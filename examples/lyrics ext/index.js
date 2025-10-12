@@ -37,7 +37,7 @@ client.on("messageCreate", async (message) => {
 	if (command === "play") {
 		if (!args[0]) return message.channel.send("❌ | Please provide a song name or URL");
 		if (!message.member.voice.channel) return message.channel.send("❌ | You must be in a voice channel");
-		const Player = Manager.create(message.guild.id, {
+		const Player = await Manager.create(message.guild.id, {
 			userdata: {
 				channel: message.channel,
 			},

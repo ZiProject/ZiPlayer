@@ -45,7 +45,7 @@ client.on("messageCreate", async (message) => {
 
 		try {
 			// Create player with plugins
-			const player = manager.create(message.guild.id, {
+			const player = await manager.create(message.guild.id, {
 				leaveOnEnd: false,
 				leaveOnEmpty: false,
 				// leaveTimeout: 30000,
