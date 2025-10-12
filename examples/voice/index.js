@@ -125,7 +125,7 @@ client.on("messageCreate", async (message) => {
 	const command = args.shift().toLowerCase();
 	if (command === "join") {
 		if (!message.member.voice.channel) return message.channel.send("You must be in a voice channel");
-		const player = Manager.create(message.guild.id, {
+		const player = await Manager.create(message.guild.id, {
 			userdata: { channel: message.channel },
 			selfDeaf: true,
 			leaveOnEmpty: false,

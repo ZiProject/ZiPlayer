@@ -313,12 +313,9 @@ export class Player extends EventEmitter {
 						throw new Error(`All getFallback attempts failed for track: ${track.title}`);
 					}
 				}
+				this.debug(streamInfo);
 			} else {
 				this.debug(`[Player] Using extension-provided stream for track: ${track.title}`);
-			}
-
-			if (plugin) {
-				this.debug(streamInfo);
 			}
 
 			// Kiểm tra nếu có stream thực sự để tạo AudioResource
@@ -641,62 +638,96 @@ export class Player extends EventEmitter {
 	}
 
 	/**
-	 * Play a track or search query
+	 * Play a track, search query, search result, or play from queue
 	 *
-	 * @param {string | Track} query - Track URL, search query, or Track object
+	 * @param {string | Track | SearchResult | null} query - Track URL, search query, Track object, SearchResult, or null for play
 	 * @param {string} requestedBy - User ID who requested the track
 	 * @returns {Promise<boolean>} True if playback started successfully
 	 * @example
-	 * await player.play("Never Gonna Give You Up", userId);
-	 * await player.play("https://youtube.com/watch?v=dQw4w9WgXcQ", userId);
-	 * await player.play("tts: Hello everyone!", userId);
+	 * await player.play("Never Gonna Give You Up", userId); // Search query
+	 * await player.play("https://youtube.com/watch?v=dQw4w9WgXcQ", userId); // Direct URL
+	 * await player.play("tts: Hello everyone!", userId); // Text-to-Speech
+	 * await player.play(trackObject, userId); // Track object
+	 * await player.play(searchResult, userId); // SearchResult object
+	 * await player.play(null); // play from queue
 	 */
-	async play(query: string | Track, requestedBy?: string): Promise<boolean> {
-		this.debug(`[Player] Play called with query: ${typeof query === "string" ? query : query?.title}`);
+	async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
+		const debugInfo =
+			query === null ? "null"
+			: typeof query === "string" ? query
+			: "tracks" in query ? `${query.tracks.length} tracks`
+			: query.title || "unknown";
+		this.debug(`[Player] Play called with query: ${debugInfo}`);
 		this.clearLeaveTimeout();
 		let tracksToAdd: Track[] = [];
 		let isPlaylist = false;
-		let effectiveRequest: ExtensionPlayRequest = { query, requestedBy };
+		let effectiveRequest: ExtensionPlayRequest = { query: query as string | Track, requestedBy };
 		let hookResponse: ExtensionPlayResponse = {};
 
 		try {
-			const hookOutcome = await this.runBeforePlayHooks(effectiveRequest);
-			effectiveRequest = hookOutcome.request;
-			hookResponse = hookOutcome.response;
-			if (effectiveRequest.requestedBy === undefined) {
-				effectiveRequest.requestedBy = requestedBy;
+			// Handle null query - play from queue
+			if (query === null) {
+				this.debug(`[Player] Play from queue requested`);
+				if (this.queue.isEmpty) {
+					this.debug(`[Player] Queue is empty, nothing to play`);
+					return false;
+				}
+
+				if (!this.isPlaying) {
+					return await this.playNext();
+				}
+				return true;
 			}
 
-			const hookTracks = Array.isArray(hookResponse.tracks) ? hookResponse.tracks : undefined;
+			// Handle SearchResult
+			if (query && typeof query === "object" && "tracks" in query && Array.isArray(query.tracks)) {
+				this.debug(`[Player] Playing SearchResult with ${query.tracks.length} tracks`);
+				tracksToAdd = query.tracks;
+				isPlaylist = !!query.playlist || query.tracks.length > 1;
 
-			if (hookResponse.handled && (!hookTracks || hookTracks.length === 0)) {
-				const handledPayload: ExtensionAfterPlayPayload = {
-					success: hookResponse.success ?? true,
-					query: effectiveRequest.query,
-					requestedBy: effectiveRequest.requestedBy,
-					tracks: [],
-					isPlaylist: hookResponse.isPlaylist ?? false,
-					error: hookResponse.error,
-				};
-				await this.runAfterPlayHooks(handledPayload);
-				if (hookResponse.error) {
-					this.emit("playerError", hookResponse.error);
+				if (query.playlist) {
+					this.debug(`[Player] Added playlist: ${query.playlist.name} (${tracksToAdd.length} tracks)`);
 				}
-				return hookResponse.success ?? true;
-			}
+			} else {
+				// Handle other types (string, Track)
+				const hookOutcome = await this.runBeforePlayHooks(effectiveRequest);
+				effectiveRequest = hookOutcome.request;
+				hookResponse = hookOutcome.response;
+				if (effectiveRequest.requestedBy === undefined) {
+					effectiveRequest.requestedBy = requestedBy;
+				}
 
-			if (hookTracks && hookTracks.length > 0) {
-				tracksToAdd = hookTracks;
-				isPlaylist = hookResponse.isPlaylist ?? hookTracks.length > 1;
-			} else if (typeof effectiveRequest.query === "string") {
-				const searchResult = await this.search(effectiveRequest.query, effectiveRequest.requestedBy || "Unknown");
-				tracksToAdd = searchResult.tracks;
-				if (searchResult.playlist) {
-					isPlaylist = true;
-					this.debug(`[Player] Added playlist: ${searchResult.playlist.name} (${tracksToAdd.length} tracks)`);
+				const hookTracks = Array.isArray(hookResponse.tracks) ? hookResponse.tracks : undefined;
+
+				if (hookResponse.handled && (!hookTracks || hookTracks.length === 0)) {
+					const handledPayload: ExtensionAfterPlayPayload = {
+						success: hookResponse.success ?? true,
+						query: effectiveRequest.query,
+						requestedBy: effectiveRequest.requestedBy,
+						tracks: [],
+						isPlaylist: hookResponse.isPlaylist ?? false,
+						error: hookResponse.error,
+					};
+					await this.runAfterPlayHooks(handledPayload);
+					if (hookResponse.error) {
+						this.emit("playerError", hookResponse.error);
+					}
+					return hookResponse.success ?? true;
 				}
-			} else if (effectiveRequest.query) {
-				tracksToAdd = [effectiveRequest.query as Track];
+
+				if (hookTracks && hookTracks.length > 0) {
+					tracksToAdd = hookTracks;
+					isPlaylist = hookResponse.isPlaylist ?? hookTracks.length > 1;
+				} else if (typeof effectiveRequest.query === "string") {
+					const searchResult = await this.search(effectiveRequest.query, effectiveRequest.requestedBy || "Unknown");
+					tracksToAdd = searchResult.tracks;
+					if (searchResult.playlist) {
+						isPlaylist = true;
+						this.debug(`[Player] Added playlist: ${searchResult.playlist.name} (${tracksToAdd.length} tracks)`);
+					}
+				} else if (effectiveRequest.query) {
+					tracksToAdd = [effectiveRequest.query as Track];
+				}
 			}
 
 			if (tracksToAdd.length === 0) {
@@ -1334,21 +1365,49 @@ export class Player extends EventEmitter {
 	}
 
 	/**
-	 * Skip to the next track
+	 * Skip to the next track or skip to a specific index
 	 *
+	 * @param {number} index - Optional index to skip to (0 = next track)
 	 * @returns {boolean} True if skipped successfully
 	 * @example
-	 * const skipped = player.skip();
+	 * const skipped = player.skip(); // Skip to next track
+	 * const skippedToIndex = player.skip(2); // Skip to track at index 2
 	 * console.log(`Skipped: ${skipped}`);
 	 */
+	skip(index?: number): boolean {
+		this.debug(`[Player] skip called with index: ${index}`);
+		try {
+			if (typeof index === "number" && index >= 0) {
+				// Skip to specific index
+				const targetTrack = this.queue.getTrack(index);
+				if (!targetTrack) {
+					this.debug(`[Player] No track found at index ${index}`);
+					return false;
+				}
 
-	skip(): boolean {
-		this.debug(`[Player] skip called`);
-		if (this.isPlaying || this.isPaused) {
-			this.skipLoop = true;
-			return this.audioPlayer.stop();
+				// Remove tracks from 0 to index-1
+				for (let i = 0; i < index; i++) {
+					this.queue.remove(0);
+				}
+
+				this.debug(`[Player] Skipped to track at index ${index}: ${targetTrack.title}`);
+				if (this.isPlaying || this.isPaused) {
+					this.skipLoop = true;
+					return this.audioPlayer.stop();
+				}
+				return true;
+			}
+
+			if (this.isPlaying || this.isPaused) {
+				this.skipLoop = true;
+				return this.audioPlayer.stop();
+			}
+
+			return true;
+		} catch (error) {
+			this.debug(`[Player] skip error:`, error);
+			return false;
 		}
-		return !!this.playNext();
 	}
 
 	/**
@@ -1369,16 +1428,38 @@ export class Player extends EventEmitter {
 	}
 
 	/**
-	 * Loop the current track
+	 * Loop the current track or queue
 	 *
-	 * @param {LoopMode} mode - The loop mode to set
+	 * @param {LoopMode | number} mode - The loop mode to set ("off", "track", "queue") or number (0=off, 1=track, 2=queue)
 	 * @returns {LoopMode} The loop mode
 	 * @example
-	 * const loopMode = player.loop("track");
+	 * const loopMode = player.loop("track"); // Loop current track
+	 * const loopQueue = player.loop("queue"); // Loop entire queue
+	 * const loopTrack = player.loop(1); // Loop current track (same as "track")
+	 * const loopQueueNum = player.loop(2); // Loop entire queue (same as "queue")
+	 * const noLoop = player.loop("off"); // No loop
+	 * const noLoopNum = player.loop(0); // No loop (same as "off")
 	 * console.log(`Loop mode: ${loopMode}`);
 	 */
-	loop(mode?: LoopMode): LoopMode {
-		return this.queue.loop(mode);
+	loop(mode?: LoopMode | number): LoopMode {
+		this.debug(`[Player] loop called with mode: ${mode}`);
+
+		if (typeof mode === "number") {
+			// Number mode: convert to text mode
+			switch (mode) {
+				case 0:
+					return this.queue.loop("off");
+				case 1:
+					return this.queue.loop("track");
+				case 2:
+					return this.queue.loop("queue");
+				default:
+					this.debug(`[Player] Invalid loop number: ${mode}, using "off"`);
+					return this.queue.loop("off");
+			}
+		}
+
+		return this.queue.loop(mode as LoopMode);
 	}
 
 	/**

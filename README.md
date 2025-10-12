@@ -1,4 +1,4 @@
-<img width="1175" height="305" alt="logo" src="https://github.com/user-attachments/assets/d4db4892-9c3d-4314-9228-701629555380" />
+<img width="1175" height="305" alt="logo" src="./publish/logo.png" />
 
 # ziplayer
 
@@ -43,7 +43,7 @@ const manager = new PlayerManager({
 });
 
 // Create player
-const player = manager.create(guildId, {
+const player = await manager.create(guildId, {
 	leaveOnEnd: true,
 	leaveTimeout: 30000,
 	userdata: { channel: textChannel }, // store channel for events
@@ -95,7 +95,7 @@ const manager = new PlayerManager({
 });
 
 // Create a player with TTS interrupt enabled
-const player = manager.create(guildId, {
+const player = await manager.create(guildId, {
 	tts: {
 		createPlayer: true, // pre-create the internal TTS AudioPlayer
 		interrupt: true, // pause music, swap to TTS, then resume

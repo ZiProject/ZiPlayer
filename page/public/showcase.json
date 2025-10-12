@@ -1,0 +1,99 @@
+{
+	"name": "ZiPlayer",
+	"description": "A modular Discord voice player with plugin system for @discordjs/voice",
+	"version": "1.0.0",
+	"repository": {
+		"url": "https://github.com/ZiProject/ZiPlayer",
+		"type": "git"
+	},
+	"packages": [
+		{
+			"name": "ziplayer",
+			"description": "Core player library with plugin system",
+			"version": "1.0.0",
+			"npm": "https://www.npmjs.com/package/ziplayer",
+			"features": [
+				"Plugin-based architecture",
+				"Queue management",
+				"Volume control",
+				"Playback control",
+				"Auto play",
+				"Loop control",
+				"Progress bar",
+				"Event-driven",
+				"Multi-guild support"
+			]
+		},
+		{
+			"name": "@ziplayer/plugin",
+			"description": "Official plugins for various music sources",
+			"version": "1.0.0",
+			"npm": "https://www.npmjs.com/package/@ziplayer/plugin",
+			"features": [
+				"YouTube support",
+				"SoundCloud support",
+				"Spotify support",
+				"TTS (Text-to-Speech) support",
+				"YTSR search optimization"
+			]
+		},
+		{
+			"name": "@ziplayer/extension",
+			"description": "Official extensions for enhanced functionality",
+			"version": "1.0.0",
+			"npm": "https://www.npmjs.com/package/@ziplayer/extension",
+			"features": ["Voice extension", "Lyrics extension", "Lavalink extension"]
+		}
+	],
+	"examples": [
+		{
+			"name": "ziji bot discord",
+			"description": "Ziji bot discord",
+			"url": "https://github.com/ZiProject/Ziji-bot-discord",
+			"features": ["Discord bot", "Music bot", "Command handling", "TTS", "Lyrics", "fun", "mini game", "etc"]
+		},
+		{
+			"name": "Music Bot TypeScript",
+			"description": "Complete Discord music bot implementation",
+			"url": "https://github.com/ZiProject/ZiPlayer/tree/main/examples/music%20bot%20ts",
+			"features": ["TypeScript", "Full bot setup", "Command handling"]
+		},
+		{
+			"name": "Music Bot JavaScript",
+			"description": "Simple JavaScript music bot",
+			"url": "https://github.com/ZiProject/ZiPlayer/tree/main/examples/musicbot%20js",
+			"features": ["JavaScript", "Basic setup", "Easy to understand"]
+		},
+		{
+			"name": "Voice Features",
+			"description": "Voice recognition and TTS examples",
+			"url": "https://github.com/ZiProject/ZiPlayer/tree/main/examples/voice",
+			"features": ["Voice commands", "TTS integration", "Speech recognition"]
+		},
+		{
+			"name": "Lyrics Extension",
+			"description": "Real-time lyrics display",
+			"url": "https://github.com/ZiProject/ZiPlayer/tree/main/examples/lyrics%20ext",
+			"features": ["Lyrics fetching", "Real-time display", "Custom styling"]
+		},
+		{
+			"name": "Search Optimization",
+			"description": "Advanced search and caching",
+			"url": "https://github.com/ZiProject/ZiPlayer/tree/main/examples/search",
+			"features": ["Search caching", "Performance optimization", "Custom resolvers"]
+		}
+	],
+	"stats": {
+		"downloads": "1,410+",
+		"stars": "1+",
+		"contributors": "1+",
+		"lastUpdated": "2025-10-12"
+	},
+	"links": {
+		"documentation": "/docs",
+		"apiReference": "/api-reference",
+		"examples": "/examples",
+		"github": "https://github.com/ZiProject/ZiPlayer",
+		"npm": "https://www.npmjs.com/package/ziplayer"
+	}
+}
