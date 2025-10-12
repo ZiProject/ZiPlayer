@@ -20,8 +20,8 @@ export function Logo({ variant = "icon", size = "md", className = "", animated =
 
 	const logoUrl =
 		variant === "icon" ?
-			"https://github.com/user-attachments/assets/4e7855e8-6044-4c49-90bd-867436173b4f"
-		:	"https://github.com/user-attachments/assets/b85a4976-ef7d-432a-9cae-36b11486ac0f";
+			"https://raw.githubusercontent.com/ZiProject/ZiPlayer/refs/heads/main/publish/icon.png"
+		:	"https://raw.githubusercontent.com/ZiProject/ZiPlayer/refs/heads/main/publish/logo.png";
 
 	const LogoComponent = animated ? motion.div : "div";
 	const logoProps =
