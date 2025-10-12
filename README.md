@@ -1,4 +1,4 @@
-<img width="1175" height="305" alt="logo" src="https://github.com/user-attachments/assets/d4db4892-9c3d-4314-9228-701629555380" />
+<img width="1175" height="305" alt="logo" src="./publish/logo.png" />
 
 # ziplayer
 
