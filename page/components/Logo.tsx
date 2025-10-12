@@ -19,18 +19,19 @@ export function Logo({ variant = "icon", size = "md", className = "", animated =
 	};
 
 	const logoUrl =
-		variant === "icon"
-			? "https://raw.githubusercontent.com/ZiProject/ZiPlayer/refs/heads/main/publish/icon.png"
-			: "https://raw.githubusercontent.com/ZiProject/ZiPlayer/refs/heads/main/publish/logo.png";
+		variant === "icon" ?
+			"https://raw.githubusercontent.com/ZiProject/ZiPlayer/refs/heads/main/publish/icon.png"
+		:	"https://raw.githubusercontent.com/ZiProject/ZiPlayer/refs/heads/main/publish/logo.png";
 
 	const LogoComponent = animated ? motion.div : "div";
-	const logoProps = animated
-		? {
+	const logoProps =
+		animated ?
+			{
 				whileHover: { scale: 1.05 },
 				whileTap: { scale: 0.95 },
 				transition: { duration: 0.2 },
-		  }
-		: {};
+			}
+		:	{};
 
 	return (
 		<LogoComponent
