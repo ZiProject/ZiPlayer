@@ -19,18 +19,19 @@ export function Logo({ variant = "icon", size = "md", className = "", animated =
 	};
 
 	const logoUrl =
-		variant === "icon"
-			? "https://github.com/user-attachments/assets/4e7855e8-6044-4c49-90bd-867436173b4f"
-			: "https://github.com/user-attachments/assets/b85a4976-ef7d-432a-9cae-36b11486ac0f";
+		variant === "icon" ?
+			"https://github.com/user-attachments/assets/4e7855e8-6044-4c49-90bd-867436173b4f"
+		:	"https://github.com/user-attachments/assets/b85a4976-ef7d-432a-9cae-36b11486ac0f";
 
 	const LogoComponent = animated ? motion.div : "div";
-	const logoProps = animated
-		? {
+	const logoProps =
+		animated ?
+			{
 				whileHover: { scale: 1.05 },
 				whileTap: { scale: 0.95 },
 				transition: { duration: 0.2 },
-		  }
-		: {};
+			}
+		:	{};
 
 	return (
 		<LogoComponent
