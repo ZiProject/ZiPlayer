@@ -41,7 +41,7 @@ const manager = new PlayerManager({
 });
 
 // Create and connect a player (discord.js VoiceChannel instance)
-const player = manager.create(guildId, { userdata: { channel: textChannel } });
+const player = await manager.create(guildId, { userdata: { channel: textChannel } });
 await player.connect(voiceChannel);
 
 // Search & play
