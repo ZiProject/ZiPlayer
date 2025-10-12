@@ -1,9 +1,9 @@
 {
 	"dependencies": {
 		"@discordjs/voice": "^0.19.0",
-		"@ziplayer/plugin": "^0.0.3",
+		"@ziplayer/plugin": "file:../../plugins",
 		"discord.js": "^14.22.1",
 		"dotenv": "^17.2.2",
-		"ziplayer": "^0.0.5"
+		"ziplayer": "file:../../core"
 	}
 }
