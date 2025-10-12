@@ -68,9 +68,9 @@ export function Layout({ children }: PropsWithChildren) {
 									target={item.external ? "_blank" : undefined}
 									rel={item.external ? "noreferrer" : undefined}
 									className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-300 ${
-										router.pathname === item.href
-											? "bg-brand-500/20 text-brand-300"
-											: "text-white/70 hover:text-white hover:bg-white/10"
+										router.pathname === item.href ?
+											"bg-brand-500/20 text-brand-300"
+										:	"text-white/70 hover:text-white hover:bg-white/10"
 									}`}>
 									<item.icon size={16} />
 									{item.label}
@@ -82,7 +82,9 @@ export function Layout({ children }: PropsWithChildren) {
 						<button
 							onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
 							className='md:hidden p-2 rounded-lg text-white/70 hover:text-white hover:bg-white/10 transition-all duration-300'>
-							{isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+							{isMobileMenuOpen ?
+								<X size={24} />
+							:	<Menu size={24} />}
 						</button>
 					</div>
 				</div>
@@ -105,9 +107,9 @@ export function Layout({ children }: PropsWithChildren) {
 										rel={item.external ? "noreferrer" : undefined}
 										onClick={() => setIsMobileMenuOpen(false)}
 										className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-300 ${
-											router.pathname === item.href
-												? "bg-brand-500/20 text-brand-300"
-												: "text-white/70 hover:text-white hover:bg-white/10"
+											router.pathname === item.href ?
+												"bg-brand-500/20 text-brand-300"
+											:	"text-white/70 hover:text-white hover:bg-white/10"
 										}`}>
 										<item.icon size={18} />
 										{item.label}
