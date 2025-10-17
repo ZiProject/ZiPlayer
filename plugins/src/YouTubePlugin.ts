@@ -1,6 +1,21 @@
-import { BasePlugin, Track, SearchResult, StreamInfo } from "ziplayer";
+import { BasePlugin, Track, SearchResult, StreamInfo, Player } from "ziplayer";
 
 import { Innertube, Log } from "youtubei.js";
+import {
+	createSabrStream,
+	createOutputStream,
+	createStreamSink,
+	DEFAULT_SABR_OPTIONS,
+	type StreamResult,
+} from "./utils/sabr-stream-factory";
+import { webStreamToNodeStream } from "./utils/stream-converter";
+
+export interface PluginOptions {
+	player: Player;
+	debug?: boolean;
+	searchClient?: Innertube;
+	client?: Innertube;
+}
 
 /**
  * A plugin for handling YouTube audio content including videos, playlists, and search functionality.
@@ -35,7 +50,8 @@ export class YouTubePlugin extends BasePlugin {
 	private client!: Innertube;
 	private searchClient!: Innertube;
 	private ready: Promise<void>;
-
+	private player: Player | undefined;
+	private options: PluginOptions;
 	/**
 	 * Creates a new YouTubePlugin instance.
 	 *
@@ -46,25 +62,36 @@ export class YouTubePlugin extends BasePlugin {
 	 * const plugin = new YouTubePlugin();
 	 * // Plugin is ready to use after initialization completes
 	 */
-	constructor() {
+	constructor(options: PluginOptions) {
 		super();
+		this.player = options?.player ?? undefined;
+		this.options = options ?? {};
 		this.ready = this.init();
 	}
 
 	private async init(): Promise<void> {
-		this.client = await Innertube.create({
-			client_type: "ANDROID",
-			retrieve_player: false,
-		} as any);
+		this.client =
+			this.options.client ??
+			(await Innertube.create({
+				client_type: "ANDROID",
+				retrieve_player: false,
+			} as any));
 
 		// Use a separate web client for search to avoid mobile parser issues
-		this.searchClient = await Innertube.create({
-			client_type: "WEB",
-			retrieve_player: false,
-		} as any);
+		this.searchClient =
+			this.options.searchClient ??
+			(await Innertube.create({
+				client_type: "WEB",
+				retrieve_player: false,
+			} as any));
 		Log.setLevel(0);
 	}
 
+	private debug(message?: any, ...optionalParams: any[]): void {
+		if (this.options?.debug && this?.player && this.player?.listenerCount("debug") > 0) {
+			this.player.emit("debug", `[YouTubePlugin] ${message}`, ...optionalParams);
+		}
+	}
 	// Build a Track from various YouTube object shapes (search item, playlist item, watch_next feed, basic_info, info)
 	private buildTrack(raw: any, requestedBy: string, extra?: { playlist?: string }): Track {
 		const pickFirst = (...vals: any[]) => vals.find((v) => v !== undefined && v !== null && v !== "");
@@ -124,6 +151,15 @@ export class YouTubePlugin extends BasePlugin {
 
 		const url = pickFirst(raw?.url, id ? `https://www.youtube.com/watch?v=${id}` : undefined);
 
+		this.debug("Track build:", {
+			id: String(id),
+			title: String(title),
+			url: String(url),
+			duration,
+			thumbnail: thumb,
+			requestedBy,
+			source: this.name,
+		});
 		return {
 			id: String(id),
 			title: String(title),
@@ -218,20 +254,27 @@ export class YouTubePlugin extends BasePlugin {
 
 		if (this.validate(query)) {
 			const listId = this.extractListId(query);
+			this.debug("List ID:", listId);
 			if (listId) {
 				if (this.isMixListId(listId)) {
 					const anchorVideoId = this.extractVideoId(query);
 					if (anchorVideoId) {
 						try {
+							this.debug("Getting info for anchor video ID:", anchorVideoId);
 							const info: any = await (this.searchClient as any).getInfo(anchorVideoId);
+							this.debug("Info:", info);
 							const feed: any[] = info?.watch_next_feed || [];
+							this.debug("Feed:", feed);
 							const tracks: Track[] = feed
 								.filter((tr: any) => tr?.content_type === "VIDEO")
 								.map((v: any) => this.buildTrack(v, requestedBy, { playlist: listId }));
+							this.debug("Tracks:", tracks);
 							const { basic_info } = info;
 
 							const currTrack = this.buildTrack(basic_info, requestedBy);
+							this.debug("Current track:", currTrack);
 							tracks.unshift(currTrack);
+							this.debug("Tracks:", tracks);
 							return {
 								tracks,
 								playlist: { name: "YouTube Mix", url: query, thumbnail: tracks[0]?.thumbnail },
@@ -325,11 +368,10 @@ export class YouTubePlugin extends BasePlugin {
 	}
 
 	/**
-	 * Retrieves the audio stream for a YouTube track.
+	 * Retrieves the audio stream for a YouTube track using sabr download.
 	 *
-	 * This method extracts the audio stream from a YouTube video using the YouTube client.
-	 * It attempts to get the best quality audio stream available and handles various
-	 * format fallbacks if the primary method fails.
+	 * This method extracts the audio stream from a YouTube video using the sabr download
+	 * method which provides better quality and more reliable streaming.
 	 *
 	 * @param track - The Track object to get the stream for
 	 * @returns A StreamInfo object containing the audio stream and metadata
@@ -349,56 +391,101 @@ export class YouTubePlugin extends BasePlugin {
 		if (!id) throw new Error("Invalid track id");
 
 		try {
-			const stream: any = await (this.client as any).download(id, {
-				type: "audio",
-				quality: "best",
-			});
+			this.debug("🚀 Attempting sabr download for video ID:", id);
+			// Use sabr download for better quality and reliability
+			const { streamResults } = await createSabrStream(id, DEFAULT_SABR_OPTIONS);
+			const { audioStream, selectedFormats, videoTitle } = streamResults;
+
+			this.debug("✅ Sabr download successful, converting Web Stream to Node.js Stream");
+			// Convert Web Stream to Node.js Readable Stream
+			const nodeStream = webStreamToNodeStream(audioStream);
+
+			this.debug("✅ Stream conversion complete, returning Node.js stream");
+			// Return the converted Node.js stream
 			return {
-				stream,
+				stream: nodeStream,
 				type: "arbitrary",
-				metadata: track.metadata,
+				metadata: {
+					...track.metadata,
+					itag: selectedFormats.audioFormat.itag,
+					mime: selectedFormats.audioFormat.mimeType,
+				},
 			};
 		} catch (e: any) {
+			this.debug("⚠️ Sabr download failed, falling back to youtubei.js:", e.message);
+			// Fallback to original youtubei.js method if sabr download fails
 			try {
-				const info: any = await (this.client as any).getBasicInfo(id);
-
-				// Prefer m4a audio-only formats first
-				let format: any = info?.chooseFormat?.({
+				const stream: any = await (this.client as any).download(id, {
 					type: "audio",
 					quality: "best",
 				});
-				if (!format && info?.formats?.length) {
-					const audioOnly = info.formats.filter((f: any) => f.mime_type?.includes("audio"));
-					audioOnly.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
-					format = audioOnly[0];
-				}
 
-				if (!format) throw new Error("No audio format available");
-
-				let url: string | undefined = undefined;
-				if (typeof format.decipher === "function") {
-					url = format.decipher((this.client as any).session.player);
-				}
-				if (!url) url = format.url;
-
-				if (!url) throw new Error("No valid URL to decipher");
-				const res = await fetch(url);
-
-				if (!res.ok || !res.body) {
-					throw new Error(`HTTP ${res.status}`);
+				// Check if it's a Web Stream and convert it
+				this.debug("🔍 Checking stream type:", typeof stream, stream?.constructor?.name);
+				if (stream && typeof stream.getReader === "function") {
+					this.debug("🔄 Converting Web Stream to Node.js Stream");
+					const nodeStream = webStreamToNodeStream(stream);
+					this.debug("✅ Stream converted successfully");
+					return {
+						stream: nodeStream,
+						type: "arbitrary",
+						metadata: track.metadata,
+					};
+				} else {
+					this.debug("⚠️ Stream is not a Web Stream or is null");
 				}
 
 				return {
-					stream: res.body as any,
+					stream,
 					type: "arbitrary",
-					metadata: {
-						...track.metadata,
-						itag: format.itag,
-						mime: format.mime_type,
-					},
+					metadata: track.metadata,
 				};
-			} catch (inner: any) {
-				throw new Error(`Failed to get YouTube stream: ${inner?.message || inner}`);
+			} catch (fallbackError: any) {
+				try {
+					const info: any = await (this.client as any).getBasicInfo(id);
+
+					// Prefer m4a audio-only formats first
+					let format: any = info?.chooseFormat?.({
+						type: "audio",
+						quality: "best",
+					});
+					if (!format && info?.formats?.length) {
+						const audioOnly = info.formats.filter((f: any) => f.mime_type?.includes("audio"));
+						audioOnly.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+						format = audioOnly[0];
+					}
+
+					if (!format) throw new Error("No audio format available");
+
+					let url: string | undefined = undefined;
+					if (typeof format.decipher === "function") {
+						url = format.decipher((this.client as any).session.player);
+					}
+					if (!url) url = format.url;
+
+					if (!url) throw new Error("No valid URL to decipher");
+					const res = await fetch(url);
+
+					if (!res.ok || !res.body) {
+						throw new Error(`HTTP ${res.status}`);
+					}
+
+					// Convert Web Stream to Node.js Stream
+					this.debug("🔄 Converting fetch response Web Stream to Node.js Stream");
+					const nodeStream = webStreamToNodeStream(res.body);
+
+					return {
+						stream: nodeStream,
+						type: "arbitrary",
+						metadata: {
+							...track.metadata,
+							itag: format.itag,
+							mime: format.mime_type,
+						},
+					};
+				} catch (inner: any) {
+					throw new Error(`Failed to get YouTube stream: ${inner?.message || inner}`);
+				}
 			}
 		}
 	}
@@ -426,14 +513,18 @@ export class YouTubePlugin extends BasePlugin {
 	 */
 	async getRelatedTracks(trackURL: string, opts: { limit?: number; offset?: number; history?: Track[] } = {}): Promise<Track[]> {
 		await this.ready;
+		this.debug("Getting related tracks for:", trackURL);
 		const videoId = this.extractVideoId(trackURL);
+		this.debug("Video ID:", videoId);
 		if (!videoId) {
 			// If the last track URL is not a direct video URL (e.g., playlist URL),
 			// we cannot fetch related videos reliably.
 			return [];
 		}
+		this.debug("Getting info for video ID:", videoId);
 		const info: any = await await (this.searchClient as any).getInfo(videoId);
 		const related: any[] = info?.watch_next_feed || [];
+		this.debug("Related:", related);
 		const offset = opts.offset ?? 0;
 		const limit = opts.limit ?? 5;
 
@@ -467,6 +558,7 @@ export class YouTubePlugin extends BasePlugin {
 		try {
 			const result = await this.search(track.title, track.requestedBy);
 			const first = result.tracks[0];
+			this.debug("Fallback track:", first);
 			if (!first) throw new Error("No fallback track found");
 			return await this.getStream(first);
 		} catch (e: any) {
