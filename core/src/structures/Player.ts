@@ -651,13 +651,10 @@ export class Player extends EventEmitter {
 	 */
 	async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
 		const debugInfo =
-			query === null
-				? "null"
-				: typeof query === "string"
-				? query
-				: "tracks" in query
-				? `${query.tracks.length} tracks`
-				: query.title || "unknown";
+			query === null ? "null"
+			: typeof query === "string" ? query
+			: "tracks" in query ? `${query.tracks.length} tracks`
+			: query.title || "unknown";
 		this.debug(`[Player] Play called with query: ${debugInfo}`);
 		this.clearLeaveTimeout();
 		let tracksToAdd: Track[] = [];
@@ -857,8 +854,15 @@ export class Player extends EventEmitter {
 			// Derive timeoutMs from resource/track duration when available, with a sensible cap
 			const md: any = (resource as any)?.metadata ?? {};
 			const declared =
-				typeof md.duration === "number" ? md.duration : typeof next?.duration === "number" ? next.duration : undefined;
-			const declaredMs = declared ? (declared > 1000 ? declared : declared * 1000) : undefined;
+				typeof md.duration === "number" ? md.duration
+				: typeof next?.duration === "number" ? next.duration
+				: undefined;
+			const declaredMs =
+				declared ?
+					declared > 1000 ?
+						declared
+					:	declared * 1000
+				:	undefined;
 			const cap = this.options?.tts?.Max_Time_TTS ?? 60_000;
 			const idleTimeout = declaredMs ? Math.min(cap, Math.max(1_000, declaredMs + 1_500)) : cap;
 			await entersState(ttsPlayer, AudioPlayerStatus.Idle, idleTimeout).catch(() => null);
