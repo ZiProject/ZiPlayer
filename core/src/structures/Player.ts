@@ -25,6 +25,7 @@ import {
 	ProgressBarOptions,
 	LoopMode,
 	StreamInfo,
+	SaveOptions,
 } from "../types";
 import type {
 	ExtensionContext,
@@ -279,8 +280,9 @@ export class Player extends EventEmitter {
 				this.debug(`[Player] Getting stream for track: ${track.title}`);
 				this.debug(`[Player] Using plugin: ${plugin.name}`);
 				this.debug(`[Track] Track Info:`, track);
+				const timeoutMs = this.options.extractorTimeout ?? 50000;
 				try {
-					streamInfo = await withTimeout(plugin.getStream(track), this.options.extractorTimeout ?? 15000, "getStream timed out");
+					streamInfo = await withTimeout(plugin.getStream(track), timeoutMs, "getStream timed out");
 				} catch (streamError) {
 					this.debug(`[Player] getStream failed, trying getFallback:`, streamError);
 					const allplugs = this.pluginManager.getAll();
@@ -289,18 +291,14 @@ export class Player extends EventEmitter {
 							continue;
 						}
 						try {
-							streamInfo = await withTimeout(
-								(p as any).getStream(track),
-								this.options.extractorTimeout ?? 15000,
-								`getStream timed out for plugin ${p.name}`,
-							);
+							streamInfo = await withTimeout((p as any).getStream(track), timeoutMs, `getStream timed out for plugin ${p.name}`);
 							if ((streamInfo as any)?.stream) {
 								this.debug(`[Player] getStream succeeded with plugin ${p.name} for track: ${track.title}`);
 								break;
 							}
 							streamInfo = await withTimeout(
 								(p as any).getFallback(track),
-								this.options.extractorTimeout ?? 15000,
+								timeoutMs,
 								`getFallback timed out for plugin ${p.name}`,
 							);
 							if (!(streamInfo as any)?.stream) continue;
@@ -378,7 +376,7 @@ export class Player extends EventEmitter {
 		if (this.leaveTimeout) {
 			clearTimeout(this.leaveTimeout);
 			this.leaveTimeout = null;
-			this.debug(`[Player] Cleared leave timeout`);
+			this.debug(`[Player] Cleared leave timeoutMs`);
 		}
 	}
 
@@ -653,10 +651,13 @@ export class Player extends EventEmitter {
 	 */
 	async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
 		const debugInfo =
-			query === null ? "null"
-			: typeof query === "string" ? query
-			: "tracks" in query ? `${query.tracks.length} tracks`
-			: query.title || "unknown";
+			query === null
+				? "null"
+				: typeof query === "string"
+				? query
+				: "tracks" in query
+				? `${query.tracks.length} tracks`
+				: query.title || "unknown";
 		this.debug(`[Player] Play called with query: ${debugInfo}`);
 		this.clearLeaveTimeout();
 		let tracksToAdd: Track[] = [];
@@ -853,18 +854,11 @@ export class Player extends EventEmitter {
 
 			// Wait until TTS starts then finishes
 			await entersState(ttsPlayer, AudioPlayerStatus.Playing, 5_000).catch(() => null);
-			// Derive timeout from resource/track duration when available, with a sensible cap
+			// Derive timeoutMs from resource/track duration when available, with a sensible cap
 			const md: any = (resource as any)?.metadata ?? {};
 			const declared =
-				typeof md.duration === "number" ? md.duration
-				: typeof next?.duration === "number" ? next.duration
-				: undefined;
-			const declaredMs =
-				declared ?
-					declared > 1000 ?
-						declared
-					:	declared * 1000
-				:	undefined;
+				typeof md.duration === "number" ? md.duration : typeof next?.duration === "number" ? next.duration : undefined;
+			const declaredMs = declared ? (declared > 1000 ? declared : declared * 1000) : undefined;
 			const cap = this.options?.tts?.Max_Time_TTS ?? 60_000;
 			const idleTimeout = declaredMs ? Math.min(cap, Math.max(1_000, declaredMs + 1_500)) : cap;
 			await entersState(ttsPlayer, AudioPlayerStatus.Idle, idleTimeout).catch(() => null);
@@ -1693,7 +1687,7 @@ export class Player extends EventEmitter {
 
 		if (this.options.leaveOnEmpty && this.options.leaveTimeout) {
 			this.leaveTimeout = setTimeout(() => {
-				this.debug(`[Player] Leaving voice channel after timeout`);
+				this.debug(`[Player] Leaving voice channel after timeoutMs`);
 				this.destroy();
 			}, this.options.leaveTimeout);
 		}
@@ -1824,5 +1818,123 @@ export class Player extends EventEmitter {
 	 */
 	get relatedTracks(): Track[] | null {
 		return this.queue.relatedTracks();
+	}
+
+	/**
+	 * Save a track's stream to a file and return a Readable stream
+	 *
+	 * @param {Track} track - The track to save
+	 * @param {SaveOptions | string} options - Save options or filename string (for backward compatibility)
+	 * @returns {Promise<Readable>} A Readable stream containing the audio data
+	 * @example
+	 * // Save current track to file
+	 * const track = player.currentTrack;
+	 * if (track) {
+	 *   const stream = await player.save(track);
+	 *
+	 *   // Use fs to write the stream to file
+	 *   const fs = require('fs');
+	 *   const writeStream = fs.createWriteStream('saved-song.mp3');
+	 *   stream.pipe(writeStream);
+	 *
+	 *   writeStream.on('finish', () => {
+	 *     console.log('File saved successfully!');
+	 *   });
+	 * }
+	 *
+	 * // Save any track by URL
+	 * const searchResult = await player.search("Never Gonna Give You Up", userId);
+	 * if (searchResult.tracks.length > 0) {
+	 *   const stream = await player.save(searchResult.tracks[0]);
+	 *   // Handle the stream...
+	 * }
+	 *
+	 * // Backward compatibility - filename as string
+	 * const stream = await player.save(track, "my-song.mp3");
+	 */
+	async save(track: Track, options?: SaveOptions | string): Promise<Readable> {
+		this.debug(`[Player] save called for track: ${track.title}`);
+
+		// Parse options - support both SaveOptions object and filename string (backward compatibility)
+		let saveOptions: SaveOptions = {};
+		if (typeof options === "string") {
+			saveOptions = { filename: options };
+		} else if (options) {
+			saveOptions = options;
+		}
+
+		// Use timeout from options or fallback to player's extractorTimeout
+		const timeout = saveOptions.timeout ?? this.options.extractorTimeout ?? 15000;
+
+		try {
+			// Try extensions first
+			let streamInfo: StreamInfo | null = await this.extensionsProvideStream(track);
+			let plugin: SourcePlugin | undefined;
+
+			if (!streamInfo) {
+				plugin = this.pluginManager.findPlugin(track.url) || this.pluginManager.get(track.source);
+
+				if (!plugin) {
+					this.debug(`[Player] No plugin found for track: ${track.title}`);
+					throw new Error(`No plugin found for track: ${track.title}`);
+				}
+
+				this.debug(`[Player] Getting save stream for track: ${track.title}`);
+				this.debug(`[Player] Using save plugin: ${plugin.name}`);
+
+				try {
+					streamInfo = await withTimeout(plugin.getStream(track), timeout, "getSaveStream timed out");
+				} catch (streamError) {
+					this.debug(`[Player] getSaveStream failed, trying getFallback:`, streamError);
+					const allplugs = this.pluginManager.getAll();
+					for (const p of allplugs) {
+						if (typeof (p as any).getFallback !== "function" && typeof (p as any).getStream !== "function") {
+							continue;
+						}
+						try {
+							streamInfo = await withTimeout(
+								(p as any).getStream(track),
+								timeout,
+								`getSaveStream timed out for plugin ${p.name}`,
+							);
+							if ((streamInfo as any)?.stream) {
+								this.debug(`[Player] getSaveStream succeeded with plugin ${p.name} for track: ${track.title}`);
+								break;
+							}
+							streamInfo = await withTimeout(
+								(p as any).getFallback(track),
+								timeout,
+								`getSaveFallback timed out for plugin ${p.name}`,
+							);
+							if (!(streamInfo as any)?.stream) continue;
+							break;
+						} catch (fallbackError) {
+							this.debug(`[Player] getSaveFallback failed with plugin ${p.name}:`, fallbackError);
+						}
+					}
+					if (!(streamInfo as any)?.stream) {
+						throw new Error(`All getSaveFallback attempts failed for track: ${track.title}`);
+					}
+				}
+			} else {
+				this.debug(`[Player] Using extension-provided save stream for track: ${track.title}`);
+			}
+
+			if (!streamInfo || !streamInfo.stream) {
+				throw new Error(`No save stream available for track: ${track.title}`);
+			}
+
+			this.debug(`[Player] Save stream obtained for track: ${track.title}`);
+			if (saveOptions.filename) {
+				this.debug(`[Player] Save options - filename: ${saveOptions.filename}, quality: ${saveOptions.quality || "default"}`);
+			}
+
+			// Return the stream directly - caller can pipe it to fs.createWriteStream()
+			return streamInfo.stream;
+		} catch (error) {
+			this.debug(`[Player] save error:`, error);
+			this.emit("playerError", error as Error, track);
+			throw error;
+		}
 	}
 }

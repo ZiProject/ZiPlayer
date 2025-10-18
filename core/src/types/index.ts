@@ -232,6 +232,27 @@ export interface ProgressBarOptions {
 	progressChar?: string;
 }
 
+/**
+ * Options for saving tracks
+ *
+ * @example
+ * const options: SaveOptions = {
+ *   filename: "my-song.mp3",
+ *   quality: "high",
+ *   timeout: 30000
+ * };
+ */
+export interface SaveOptions {
+	/** Optional filename for the saved file */
+	filename?: string;
+	/** Quality of the saved audio ("high" | "low") */
+	quality?: "high" | "low";
+	/** Timeout in milliseconds for the save operation */
+	timeout?: number;
+	/** Additional metadata to include */
+	metadata?: Record<string, any>;
+}
+
 export type LoopMode = "off" | "track" | "queue";
 
 /**
