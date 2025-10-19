@@ -308,130 +308,102 @@ export class Player extends EventEmitter {
 
 		return streamInfo as StreamInfo;
 	}
-	private async Audioresource(streamInfo: StreamInfo, track?: Track): Promise<AudioResource> {
-		function mapToStreamType(type: string | undefined): StreamType {
-			switch (type) {
-				case "webm/opus":
-					return StreamType.WebmOpus;
-				case "ogg/opus":
-					return StreamType.OggOpus;
-				case "arbitrary":
-				default:
-					return StreamType.Arbitrary;
-			}
-		}
 
-		let stream: Readable = (streamInfo as StreamInfo).stream;
-		const inputType = mapToStreamType((streamInfo as StreamInfo).type);
-
-		// Apply filters if any are active
-		if (this.activeFilters.length > 0) {
-			stream = await this.applyFiltersToStream(stream, track);
-		}
-
-		const resource = createAudioResource(stream, {
-			metadata: track ?? {
-				title: streamInfo.metadata?.title ?? "",
-				duration: streamInfo.metadata?.duration ?? 0,
-				source: streamInfo.metadata?.source ?? "",
-				requestedBy: streamInfo.metadata?.requestedBy ?? "",
-				thumbnail: streamInfo.metadata?.thumbnail ?? "",
-				url: streamInfo.metadata?.url ?? "",
-				id: streamInfo.metadata?.id ?? "",
-			},
-			inputType,
-			inlineVolume: true,
-		});
-
-		return resource;
-	}
-
-	/**
-	 * Apply active filters to an audio stream using @prismmedia/ffmpeg
-	 *
-	 * @param {Readable} stream - The original audio stream
-	 * @param {Track} track - The track being processed (for caching)
-	 * @returns {Promise<Readable>} The filtered audio stream
-	 */
-	private async applyFiltersToStream(stream: Readable, track?: Track): Promise<Readable> {
+	private async applyFiltersAndSeek(stream: Readable, track: Track, position: number = 0): Promise<Readable> {
 		const filterString = this.getFilterString();
-		if (!filterString) {
-			return stream;
-		}
-
-		// Create cache key for this track and filter combination
-		const cacheKey = track ? `${track.id}-${filterString}` : `stream-${filterString}`;
-
-		// Check if we have a cached filtered stream
-		if (this.filterCache.has(cacheKey)) {
-			this.debug(`[Player] Using cached filtered stream for: ${track?.title || "unknown"}`);
-			return this.filterCache.get(cacheKey)!;
-		}
-
-		this.debug(`[Player] Applying filters to stream: ${filterString}`);
-
+		const seekSeconds = Math.floor(position / 1000);
+		this.debug(`[Player] Applying filters and seek to stream: ${filterString || "none"}, seek: ${position}ms`);
 		try {
+			const args = ["-analyzeduration", "0", "-loglevel", "0"];
+
+			if (position > 0) {
+				args.push("-ss", seekSeconds.toString());
+			}
+
+			// Add filter if any are active
+			if (filterString) {
+				args.push("-af", filterString);
+			}
+
+			args.push("-f", "mp3", "-ar", "48000", "-ac", "2");
+
 			let ffmpeg = new prism.FFmpeg({
-				args: [
-					"-analyzeduration",
-					"0",
-					"-loglevel",
-					"0",
-					// "-i",
-					// "pipe:0",
-					"-af",
-					filterString,
-					"-f",
-					"mp3",
-					"-ar",
-					"48000",
-					"-ac",
-					"2",
-					// "pipe:1",
-				],
-			});
-
-			// Handle FFmpeg errors
-			ffmpeg.on("error", (err: Error) => {
-				this.debug(`[Player] FFmpeg error:`, err);
-			});
-
-			ffmpeg.on("close", () => {
-				this.debug(`[Player] FFmpeg filter processing completed`);
+				args,
 			});
 
 			ffmpeg = stream.pipe(ffmpeg);
-			ffmpeg.on("data", (data: Buffer) => {
-				this.debug(`[Player] FFmpeg data:`, data.length);
+
+			ffmpeg.on("close", () => {
+				this.debug(`[Player] FFmpeg filter+seek processing completed`);
+				ffmpeg.destroy();
 			});
-			ffmpeg.on("error", () => ffmpeg.destroy());
 
-			// const opus = new prism.opus.Encoder({
-			// 	rate: 48000,
-			// 	channels: 2,
-			// 	frameSize: 960,
-			// });
-			// const opusStream = ffmpeg.pipe(opus);
-			// opusStream.on("close", () => {
-			// 	ffmpeg.destroy();
-			// 	opus.destroy();
-			// });
-			// Cache the filtered stream
-			this.filterCache.set(cacheKey, ffmpeg);
-
-			// Clean up cache periodically to prevent memory leaks
-			if (this.filterCache.size > 10) {
-				const firstKey = this.filterCache.keys().next().value;
-				if (firstKey) {
-					this.filterCache.delete(firstKey);
-				}
-			}
+			ffmpeg.on("error", (err: Error) => {
+				this.debug(`[Player] FFmpeg filter+seek error:`, err);
+				ffmpeg.destroy();
+			});
 
 			return ffmpeg;
 		} catch (error) {
 			this.debug(`[Player] Error creating FFmpeg instance:`, error);
 			// Fallback to original stream if FFmpeg fails
-			return stream;
+			throw error;
+		}
+	}
+
+	/**
+	 * Create AudioResource with filters and seek applied
+	 *
+	 * @param {StreamInfo} streamInfo - The stream information
+	 * @param {Track} track - The track being processed
+	 * @param {number} position - Position in milliseconds to seek to (0 = no seek)
+	 * @returns {Promise<AudioResource>} The AudioResource with filters and seek applied
+	 */
+	private async createResource(streamInfo: StreamInfo, track: Track, position: number = 0): Promise<AudioResource> {
+		const filterString = this.getFilterString();
+
+		this.debug(`[Player] Creating AudioResource with filters: ${filterString || "none"}, seek: ${position}ms`);
+
+		try {
+			let stream: Readable = streamInfo.stream;
+
+			// Apply filters and seek if needed
+			if (filterString || position > 0) {
+				stream = await this.applyFiltersAndSeek(streamInfo.stream, track, position);
+			}
+
+			// Create AudioResource with better error handling
+			const resource = createAudioResource(stream, {
+				metadata: track,
+				inputType:
+					streamInfo.type === "webm/opus"
+						? StreamType.WebmOpus
+						: streamInfo.type === "ogg/opus"
+						? StreamType.OggOpus
+						: StreamType.Arbitrary,
+				inlineVolume: true,
+			});
+
+			return resource;
+		} catch (error) {
+			this.debug(`[Player] Error creating AudioResource with filters+seek:`, error);
+			// Fallback to basic AudioResource
+			try {
+				const resource = createAudioResource(streamInfo.stream, {
+					metadata: track,
+					inputType:
+						streamInfo.type === "webm/opus"
+							? StreamType.WebmOpus
+							: streamInfo.type === "ogg/opus"
+							? StreamType.OggOpus
+							: StreamType.Arbitrary,
+					inlineVolume: true,
+				});
+				return resource;
+			} catch (fallbackError) {
+				this.debug(`[Player] Fallback AudioResource creation failed:`, fallbackError);
+				throw fallbackError;
+			}
 		}
 	}
 
@@ -454,19 +426,46 @@ export class Player extends EventEmitter {
 
 			// Kiểm tra nếu có stream thực sự để tạo AudioResource
 			if (streamInfo && (streamInfo as any).stream) {
-				this.currentResource = await this.Audioresource(streamInfo, track);
-				// Apply initial volume using the resource's VolumeTransformer
-				if (this.volumeInterval) {
-					clearInterval(this.volumeInterval);
-					this.volumeInterval = null;
+				try {
+					this.currentResource = await this.createResource(streamInfo, track, 0);
+					// Apply initial volume using the resource's VolumeTransformer
+					if (this.volumeInterval) {
+						clearInterval(this.volumeInterval);
+						this.volumeInterval = null;
+					}
+					this.currentResource.volume?.setVolume(this.volume / 100);
+
+					this.debug(`[Player] Playing resource for track: ${track.title}`);
+					this.audioPlayer.play(this.currentResource);
+
+					await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 5_000);
+					return true;
+				} catch (resourceError) {
+					this.debug(`[Player] Error creating/playing resource:`, resourceError);
+					// Try fallback without filters
+					try {
+						this.debug(`[Player] Attempting fallback without filters`);
+						const fallbackResource = createAudioResource(streamInfo.stream, {
+							metadata: track,
+							inputType:
+								streamInfo.type === "webm/opus"
+									? StreamType.WebmOpus
+									: streamInfo.type === "ogg/opus"
+									? StreamType.OggOpus
+									: StreamType.Arbitrary,
+							inlineVolume: true,
+						});
+
+						this.currentResource = fallbackResource;
+						this.currentResource.volume?.setVolume(this.volume / 100);
+						this.audioPlayer.play(this.currentResource);
+						await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 5_000);
+						return true;
+					} catch (fallbackError) {
+						this.debug(`[Player] Fallback also failed:`, fallbackError);
+						throw fallbackError;
+					}
 				}
-				this.currentResource.volume?.setVolume(this.volume / 100);
-
-				this.debug(`[Player] Playing resource for track: ${track.title}`);
-				this.audioPlayer.play(this.currentResource);
-
-				await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 5_000);
-				return true;
 			} else if (streamInfo && !(streamInfo as any).stream) {
 				// Extension đang xử lý phát nhạc (như Lavalink) - chỉ đánh dấu đang phát
 				this.debug(`[Player] Extension is handling playback for track: ${track.title}`);
@@ -540,7 +539,10 @@ export class Player extends EventEmitter {
 		// Initialize filters from options
 		if (this.options.filters && this.options.filters.length > 0) {
 			this.debug(`[Player] Initializing ${this.options.filters.length} filters from options`);
-			this.applyFilters(this.options.filters);
+			// Use async version but don't await in constructor
+			this.applyFilters(this.options.filters).catch((error) => {
+				this.debug(`[Player] Error initializing filters:`, error);
+			});
 		}
 
 		// Optionally pre-create the TTS AudioPlayer
@@ -941,7 +943,7 @@ export class Player extends EventEmitter {
 			if (!streamInfo) {
 				throw new Error("No stream available for track: ${track.title}");
 			}
-			const resource = await this.Audioresource(streamInfo as StreamInfo, track);
+			const resource = await this.createResource(streamInfo as StreamInfo, track);
 			if (!resource) {
 				throw new Error("No resource available for track: ${track.title}");
 			}
@@ -1211,6 +1213,122 @@ export class Player extends EventEmitter {
 		this.isPaused = false;
 		this.emit("playerStop");
 		return result;
+	}
+
+	/**
+	 * Seek to a specific position in the current track
+	 *
+	 * @param {number} position - Position in milliseconds to seek to
+	 * @returns {Promise<boolean>} True if seek was successful
+	 * @example
+	 * // Seek to 30 seconds (30000ms)
+	 * const success = await player.seek(30000);
+	 * console.log(`Seek successful: ${success}`);
+	 *
+	 * // Seek to 1 minute 30 seconds (90000ms)
+	 * await player.seek(90000);
+	 */
+	async seek(position: number): Promise<boolean> {
+		this.debug(`[Player] seek called with position: ${position}ms`);
+
+		const track = this.queue.currentTrack;
+		if (!track) {
+			this.debug(`[Player] No current track to seek`);
+			return false;
+		}
+
+		const totalDuration = track.duration > 1000 ? track.duration : track.duration * 1000;
+		if (position < 0 || position > totalDuration) {
+			this.debug(`[Player] Invalid seek position: ${position}ms (track duration: ${totalDuration}ms)`);
+			return false;
+		}
+
+		try {
+			// Get current stream info
+			const streamInfo = await this.getStreamFromPlugin(track);
+			if (!streamInfo) {
+				this.debug(`[Player] Failed to get stream for seek`);
+				return false;
+			}
+
+			try {
+				// Create AudioResource with filters and seek applied
+				const resource = await this.createResource(streamInfo, track, position);
+
+				// Stop current playback and start new one
+				const wasPlaying = this.isPlaying;
+				const wasPaused = this.isPaused;
+
+				this.audioPlayer.stop();
+				this.currentResource = resource;
+
+				// Subscribe to new resource
+				if (this.connection) {
+					this.connection.subscribe(this.audioPlayer);
+					this.audioPlayer.play(resource);
+				}
+
+				// Restore playing state
+				if (wasPlaying && !wasPaused) {
+					this.isPlaying = true;
+					this.isPaused = false;
+				} else if (wasPaused) {
+					this.isPlaying = true;
+					this.isPaused = true;
+					this.audioPlayer.pause();
+				}
+
+				this.debug(`[Player] Successfully seeked to ${position}ms`);
+				this.emit("seek", { track, position });
+				return true;
+			} catch (resourceError) {
+				this.debug(`[Player] Error creating resource for seek:`, resourceError);
+				// Try fallback without filters
+				try {
+					this.debug(`[Player] Attempting seek fallback without filters`);
+					const fallbackResource = createAudioResource(streamInfo.stream, {
+						metadata: track,
+						inputType:
+							streamInfo.type === "webm/opus"
+								? StreamType.WebmOpus
+								: streamInfo.type === "ogg/opus"
+								? StreamType.OggOpus
+								: StreamType.Arbitrary,
+						inlineVolume: true,
+					});
+
+					const wasPlaying = this.isPlaying;
+					const wasPaused = this.isPaused;
+
+					this.audioPlayer.stop();
+					this.currentResource = fallbackResource;
+
+					if (this.connection) {
+						this.connection.subscribe(this.audioPlayer);
+						this.audioPlayer.play(fallbackResource);
+					}
+
+					if (wasPlaying && !wasPaused) {
+						this.isPlaying = true;
+						this.isPaused = false;
+					} else if (wasPaused) {
+						this.isPlaying = true;
+						this.isPaused = true;
+						this.audioPlayer.pause();
+					}
+
+					this.debug(`[Player] Seek fallback successful`);
+					this.emit("seek", { track, position });
+					return true;
+				} catch (fallbackError) {
+					this.debug(`[Player] Seek fallback also failed:`, fallbackError);
+					return false;
+				}
+			}
+		} catch (error) {
+			this.debug(`[Player] Seek error:`, error);
+			return false;
+		}
 	}
 
 	/**
@@ -1548,49 +1666,113 @@ export class Player extends EventEmitter {
 		}
 	}
 
+	private async refeshPlayerResource(applyToCurrent: boolean = true): Promise<boolean> {
+		if (!applyToCurrent || !this.queue.currentTrack || !(this.isPlaying || this.isPaused)) {
+			return false;
+		}
+
+		try {
+			const track = this.queue.currentTrack;
+			this.debug(`[Player] Refreshing player resource for track: ${track.title}`);
+
+			// Get current position for seeking
+			const currentPosition = this.currentResource?.playbackDuration || 0;
+
+			// Get stream info
+			const streamInfo = await this.getStreamFromPlugin(track);
+			if (!streamInfo) {
+				this.debug(`[Player] Failed to get stream for filter application`);
+				return true; // Filter was still added to active filters
+			}
+
+			// Create AudioResource with filters and seek to current position
+			const resource = await this.createResource(streamInfo, track, currentPosition);
+
+			// Stop current playback and start new one
+			const wasPlaying = this.isPlaying;
+			const wasPaused = this.isPaused;
+
+			this.audioPlayer.stop();
+			this.currentResource = resource;
+
+			// Subscribe to new resource
+			if (this.connection) {
+				this.connection.subscribe(this.audioPlayer);
+				this.audioPlayer.play(resource);
+			}
+
+			// Restore playing state
+			if (wasPlaying && !wasPaused) {
+				this.isPlaying = true;
+				this.isPaused = false;
+			} else if (wasPaused) {
+				this.isPlaying = true;
+				this.isPaused = true;
+				this.audioPlayer.pause();
+			}
+
+			this.debug(`[Player] Successfully applied filter to current track at position ${currentPosition}ms`);
+			return true;
+		} catch (error) {
+			this.debug(`[Player] Error applying filter to current track:`, error);
+			// Filter was still added to active filters, so return true
+			return true;
+		}
+	}
 	/**
 	 * Apply an audio filter to the player
 	 *
 	 * @param {string | AudioFilter} filter - Filter name or AudioFilter object
-	 * @returns {boolean} True if filter was applied successfully
+	 * @param {boolean} applyToCurrent - Whether to apply filter to current track immediately (default: true)
+	 * @returns {Promise<boolean>} True if filter was applied successfully
 	 * @example
-	 * // Apply predefined filter
-	 * player.applyFilter("bassboost");
+	 * // Apply predefined filter to current track
+	 * await player.applyFilter("bassboost");
 	 *
-	 * // Apply custom filter
-	 * player.applyFilter({
+	 * // Apply custom filter to current track
+	 * await player.applyFilter({
 	 *   name: "custom",
 	 *   ffmpegFilter: "volume=1.5,treble=g=5",
 	 *   description: "Tăng âm lượng và âm cao"
 	 * });
+	 *
+	 * // Apply filter without affecting current track
+	 * await player.applyFilter("bassboost", false);
 	 */
-	applyFilter(filter: string | AudioFilter): boolean {
-		this.debug(`[Player] applyFilter called with: ${typeof filter === "string" ? filter : filter.name}`);
+	async applyFilter(filter?: string | AudioFilter, applyToCurrent: boolean = true): Promise<boolean> {
+		if (!!filter) {
+			this.debug(
+				`[Player] applyFilter called with: ${
+					typeof filter === "string" ? filter : filter.name
+				}, applyToCurrent: ${applyToCurrent}`,
+			);
+			let audioFilter: AudioFilter;
 
-		let audioFilter: AudioFilter;
+			if (typeof filter === "string") {
+				const predefinedFilter = PREDEFINED_FILTERS[filter];
+				if (!predefinedFilter) {
+					this.debug(`[Player] Predefined filter not found: ${filter}`);
+					return false;
+				}
+				audioFilter = predefinedFilter;
+			} else {
+				audioFilter = filter;
+			}
 
-		if (typeof filter === "string") {
-			const predefinedFilter = PREDEFINED_FILTERS[filter];
-			if (!predefinedFilter) {
-				this.debug(`[Player] Predefined filter not found: ${filter}`);
+			// Check if filter is already applied
+			if (this.activeFilters.some((f) => f.name === audioFilter.name)) {
+				this.debug(`[Player] Filter already applied: ${audioFilter.name}`);
 				return false;
 			}
-			audioFilter = predefinedFilter;
-		} else {
-			audioFilter = filter;
+
+			this.activeFilters.push(audioFilter);
+			this.debug(`[Player] Applied filter: ${audioFilter.name} - ${audioFilter.description}`);
+			this.emit("filterApplied", audioFilter);
 		}
 
-		// Check if filter is already applied
-		if (this.activeFilters.some((f) => f.name === audioFilter.name)) {
-			this.debug(`[Player] Filter already applied: ${audioFilter.name}`);
-			return false;
-		}
+		// Apply filter to current track if requested and there's a current track
 
-		this.activeFilters.push(audioFilter);
-		this.debug(`[Player] Applied filter: ${audioFilter.name} - ${audioFilter.description}`);
-		this.emit("filterApplied", audioFilter);
-
-		return true;
+		return await this.refeshPlayerResource(applyToCurrent);
 	}
 
 	/**
@@ -1601,7 +1783,7 @@ export class Player extends EventEmitter {
 	 * @example
 	 * player.removeFilter("bassboost");
 	 */
-	removeFilter(filterName: string): boolean {
+	async removeFilter(filterName: string): Promise<boolean> {
 		this.debug(`[Player] removeFilter called with: ${filterName}`);
 
 		const filterIndex = this.activeFilters.findIndex((f) => f.name === filterName);
@@ -1613,8 +1795,7 @@ export class Player extends EventEmitter {
 		const removedFilter = this.activeFilters.splice(filterIndex, 1)[0];
 		this.debug(`[Player] Removed filter: ${removedFilter.name}`);
 		this.emit("filterRemoved", removedFilter);
-
-		return true;
+		return await this.refeshPlayerResource();
 	}
 
 	/**
@@ -1624,13 +1805,14 @@ export class Player extends EventEmitter {
 	 * @example
 	 * player.clearFilters();
 	 */
-	clearFilters(): void {
+	async clearFilters(): Promise<boolean> {
 		this.debug(`[Player] clearFilters called`);
 		const filterCount = this.activeFilters.length;
 		this.activeFilters = [];
 		this.filterCache.clear();
 		this.debug(`[Player] Cleared ${filterCount} filters`);
 		this.emit("filtersCleared");
+		return await this.refeshPlayerResource();
 	}
 
 	/**
@@ -1687,17 +1869,70 @@ export class Player extends EventEmitter {
 	 * Apply multiple filters at once
 	 *
 	 * @param {(string | AudioFilter)[]} filters - Array of filter names or AudioFilter objects
-	 * @returns {boolean} True if all filters were applied successfully
+	 * @param {boolean} applyToCurrent - Whether to apply filters to current track immediately (default: true)
+	 * @returns {Promise<boolean>} True if all filters were applied successfully
 	 * @example
-	 * player.applyFilters(["bassboost", "trebleboost"]);
+	 * // Apply multiple filters to current track
+	 * await player.applyFilters(["bassboost", "trebleboost"]);
+	 *
+	 * // Apply filters without affecting current track
+	 * await player.applyFilters(["bassboost", "trebleboost"], false);
 	 */
-	applyFilters(filters: (string | AudioFilter)[]): boolean {
-		this.debug(`[Player] applyFilters called with ${filters.length} filters`);
+	async applyFilters(filters: (string | AudioFilter)[], applyToCurrent: boolean = true): Promise<boolean> {
+		this.debug(`[Player] applyFilters called with ${filters.length} filters, applyToCurrent: ${applyToCurrent}`);
 
 		let allApplied = true;
 		for (const filter of filters) {
-			if (!this.applyFilter(filter)) {
+			if (!(await this.applyFilter(filter, false))) {
 				allApplied = false;
+			}
+		}
+
+		// Apply to current track if requested and at least one filter was applied
+		if (applyToCurrent && allApplied && this.queue.currentTrack && (this.isPlaying || this.isPaused)) {
+			try {
+				const track = this.queue.currentTrack;
+				this.debug(`[Player] Applying all filters to current track: ${track.title}`);
+
+				const currentPosition = this.currentResource?.playbackDuration || 0;
+
+				const streamInfo = await this.getStreamFromPlugin(track);
+				if (!streamInfo) {
+					this.debug(`[Player] Failed to get stream for filter application`);
+					return allApplied; // Filters were still added to active filters
+				}
+
+				const resource = await this.createResource(streamInfo, track, currentPosition);
+
+				// Stop current playback and start new one
+				const wasPlaying = this.isPlaying;
+				const wasPaused = this.isPaused;
+
+				this.audioPlayer.stop();
+				this.currentResource = resource;
+
+				// Subscribe to new resource
+				if (this.connection) {
+					this.connection.subscribe(this.audioPlayer);
+					this.audioPlayer.play(resource);
+				}
+
+				// Restore playing state
+				if (wasPlaying && !wasPaused) {
+					this.isPlaying = true;
+					this.isPaused = false;
+				} else if (wasPaused) {
+					this.isPlaying = true;
+					this.isPaused = true;
+					this.audioPlayer.pause();
+				}
+
+				this.debug(`[Player] Successfully applied all filters to current track at position ${currentPosition}ms`);
+				return true;
+			} catch (error) {
+				this.debug(`[Player] Error applying filters to current track:`, error);
+				// Filters were still added to active filters, so return allApplied
+				return allApplied;
 			}
 		}
 
@@ -1896,57 +2131,7 @@ export class Player extends EventEmitter {
 
 		try {
 			// Try extensions first
-			let streamInfo: StreamInfo | null = await this.extensionsProvideStream(track);
-			let plugin: SourcePlugin | undefined;
-
-			if (!streamInfo) {
-				plugin = this.pluginManager.findPlugin(track.url) || this.pluginManager.get(track.source);
-
-				if (!plugin) {
-					this.debug(`[Player] No plugin found for track: ${track.title}`);
-					throw new Error(`No plugin found for track: ${track.title}`);
-				}
-
-				this.debug(`[Player] Getting save stream for track: ${track.title}`);
-				this.debug(`[Player] Using save plugin: ${plugin.name}`);
-
-				try {
-					streamInfo = await withTimeout(plugin.getStream(track), timeout, "getSaveStream timed out");
-				} catch (streamError) {
-					this.debug(`[Player] getSaveStream failed, trying getFallback:`, streamError);
-					const allplugs = this.pluginManager.getAll();
-					for (const p of allplugs) {
-						if (typeof (p as any).getFallback !== "function" && typeof (p as any).getStream !== "function") {
-							continue;
-						}
-						try {
-							streamInfo = await withTimeout(
-								(p as any).getStream(track),
-								timeout,
-								`getSaveStream timed out for plugin ${p.name}`,
-							);
-							if ((streamInfo as any)?.stream) {
-								this.debug(`[Player] getSaveStream succeeded with plugin ${p.name} for track: ${track.title}`);
-								break;
-							}
-							streamInfo = await withTimeout(
-								(p as any).getFallback(track),
-								timeout,
-								`getSaveFallback timed out for plugin ${p.name}`,
-							);
-							if (!(streamInfo as any)?.stream) continue;
-							break;
-						} catch (fallbackError) {
-							this.debug(`[Player] getSaveFallback failed with plugin ${p.name}:`, fallbackError);
-						}
-					}
-					if (!(streamInfo as any)?.stream) {
-						throw new Error(`All getSaveFallback attempts failed for track: ${track.title}`);
-					}
-				}
-			} else {
-				this.debug(`[Player] Using extension-provided save stream for track: ${track.title}`);
-			}
+			let streamInfo: StreamInfo | null = await this.getStreamFromPlugin(track);
 
 			if (!streamInfo || !streamInfo.stream) {
 				throw new Error(`No save stream available for track: ${track.title}`);
@@ -1961,7 +2146,7 @@ export class Player extends EventEmitter {
 			let finalStream = streamInfo.stream;
 			if (this.activeFilters.length > 0) {
 				this.debug(`[Player] Applying filters to save stream: ${this.getFilterString()}`);
-				finalStream = await this.applyFiltersToStream(streamInfo.stream, track);
+				finalStream = await this.applyFiltersAndSeek(streamInfo.stream, track);
 			}
 
 			// Return the stream directly - caller can pipe it to fs.createWriteStream()

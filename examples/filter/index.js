@@ -62,7 +62,7 @@ client.on("messageCreate", async (message) => {
 
 				const player = await manager.create(message.guildId, {
 					// Áp dụng filters mặc định khi tạo player
-					filters: ["bassboost"],
+					// filters: ["bassboost"],
 				});
 
 				await player.connect(message.member.voice.channel);
@@ -237,7 +237,14 @@ client.on("messageCreate", async (message) => {
 
 				message.reply(helpText);
 				break;
-
+			case "skip":
+				const player7 = manager.get(message.guildId);
+				if (!player7) {
+					return message.reply("❌ Không có player nào đang hoạt động!");
+				}
+				player7.skip();
+				message.reply("✅ Đã bỏ qua bài hát hiện tại!");
+				break;
 			default:
 				message.reply("❌ Command không tồn tại! Sử dụng `!help` để xem danh sách commands.");
 		}

@@ -315,13 +315,13 @@ export const PREDEFINED_FILTERS: Record<string, AudioFilter> = {
 	},
 	nightcore: {
 		name: "nightcore",
-		ffmpegFilter: "atempo=1.25,asetrate=44100*1.25",
+		ffmpegFilter: "aresample=48000,asetrate=48000*1.5",
 		description: "Tăng tốc độ và cao độ",
 		category: "speed",
 	},
 	vaporwave: {
 		name: "vaporwave",
-		ffmpegFilter: "atempo=0.8,asetrate=44100*0.8",
+		ffmpegFilter: "aresample=48000,asetrate=48000*0.8",
 		description: "Giảm tốc độ và cao độ",
 		category: "speed",
 	},
@@ -330,12 +330,6 @@ export const PREDEFINED_FILTERS: Record<string, AudioFilter> = {
 		ffmpegFilter: "treble=g=10:f=3000:w=0.5",
 		description: "Tăng âm cao",
 		category: "eq",
-	},
-	volume: {
-		name: "volume",
-		ffmpegFilter: "volume=1.5",
-		description: "Tăng âm lượng",
-		category: "volume",
 	},
 	karaoke: {
 		name: "karaoke",
@@ -708,6 +702,8 @@ export interface PlayerEvents {
 	playerResume: [track: Track];
 	playerStop: [];
 	playerDestroy: [];
+	/** Emitted when seeking to a position in current track */
+	seek: [payload: { track: Track; position: number }];
 	/** Emitted when TTS starts playing (interruption mode) */
 	ttsStart: [payload: { text?: string; track?: Track }];
 	/** Emitted when TTS finished (interruption mode) */

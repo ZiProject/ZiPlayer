@@ -11,6 +11,7 @@ A modular Discord voice player with plugin system for @discordjs/voice.
 - 🔊 **Queue management** - Add, remove, shuffle, clear
 - 🎚️ **Volume control** - 0-200% volume range
 - ⏯️ **Playback control** - Play, pause, resume, stop, skip
+- ⏰ **Seek functionality** - Jump to any position in the current track
 - 🔁 **Auto play** - Automatically replay the queue when it ends
 - 🔂 **Loop control** - Repeat a single track or the entire queue
 - 📊 **Progress bar** - Display playback progress with customizable icons
@@ -18,6 +19,7 @@ A modular Discord voice player with plugin system for @discordjs/voice.
 - 🎭 **Multi-guild support** - Manage players across multiple Discord servers
 - 🗃️ **User data** - Attach custom data to each player for later use
 - 🎛️ **Audio Filters** - Apply real-time audio effects using FFmpeg (bassboost, nightcore, etc.)
+- 🎚️ **Real-time Filter Application** - Apply filters to currently playing tracks instantly
 
 ## Installation
 
@@ -248,6 +250,89 @@ export class MyPlugin extends BasePlugin {
 }
 ```
 
+## Seek Functionality
+
+Jump to any position in the current track using the `seek` method:
+
+```typescript
+// Seek to 30 seconds (30000ms)
+const success = await player.seek(30000);
+console.log(`Seek successful: ${success}`);
+
+// Seek to 1 minute 30 seconds (90000ms)
+await player.seek(90000);
+
+// Listen for seek events
+player.on("seek", ({ track, position }) => {
+	console.log(`Seeked to ${position}ms in ${track.title}`);
+});
+```
+
+## Audio Filters
+
+Apply real-time audio effects to enhance your music experience:
+
+### Apply Single Filter
+
+```typescript
+// Apply predefined filter to current track (default behavior)
+await player.applyFilter("bassboost");
+
+// Apply custom filter to current track
+await player.applyFilter({
+	name: "custom",
+	ffmpegFilter: "volume=1.5,treble=g=5",
+	description: "Tăng âm lượng và âm cao",
+});
+
+// Apply filter without affecting current track
+await player.applyFilter("bassboost", false);
+```
+
+### Apply Multiple Filters
+
+```typescript
+// Apply multiple filters to current track (default behavior)
+await player.applyFilters(["bassboost", "trebleboost"]);
+
+// Apply filters without affecting current track
+await player.applyFilters(["bassboost", "trebleboost"], false);
+```
+
+### Available Predefined Filters
+
+- `bassboost` - Enhance bass frequencies
+- `trebleboost` - Enhance treble frequencies
+- `nightcore` - Speed up and pitch up
+- `vaporwave` - Slow down and pitch down
+- `volume` - Adjust volume level
+- `karaoke` - Remove vocals (center channel)
+
+### Filter Management
+
+```typescript
+// Check if filter is applied
+const hasBassBoost = player.hasFilter("bassboost");
+
+// Remove specific filter
+player.removeFilter("bassboost");
+
+// Clear all filters
+player.clearFilters();
+
+// Get active filters
+const activeFilters = player.getActiveFilters();
+
+// Listen for filter events
+player.on("filterApplied", (filter) => {
+	console.log(`Applied filter: ${filter.name}`);
+});
+
+player.on("filterRemoved", (filter) => {
+	console.log(`Removed filter: ${filter.name}`);
+});
+```
+
 ## Progress Bar
 
 Display the current playback progress with `getProgressBar`:
@@ -267,6 +352,10 @@ All player events are forwarded through the PlayerManager:
 - `playerError` - When an error occurs
 - `queueAdd` - When a track is added
 - `volumeChange` - When volume changes
+- `seek` - When seeking to a position in current track
+- `filterApplied` - When an audio filter is applied
+- `filterRemoved` - When an audio filter is removed
+- `filtersCleared` - When all filters are cleared
 - And more...
 
 ## Useful Links
