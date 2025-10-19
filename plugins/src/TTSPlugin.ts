@@ -318,7 +318,10 @@ export class TTSPlugin extends BasePlugin {
 					const urlStr = o.url.toString();
 					try {
 						type =
-							normType(o.type) || (urlStr.endsWith(".webm") ? "webm/opus" : urlStr.endsWith(".ogg") ? "ogg/opus" : undefined);
+							normType(o.type) ||
+							(urlStr.endsWith(".webm") ? "webm/opus"
+							: urlStr.endsWith(".ogg") ? "ogg/opus"
+							: undefined);
 						const res = await axios.get(urlStr, { responseType: "stream" });
 						stream = res.data as unknown as Readable;
 						metadata = o.metadata;
