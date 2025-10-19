@@ -15,6 +15,7 @@ import {
 
 import { VoiceChannel } from "discord.js";
 import { Readable } from "stream";
+import prism from "prism-media";
 import { BaseExtension } from "../extensions";
 import {
 	Track,
@@ -26,6 +27,8 @@ import {
 	LoopMode,
 	StreamInfo,
 	SaveOptions,
+	AudioFilter,
+	PREDEFINED_FILTERS,
 } from "../types";
 import type {
 	ExtensionContext,
@@ -98,6 +101,9 @@ export class Player extends EventEmitter {
 	private skipLoop = false;
 	private extensions: BaseExtension[] = [];
 	private extensionContext!: ExtensionContext;
+	// Audio filters
+	private activeFilters: AudioFilter[] = [];
+	private filterCache = new Map<string, Readable>();
 
 	// Cache for search results to avoid duplicate calls
 	private searchCache = new Map<string, SearchResult>();
@@ -257,7 +263,7 @@ export class Player extends EventEmitter {
 		return null;
 	}
 
-	private async getStreamFromPlugin(track: Track): Promise<StreamInfo | null> {
+	async getStreamFromPlugin(track: Track): Promise<StreamInfo | null> {
 		let streamInfo: StreamInfo | null = null;
 		const plugin = this.pluginManager.get(track.source) || this.pluginManager.findPlugin(track.url);
 
@@ -315,8 +321,13 @@ export class Player extends EventEmitter {
 			}
 		}
 
-		const stream: Readable = (streamInfo as StreamInfo).stream;
+		let stream: Readable = (streamInfo as StreamInfo).stream;
 		const inputType = mapToStreamType((streamInfo as StreamInfo).type);
+
+		// Apply filters if any are active
+		if (this.activeFilters.length > 0) {
+			stream = await this.applyFiltersToStream(stream, track);
+		}
 
 		const resource = createAudioResource(stream, {
 			metadata: track ?? {
@@ -333,6 +344,95 @@ export class Player extends EventEmitter {
 		});
 
 		return resource;
+	}
+
+	/**
+	 * Apply active filters to an audio stream using @prismmedia/ffmpeg
+	 *
+	 * @param {Readable} stream - The original audio stream
+	 * @param {Track} track - The track being processed (for caching)
+	 * @returns {Promise<Readable>} The filtered audio stream
+	 */
+	private async applyFiltersToStream(stream: Readable, track?: Track): Promise<Readable> {
+		const filterString = this.getFilterString();
+		if (!filterString) {
+			return stream;
+		}
+
+		// Create cache key for this track and filter combination
+		const cacheKey = track ? `${track.id}-${filterString}` : `stream-${filterString}`;
+
+		// Check if we have a cached filtered stream
+		if (this.filterCache.has(cacheKey)) {
+			this.debug(`[Player] Using cached filtered stream for: ${track?.title || "unknown"}`);
+			return this.filterCache.get(cacheKey)!;
+		}
+
+		this.debug(`[Player] Applying filters to stream: ${filterString}`);
+
+		try {
+			let ffmpeg = new prism.FFmpeg({
+				args: [
+					"-analyzeduration",
+					"0",
+					"-loglevel",
+					"0",
+					// "-i",
+					// "pipe:0",
+					"-af",
+					filterString,
+					"-f",
+					"mp3",
+					"-ar",
+					"48000",
+					"-ac",
+					"2",
+					// "pipe:1",
+				],
+			});
+
+			// Handle FFmpeg errors
+			ffmpeg.on("error", (err: Error) => {
+				this.debug(`[Player] FFmpeg error:`, err);
+			});
+
+			ffmpeg.on("close", () => {
+				this.debug(`[Player] FFmpeg filter processing completed`);
+			});
+
+			ffmpeg = stream.pipe(ffmpeg);
+			ffmpeg.on("data", (data: Buffer) => {
+				this.debug(`[Player] FFmpeg data:`, data.length);
+			});
+			ffmpeg.on("error", () => ffmpeg.destroy());
+
+			// const opus = new prism.opus.Encoder({
+			// 	rate: 48000,
+			// 	channels: 2,
+			// 	frameSize: 960,
+			// });
+			// const opusStream = ffmpeg.pipe(opus);
+			// opusStream.on("close", () => {
+			// 	ffmpeg.destroy();
+			// 	opus.destroy();
+			// });
+			// Cache the filtered stream
+			this.filterCache.set(cacheKey, ffmpeg);
+
+			// Clean up cache periodically to prevent memory leaks
+			if (this.filterCache.size > 10) {
+				const firstKey = this.filterCache.keys().next().value;
+				if (firstKey) {
+					this.filterCache.delete(firstKey);
+				}
+			}
+
+			return ffmpeg;
+		} catch (error) {
+			this.debug(`[Player] Error creating FFmpeg instance:`, error);
+			// Fallback to original stream if FFmpeg fails
+			return stream;
+		}
 	}
 
 	/**
@@ -436,6 +536,12 @@ export class Player extends EventEmitter {
 		this.userdata = this.options.userdata;
 		this.setupEventListeners();
 		this.extensionContext = Object.freeze({ player: this, manager });
+
+		// Initialize filters from options
+		if (this.options.filters && this.options.filters.length > 0) {
+			this.debug(`[Player] Initializing ${this.options.filters.length} filters from options`);
+			this.applyFilters(this.options.filters);
+		}
 
 		// Optionally pre-create the TTS AudioPlayer
 		if (this.options?.tts?.createPlayer) {
@@ -663,10 +769,13 @@ export class Player extends EventEmitter {
 	 */
 	async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
 		const debugInfo =
-			query === null ? "null"
-			: typeof query === "string" ? query
-			: "tracks" in query ? `${query.tracks.length} tracks`
-			: query.title || "unknown";
+			query === null
+				? "null"
+				: typeof query === "string"
+				? query
+				: "tracks" in query
+				? `${query.tracks.length} tracks`
+				: query.title || "unknown";
 		this.debug(`[Player] Play called with query: ${debugInfo}`);
 		this.clearLeaveTimeout();
 		let tracksToAdd: Track[] = [];
@@ -855,15 +964,8 @@ export class Player extends EventEmitter {
 			// Derive timeoutMs from resource/track duration when available, with a sensible cap
 			const md: any = (resource as any)?.metadata ?? {};
 			const declared =
-				typeof md.duration === "number" ? md.duration
-				: typeof track?.duration === "number" ? track.duration
-				: undefined;
-			const declaredMs =
-				declared ?
-					declared > 1000 ?
-						declared
-					:	declared * 1000
-				:	undefined;
+				typeof md.duration === "number" ? md.duration : typeof track?.duration === "number" ? track.duration : undefined;
+			const declaredMs = declared ? (declared > 1000 ? declared : declared * 1000) : undefined;
 			const cap = this.options?.tts?.Max_Time_TTS ?? 60_000;
 			const idleTimeout = declaredMs ? Math.min(cap, Math.max(1_000, declaredMs + 1_500)) : cap;
 			await entersState(ttsPlayer, AudioPlayerStatus.Idle, idleTimeout).catch(() => null);
@@ -1447,6 +1549,178 @@ export class Player extends EventEmitter {
 	}
 
 	/**
+	 * Apply an audio filter to the player
+	 *
+	 * @param {string | AudioFilter} filter - Filter name or AudioFilter object
+	 * @returns {boolean} True if filter was applied successfully
+	 * @example
+	 * // Apply predefined filter
+	 * player.applyFilter("bassboost");
+	 *
+	 * // Apply custom filter
+	 * player.applyFilter({
+	 *   name: "custom",
+	 *   ffmpegFilter: "volume=1.5,treble=g=5",
+	 *   description: "Tăng âm lượng và âm cao"
+	 * });
+	 */
+	applyFilter(filter: string | AudioFilter): boolean {
+		this.debug(`[Player] applyFilter called with: ${typeof filter === "string" ? filter : filter.name}`);
+
+		let audioFilter: AudioFilter;
+
+		if (typeof filter === "string") {
+			const predefinedFilter = PREDEFINED_FILTERS[filter];
+			if (!predefinedFilter) {
+				this.debug(`[Player] Predefined filter not found: ${filter}`);
+				return false;
+			}
+			audioFilter = predefinedFilter;
+		} else {
+			audioFilter = filter;
+		}
+
+		// Check if filter is already applied
+		if (this.activeFilters.some((f) => f.name === audioFilter.name)) {
+			this.debug(`[Player] Filter already applied: ${audioFilter.name}`);
+			return false;
+		}
+
+		this.activeFilters.push(audioFilter);
+		this.debug(`[Player] Applied filter: ${audioFilter.name} - ${audioFilter.description}`);
+		this.emit("filterApplied", audioFilter);
+
+		return true;
+	}
+
+	/**
+	 * Remove an audio filter from the player
+	 *
+	 * @param {string} filterName - Name of the filter to remove
+	 * @returns {boolean} True if filter was removed successfully
+	 * @example
+	 * player.removeFilter("bassboost");
+	 */
+	removeFilter(filterName: string): boolean {
+		this.debug(`[Player] removeFilter called with: ${filterName}`);
+
+		const filterIndex = this.activeFilters.findIndex((f) => f.name === filterName);
+		if (filterIndex === -1) {
+			this.debug(`[Player] Filter not found: ${filterName}`);
+			return false;
+		}
+
+		const removedFilter = this.activeFilters.splice(filterIndex, 1)[0];
+		this.debug(`[Player] Removed filter: ${removedFilter.name}`);
+		this.emit("filterRemoved", removedFilter);
+
+		return true;
+	}
+
+	/**
+	 * Clear all audio filters from the player
+	 *
+	 * @returns {void}
+	 * @example
+	 * player.clearFilters();
+	 */
+	clearFilters(): void {
+		this.debug(`[Player] clearFilters called`);
+		const filterCount = this.activeFilters.length;
+		this.activeFilters = [];
+		this.filterCache.clear();
+		this.debug(`[Player] Cleared ${filterCount} filters`);
+		this.emit("filtersCleared");
+	}
+
+	/**
+	 * Get all currently applied filters
+	 *
+	 * @returns {AudioFilter[]} Array of active filters
+	 * @example
+	 * const filters = player.getActiveFilters();
+	 * console.log(`Active filters: ${filters.map(f => f.name).join(', ')}`);
+	 */
+	getActiveFilters(): AudioFilter[] {
+		return [...this.activeFilters];
+	}
+
+	/**
+	 * Check if a specific filter is currently applied
+	 *
+	 * @param {string} filterName - Name of the filter to check
+	 * @returns {boolean} True if filter is applied
+	 * @example
+	 * const hasBassBoost = player.hasFilter("bassboost");
+	 * console.log(`Has bass boost: ${hasBassBoost}`);
+	 */
+	hasFilter(filterName: string): boolean {
+		return this.activeFilters.some((f) => f.name === filterName);
+	}
+
+	/**
+	 * Get available predefined filters
+	 *
+	 * @returns {AudioFilter[]} Array of all predefined filters
+	 * @example
+	 * const availableFilters = player.getAvailableFilters();
+	 * console.log(`Available filters: ${availableFilters.length}`);
+	 */
+	getAvailableFilters(): AudioFilter[] {
+		return Object.values(PREDEFINED_FILTERS);
+	}
+
+	/**
+	 * Get filters by category
+	 *
+	 * @param {string} category - Category to filter by
+	 * @returns {AudioFilter[]} Array of filters in the category
+	 * @example
+	 * const eqFilters = player.getFiltersByCategory("eq");
+	 * console.log(`EQ filters: ${eqFilters.map(f => f.name).join(', ')}`);
+	 */
+	getFiltersByCategory(category: string): AudioFilter[] {
+		return Object.values(PREDEFINED_FILTERS).filter((f) => f.category === category);
+	}
+
+	/**
+	 * Apply multiple filters at once
+	 *
+	 * @param {(string | AudioFilter)[]} filters - Array of filter names or AudioFilter objects
+	 * @returns {boolean} True if all filters were applied successfully
+	 * @example
+	 * player.applyFilters(["bassboost", "trebleboost"]);
+	 */
+	applyFilters(filters: (string | AudioFilter)[]): boolean {
+		this.debug(`[Player] applyFilters called with ${filters.length} filters`);
+
+		let allApplied = true;
+		for (const filter of filters) {
+			if (!this.applyFilter(filter)) {
+				allApplied = false;
+			}
+		}
+
+		return allApplied;
+	}
+
+	/**
+	 * Get the combined FFmpeg filter string for all active filters
+	 *
+	 * @returns {string} Combined FFmpeg filter string
+	 * @example
+	 * const filterString = player.getFilterString();
+	 * console.log(`Filter string: ${filterString}`);
+	 */
+	getFilterString(): string {
+		if (this.activeFilters.length === 0) {
+			return "";
+		}
+
+		return this.activeFilters.map((f) => f.ffmpegFilter).join(",");
+	}
+
+	/**
 	 * Destroy the player
 	 *
 	 * @returns {void}
@@ -1476,6 +1750,7 @@ export class Player extends EventEmitter {
 
 		this.queue.clear();
 		this.pluginManager.clear();
+		this.clearFilters();
 		for (const extension of [...this.extensions]) {
 			this.invokeExtensionLifecycle(extension, "onDestroy");
 			if (extension.player === this) {
@@ -1682,8 +1957,15 @@ export class Player extends EventEmitter {
 				this.debug(`[Player] Save options - filename: ${saveOptions.filename}, quality: ${saveOptions.quality || "default"}`);
 			}
 
+			// Apply filters if any are active
+			let finalStream = streamInfo.stream;
+			if (this.activeFilters.length > 0) {
+				this.debug(`[Player] Applying filters to save stream: ${this.getFilterString()}`);
+				finalStream = await this.applyFiltersToStream(streamInfo.stream, track);
+			}
+
 			// Return the stream directly - caller can pipe it to fs.createWriteStream()
-			return streamInfo.stream;
+			return finalStream;
 		} catch (error) {
 			this.debug(`[Player] save error:`, error);
 			this.emit("playerError", error as Error, track);

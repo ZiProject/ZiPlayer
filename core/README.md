@@ -18,6 +18,7 @@ A modular Discord voice player with plugin system for @discordjs/voice.
 - 🎭 **Multi-guild support** - Manage players across multiple Discord servers
 - 🗃️ **User data** - Attach custom data to each player for later use
 - 🔌 **Lavalink** - Support manage an external Lavalink JVM node
+- 🎛️ **Audio Filters** - Apply real-time audio effects using FFmpeg (bassboost, nightcore, etc.)
 
 ## Installation
 
@@ -50,6 +51,8 @@ const player = await manager.create(guildId, {
 	userdata: { channel: textChannel }, // store channel for events
 	// Choose extensions for this player (by name or instances)
 	extensions: ["voiceExt"],
+	// Apply audio filters
+	filters: ["bassboost", "normalize"],
 });
 
 // Connect and play
@@ -72,6 +75,23 @@ player.on("willPlay", (player, track) => {
 player.on("trackStart", (player, track) => {
 	console.log(`Now playing: ${track.title}`);
 	player.userdata?.channel?.send(`Now playing: ${track.title}`);
+});
+// Audio Filters
+player.applyFilter("bassboost"); // Apply bass boost
+player.applyFilter("nightcore"); // Apply nightcore effect
+player.removeFilter("bassboost"); // Remove specific filter
+player.clearFilters(); // Clear all filters
+
+// Apply custom filter
+player.applyFilter({
+	name: "custom",
+	ffmpegFilter: "volume=1.5,treble=g=5",
+	description: "Volume boost + treble boost",
+});
+
+// Filter events
+player.on("filterApplied", (player, filter) => {
+	console.log(`Applied filter: ${filter.name}`);
 });
 
 // Receive transcripts

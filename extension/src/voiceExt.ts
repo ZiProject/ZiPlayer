@@ -413,6 +413,7 @@ export class voiceExt extends BaseExtension {
 
 			// Emit directly via manager when available; fallback to player event
 			if (this.manager && typeof (this.manager as any).emit === "function") {
+				if (!this.player) throw new Error("Player not found");
 				this.manager.emit("voiceCreate", this.player, payload);
 			} else {
 				(this.player as any)?.emit?.("voiceCreate", payload);

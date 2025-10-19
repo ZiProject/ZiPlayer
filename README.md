@@ -17,6 +17,7 @@ A modular Discord voice player with plugin system for @discordjs/voice.
 - 🔔 **Event-driven** - Rich event system for all player actions
 - 🎭 **Multi-guild support** - Manage players across multiple Discord servers
 - 🗃️ **User data** - Attach custom data to each player for later use
+- 🎛️ **Audio Filters** - Apply real-time audio effects using FFmpeg (bassboost, nightcore, etc.)
 
 ## Installation
 
@@ -49,6 +50,8 @@ const player = await manager.create(guildId, {
 	userdata: { channel: textChannel }, // store channel for events
 	// Choose extensions for this player (by name or instances)
 	extensions: ["voiceExt"],
+	// Apply audio filters
+	filters: ["bassboost", "normalize"],
 });
 
 // Connect and play
@@ -73,11 +76,68 @@ player.on("trackStart", (player, track) => {
 	player.userdata?.channel?.send(`Now playing: ${track.title}`);
 });
 
+// Audio Filters
+player.applyFilter("bassboost"); // Apply bass boost
+player.applyFilter("nightcore"); // Apply nightcore effect
+player.removeFilter("bassboost"); // Remove specific filter
+player.clearFilters(); // Clear all filters
+
+// Filter events
+player.on("filterApplied", (player, filter) => {
+	console.log(`Applied filter: ${filter.name}`);
+});
+
 // Receive transcripts
 manager.on("voiceCreate", (player, evt) => {
 	console.log(`User ${evt.userId} said: ${evt.content}`);
 });
 ```
+
+### Audio Filters
+
+Apply real-time audio effects to your music using @prismmedia/ffmpeg. Supports popular filters like bassboost, nightcore,
+vaporwave, and many more.
+
+```typescript
+// Apply predefined filters
+player.applyFilter("bassboost"); // Boost bass
+player.applyFilter("nightcore"); // Speed up + pitch up
+player.applyFilter("vaporwave"); // Slow down + pitch down
+
+// Apply custom filter
+player.applyFilter({
+	name: "custom",
+	ffmpegFilter: "volume=1.5,treble=g=5",
+	description: "Volume boost + treble boost",
+});
+
+// Apply multiple filters
+player.applyFilters(["bassboost", "normalize", "compressor"]);
+
+// Manage filters
+player.removeFilter("bassboost"); // Remove specific filter
+player.clearFilters(); // Clear all filters
+player.getActiveFilters(); // Get active filters
+player.getAvailableFilters(); // Get all available filters
+
+// Filter events
+player.on("filterApplied", (filter) => {
+	console.log(`Applied: ${filter.name}`);
+});
+player.on("filterRemoved", (filter) => {
+	console.log(`Removed: ${filter.name}`);
+});
+```
+
+**Available Filter Categories:**
+
+- **EQ**: bassboost, trebleboost, equalizer
+- **Speed**: nightcore, vaporwave, slow, fast
+- **Volume**: volume, normalize, compressor, limiter
+- **Effects**: chorus, flanger, phaser, reverb, delay
+- **Vocal**: karaoke, robot
+- **Filters**: lowpass, highpass, bandpass
+- **Channel**: mono, stereo
 
 ### TTS (Interrupt Mode)
 
