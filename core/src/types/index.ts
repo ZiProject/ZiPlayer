@@ -353,70 +353,89 @@ export interface ExtensionSearchRequest {
  *
  * @example
  *
- * player.on("willPlay", (player, track) => {
+ * manager.on("willPlay", (player, track) => {
  *   console.log(`Up next: ${track.title}`);
  * });
  *
- * player.on("trackEnd", (player, track) => {
+ * manager.on("trackEnd", (player, track) => {
  *   console.log(`Now playing: ${track.title}`);
  * });
  *
- * player.on("queueAdd", (player, track) => {
+ * manager.on("queueAdd", (player, track) => {
  *   console.log(`Queue added: ${track.title}`);
  * });
  *
- * player.on("queueAddList", (player, tracks) => {
+ * manager.on("queueAddList", (player, tracks) => {
  *   console.log(`Queue added: ${tracks.length} tracks`);
  * });
  *
- * player.on("queueRemove", (player, track, index) => {
+ * manager.on("queueRemove", (player, track, index) => {
  *   console.log(`Queue removed: ${track.title} at index ${index}`);
  * });
  *
- * player.on("playerPause", (player, track) => {
+ * manager.on("playerPause", (player, track) => {
  *   console.log(`Player paused: ${track.title}`);
  * });
  *
- * player.on("playerResume", (player, track) => {
+ * manager.on("playerResume", (player, track) => {
  *   console.log(`Player resumed: ${track.title}`);
  * });
  *
- * player.on("playerStop", (player) => {
+ * manager.on("playerStop", (player) => {
  *   console.log("Player stopped");
  * });
  *
- * player.on("playerDestroy", (player) => {
+ * manager.on("playerDestroy", (player) => {
  *   console.log("Player destroyed");
  * });
  *
- * player.on("ttsStart", (player, payload) => {
+ * manager.on("ttsStart", (player, payload) => {
  *   console.log(`TTS started: ${payload.text}`);
  * });
  *
- * player.on("ttsEnd", (player) => {
+ * manager.on("ttsEnd", (player) => {
  *   console.log("TTS ended");
  * });
  *
- * player.on("playerError", (player, error, track) => {
+ * manager.on("playerError", (player, error, track) => {
  *   console.log(`Player error: ${error.message}`);
  * });
  *
- * player.on("connectionError", (player, error) => {
+ * manager.on("connectionError", (player, error) => {
  *   console.log(`Connection error: ${error.message}`);
  * });
- * player.on("trackStart", (player, track) => {
+ * manager.on("trackStart", (player, track) => {
  *   console.log(`Track started: ${track.title}`);
  * });
  *
- * player.on("volumeChange", (player, oldVolume, newVolume) => {
+ * manager.on("volumeChange", (player, oldVolume, newVolume) => {
  *   console.log(`Volume changed: ${oldVolume} -> ${newVolume}`);
  * });
  *
- * player.on("queueEnd", (player) => {
+ * manager.on("queueEnd", (player) => {
  *   console.log("Queue finished");
  * });
  *
  */
+export interface ManagerEvents {
+	debug: [message: string, ...args: any[]];
+	willPlay: [player: Player, track: Track, upcomingTracks: Track[]];
+	trackStart: [player: Player, track: Track];
+	trackEnd: [player: Player, track: Track];
+	queueEnd: [player: Player];
+	playerError: [player: Player, error: Error, track?: Track];
+	connectionError: [player: Player, error: Error];
+	volumeChange: [player: Player, oldVolume: number, newVolume: number];
+	queueAdd: [player: Player, track: Track];
+	queueAddList: [player: Player, tracks: Track[]];
+	queueRemove: [player: Player, track: Track, index: number];
+	playerPause: [player: Player, track: Track];
+	playerResume: [player: Player, track: Track];
+	playerStop: [player: Player];
+	playerDestroy: [player: Player];
+	ttsStart: [player: Player, payload: { text?: string; track?: Track }];
+	ttsEnd: [player: Player];
+}
 export interface PlayerEvents {
 	debug: [message: string, ...args: any[]];
 	willPlay: [track: Track, upcomingTracks: Track[]];

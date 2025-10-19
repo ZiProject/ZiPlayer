@@ -1,6 +1,6 @@
 import { EventEmitter } from "events";
 import { Player } from "./Player";
-import { PlayerManagerOptions, PlayerOptions, Track, SourcePlugin, SearchResult } from "../types";
+import { PlayerManagerOptions, PlayerOptions, Track, SourcePlugin, SearchResult, ManagerEvents } from "../types";
 import type { BaseExtension } from "../extensions";
 import { withTimeout } from "../utils/timeout";
 
@@ -24,6 +24,11 @@ const setGlobalManager = (instance: PlayerManager): void => {
 		console.error("[PlayerManager] Error setting global instance:", error);
 	}
 };
+
+export declare interface PlayerManager {
+	on<K extends keyof ManagerEvents>(event: K, listener: (...args: ManagerEvents[K]) => void): this;
+	emit<K extends keyof ManagerEvents>(event: K, ...args: ManagerEvents[K]): boolean;
+}
 
 /**
  * The main class for managing players across multiple Discord guilds.
@@ -212,18 +217,18 @@ export class PlayerManager extends EventEmitter {
 		}
 
 		// Forward all player events
-		player.on("willPlay", (track, tracks) => this.emit("willPlay", player, track, tracks));
-		player.on("trackStart", (track) => this.emit("trackStart", player, track));
-		player.on("trackEnd", (track) => this.emit("trackEnd", player, track));
+		player.on("willPlay", (track, tracks) => this.emit("willPlay", player, track as Track, tracks as Track[]));
+		player.on("trackStart", (track) => this.emit("trackStart", player, track as Track));
+		player.on("trackEnd", (track) => this.emit("trackEnd", player, track as Track));
 		player.on("queueEnd", () => this.emit("queueEnd", player));
-		player.on("playerError", (error, track) => this.emit("playerError", player, error, track));
+		player.on("playerError", (error, track) => this.emit("playerError", player, error, track as Track));
 		player.on("connectionError", (error) => this.emit("connectionError", player, error));
-		player.on("volumeChange", (old, volume) => this.emit("volumeChange", player, old, volume));
-		player.on("queueAdd", (track) => this.emit("queueAdd", player, track));
-		player.on("queueAddList", (tracks) => this.emit("queueAddList", player, tracks));
-		player.on("queueRemove", (track, index) => this.emit("queueRemove", player, track, index));
-		player.on("playerPause", (track) => this.emit("playerPause", player, track));
-		player.on("playerResume", (track) => this.emit("playerResume", player, track));
+		player.on("volumeChange", (old, volume) => this.emit("volumeChange", player, old as number, volume as number));
+		player.on("queueAdd", (track) => this.emit("queueAdd", player, track as Track));
+		player.on("queueAddList", (tracks) => this.emit("queueAddList", player, tracks as Track[]));
+		player.on("queueRemove", (track, index) => this.emit("queueRemove", player, track as Track, index));
+		player.on("playerPause", (track) => this.emit("playerPause", player, track as Track));
+		player.on("playerResume", (track) => this.emit("playerResume", player, track as Track));
 		player.on("playerStop", () => this.emit("playerStop", player));
 		player.on("playerDestroy", () => {
 			this.emit("playerDestroy", player);
