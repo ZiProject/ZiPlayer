@@ -33,7 +33,7 @@
  * const youtubePlugin = new YouTubePlugin();
  * const result = await youtubePlugin.search("Never Gonna Give You Up", "user123");
  */
-export { YouTubePlugin } from "./YouTubePlugin";
+export * from "./YouTubePlugin";
 
 /**
  * SoundCloud plugin for handling SoundCloud tracks, playlists, and search.
@@ -49,7 +49,7 @@ export { YouTubePlugin } from "./YouTubePlugin";
  * const soundcloudPlugin = new SoundCloudPlugin();
  * const result = await soundcloudPlugin.search("chill music", "user123");
  */
-export { SoundCloudPlugin } from "./SoundCloudPlugin";
+export * from "./SoundCloudPlugin";
 
 /**
  * Spotify plugin for metadata extraction and display purposes.
@@ -67,7 +67,7 @@ export { SoundCloudPlugin } from "./SoundCloudPlugin";
  * const spotifyPlugin = new SpotifyPlugin();
  * const result = await spotifyPlugin.search("spotify:track:4iV5W9uYEdYUVa79Axb7Rh", "user123");
  */
-export { SpotifyPlugin } from "./SpotifyPlugin";
+export * from "./SpotifyPlugin";
 
 /**
  * Text-to-Speech (TTS) plugin for converting text to audio.
@@ -83,7 +83,7 @@ export { SpotifyPlugin } from "./SpotifyPlugin";
  * const ttsPlugin = new TTSPlugin({ defaultLang: "en" });
  * const result = await ttsPlugin.search("tts:Hello world", "user123");
  */
-export { TTSPlugin } from "./TTSPlugin";
+export * from "./TTSPlugin";
 
 /**
  * YTSR plugin for advanced YouTube search without streaming.
@@ -100,4 +100,27 @@ export { TTSPlugin } from "./TTSPlugin";
  * const result = await ytsrPlugin.search("Never Gonna Give You Up", "user123");
  * const playlistResult = await ytsrPlugin.searchPlaylist("chill music", "user123");
  */
-export { YTSRPlugin } from "./YTSRPlugin";
+export * from "./YTSRPlugin";
+
+/**
+ * Attachments plugin for handling Discord attachment URLs and audio files.
+ *
+ * Provides comprehensive support for attachment content including:
+ * - Discord attachment URLs (cdn.discordapp.com, media.discordapp.net)
+ * - Direct audio file URLs
+ * - Local file paths (if accessible)
+ * - Various audio formats (mp3, wav, ogg, m4a, flac, etc.)
+ * - File size validation and stream extraction
+ * - Proper error handling and fallback support
+ *
+ * @example
+ * const attachmentsPlugin = new AttachmentsPlugin({
+ *   maxFileSize: 25 * 1024 * 1024, // 25MB
+ *   allowedExtensions: ['mp3', 'wav', 'ogg', 'm4a', 'flac']
+ * });
+ * const result = await attachmentsPlugin.search(
+ *   "https://cdn.discordapp.com/attachments/123/456/audio.mp3",
+ *   "user123"
+ * );
+ */
+export * from "./AttachmentsPlugin";

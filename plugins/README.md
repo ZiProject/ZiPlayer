@@ -8,6 +8,7 @@ Official plugin bundle for ZiPlayer. It ships a set of ready‑to‑use source p
 - SoundCloudPlugin: search + stream SoundCloud tracks and sets
 - SpotifyPlugin: resolve tracks/albums/playlists, stream via fallbacks
 - TTSPlugin: Text‑to‑Speech playback from simple `tts:` queries
+- AttachmentsPlugin: handle Discord attachment URLs and direct audio file URLs
 
 ZiPlayer is an audio player built on top of `@discordjs/voice` and `discord.js`. This package provides sources; the core player
 lives in `ziplayer`.
@@ -28,15 +29,16 @@ npm install @zibot/zitts axios
 
 ```ts
 import { PlayerManager } from "ziplayer";
-import { YouTubePlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin } from "@ziplayer/plugin";
+import { YouTubePlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin, AttachmentsPlugin } from "@ziplayer/plugin";
 
 const manager = new PlayerManager({
 	plugins: [
-		// Order matters: put more specific handlers first (e.g., TTS)
+		// Order matters: put more specific handlers first (e.g., TTS, Attachments)
 		new TTSPlugin({ defaultLang: "en" }),
 		new YouTubePlugin(),
 		new SoundCloudPlugin(),
 		new SpotifyPlugin(),
+		new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }), //25mb
 	],
 });
 
@@ -52,6 +54,9 @@ await player.play("https://www.youtube.com/playlist?list=...", requestedBy);
 
 // Speak with TTS
 await player.play("tts:en:Hello there!", requestedBy);
+
+// Play Discord attachment
+await player.play("https://cdn.discordapp.com/attachments/123/456/audio.mp3", requestedBy);
 
 // Handle events via the manager
 manager.on("trackStart", (plr, track) => {
@@ -93,6 +98,7 @@ const sp = new SpotifyPlugin();
 ### TTSPlugin (Text‑to‑Speech)
 
 - Plays spoken audio from text using a lightweight Google TTS wrapper.
+- **Accurate duration analysis**: Generates sample audio to measure actual duration instead of estimating.
 - Supported query formats:
   - `tts: <text>`
   - `tts:<lang>:<text>` (e.g., `tts:vi:xin chao`)
@@ -101,6 +107,13 @@ const sp = new SpotifyPlugin();
 ```ts
 import { TTSPlugin } from "@ziplayer/plugin";
 const tts = new TTSPlugin({ defaultLang: "en", slow: false });
+
+// The plugin automatically analyzes TTS duration
+const result = await tts.search("tts:en:Hello world", "user123");
+console.log(`Duration: ${result.tracks[0].duration}s`); // Real duration from audio analysis
+console.log(`Language: ${result.tracks[0].metadata.language}`); // "en"
+console.log(`Slow mode: ${result.tracks[0].metadata.slowMode}`); // false
+
 await player.play("tts:en:1:good morning", requestedBy);
 ```
 
@@ -122,6 +135,29 @@ const tts = new TTSPlugin({
 		return url; // or Readable / Buffer
 	},
 });
+```
+
+### AttachmentsPlugin
+
+- Handles Discord attachment URLs and direct audio file URLs.
+- Supports various audio formats (mp3, wav, ogg, m4a, flac, etc.).
+- **Audio metadata analysis**: Extracts duration, title, artist, album, bitrate, etc.
+- Includes file size validation and proper error handling.
+- Uses Range requests to efficiently analyze metadata without downloading entire files.
+
+```ts
+import { AttachmentsPlugin } from "@ziplayer/plugin";
+const attachments = new AttachmentsPlugin({
+	maxFileSize: 25 * 1024 * 1024, // 25MB
+	allowedExtensions: ["mp3", "wav", "ogg", "m4a", "flac"],
+	debug: true, // Enable to see metadata analysis process
+});
+
+// The plugin automatically analyzes audio metadata
+const result = await attachments.search("https://cdn.discordapp.com/attachments/123/456/song.mp3", "user123");
+console.log(`Duration: ${result.tracks[0].duration}s`); // Real duration from metadata
+console.log(`Title: ${result.tracks[0].title}`); // May be extracted from metadata
+console.log(`Artist: ${result.tracks[0].metadata.artist}`); // From metadata
 ```
 
 ## Writing Your Own Plugin

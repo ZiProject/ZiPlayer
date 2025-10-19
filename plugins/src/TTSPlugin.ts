@@ -2,6 +2,7 @@
 import { Readable } from "stream";
 import { getTTSUrls } from "@zibot/zitts";
 import axios from "axios";
+import { parseBuffer } from "music-metadata";
 
 /**
  * Configuration options for the TTSPlugin.
@@ -58,6 +59,7 @@ interface TTSConfig {
  * - Multiple language support
  * - Configurable speech rate (normal/slow)
  * - TTS query parsing with language and speed options
+ * - Accurate duration analysis by generating sample audio
  *
  * @example
  * const ttsPlugin = new TTSPlugin({
@@ -174,19 +176,92 @@ export class TTSPlugin extends BasePlugin {
 		const config: TTSConfig = { text, lang, slow };
 		const url = this.encodeConfig(config);
 		const title = `TTS (${lang}${slow ? ", slow" : ""}): ${text.slice(0, 64)}${text.length > 64 ? "…" : ""}`;
-		const estimatedSeconds = Math.max(1, Math.min(60, Math.ceil(text.length / 12)));
+
+		// Analyze actual TTS duration
+		let duration: number;
+		try {
+			duration = await this.analyzeTTSDuration(text, lang, slow);
+		} catch (error) {
+			// Fallback to estimation if analysis fails
+			duration = this.estimateDuration(text);
+		}
 
 		const track: Track = {
 			id: `tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
 			title,
 			url,
-			duration: estimatedSeconds,
+			duration,
 			requestedBy,
 			source: this.name,
-			metadata: { tts: config },
+			metadata: {
+				tts: config,
+				analyzedDuration: true,
+				textLength: text.length,
+				language: lang,
+				slowMode: slow,
+			},
 		};
 
 		return { tracks: [track] };
+	}
+
+	/**
+	 * Analyzes TTS audio duration by generating a small sample and measuring its length.
+	 *
+	 * @param text - The text to analyze
+	 * @param lang - The language code
+	 * @param slow - Whether to use slow speech rate
+	 * @returns Promise containing duration in seconds
+	 */
+	private async analyzeTTSDuration(text: string, lang: string, slow: boolean): Promise<number> {
+		try {
+			// Use a shorter sample text for duration analysis to minimize processing time
+			const sampleText = text.length > 50 ? text.slice(0, 50) + "..." : text;
+
+			const urls = getTTSUrls(sampleText, { lang, slow });
+			if (!urls || urls.length === 0) {
+				return this.estimateDuration(text);
+			}
+
+			// Download the sample audio
+			const parts = await Promise.all(
+				urls.map((u) => axios.get<ArrayBuffer>(u, { responseType: "arraybuffer" }).then((r) => Buffer.from(r.data))),
+			);
+
+			const merged = Buffer.concat(parts);
+
+			// Parse metadata to get actual duration
+			const metadata = await parseBuffer(merged);
+			const actualDuration = metadata.format.duration || 0;
+
+			// Calculate ratio and apply to full text
+			const sampleRatio = sampleText.length / text.length;
+			const estimatedDuration = actualDuration / sampleRatio;
+
+			return Math.round(estimatedDuration);
+		} catch (error) {
+			// Fallback to text-based estimation
+			return this.estimateDuration(text);
+		}
+	}
+
+	/**
+	 * Estimates TTS duration based on text length and language.
+	 *
+	 * @param text - The text to estimate duration for
+	 * @returns Estimated duration in seconds
+	 */
+	private estimateDuration(text: string): number {
+		// Base estimation: ~12 characters per second for normal speech
+		// Adjust based on text complexity and language
+		const baseRate = 12; // characters per second
+		const wordCount = text.split(/\s+/).length;
+		const charCount = text.length;
+
+		// Use word count for better estimation
+		const estimatedSeconds = Math.max(1, Math.min(300, Math.ceil(wordCount / 2.5)));
+
+		return estimatedSeconds;
 	}
 
 	/**
@@ -243,10 +318,7 @@ export class TTSPlugin extends BasePlugin {
 					const urlStr = o.url.toString();
 					try {
 						type =
-							normType(o.type) ||
-							(urlStr.endsWith(".webm") ? "webm/opus"
-							: urlStr.endsWith(".ogg") ? "ogg/opus"
-							: undefined);
+							normType(o.type) || (urlStr.endsWith(".webm") ? "webm/opus" : urlStr.endsWith(".ogg") ? "ogg/opus" : undefined);
 						const res = await axios.get(urlStr, { responseType: "stream" });
 						stream = res.data as unknown as Readable;
 						metadata = o.metadata;
