@@ -475,12 +475,6 @@ export const PREDEFINED_FILTERS: Record<string, AudioFilter> = {
 		description: "Phát nhanh",
 		category: "speed",
 	},
-	smooth: {
-		name: "smooth",
-		ffmpegFilter: "smooth=f=11:o=1",
-		description: "Làm mượt âm thanh",
-		category: "effect",
-	},
 	mono: {
 		name: "mono",
 		ffmpegFilter: "pan=mono|c0=0.5*c0+0.5*c1",
