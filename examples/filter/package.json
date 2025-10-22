@@ -8,10 +8,10 @@
 		"dev": "nodemon index.js"
 	},
 	"dependencies": {
-		"ziplayer": "file:../../core",
 		"@ziplayer/plugin": "file:../../plugins",
 		"discord.js": "^14.0.0",
-		"@prismmedia/ffmpeg": "^1.0.3"
+		"dotenv": "^17.2.3",
+		"ziplayer": "file:../../core"
 	},
 	"devDependencies": {
 		"nodemon": "^3.0.0"

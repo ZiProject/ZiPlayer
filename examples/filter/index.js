@@ -49,8 +49,10 @@ client.on("messageCreate", async (message) => {
 	const command = args.shift().toLowerCase();
 
 	try {
+		const player = manager.get(message.guildId);
+
 		switch (command) {
-			case "play":
+			case "play": {
 				if (!message.member.voice.channel) {
 					return message.reply("❌ Bạn cần tham gia kênh thoại trước!");
 				}
@@ -70,17 +72,13 @@ client.on("messageCreate", async (message) => {
 
 				message.reply(`🎵 Đang tìm kiếm và phát: **${query}**`);
 				break;
+			}
 
 			case "filter":
-				const player2 = manager.get(message.guildId);
-				if (!player2) {
-					return message.reply("❌ Không có player nào đang hoạt động!");
-				}
-
 				const filterName = args[0];
 				if (!filterName) {
 					// Hiển thị danh sách filters có sẵn
-					const availableFilters = player2.getAvailableFilters();
+					const availableFilters = player.filter.getAvailableFilters();
 					const categories = {};
 
 					availableFilters.forEach((filter) => {
@@ -103,7 +101,7 @@ client.on("messageCreate", async (message) => {
 					return message.reply(response);
 				}
 
-				const success = player2.applyFilter(filterName);
+				const success = player.filter.applyFilter(filterName);
 				if (success) {
 					message.reply(`✅ Đã áp dụng filter: **${filterName}**`);
 				} else {
@@ -112,14 +110,9 @@ client.on("messageCreate", async (message) => {
 				break;
 
 			case "removefilter":
-				const player3 = manager.get(message.guildId);
-				if (!player3) {
-					return message.reply("❌ Không có player nào đang hoạt động!");
-				}
-
 				const filterToRemove = args[0];
 				if (!filterToRemove) {
-					const activeFilters = player3.getActiveFilters();
+					const activeFilters = player.filter.getActiveFilters();
 					if (activeFilters.length === 0) {
 						return message.reply("❌ Không có filter nào đang được áp dụng!");
 					}
@@ -132,7 +125,7 @@ client.on("messageCreate", async (message) => {
 					return message.reply(response);
 				}
 
-				const removed = player3.removeFilter(filterToRemove);
+				const removed = player.filter.removeFilter(filterToRemove);
 				if (removed) {
 					message.reply(`✅ Đã gỡ filter: **${filterToRemove}**`);
 				} else {
@@ -141,22 +134,12 @@ client.on("messageCreate", async (message) => {
 				break;
 
 			case "clearfilters":
-				const player4 = manager.get(message.guildId);
-				if (!player4) {
-					return message.reply("❌ Không có player nào đang hoạt động!");
-				}
-
-				player4.clearFilters();
+				player.filter.clearAll();
 				message.reply("✅ Đã xóa tất cả filters!");
 				break;
 
 			case "filters":
-				const player5 = manager.get(message.guildId);
-				if (!player5) {
-					return message.reply("❌ Không có player nào đang hoạt động!");
-				}
-
-				const activeFilters = player5.getActiveFilters();
+				const activeFilters = player.filter.getActiveFilters();
 				if (activeFilters.length === 0) {
 					return message.reply("❌ Không có filter nào đang được áp dụng!");
 				}
@@ -166,7 +149,7 @@ client.on("messageCreate", async (message) => {
 					response += `• \`${filter.name}\` - ${filter.description}\n`;
 				});
 
-				const filterString = player5.getFilterString();
+				const filterString = player.filter.getFilterString();
 				if (filterString) {
 					response += `\n**FFmpeg Filter String:**\n\`${filterString}\``;
 				}
@@ -175,14 +158,9 @@ client.on("messageCreate", async (message) => {
 				break;
 
 			case "filtercategory":
-				const player6 = manager.get(message.guildId);
-				if (!player6) {
-					return message.reply("❌ Không có player nào đang hoạt động!");
-				}
-
 				const category = args[0];
 				if (!category) {
-					const availableFilters = player6.getAvailableFilters();
+					const availableFilters = player.filter.getAvailableFilters();
 					const categories = [...new Set(availableFilters.map((f) => f.category).filter(Boolean))];
 
 					let response = "🎛️ **Danh sách categories:**\n";
@@ -193,7 +171,7 @@ client.on("messageCreate", async (message) => {
 					return message.reply(response);
 				}
 
-				const categoryFilters = player6.getFiltersByCategory(category);
+				const categoryFilters = player.filter.getFiltersByCategory(category);
 				if (categoryFilters.length === 0) {
 					return message.reply(`❌ Không tìm thấy category: **${category}**`);
 				}
@@ -238,12 +216,28 @@ client.on("messageCreate", async (message) => {
 				message.reply(helpText);
 				break;
 			case "skip":
-				const player7 = manager.get(message.guildId);
-				if (!player7) {
-					return message.reply("❌ Không có player nào đang hoạt động!");
-				}
-				player7.skip();
+				player.skip();
 				message.reply("✅ Đã bỏ qua bài hát hiện tại!");
+				break;
+			case "stop":
+				player.destroy();
+				message.reply("✅ Đã dừng phát nhạc!");
+				break;
+			case "pause":
+				player.pause();
+				message.reply("✅ Đã tạm dừng phát nhạc!");
+				break;
+			case "resume":
+				player.resume();
+				message.reply("✅ Đã tiếp tục phát nhạc!");
+				break;
+			case "seek":
+				const seekTime = parseInt(args[0]);
+				if (isNaN(seekTime)) {
+					return message.reply("❌ Vui lòng cung cấp thời gian tìm kiếm!");
+				}
+				player.seek(seekTime);
+				message.reply(`✅ Đã tìm kiếm đến thời gian: ${seekTime}ms!`);
 				break;
 			default:
 				message.reply("❌ Command không tồn tại! Sử dụng `!help` để xem danh sách commands.");
