@@ -223,7 +223,12 @@ export class FilterManager {
 			if (filterString) {
 				args.push("-af", filterString);
 			}
-			args.push("-f", this.StreamType === "webm/opus" ? "webm/opus" : this.StreamType === "ogg/opus" ? "ogg/opus" : "mp3");
+			args.push(
+				"-f",
+				this.StreamType === "webm/opus" ? "webm/opus"
+				: this.StreamType === "ogg/opus" ? "ogg/opus"
+				: "mp3",
+			);
 			args.push("-ar", "48000", "-ac", "2");
 
 			try {
