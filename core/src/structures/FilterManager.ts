@@ -12,6 +12,7 @@ export class FilterManager {
 	private debug: DebugFn;
 	private player: Player;
 	private ffmpeg: FFmpeg | null = null;
+	public StreamType: "webm/opus" | "ogg/opus" | "mp3" | "arbitrary" = "mp3";
 
 	constructor(player: Player, manager: PlayerManager) {
 		this.player = player as Player;
@@ -222,8 +223,8 @@ export class FilterManager {
 			if (filterString) {
 				args.push("-af", filterString);
 			}
-
-			args.push("-f", "mp3", "-ar", "48000", "-ac", "2");
+			args.push("-f", this.StreamType === "webm/opus" ? "webm/opus" : this.StreamType === "ogg/opus" ? "ogg/opus" : "mp3");
+			args.push("-ar", "48000", "-ac", "2");
 
 			try {
 				if (this.ffmpeg) {
@@ -250,10 +251,6 @@ export class FilterManager {
 				if (this.ffmpeg) {
 					this.ffmpeg = null;
 				}
-			});
-			this.ffmpeg.on("data", (data: any) => {
-				console.log(data);
-				this.debug(`[FilterManager] FFmpeg filter+seek data:`, data);
 			});
 			return this.ffmpeg;
 		} catch (error) {

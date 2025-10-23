@@ -64,7 +64,7 @@ client.on("messageCreate", async (message) => {
 
 				const player = await manager.create(message.guildId, {
 					// Áp dụng filters mặc định khi tạo player
-					// filters: ["bassboost"],
+					filters: ["fadein"],
 				});
 
 				await player.connect(message.member.voice.channel);

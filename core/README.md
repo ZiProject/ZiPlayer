@@ -76,22 +76,18 @@ player.on("trackStart", (player, track) => {
 	console.log(`Now playing: ${track.title}`);
 	player.userdata?.channel?.send(`Now playing: ${track.title}`);
 });
+
 // Audio Filters
-player.applyFilter("bassboost"); // Apply bass boost
-player.applyFilter("nightcore"); // Apply nightcore effect
-player.removeFilter("bassboost"); // Remove specific filter
-player.clearFilters(); // Clear all filters
+player.filter.applyFilter("bassboost"); // Apply bass boost
+player.filter.applyFilter("nightcore"); // Apply nightcore effect
+player.filter.removeFilter("bassboost"); // Remove specific filter
+player.filter.clearFilters(); // Clear all filters
 
 // Apply custom filter
-player.applyFilter({
+player.filter.applyFilter({
 	name: "custom",
 	ffmpegFilter: "volume=1.5,treble=g=5",
 	description: "Volume boost + treble boost",
-});
-
-// Filter events
-player.on("filterApplied", (player, filter) => {
-	console.log(`Applied filter: ${filter.name}`);
 });
 
 // Receive transcripts
