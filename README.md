@@ -11,12 +11,15 @@ A modular Discord voice player with plugin system for @discordjs/voice.
 - 🔊 **Queue management** - Add, remove, shuffle, clear
 - 🎚️ **Volume control** - 0-200% volume range
 - ⏯️ **Playback control** - Play, pause, resume, stop, skip
+- ⏰ **Seek functionality** - Jump to any position in the current track
 - 🔁 **Auto play** - Automatically replay the queue when it ends
 - 🔂 **Loop control** - Repeat a single track or the entire queue
 - 📊 **Progress bar** - Display playback progress with customizable icons
 - 🔔 **Event-driven** - Rich event system for all player actions
 - 🎭 **Multi-guild support** - Manage players across multiple Discord servers
 - 🗃️ **User data** - Attach custom data to each player for later use
+- 🎛️ **Audio Filters** - Apply real-time audio effects using FFmpeg (bassboost, nightcore, etc.)
+- 🎚️ **Real-time Filter Application** - Apply filters to currently playing tracks instantly
 
 ## Installation
 
@@ -49,6 +52,8 @@ const player = await manager.create(guildId, {
 	userdata: { channel: textChannel }, // store channel for events
 	// Choose extensions for this player (by name or instances)
 	extensions: ["voiceExt"],
+	// Apply audio filters
+	filters: ["bassboost", "normalize"],
 });
 
 // Connect and play
@@ -73,11 +78,68 @@ player.on("trackStart", (player, track) => {
 	player.userdata?.channel?.send(`Now playing: ${track.title}`);
 });
 
+// Audio Filters
+player.applyFilter("bassboost"); // Apply bass boost
+player.applyFilter("nightcore"); // Apply nightcore effect
+player.removeFilter("bassboost"); // Remove specific filter
+player.clearFilters(); // Clear all filters
+
+// Filter events
+player.on("filterApplied", (player, filter) => {
+	console.log(`Applied filter: ${filter.name}`);
+});
+
 // Receive transcripts
 manager.on("voiceCreate", (player, evt) => {
 	console.log(`User ${evt.userId} said: ${evt.content}`);
 });
 ```
+
+### Audio Filters
+
+Apply real-time audio effects to your music using @prismmedia/ffmpeg. Supports popular filters like bassboost, nightcore,
+vaporwave, and many more.
+
+```typescript
+// Apply predefined filters
+player.applyFilter("bassboost"); // Boost bass
+player.applyFilter("nightcore"); // Speed up + pitch up
+player.applyFilter("vaporwave"); // Slow down + pitch down
+
+// Apply custom filter
+player.applyFilter({
+	name: "custom",
+	ffmpegFilter: "volume=1.5,treble=g=5",
+	description: "Volume boost + treble boost",
+});
+
+// Apply multiple filters
+player.applyFilters(["bassboost", "normalize", "compressor"]);
+
+// Manage filters
+player.removeFilter("bassboost"); // Remove specific filter
+player.clearFilters(); // Clear all filters
+player.getActiveFilters(); // Get active filters
+player.getAvailableFilters(); // Get all available filters
+
+// Filter events
+player.on("filterApplied", (filter) => {
+	console.log(`Applied: ${filter.name}`);
+});
+player.on("filterRemoved", (filter) => {
+	console.log(`Removed: ${filter.name}`);
+});
+```
+
+**Available Filter Categories:**
+
+- **EQ**: bassboost, trebleboost, equalizer
+- **Speed**: nightcore, vaporwave, slow, fast
+- **Volume**: volume, normalize, compressor, limiter
+- **Effects**: chorus, flanger, phaser, reverb, delay
+- **Vocal**: karaoke, robot
+- **Filters**: lowpass, highpass, bandpass
+- **Channel**: mono, stereo
 
 ### TTS (Interrupt Mode)
 
@@ -188,6 +250,89 @@ export class MyPlugin extends BasePlugin {
 }
 ```
 
+## Seek Functionality
+
+Jump to any position in the current track using the `seek` method:
+
+```typescript
+// Seek to 30 seconds (30000ms)
+const success = await player.seek(30000);
+console.log(`Seek successful: ${success}`);
+
+// Seek to 1 minute 30 seconds (90000ms)
+await player.seek(90000);
+
+// Listen for seek events
+player.on("seek", ({ track, position }) => {
+	console.log(`Seeked to ${position}ms in ${track.title}`);
+});
+```
+
+## Audio Filters
+
+Apply real-time audio effects to enhance your music experience:
+
+### Apply Single Filter
+
+```typescript
+// Apply predefined filter to current track (default behavior)
+await player.applyFilter("bassboost");
+
+// Apply custom filter to current track
+await player.applyFilter({
+	name: "custom",
+	ffmpegFilter: "volume=1.5,treble=g=5",
+	description: "Tăng âm lượng và âm cao",
+});
+
+// Apply filter without affecting current track
+await player.applyFilter("bassboost", false);
+```
+
+### Apply Multiple Filters
+
+```typescript
+// Apply multiple filters to current track (default behavior)
+await player.applyFilters(["bassboost", "trebleboost"]);
+
+// Apply filters without affecting current track
+await player.applyFilters(["bassboost", "trebleboost"], false);
+```
+
+### Available Predefined Filters
+
+- `bassboost` - Enhance bass frequencies
+- `trebleboost` - Enhance treble frequencies
+- `nightcore` - Speed up and pitch up
+- `vaporwave` - Slow down and pitch down
+- `volume` - Adjust volume level
+- `karaoke` - Remove vocals (center channel)
+
+### Filter Management
+
+```typescript
+// Check if filter is applied
+const hasBassBoost = player.hasFilter("bassboost");
+
+// Remove specific filter
+player.removeFilter("bassboost");
+
+// Clear all filters
+player.clearFilters();
+
+// Get active filters
+const activeFilters = player.getActiveFilters();
+
+// Listen for filter events
+player.on("filterApplied", (filter) => {
+	console.log(`Applied filter: ${filter.name}`);
+});
+
+player.on("filterRemoved", (filter) => {
+	console.log(`Removed filter: ${filter.name}`);
+});
+```
+
 ## Progress Bar
 
 Display the current playback progress with `getProgressBar`:
@@ -207,6 +352,10 @@ All player events are forwarded through the PlayerManager:
 - `playerError` - When an error occurs
 - `queueAdd` - When a track is added
 - `volumeChange` - When volume changes
+- `seek` - When seeking to a position in current track
+- `filterApplied` - When an audio filter is applied
+- `filterRemoved` - When an audio filter is removed
+- `filtersCleared` - When all filters are cleared
 - And more...
 
 ## Useful Links

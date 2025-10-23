@@ -1,0 +1,29 @@
+{
+	"name": "ziplayer-filter-example",
+	"version": "1.0.0",
+	"description": "Ví dụ sử dụng tính năng Audio Filter của ZiPlayer",
+	"main": "index.js",
+	"scripts": {
+		"start": "node index.js",
+		"dev": "nodemon index.js"
+	},
+	"dependencies": {
+		"@ziplayer/plugin": "file:../../plugins",
+		"discord.js": "^14.0.0",
+		"dotenv": "^17.2.3",
+		"ziplayer": "file:../../core"
+	},
+	"devDependencies": {
+		"nodemon": "^3.0.0"
+	},
+	"keywords": [
+		"discord",
+		"music",
+		"bot",
+		"filter",
+		"ffmpeg",
+		"ziplayer"
+	],
+	"author": "ZiProject",
+	"license": "MIT"
+}

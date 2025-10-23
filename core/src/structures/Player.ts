@@ -15,8 +15,8 @@ import {
 
 import { VoiceChannel } from "discord.js";
 import { Readable } from "stream";
-import { BaseExtension } from "../extensions";
-import {
+import type { BaseExtension } from "../extensions";
+import type {
 	Track,
 	PlayerOptions,
 	PlayerEvents,
@@ -26,19 +26,18 @@ import {
 	LoopMode,
 	StreamInfo,
 	SaveOptions,
-} from "../types";
-import type {
-	ExtensionContext,
 	ExtensionPlayRequest,
 	ExtensionPlayResponse,
 	ExtensionAfterPlayPayload,
-	ExtensionStreamRequest,
-	ExtensionSearchRequest,
 } from "../types";
+import type { PlayerManager } from "./PlayerManager";
+
 import { Queue } from "./Queue";
 import { PluginManager } from "../plugins";
+import { ExtensionManager } from "../extensions";
 import { withTimeout } from "../utils/timeout";
-import type { PlayerManager } from "./PlayerManager";
+import { FilterManager } from "./FilterManager";
+
 export declare interface Player {
 	on<K extends keyof PlayerEvents>(event: K, listener: (...args: PlayerEvents[K]) => void): this;
 	emit<K extends keyof PlayerEvents>(event: K, ...args: PlayerEvents[K]): boolean;
@@ -90,313 +89,20 @@ export class Player extends EventEmitter {
 	public isPaused: boolean = false;
 	public options: PlayerOptions;
 	public pluginManager: PluginManager;
+	public extensionManager: ExtensionManager;
 	public userdata?: Record<string, any>;
 	private manager: PlayerManager;
 	private leaveTimeout: NodeJS.Timeout | null = null;
 	private currentResource: AudioResource | null = null;
 	private volumeInterval: NodeJS.Timeout | null = null;
 	private skipLoop = false;
-	private extensions: BaseExtension[] = [];
-	private extensionContext!: ExtensionContext;
+	private filter!: FilterManager;
 
 	// Cache for search results to avoid duplicate calls
 	private searchCache = new Map<string, SearchResult>();
 	private readonly SEARCH_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 	private searchCacheTimestamps = new Map<string, number>();
-	// TTS support
 	private ttsPlayer: DiscordAudioPlayer | null = null;
-	/**
-	 * Attach an extension to the player
-	 *
-	 * @param {BaseExtension} extension - The extension to attach
-	 * @example
-	 * player.attachExtension(new MyExtension());
-	 */
-	public attachExtension(extension: BaseExtension): void {
-		if (this.extensions.includes(extension)) return;
-		if (!extension.player) extension.player = this;
-		this.extensions.push(extension);
-		this.invokeExtensionLifecycle(extension, "onRegister");
-	}
-
-	/**
-	 * Detach an extension from the player
-	 *
-	 * @param {BaseExtension} extension - The extension to detach
-	 * @example
-	 * player.detachExtension(new MyExtension());
-	 */
-	public detachExtension(extension: BaseExtension): void {
-		const index = this.extensions.indexOf(extension);
-		if (index === -1) return;
-		this.extensions.splice(index, 1);
-		this.invokeExtensionLifecycle(extension, "onDestroy");
-		if (extension.player === this) {
-			extension.player = null;
-		}
-	}
-
-	/**
-	 * Get all extensions attached to the player
-	 *
-	 * @returns {readonly BaseExtension[]} All attached extensions
-	 * @example
-	 * const extensions = player.getExtensions();
-	 * console.log(`Extensions: ${extensions.length}`);
-	 */
-	public getExtensions(): readonly BaseExtension[] {
-		return this.extensions;
-	}
-
-	private invokeExtensionLifecycle(extension: BaseExtension, hook: "onRegister" | "onDestroy"): void {
-		const fn = (extension as any)[hook];
-		if (typeof fn !== "function") return;
-		try {
-			const result = fn.call(extension, this.extensionContext);
-			if (result && typeof (result as Promise<unknown>).then === "function") {
-				(result as Promise<unknown>).catch((err) => this.debug(`[Player] Extension ${extension.name} ${hook} error:`, err));
-			}
-		} catch (err) {
-			this.debug(`[Player] Extension ${extension.name} ${hook} error:`, err);
-		}
-	}
-
-	private async runBeforePlayHooks(
-		initial: ExtensionPlayRequest,
-	): Promise<{ request: ExtensionPlayRequest; response: ExtensionPlayResponse }> {
-		const request: ExtensionPlayRequest = { ...initial };
-		const response: ExtensionPlayResponse = {};
-		for (const extension of this.extensions) {
-			const hook = (extension as any).beforePlay;
-			if (typeof hook !== "function") continue;
-			try {
-				const result = await Promise.resolve(hook.call(extension, this.extensionContext, request));
-				if (!result) continue;
-				if (result.query !== undefined) {
-					request.query = result.query;
-					response.query = result.query;
-				}
-				if (result.requestedBy !== undefined) {
-					request.requestedBy = result.requestedBy;
-					response.requestedBy = result.requestedBy;
-				}
-				if (Array.isArray(result.tracks)) {
-					response.tracks = result.tracks;
-				}
-				if (typeof result.isPlaylist === "boolean") {
-					response.isPlaylist = result.isPlaylist;
-				}
-				if (typeof result.success === "boolean") {
-					response.success = result.success;
-				}
-				if (result.error instanceof Error) {
-					response.error = result.error;
-				}
-				if (typeof result.handled === "boolean") {
-					response.handled = result.handled;
-					if (result.handled) break;
-				}
-			} catch (err) {
-				this.debug(`[Player] Extension ${extension.name} beforePlay error:`, err);
-			}
-		}
-		return { request, response };
-	}
-
-	private async runAfterPlayHooks(payload: ExtensionAfterPlayPayload): Promise<void> {
-		if (this.extensions.length === 0) return;
-		const safeTracks = payload.tracks ? [...payload.tracks] : undefined;
-		if (safeTracks) {
-			Object.freeze(safeTracks);
-		}
-		const immutablePayload = Object.freeze({ ...payload, tracks: safeTracks });
-		for (const extension of this.extensions) {
-			const hook = (extension as any).afterPlay;
-			if (typeof hook !== "function") continue;
-			try {
-				await Promise.resolve(hook.call(extension, this.extensionContext, immutablePayload));
-			} catch (err) {
-				this.debug(`[Player] Extension ${extension.name} afterPlay error:`, err);
-			}
-		}
-	}
-
-	private async extensionsProvideSearch(query: string, requestedBy: string): Promise<SearchResult | null> {
-		const request: ExtensionSearchRequest = { query, requestedBy };
-		for (const extension of this.extensions) {
-			const hook = (extension as any).provideSearch;
-			if (typeof hook !== "function") continue;
-			try {
-				const result = await Promise.resolve(hook.call(extension, this.extensionContext, request));
-				if (result && Array.isArray(result.tracks) && result.tracks.length > 0) {
-					this.debug(`[Player] Extension ${extension.name} handled search for query: ${query}`);
-					return result as SearchResult;
-				}
-			} catch (err) {
-				this.debug(`[Player] Extension ${extension.name} provideSearch error:`, err);
-			}
-		}
-		return null;
-	}
-
-	private async extensionsProvideStream(track: Track): Promise<StreamInfo | null> {
-		const request: ExtensionStreamRequest = { track };
-		for (const extension of this.extensions) {
-			const hook = (extension as any).provideStream;
-			if (typeof hook !== "function") continue;
-			try {
-				const result = await Promise.resolve(hook.call(extension, this.extensionContext, request));
-				if (result && (result as StreamInfo).stream) {
-					this.debug(`[Player] Extension ${extension.name} provided stream for track: ${track.title}`);
-					return result as StreamInfo;
-				}
-			} catch (err) {
-				this.debug(`[Player] Extension ${extension.name} provideStream error:`, err);
-			}
-		}
-		return null;
-	}
-
-	private async getStreamFromPlugin(track: Track): Promise<StreamInfo | null> {
-		let streamInfo: StreamInfo | null = null;
-		const plugin = this.pluginManager.get(track.source) || this.pluginManager.findPlugin(track.url);
-
-		if (!plugin) {
-			this.debug(`[Player] No plugin found for track: ${track.title}`);
-			return null;
-		}
-
-		this.debug(`[Player] Getting stream for track: ${track.title}`);
-		this.debug(`[Player] Using plugin: ${plugin.name}`);
-		this.debug(`[Track] Track Info:`, track);
-		const timeoutMs = this.options.extractorTimeout ?? 50000;
-		try {
-			streamInfo = await withTimeout(plugin.getStream(track), timeoutMs, "getStream timed out");
-			if (!(streamInfo as any)?.stream) {
-				throw new Error(`No stream returned from ${plugin.name}`);
-			}
-		} catch (streamError) {
-			this.debug(`[Player] getStream failed, trying getFallback:`, streamError);
-			const allplugs = this.pluginManager.getAll();
-			for (const p of allplugs) {
-				if (typeof (p as any).getFallback !== "function" && typeof (p as any).getStream !== "function") {
-					continue;
-				}
-				try {
-					streamInfo = await withTimeout((p as any).getStream(track), timeoutMs, `getStream timed out for plugin ${p.name}`);
-					if ((streamInfo as any)?.stream) {
-						this.debug(`[Player] getStream succeeded with plugin ${p.name} for track: ${track.title}`);
-						break;
-					}
-					streamInfo = await withTimeout((p as any).getFallback(track), timeoutMs, `getFallback timed out for plugin ${p.name}`);
-					if (!(streamInfo as any)?.stream) continue;
-					break;
-				} catch (fallbackError) {
-					this.debug(`[Player] getFallback failed with plugin ${p.name}:`, fallbackError);
-				}
-			}
-			if (!(streamInfo as any)?.stream) {
-				throw new Error(`All getFallback attempts failed for track: ${track.title}`);
-			}
-		}
-
-		return streamInfo as StreamInfo;
-	}
-	private async Audioresource(streamInfo: StreamInfo, track?: Track): Promise<AudioResource> {
-		function mapToStreamType(type: string | undefined): StreamType {
-			switch (type) {
-				case "webm/opus":
-					return StreamType.WebmOpus;
-				case "ogg/opus":
-					return StreamType.OggOpus;
-				case "arbitrary":
-				default:
-					return StreamType.Arbitrary;
-			}
-		}
-
-		const stream: Readable = (streamInfo as StreamInfo).stream;
-		const inputType = mapToStreamType((streamInfo as StreamInfo).type);
-
-		const resource = createAudioResource(stream, {
-			metadata: track ?? {
-				title: streamInfo.metadata?.title ?? "",
-				duration: streamInfo.metadata?.duration ?? 0,
-				source: streamInfo.metadata?.source ?? "",
-				requestedBy: streamInfo.metadata?.requestedBy ?? "",
-				thumbnail: streamInfo.metadata?.thumbnail ?? "",
-				url: streamInfo.metadata?.url ?? "",
-				id: streamInfo.metadata?.id ?? "",
-			},
-			inputType,
-			inlineVolume: true,
-		});
-
-		return resource;
-	}
-
-	/**
-	 * Start playing a specific track immediately, replacing the current resource.
-	 */
-	private async startTrack(track: Track): Promise<boolean> {
-		try {
-			let streamInfo: StreamInfo | null = await this.extensionsProvideStream(track);
-			let plugin: SourcePlugin | undefined;
-
-			if (!streamInfo) {
-				streamInfo = await this.getStreamFromPlugin(track);
-				if (!streamInfo) {
-					throw new Error(`No stream available for track: ${track.title}`);
-				}
-			} else {
-				this.debug(`[Player] Using extension-provided stream for track: ${track.title}`);
-			}
-
-			// Kiểm tra nếu có stream thực sự để tạo AudioResource
-			if (streamInfo && (streamInfo as any).stream) {
-				this.currentResource = await this.Audioresource(streamInfo, track);
-				// Apply initial volume using the resource's VolumeTransformer
-				if (this.volumeInterval) {
-					clearInterval(this.volumeInterval);
-					this.volumeInterval = null;
-				}
-				this.currentResource.volume?.setVolume(this.volume / 100);
-
-				this.debug(`[Player] Playing resource for track: ${track.title}`);
-				this.audioPlayer.play(this.currentResource);
-
-				await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 5_000);
-				return true;
-			} else if (streamInfo && !(streamInfo as any).stream) {
-				// Extension đang xử lý phát nhạc (như Lavalink) - chỉ đánh dấu đang phát
-				this.debug(`[Player] Extension is handling playback for track: ${track.title}`);
-				this.isPlaying = true;
-				this.isPaused = false;
-				this.emit("trackStart", track);
-				return true;
-			} else {
-				throw new Error(`No stream available for track: ${track.title}`);
-			}
-		} catch (error) {
-			this.debug(`[Player] startTrack error:`, error);
-			this.emit("playerError", error as Error, track);
-			return false;
-		}
-	}
-
-	private clearLeaveTimeout(): void {
-		if (this.leaveTimeout) {
-			clearTimeout(this.leaveTimeout);
-			this.leaveTimeout = null;
-			this.debug(`[Player] Cleared leave timeoutMs`);
-		}
-	}
-
-	private debug(message?: any, ...optionalParams: any[]): void {
-		if (this.listenerCount("debug") > 0) {
-			this.emit("debug", message, ...optionalParams);
-		}
-	}
 
 	constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
 		super();
@@ -410,8 +116,6 @@ export class Player extends EventEmitter {
 				maxMissedFrames: 100,
 			},
 		});
-
-		this.pluginManager = new PluginManager();
 
 		this.options = {
 			leaveOnEnd: true,
@@ -431,11 +135,24 @@ export class Player extends EventEmitter {
 				...(options?.tts || {}),
 			},
 		};
+		this.filter = new FilterManager(this, this.manager);
+		this.extensionManager = new ExtensionManager(this, this.manager);
+		this.pluginManager = new PluginManager(this, this.manager, {
+			extractorTimeout: this.options.extractorTimeout,
+		});
 
 		this.volume = this.options.volume || 100;
 		this.userdata = this.options.userdata;
 		this.setupEventListeners();
-		this.extensionContext = Object.freeze({ player: this, manager });
+
+		// Initialize filters from options
+		if (this.options.filters && this.options.filters.length > 0) {
+			this.debug(`[Player] Initializing ${this.options.filters.length} filters from options`);
+			// Use async version but don't await in constructor
+			this.filter.applyFilters(this.options.filters).catch((error: any) => {
+				this.debug(`[Player] Error initializing filters:`, error);
+			});
+		}
 
 		// Optionally pre-create the TTS AudioPlayer
 		if (this.options?.tts?.createPlayer) {
@@ -443,129 +160,7 @@ export class Player extends EventEmitter {
 		}
 	}
 
-	private setupEventListeners(): void {
-		this.audioPlayer.on("stateChange", (oldState, newState) => {
-			this.debug(`[Player] AudioPlayer stateChange from ${oldState.status} to ${newState.status}`);
-			if (newState.status === AudioPlayerStatus.Idle && oldState.status !== AudioPlayerStatus.Idle) {
-				// Track ended
-				const track = this.queue.currentTrack;
-				if (track) {
-					this.debug(`[Player] Track ended: ${track.title}`);
-					this.emit("trackEnd", track);
-				}
-				this.playNext();
-			} else if (
-				newState.status === AudioPlayerStatus.Playing &&
-				(oldState.status === AudioPlayerStatus.Idle || oldState.status === AudioPlayerStatus.Buffering)
-			) {
-				// Track started
-				this.clearLeaveTimeout();
-				this.isPlaying = true;
-				this.isPaused = false;
-				const track = this.queue.currentTrack;
-				if (track) {
-					this.debug(`[Player] Track started: ${track.title}`);
-					this.emit("trackStart", track);
-				}
-			} else if (newState.status === AudioPlayerStatus.Paused && oldState.status !== AudioPlayerStatus.Paused) {
-				// Track paused
-				this.isPaused = true;
-				const track = this.queue.currentTrack;
-				if (track) {
-					this.debug(`[Player] Player paused on track: ${track.title}`);
-					this.emit("playerPause", track);
-				}
-			} else if (newState.status !== AudioPlayerStatus.Paused && oldState.status === AudioPlayerStatus.Paused) {
-				// Track resumed
-				this.isPaused = false;
-				const track = this.queue.currentTrack;
-				if (track) {
-					this.debug(`[Player] Player resumed on track: ${track.title}`);
-					this.emit("playerResume", track);
-				}
-			} else if (newState.status === AudioPlayerStatus.AutoPaused) {
-				this.debug(`[Player] AudioPlayerStatus.AutoPaused`);
-			} else if (newState.status === AudioPlayerStatus.Buffering) {
-				this.debug(`[Player] AudioPlayerStatus.Buffering`);
-			}
-		});
-		this.audioPlayer.on("error", (error) => {
-			this.debug(`[Player] AudioPlayer error:`, error);
-			this.emit("playerError", error, this.queue.currentTrack || undefined);
-			this.playNext();
-		});
-
-		this.audioPlayer.on("debug", (...args) => {
-			if (this.manager.debugEnabled) {
-				this.emit("debug", ...args);
-			}
-		});
-	}
-
-	private ensureTTSPlayer(): DiscordAudioPlayer {
-		if (this.ttsPlayer) return this.ttsPlayer;
-		this.ttsPlayer = createAudioPlayer({
-			behaviors: {
-				noSubscriber: NoSubscriberBehavior.Pause,
-				maxMissedFrames: 100,
-			},
-		});
-		this.ttsPlayer.on("error", (e) => this.debug("[TTS] error:", e));
-		return this.ttsPlayer;
-	}
-
-	addPlugin(plugin: SourcePlugin): void {
-		this.debug(`[Player] Adding plugin: ${plugin.name}`);
-		this.pluginManager.register(plugin);
-	}
-
-	removePlugin(name: string): boolean {
-		this.debug(`[Player] Removing plugin: ${name}`);
-		return this.pluginManager.unregister(name);
-	}
-
-	/**
-	 * Connect to a voice channel
-	 *
-	 * @param {VoiceChannel} channel - Discord voice channel
-	 * @returns {Promise<VoiceConnection>} The voice connection
-	 * @example
-	 * await player.connect(voiceChannel);
-	 */
-	async connect(channel: VoiceChannel): Promise<VoiceConnection> {
-		try {
-			this.debug(`[Player] Connecting to voice channel: ${channel.id}`);
-			const connection = joinVoiceChannel({
-				channelId: channel.id,
-				guildId: channel.guildId,
-				adapterCreator: channel.guild.voiceAdapterCreator as any,
-				selfDeaf: this.options.selfDeaf ?? true,
-				selfMute: this.options.selfMute ?? false,
-			});
-
-			await entersState(connection, VoiceConnectionStatus.Ready, 50_000);
-			this.connection = connection;
-
-			connection.on(VoiceConnectionStatus.Disconnected, () => {
-				this.debug(`[Player] VoiceConnectionStatus.Disconnected`);
-				this.destroy();
-			});
-
-			connection.on("error", (error) => {
-				this.debug(`[Player] Voice connection error:`, error);
-				this.emit("connectionError", error);
-			});
-			connection.subscribe(this.audioPlayer);
-
-			this.clearLeaveTimeout();
-			return this.connection;
-		} catch (error) {
-			this.debug(`[Player] Connection error:`, error);
-			this.emit("connectionError", error as Error);
-			this.connection?.destroy();
-			throw error;
-		}
-	}
+	//#region Search
 
 	/**
 	 * Search for tracks using the player's extensions and plugins
@@ -593,7 +188,7 @@ export class Player extends EventEmitter {
 		}
 
 		// Try extensions first
-		const extensionResult = await this.extensionsProvideSearch(query, requestedBy);
+		const extensionResult = await this.extensionManager.provideSearch(query, requestedBy);
 		if (extensionResult && Array.isArray(extensionResult.tracks) && extensionResult.tracks.length > 0) {
 			this.debug(`[Player] Extension handled search for query: ${query}`);
 			this.cacheSearchResult(query, extensionResult);
@@ -645,242 +240,6 @@ export class Player extends EventEmitter {
 		this.debug(`[Player] No plugins returned results for query: ${query} (tried ${searchAttempts} plugins)`);
 		if (lastError) this.emit("playerError", lastError as Error);
 		throw new Error(`No plugin found to handle: ${query}`);
-	}
-
-	/**
-	 * Play a track, search query, search result, or play from queue
-	 *
-	 * @param {string | Track | SearchResult | null} query - Track URL, search query, Track object, SearchResult, or null for play
-	 * @param {string} requestedBy - User ID who requested the track
-	 * @returns {Promise<boolean>} True if playback started successfully
-	 * @example
-	 * await player.play("Never Gonna Give You Up", userId); // Search query
-	 * await player.play("https://youtube.com/watch?v=dQw4w9WgXcQ", userId); // Direct URL
-	 * await player.play("tts: Hello everyone!", userId); // Text-to-Speech
-	 * await player.play(trackObject, userId); // Track object
-	 * await player.play(searchResult, userId); // SearchResult object
-	 * await player.play(null); // play from queue
-	 */
-	async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
-		const debugInfo =
-			query === null ? "null"
-			: typeof query === "string" ? query
-			: "tracks" in query ? `${query.tracks.length} tracks`
-			: query.title || "unknown";
-		this.debug(`[Player] Play called with query: ${debugInfo}`);
-		this.clearLeaveTimeout();
-		let tracksToAdd: Track[] = [];
-		let isPlaylist = false;
-		let effectiveRequest: ExtensionPlayRequest = { query: query as string | Track, requestedBy };
-		let hookResponse: ExtensionPlayResponse = {};
-
-		try {
-			// Handle null query - play from queue
-			if (query === null) {
-				this.debug(`[Player] Play from queue requested`);
-				if (this.queue.isEmpty) {
-					this.debug(`[Player] Queue is empty, nothing to play`);
-					return false;
-				}
-
-				if (!this.isPlaying) {
-					return await this.playNext();
-				}
-				return true;
-			}
-
-			// Handle SearchResult
-			if (query && typeof query === "object" && "tracks" in query && Array.isArray(query.tracks)) {
-				this.debug(`[Player] Playing SearchResult with ${query.tracks.length} tracks`);
-				tracksToAdd = query.tracks;
-				isPlaylist = !!query.playlist || query.tracks.length > 1;
-
-				if (query.playlist) {
-					this.debug(`[Player] Added playlist: ${query.playlist.name} (${tracksToAdd.length} tracks)`);
-				}
-			} else {
-				// Handle other types (string, Track)
-				const hookOutcome = await this.runBeforePlayHooks(effectiveRequest);
-				effectiveRequest = hookOutcome.request;
-				hookResponse = hookOutcome.response;
-				if (effectiveRequest.requestedBy === undefined) {
-					effectiveRequest.requestedBy = requestedBy;
-				}
-
-				const hookTracks = Array.isArray(hookResponse.tracks) ? hookResponse.tracks : undefined;
-
-				if (hookResponse.handled && (!hookTracks || hookTracks.length === 0)) {
-					const handledPayload: ExtensionAfterPlayPayload = {
-						success: hookResponse.success ?? true,
-						query: effectiveRequest.query,
-						requestedBy: effectiveRequest.requestedBy,
-						tracks: [],
-						isPlaylist: hookResponse.isPlaylist ?? false,
-						error: hookResponse.error,
-					};
-					await this.runAfterPlayHooks(handledPayload);
-					if (hookResponse.error) {
-						this.emit("playerError", hookResponse.error);
-					}
-					return hookResponse.success ?? true;
-				}
-
-				if (hookTracks && hookTracks.length > 0) {
-					tracksToAdd = hookTracks;
-					isPlaylist = hookResponse.isPlaylist ?? hookTracks.length > 1;
-				} else if (typeof effectiveRequest.query === "string") {
-					const searchResult = await this.search(effectiveRequest.query, effectiveRequest.requestedBy || "Unknown");
-					tracksToAdd = searchResult.tracks;
-					if (searchResult.playlist) {
-						isPlaylist = true;
-						this.debug(`[Player] Added playlist: ${searchResult.playlist.name} (${tracksToAdd.length} tracks)`);
-					}
-				} else if (effectiveRequest.query) {
-					tracksToAdd = [effectiveRequest.query as Track];
-				}
-			}
-
-			if (tracksToAdd.length === 0) {
-				this.debug(`[Player] No tracks found for play`);
-				throw new Error("No tracks found");
-			}
-
-			const isTTS = (t: Track | undefined) => {
-				if (!t) return false;
-				try {
-					return typeof t.source === "string" && t.source.toLowerCase().includes("tts");
-				} catch {
-					return false;
-				}
-			};
-
-			const queryLooksTTS =
-				typeof effectiveRequest.query === "string" && effectiveRequest.query.trim().toLowerCase().startsWith("tts");
-
-			if (
-				!isPlaylist &&
-				tracksToAdd.length > 0 &&
-				this.options?.tts?.interrupt !== false &&
-				(isTTS(tracksToAdd[0]) || queryLooksTTS)
-			) {
-				this.debug(`[Player] Interrupting with TTS: ${tracksToAdd[0].title}`);
-				await this.interruptWithTTSTrack(tracksToAdd[0]);
-				await this.runAfterPlayHooks({
-					success: true,
-					query: effectiveRequest.query,
-					requestedBy: effectiveRequest.requestedBy,
-					tracks: tracksToAdd,
-					isPlaylist,
-				});
-				return true;
-			}
-
-			if (isPlaylist) {
-				this.queue.addMultiple(tracksToAdd);
-				this.emit("queueAddList", tracksToAdd);
-			} else {
-				this.queue.add(tracksToAdd[0]);
-				this.emit("queueAdd", tracksToAdd[0]);
-			}
-
-			const started = !this.isPlaying ? await this.playNext() : true;
-
-			await this.runAfterPlayHooks({
-				success: started,
-				query: effectiveRequest.query,
-				requestedBy: effectiveRequest.requestedBy,
-				tracks: tracksToAdd,
-				isPlaylist,
-			});
-
-			return started;
-		} catch (error) {
-			await this.runAfterPlayHooks({
-				success: false,
-				query: effectiveRequest.query,
-				requestedBy: effectiveRequest.requestedBy,
-				tracks: tracksToAdd,
-				isPlaylist,
-				error: error as Error,
-			});
-			this.debug(`[Player] Play error:`, error);
-			this.emit("playerError", error as Error);
-			return false;
-		}
-	}
-
-	/**
-	 * Interrupt current music with a TTS track. Pauses music, swaps the
-	 * subscription to a dedicated TTS player, plays TTS, then resumes.
-	 *
-	 * @param {Track} track - The track to interrupt with
-	 * @returns {Promise<void>}
-	 * @example
-	 * await player.interruptWithTTSTrack(track);
-	 */
-	public async interruptWithTTSTrack(track: Track): Promise<void> {
-		const wasPlaying =
-			this.audioPlayer.state.status === AudioPlayerStatus.Playing ||
-			this.audioPlayer.state.status === AudioPlayerStatus.Buffering;
-
-		try {
-			if (!this.connection) throw new Error("No voice connection for TTS");
-			const ttsPlayer = this.ensureTTSPlayer();
-
-			// Build resource from plugin stream
-			const streamInfo = await this.getStreamFromPlugin(track);
-			if (!streamInfo) {
-				throw new Error("No stream available for track: ${track.title}");
-			}
-			const resource = await this.Audioresource(streamInfo as StreamInfo, track);
-			if (!resource) {
-				throw new Error("No resource available for track: ${track.title}");
-			}
-			if (resource.volume) {
-				resource.volume.setVolume((this.options?.tts?.volume ?? this?.volume ?? 100) / 100);
-			}
-
-			// Pause current music if any
-			try {
-				this.pause();
-			} catch {}
-
-			// Swap subscription and play TTS
-			this.connection.subscribe(ttsPlayer);
-			this.emit("ttsStart", { track });
-			ttsPlayer.play(resource);
-
-			// Wait until TTS starts then finishes
-			await entersState(ttsPlayer, AudioPlayerStatus.Playing, 5_000).catch(() => null);
-			// Derive timeoutMs from resource/track duration when available, with a sensible cap
-			const md: any = (resource as any)?.metadata ?? {};
-			const declared =
-				typeof md.duration === "number" ? md.duration
-				: typeof track?.duration === "number" ? track.duration
-				: undefined;
-			const declaredMs =
-				declared ?
-					declared > 1000 ?
-						declared
-					:	declared * 1000
-				:	undefined;
-			const cap = this.options?.tts?.Max_Time_TTS ?? 60_000;
-			const idleTimeout = declaredMs ? Math.min(cap, Math.max(1_000, declaredMs + 1_500)) : cap;
-			await entersState(ttsPlayer, AudioPlayerStatus.Idle, idleTimeout).catch(() => null);
-
-			// Swap back and resume if needed
-			this.connection.subscribe(this.audioPlayer);
-		} catch (err) {
-			this.debug("[TTS] error while playing:", err);
-			this.emit("playerError", err as Error);
-		} finally {
-			if (wasPlaying) {
-				try {
-					this.resume();
-				} catch {}
-			}
-			this.emit("ttsEnd");
-		}
 	}
 
 	/**
@@ -1015,6 +374,301 @@ export class Player extends EventEmitter {
 			}
 		}
 	}
+	//#endregion
+	//#region Play
+
+	/**
+	 * Play a track, search query, search result, or play from queue
+	 *
+	 * @param {string | Track | SearchResult | null} query - Track URL, search query, Track object, SearchResult, or null for play
+	 * @param {string} requestedBy - User ID who requested the track
+	 * @returns {Promise<boolean>} True if playback started successfully
+	 * @example
+	 * await player.play("Never Gonna Give You Up", userId); // Search query
+	 * await player.play("https://youtube.com/watch?v=dQw4w9WgXcQ", userId); // Direct URL
+	 * await player.play("tts: Hello everyone!", userId); // Text-to-Speech
+	 * await player.play(trackObject, userId); // Track object
+	 * await player.play(searchResult, userId); // SearchResult object
+	 * await player.play(null); // play from queue
+	 */
+	async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
+		const debugInfo =
+			query === null
+				? "null"
+				: typeof query === "string"
+				? query
+				: "tracks" in query
+				? `${query.tracks.length} tracks`
+				: query.title || "unknown";
+		this.debug(`[Player] Play called with query: ${debugInfo}`);
+		this.clearLeaveTimeout();
+		let tracksToAdd: Track[] = [];
+		let isPlaylist = false;
+		let effectiveRequest: ExtensionPlayRequest = { query: query as string | Track, requestedBy };
+		let hookResponse: ExtensionPlayResponse = {};
+
+		try {
+			// Handle null query - play from queue
+			if (query === null) {
+				this.debug(`[Player] Play from queue requested`);
+				if (this.queue.isEmpty) {
+					this.debug(`[Player] Queue is empty, nothing to play`);
+					return false;
+				}
+
+				if (!this.isPlaying) {
+					return await this.playNext();
+				}
+				return true;
+			}
+
+			// Handle SearchResult
+			if (query && typeof query === "object" && "tracks" in query && Array.isArray(query.tracks)) {
+				this.debug(`[Player] Playing SearchResult with ${query.tracks.length} tracks`);
+				tracksToAdd = query.tracks;
+				isPlaylist = !!query.playlist || query.tracks.length > 1;
+
+				if (query.playlist) {
+					this.debug(`[Player] Added playlist: ${query.playlist.name} (${tracksToAdd.length} tracks)`);
+				}
+			} else {
+				// Handle other types (string, Track)
+				const hookOutcome = await this.extensionManager.BeforePlayHooks(effectiveRequest);
+				effectiveRequest = hookOutcome.request;
+				hookResponse = hookOutcome.response;
+				if (effectiveRequest.requestedBy === undefined) {
+					effectiveRequest.requestedBy = requestedBy;
+				}
+
+				const hookTracks = Array.isArray(hookResponse.tracks) ? hookResponse.tracks : undefined;
+
+				if (hookResponse.handled && (!hookTracks || hookTracks.length === 0)) {
+					const handledPayload: ExtensionAfterPlayPayload = {
+						success: hookResponse.success ?? true,
+						query: effectiveRequest.query,
+						requestedBy: effectiveRequest.requestedBy,
+						tracks: [],
+						isPlaylist: hookResponse.isPlaylist ?? false,
+						error: hookResponse.error,
+					};
+					await this.extensionManager.AfterPlayHooks(handledPayload);
+					if (hookResponse.error) {
+						this.emit("playerError", hookResponse.error);
+					}
+					return hookResponse.success ?? true;
+				}
+
+				if (hookTracks && hookTracks.length > 0) {
+					tracksToAdd = hookTracks;
+					isPlaylist = hookResponse.isPlaylist ?? hookTracks.length > 1;
+				} else if (typeof effectiveRequest.query === "string") {
+					const searchResult = await this.search(effectiveRequest.query, effectiveRequest.requestedBy || "Unknown");
+					tracksToAdd = searchResult.tracks;
+					if (searchResult.playlist) {
+						isPlaylist = true;
+						this.debug(`[Player] Added playlist: ${searchResult.playlist.name} (${tracksToAdd.length} tracks)`);
+					}
+				} else if (effectiveRequest.query) {
+					tracksToAdd = [effectiveRequest.query as Track];
+				}
+			}
+
+			if (tracksToAdd.length === 0) {
+				this.debug(`[Player] No tracks found for play`);
+				throw new Error("No tracks found");
+			}
+
+			const isTTS = (t: Track | undefined) => {
+				if (!t) return false;
+				try {
+					return typeof t.source === "string" && t.source.toLowerCase().includes("tts");
+				} catch {
+					return false;
+				}
+			};
+
+			const queryLooksTTS =
+				typeof effectiveRequest.query === "string" && effectiveRequest.query.trim().toLowerCase().startsWith("tts");
+
+			if (
+				!isPlaylist &&
+				tracksToAdd.length > 0 &&
+				this.options?.tts?.interrupt !== false &&
+				(isTTS(tracksToAdd[0]) || queryLooksTTS)
+			) {
+				this.debug(`[Player] Interrupting with TTS: ${tracksToAdd[0].title}`);
+				await this.interruptWithTTSTrack(tracksToAdd[0]);
+				await this.extensionManager.AfterPlayHooks({
+					success: true,
+					query: effectiveRequest.query,
+					requestedBy: effectiveRequest.requestedBy,
+					tracks: tracksToAdd,
+					isPlaylist,
+				});
+				return true;
+			}
+
+			if (isPlaylist) {
+				this.queue.addMultiple(tracksToAdd);
+				this.emit("queueAddList", tracksToAdd);
+			} else {
+				this.queue.add(tracksToAdd[0]);
+				this.emit("queueAdd", tracksToAdd[0]);
+			}
+
+			const started = !this.isPlaying ? await this.playNext() : true;
+
+			await this.extensionManager.AfterPlayHooks({
+				success: started,
+				query: effectiveRequest.query,
+				requestedBy: effectiveRequest.requestedBy,
+				tracks: tracksToAdd,
+				isPlaylist,
+			});
+
+			return started;
+		} catch (error) {
+			await this.extensionManager.AfterPlayHooks({
+				success: false,
+				query: effectiveRequest.query,
+				requestedBy: effectiveRequest.requestedBy,
+				tracks: tracksToAdd,
+				isPlaylist,
+				error: error as Error,
+			});
+			this.debug(`[Player] Play error:`, error);
+			this.emit("playerError", error as Error);
+			return false;
+		}
+	}
+
+	/**
+	 * Create AudioResource with filters and seek applied
+	 *
+	 * @param {StreamInfo} streamInfo - The stream information
+	 * @param {Track} track - The track being processed
+	 * @param {number} position - Position in milliseconds to seek to (0 = no seek)
+	 * @returns {Promise<AudioResource>} The AudioResource with filters and seek applied
+	 */
+	private async createResource(streamInfo: StreamInfo, track: Track, position: number = 0): Promise<AudioResource> {
+		const filterString = this.filter.getFilterString();
+
+		this.debug(`[Player] Creating AudioResource with filters: ${filterString || "none"}, seek: ${position}ms`);
+
+		try {
+			let stream: Readable = streamInfo.stream;
+			// Apply filters and seek if needed
+			if (filterString || position > 0) {
+				stream = await this.filter.applyFiltersAndSeek(streamInfo.stream, position);
+				streamInfo.type = StreamType.Arbitrary;
+			}
+
+			// Create AudioResource with better error handling
+			const resource = createAudioResource(stream, {
+				metadata: track,
+				inputType:
+					streamInfo.type === "webm/opus"
+						? StreamType.WebmOpus
+						: streamInfo.type === "ogg/opus"
+						? StreamType.OggOpus
+						: StreamType.Arbitrary,
+				inlineVolume: true,
+			});
+
+			return resource;
+		} catch (error) {
+			this.debug(`[Player] Error creating AudioResource with filters+seek:`, error);
+			// Fallback to basic AudioResource
+			try {
+				const resource = createAudioResource(streamInfo.stream, {
+					metadata: track,
+					inputType:
+						streamInfo.type === "webm/opus"
+							? StreamType.WebmOpus
+							: streamInfo.type === "ogg/opus"
+							? StreamType.OggOpus
+							: StreamType.Arbitrary,
+					inlineVolume: true,
+				});
+				return resource;
+			} catch (fallbackError) {
+				this.debug(`[Player] Fallback AudioResource creation failed:`, fallbackError);
+				throw fallbackError;
+			}
+		}
+	}
+	private async getStream(track: Track): Promise<StreamInfo | null> {
+		let stream = await this.extensionManager.provideStream(track);
+		if (stream?.stream) return stream;
+		stream = await this.pluginManager.getStream(track);
+		if (stream?.stream) return stream;
+		throw new Error(`No stream available for track: ${track.title}`);
+	}
+
+	/**
+	 * Start playing a specific track immediately, replacing the current resource.
+	 */
+	private async startTrack(track: Track): Promise<boolean> {
+		try {
+			let streamInfo: StreamInfo | null = await this.getStream(track);
+			this.debug(`[Player] Using stream for track: ${track.title}`);
+			// Kiểm tra nếu có stream thực sự để tạo AudioResource
+			if (streamInfo && (streamInfo as any).stream) {
+				try {
+					this.currentResource = await this.createResource(streamInfo, track, 0);
+					if (this.volumeInterval) {
+						clearInterval(this.volumeInterval);
+						this.volumeInterval = null;
+					}
+					this.currentResource.volume?.setVolume(this.volume / 100);
+
+					this.debug(`[Player] Playing resource for track: ${track.title}`);
+					this.audioPlayer.play(this.currentResource);
+
+					await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 5_000);
+					return true;
+				} catch (resourceError) {
+					this.debug(`[Player] Error creating/playing resource:`, resourceError);
+					// Try fallback without filters
+					try {
+						this.debug(`[Player] Attempting fallback without filters`);
+						const fallbackResource = createAudioResource(streamInfo.stream, {
+							metadata: track,
+							inputType:
+								streamInfo.type === "webm/opus"
+									? StreamType.WebmOpus
+									: streamInfo.type === "ogg/opus"
+									? StreamType.OggOpus
+									: StreamType.Arbitrary,
+							inlineVolume: true,
+						});
+
+						this.currentResource = fallbackResource;
+						this.currentResource.volume?.setVolume(this.volume / 100);
+						this.audioPlayer.play(this.currentResource);
+						await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 5_000);
+						return true;
+					} catch (fallbackError) {
+						this.debug(`[Player] Fallback also failed:`, fallbackError);
+						throw fallbackError;
+					}
+				}
+			} else if (streamInfo && !(streamInfo as any).stream) {
+				// Extension đang xử lý phát nhạc (như Lavalink) - chỉ đánh dấu đang phát
+				this.debug(`[Player] Extension is handling playback for track: ${track.title}`);
+				this.isPlaying = true;
+				this.isPaused = false;
+				this.emit("trackStart", track);
+				return true;
+			} else {
+				throw new Error(`No stream available for track: ${track.title}`);
+			}
+		} catch (error) {
+			this.debug(`[Player] startTrack error:`, error);
+			this.emit("playerError", error as Error, track);
+			return false;
+		}
+	}
 
 	private async playNext(): Promise<boolean> {
 		this.debug(`[Player] playNext called`);
@@ -1050,6 +704,133 @@ export class Player extends EventEmitter {
 			this.debug(`[Player] playNext error:`, error);
 			this.emit("playerError", error as Error, track);
 			return this.playNext();
+		}
+	}
+
+	//#endregion
+	//#region TTS
+
+	private ensureTTSPlayer(): DiscordAudioPlayer {
+		if (this.ttsPlayer) return this.ttsPlayer;
+		this.ttsPlayer = createAudioPlayer({
+			behaviors: {
+				noSubscriber: NoSubscriberBehavior.Pause,
+				maxMissedFrames: 100,
+			},
+		});
+		this.ttsPlayer.on("error", (e) => this.debug("[TTS] error:", e));
+		return this.ttsPlayer;
+	}
+	/**
+	 * Interrupt current music with a TTS track. Pauses music, swaps the
+	 * subscription to a dedicated TTS player, plays TTS, then resumes.
+	 *
+	 * @param {Track} track - The track to interrupt with
+	 * @returns {Promise<void>}
+	 * @example
+	 * await player.interruptWithTTSTrack(track);
+	 */
+	public async interruptWithTTSTrack(track: Track): Promise<void> {
+		const wasPlaying =
+			this.audioPlayer.state.status === AudioPlayerStatus.Playing ||
+			this.audioPlayer.state.status === AudioPlayerStatus.Buffering;
+
+		try {
+			if (!this.connection) throw new Error("No voice connection for TTS");
+			const ttsPlayer = this.ensureTTSPlayer();
+
+			// Build resource from plugin stream
+			const streamInfo = await this.pluginManager.getStream(track);
+			if (!streamInfo) {
+				throw new Error("No stream available for track: ${track.title}");
+			}
+			const resource = await this.createResource(streamInfo as StreamInfo, track);
+			if (!resource) {
+				throw new Error("No resource available for track: ${track.title}");
+			}
+			if (resource.volume) {
+				resource.volume.setVolume((this.options?.tts?.volume ?? this?.volume ?? 100) / 100);
+			}
+
+			// Pause current music if any
+			try {
+				this.pause();
+			} catch {}
+
+			// Swap subscription and play TTS
+			this.connection.subscribe(ttsPlayer);
+			this.emit("ttsStart", { track });
+			ttsPlayer.play(resource);
+
+			// Wait until TTS starts then finishes
+			await entersState(ttsPlayer, AudioPlayerStatus.Playing, 5_000).catch(() => null);
+			// Derive timeoutMs from resource/track duration when available, with a sensible cap
+			const md: any = (resource as any)?.metadata ?? {};
+			const declared =
+				typeof md.duration === "number" ? md.duration : typeof track?.duration === "number" ? track.duration : undefined;
+			const declaredMs = declared ? (declared > 1000 ? declared : declared * 1000) : undefined;
+			const cap = this.options?.tts?.Max_Time_TTS ?? 60_000;
+			const idleTimeout = declaredMs ? Math.min(cap, Math.max(1_000, declaredMs + 1_500)) : cap;
+			await entersState(ttsPlayer, AudioPlayerStatus.Idle, idleTimeout).catch(() => null);
+
+			// Swap back and resume if needed
+			this.connection.subscribe(this.audioPlayer);
+		} catch (err) {
+			this.debug("[TTS] error while playing:", err);
+			this.emit("playerError", err as Error);
+		} finally {
+			if (wasPlaying) {
+				try {
+					this.resume();
+				} catch {}
+			}
+			this.emit("ttsEnd");
+		}
+	}
+
+	//#endregion
+	//#region Player Function
+
+	/**
+	 * Connect to a voice channel
+	 *
+	 * @param {VoiceChannel} channel - Discord voice channel
+	 * @returns {Promise<VoiceConnection>} The voice connection
+	 * @example
+	 * await player.connect(voiceChannel);
+	 */
+	async connect(channel: VoiceChannel): Promise<VoiceConnection> {
+		try {
+			this.debug(`[Player] Connecting to voice channel: ${channel.id}`);
+			const connection = joinVoiceChannel({
+				channelId: channel.id,
+				guildId: channel.guildId,
+				adapterCreator: channel.guild.voiceAdapterCreator as any,
+				selfDeaf: this.options.selfDeaf ?? true,
+				selfMute: this.options.selfMute ?? false,
+			});
+
+			await entersState(connection, VoiceConnectionStatus.Ready, 50_000);
+			this.connection = connection;
+
+			connection.on(VoiceConnectionStatus.Disconnected, () => {
+				this.debug(`[Player] VoiceConnectionStatus.Disconnected`);
+				this.destroy();
+			});
+
+			connection.on("error", (error) => {
+				this.debug(`[Player] Voice connection error:`, error);
+				this.emit("connectionError", error);
+			});
+			connection.subscribe(this.audioPlayer);
+
+			this.clearLeaveTimeout();
+			return this.connection;
+		} catch (error) {
+			this.debug(`[Player] Connection error:`, error);
+			this.emit("connectionError", error as Error);
+			this.connection?.destroy();
+			throw error;
 		}
 	}
 
@@ -1109,6 +890,45 @@ export class Player extends EventEmitter {
 		this.isPaused = false;
 		this.emit("playerStop");
 		return result;
+	}
+
+	/**
+	 * Seek to a specific position in the current track
+	 *
+	 * @param {number} position - Position in milliseconds to seek to
+	 * @returns {Promise<boolean>} True if seek was successful
+	 * @example
+	 * // Seek to 30 seconds (30000ms)
+	 * const success = await player.seek(30000);
+	 * console.log(`Seek successful: ${success}`);
+	 *
+	 * // Seek to 1 minute 30 seconds (90000ms)
+	 * await player.seek(90000);
+	 */
+	async seek(position: number): Promise<boolean> {
+		this.debug(`[Player] seek called with position: ${position}ms`);
+
+		const track = this.queue.currentTrack;
+		if (!track) {
+			this.debug(`[Player] No current track to seek`);
+			return false;
+		}
+
+		const totalDuration = track.duration > 1000 ? track.duration : track.duration * 1000;
+		if (position < 0 || position > totalDuration) {
+			this.debug(`[Player] Invalid seek position: ${position}ms (track duration: ${totalDuration}ms)`);
+			return false;
+		}
+
+		const streaminfo = await this.getStream(track);
+		if (!streaminfo?.stream) {
+			this.debug(`[Player] No stream to seek`);
+			return false;
+		}
+
+		await this.refeshPlayerResource(true, position);
+
+		return true;
 	}
 
 	/**
@@ -1172,6 +992,78 @@ export class Player extends EventEmitter {
 		if (this.queue.currentTrack) this.insert(this.queue.currentTrack, 0);
 		this.clearLeaveTimeout();
 		return this.startTrack(track);
+	}
+
+	/**
+	 * Save a track's stream to a file and return a Readable stream
+	 *
+	 * @param {Track} track - The track to save
+	 * @param {SaveOptions | string} options - Save options or filename string (for backward compatibility)
+	 * @returns {Promise<Readable>} A Readable stream containing the audio data
+	 * @example
+	 * // Save current track to file
+	 * const track = player.currentTrack;
+	 * if (track) {
+	 *   const stream = await player.save(track);
+	 *
+	 *   // Use fs to write the stream to file
+	 *   const fs = require('fs');
+	 *   const writeStream = fs.createWriteStream('saved-song.mp3');
+	 *   stream.pipe(writeStream);
+	 *
+	 *   writeStream.on('finish', () => {
+	 *     console.log('File saved successfully!');
+	 *   });
+	 * }
+	 *
+	 * // Save any track by URL
+	 * const searchResult = await player.search("Never Gonna Give You Up", userId);
+	 * if (searchResult.tracks.length > 0) {
+	 *   const stream = await player.save(searchResult.tracks[0]);
+	 *   // Handle the stream...
+	 * }
+	 *
+	 * // Backward compatibility - filename as string
+	 * const stream = await player.save(track, "my-song.mp3");
+	 */
+	async save(track: Track, options?: SaveOptions | string): Promise<Readable> {
+		this.debug(`[Player] save called for track: ${track.title}`);
+
+		// Parse options - support both SaveOptions object and filename string (backward compatibility)
+		let saveOptions: SaveOptions = {};
+		if (typeof options === "string") {
+			saveOptions = { filename: options };
+		} else if (options) {
+			saveOptions = options;
+		}
+
+		try {
+			// Try extensions first
+			let streamInfo: StreamInfo | null = await this.pluginManager.getStream(track);
+
+			if (!streamInfo || !streamInfo.stream) {
+				throw new Error(`No save stream available for track: ${track.title}`);
+			}
+
+			this.debug(`[Player] Save stream obtained for track: ${track.title}`);
+			if (saveOptions.filename) {
+				this.debug(`[Player] Save options - filename: ${saveOptions.filename}, quality: ${saveOptions.quality || "default"}`);
+			}
+
+			// Apply filters if any are active
+			let finalStream = streamInfo.stream;
+			if (this.filter.getActiveFilters().length > 0) {
+				this.debug(`[Player] Applying filters to save stream: ${this.filter.getFilterString() || "none"}`);
+				finalStream = await this.filter.applyFiltersAndSeek(streamInfo.stream);
+			}
+
+			// Return the stream directly - caller can pipe it to fs.createWriteStream()
+			return finalStream;
+		} catch (error) {
+			this.debug(`[Player] save error:`, error);
+			this.emit("playerError", error as Error, track);
+			throw error;
+		}
 	}
 
 	/**
@@ -1432,20 +1324,6 @@ export class Player extends EventEmitter {
 		return parts.join(":");
 	}
 
-	private scheduleLeave(): void {
-		this.debug(`[Player] scheduleLeave called`);
-		if (this.leaveTimeout) {
-			clearTimeout(this.leaveTimeout);
-		}
-
-		if (this.options.leaveOnEmpty && this.options.leaveTimeout) {
-			this.leaveTimeout = setTimeout(() => {
-				this.debug(`[Player] Leaving voice channel after timeoutMs`);
-				this.destroy();
-			}, this.options.leaveTimeout);
-		}
-	}
-
 	/**
 	 * Destroy the player
 	 *
@@ -1476,18 +1354,212 @@ export class Player extends EventEmitter {
 
 		this.queue.clear();
 		this.pluginManager.clear();
-		for (const extension of [...this.extensions]) {
-			this.invokeExtensionLifecycle(extension, "onDestroy");
-			if (extension.player === this) {
-				extension.player = null;
-			}
-		}
-		this.extensions = [];
+		this.filter.destroy();
+		this.extensionManager.destroy();
 		this.isPlaying = false;
 		this.isPaused = false;
 		this.emit("playerDestroy");
 		this.removeAllListeners();
 	}
+
+	//#endregion
+	//#region utils
+	private scheduleLeave(): void {
+		this.debug(`[Player] scheduleLeave called`);
+		if (this.leaveTimeout) {
+			clearTimeout(this.leaveTimeout);
+		}
+
+		if (this.options.leaveOnEmpty && this.options.leaveTimeout) {
+			this.leaveTimeout = setTimeout(() => {
+				this.debug(`[Player] Leaving voice channel after timeoutMs`);
+				this.destroy();
+			}, this.options.leaveTimeout);
+		}
+	}
+
+	/**
+	 * Refesh player resource (apply filter)
+	 *
+	 * @param {boolean} applyToCurrent - Apply filter for curent track
+	 * @param {number} position - Position to seek to in milliseconds
+	 * @returns {Promise<boolean>}
+	 * @example
+	 * const refreshed = await player.refeshPlayerResource(true, 1000);
+	 * console.log(`Refreshed: ${refreshed}`);
+	 */
+	public async refeshPlayerResource(applyToCurrent: boolean = true, position: number = -1): Promise<boolean> {
+		if (!applyToCurrent || !this.queue.currentTrack || !(this.isPlaying || this.isPaused)) {
+			return false;
+		}
+
+		try {
+			const track = this.queue.currentTrack;
+			this.debug(`[Player] Refreshing player resource for track: ${track.title}`);
+
+			// Get current position for seeking
+			const currentPosition = position > 0 ? position : this.currentResource?.playbackDuration || 0;
+
+			const streaminfo = await this.getStream(track);
+			if (!streaminfo?.stream) {
+				this.debug(`[Player] No stream to refresh`);
+				return false;
+			}
+
+			// Create AudioResource with filters and seek to current position
+			const resource = await this.createResource(streaminfo, track, currentPosition);
+
+			// Stop current playback and start new one
+			const wasPlaying = this.isPlaying;
+			const wasPaused = this.isPaused;
+
+			this.audioPlayer.stop();
+			this.currentResource = resource;
+
+			// Subscribe to new resource
+			if (this.connection) {
+				this.connection.subscribe(this.audioPlayer);
+				this.audioPlayer.play(resource);
+			}
+
+			// Restore playing state
+			if (wasPlaying && !wasPaused) {
+				this.isPlaying = true;
+				this.isPaused = false;
+			} else if (wasPaused) {
+				this.isPlaying = false;
+				this.isPaused = true;
+				this.audioPlayer.pause();
+			}
+
+			this.debug(`[Player] Successfully applied filter to current track at position ${currentPosition}ms`);
+			return true;
+		} catch (error) {
+			this.debug(`[Player] Error applying filter to current track:`, error);
+			// Filter was still added to active filters, so return true
+			return true;
+		}
+	}
+
+	/**
+	 * Attach an extension to the player
+	 *
+	 * @param {BaseExtension} extension - The extension to attach
+	 * @example
+	 * player.attachExtension(new MyExtension());
+	 */
+	public attachExtension(extension: BaseExtension): void {
+		this.extensionManager.register(extension);
+	}
+
+	/**
+	 * Detach an extension from the player
+	 *
+	 * @param {BaseExtension} extension - The extension to detach
+	 * @example
+	 * player.detachExtension(new MyExtension());
+	 */
+	public detachExtension(extension: BaseExtension): void {
+		this.extensionManager.unregister(extension);
+	}
+
+	/**
+	 * Get all extensions attached to the player
+	 *
+	 * @returns {readonly BaseExtension[]} All attached extensions
+	 * @example
+	 * const extensions = player.getExtensions();
+	 * console.log(`Extensions: ${extensions.length}`);
+	 */
+	public getExtensions(): readonly BaseExtension[] {
+		return this.extensionManager.getAll();
+	}
+
+	private clearLeaveTimeout(): void {
+		if (this.leaveTimeout) {
+			clearTimeout(this.leaveTimeout);
+			this.leaveTimeout = null;
+			this.debug(`[Player] Cleared leave timeoutMs`);
+		}
+	}
+
+	private debug(message?: any, ...optionalParams: any[]): void {
+		if (this.listenerCount("debug") > 0) {
+			this.emit("debug", message, ...optionalParams);
+		}
+	}
+
+	private setupEventListeners(): void {
+		this.audioPlayer.on("stateChange", (oldState, newState) => {
+			this.debug(`[Player] AudioPlayer stateChange from ${oldState.status} to ${newState.status}`);
+			if (newState.status === AudioPlayerStatus.Idle && oldState.status !== AudioPlayerStatus.Idle) {
+				// Track ended
+				const track = this.queue.currentTrack;
+				if (track) {
+					this.debug(`[Player] Track ended: ${track.title}`);
+					this.emit("trackEnd", track);
+				}
+				this.playNext();
+			} else if (
+				newState.status === AudioPlayerStatus.Playing &&
+				(oldState.status === AudioPlayerStatus.Idle || oldState.status === AudioPlayerStatus.Buffering)
+			) {
+				// Track started
+				this.clearLeaveTimeout();
+				this.isPlaying = true;
+				this.isPaused = false;
+				const track = this.queue.currentTrack;
+				if (track) {
+					this.debug(`[Player] Track started: ${track.title}`);
+					this.emit("trackStart", track);
+				}
+			} else if (newState.status === AudioPlayerStatus.Paused && oldState.status !== AudioPlayerStatus.Paused) {
+				// Track paused
+				this.isPaused = true;
+				const track = this.queue.currentTrack;
+				if (track) {
+					this.debug(`[Player] Player paused on track: ${track.title}`);
+					this.emit("playerPause", track);
+				}
+			} else if (newState.status !== AudioPlayerStatus.Paused && oldState.status === AudioPlayerStatus.Paused) {
+				// Track resumed
+				this.isPaused = false;
+				const track = this.queue.currentTrack;
+				if (track) {
+					this.debug(`[Player] Player resumed on track: ${track.title}`);
+					this.emit("playerResume", track);
+				}
+			} else if (newState.status === AudioPlayerStatus.AutoPaused) {
+				this.debug(`[Player] AudioPlayerStatus.AutoPaused`);
+			} else if (newState.status === AudioPlayerStatus.Buffering) {
+				this.debug(`[Player] AudioPlayerStatus.Buffering`);
+			}
+		});
+		this.audioPlayer.on("error", (error) => {
+			this.debug(`[Player] AudioPlayer error:`, error);
+			this.emit("playerError", error, this.queue.currentTrack || undefined);
+			this.playNext();
+		});
+
+		this.audioPlayer.on("debug", (...args) => {
+			if (this.manager.debugEnabled) {
+				this.emit("debug", ...args);
+			}
+		});
+	}
+
+	addPlugin(plugin: SourcePlugin): void {
+		this.debug(`[Player] Adding plugin: ${plugin.name}`);
+		this.pluginManager.register(plugin);
+	}
+
+	removePlugin(name: string): boolean {
+		this.debug(`[Player] Removing plugin: ${name}`);
+		return this.pluginManager.unregister(name);
+	}
+
+	//#endregion
+	//#region Getters
 
 	/**
 	 * Get the size of the queue
@@ -1573,121 +1645,5 @@ export class Player extends EventEmitter {
 		return this.queue.relatedTracks();
 	}
 
-	/**
-	 * Save a track's stream to a file and return a Readable stream
-	 *
-	 * @param {Track} track - The track to save
-	 * @param {SaveOptions | string} options - Save options or filename string (for backward compatibility)
-	 * @returns {Promise<Readable>} A Readable stream containing the audio data
-	 * @example
-	 * // Save current track to file
-	 * const track = player.currentTrack;
-	 * if (track) {
-	 *   const stream = await player.save(track);
-	 *
-	 *   // Use fs to write the stream to file
-	 *   const fs = require('fs');
-	 *   const writeStream = fs.createWriteStream('saved-song.mp3');
-	 *   stream.pipe(writeStream);
-	 *
-	 *   writeStream.on('finish', () => {
-	 *     console.log('File saved successfully!');
-	 *   });
-	 * }
-	 *
-	 * // Save any track by URL
-	 * const searchResult = await player.search("Never Gonna Give You Up", userId);
-	 * if (searchResult.tracks.length > 0) {
-	 *   const stream = await player.save(searchResult.tracks[0]);
-	 *   // Handle the stream...
-	 * }
-	 *
-	 * // Backward compatibility - filename as string
-	 * const stream = await player.save(track, "my-song.mp3");
-	 */
-	async save(track: Track, options?: SaveOptions | string): Promise<Readable> {
-		this.debug(`[Player] save called for track: ${track.title}`);
-
-		// Parse options - support both SaveOptions object and filename string (backward compatibility)
-		let saveOptions: SaveOptions = {};
-		if (typeof options === "string") {
-			saveOptions = { filename: options };
-		} else if (options) {
-			saveOptions = options;
-		}
-
-		// Use timeout from options or fallback to player's extractorTimeout
-		const timeout = saveOptions.timeout ?? this.options.extractorTimeout ?? 15000;
-
-		try {
-			// Try extensions first
-			let streamInfo: StreamInfo | null = await this.extensionsProvideStream(track);
-			let plugin: SourcePlugin | undefined;
-
-			if (!streamInfo) {
-				plugin = this.pluginManager.findPlugin(track.url) || this.pluginManager.get(track.source);
-
-				if (!plugin) {
-					this.debug(`[Player] No plugin found for track: ${track.title}`);
-					throw new Error(`No plugin found for track: ${track.title}`);
-				}
-
-				this.debug(`[Player] Getting save stream for track: ${track.title}`);
-				this.debug(`[Player] Using save plugin: ${plugin.name}`);
-
-				try {
-					streamInfo = await withTimeout(plugin.getStream(track), timeout, "getSaveStream timed out");
-				} catch (streamError) {
-					this.debug(`[Player] getSaveStream failed, trying getFallback:`, streamError);
-					const allplugs = this.pluginManager.getAll();
-					for (const p of allplugs) {
-						if (typeof (p as any).getFallback !== "function" && typeof (p as any).getStream !== "function") {
-							continue;
-						}
-						try {
-							streamInfo = await withTimeout(
-								(p as any).getStream(track),
-								timeout,
-								`getSaveStream timed out for plugin ${p.name}`,
-							);
-							if ((streamInfo as any)?.stream) {
-								this.debug(`[Player] getSaveStream succeeded with plugin ${p.name} for track: ${track.title}`);
-								break;
-							}
-							streamInfo = await withTimeout(
-								(p as any).getFallback(track),
-								timeout,
-								`getSaveFallback timed out for plugin ${p.name}`,
-							);
-							if (!(streamInfo as any)?.stream) continue;
-							break;
-						} catch (fallbackError) {
-							this.debug(`[Player] getSaveFallback failed with plugin ${p.name}:`, fallbackError);
-						}
-					}
-					if (!(streamInfo as any)?.stream) {
-						throw new Error(`All getSaveFallback attempts failed for track: ${track.title}`);
-					}
-				}
-			} else {
-				this.debug(`[Player] Using extension-provided save stream for track: ${track.title}`);
-			}
-
-			if (!streamInfo || !streamInfo.stream) {
-				throw new Error(`No save stream available for track: ${track.title}`);
-			}
-
-			this.debug(`[Player] Save stream obtained for track: ${track.title}`);
-			if (saveOptions.filename) {
-				this.debug(`[Player] Save options - filename: ${saveOptions.filename}, quality: ${saveOptions.quality || "default"}`);
-			}
-
-			// Return the stream directly - caller can pipe it to fs.createWriteStream()
-			return streamInfo.stream;
-		} catch (error) {
-			this.debug(`[Player] save error:`, error);
-			this.emit("playerError", error as Error, track);
-			throw error;
-		}
-	}
+	//#endregion
 }
