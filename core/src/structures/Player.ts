@@ -335,13 +335,21 @@ export class Player extends EventEmitter {
 		};
 	}
 
-	private async generateWillNext(): Promise<void> {
-		const lastTrack = this.queue.previousTracks[this.queue.previousTracks.length - 1] ?? this.queue.currentTrack;
-		if (!lastTrack) return;
+	/**
+	 * Get related tracks for a given track
+	 * @param {Track} track Track to find related tracks for
+	 * @returns {Track[]} Related tracks or empty array
+	 * @example
+	 * const related = await player.getRelatedTracks(track);
+	 * console.log(`Found ${related.length} related tracks`);
+	 */
+	async getRelatedTracks(track: Track): Promise<Track[]> {
+		if (!track) return [];
 
-		// Build list of candidate plugins: preferred first, then others with getRelatedTracks
-		const preferred = this.pluginManager.findPlugin(lastTrack.url) || this.pluginManager.get(lastTrack.source);
+		const preferred = this.pluginManager.findPlugin(track.url) || this.pluginManager.get(track.source);
+
 		const all = this.pluginManager.getAll();
+
 		const candidates = [...(preferred ? [preferred] : []), ...all.filter((p) => p !== preferred)].filter(
 			(p) => typeof (p as any).getRelatedTracks === "function",
 		);
@@ -350,7 +358,7 @@ export class Player extends EventEmitter {
 			try {
 				this.debug(`[Player] Trying related from plugin: ${p.name}`);
 				const related = await withTimeout(
-					(p as any).getRelatedTracks(lastTrack.url, {
+					(p as any).getRelatedTracks(track.url, {
 						limit: 10,
 						history: this.queue.previousTracks,
 					}),
@@ -359,20 +367,29 @@ export class Player extends EventEmitter {
 				);
 
 				if (Array.isArray(related) && related.length > 0) {
-					const randomchoice = Math.floor(Math.random() * related.length);
-					const nextTrack = this.queue.nextTrack ? this.queue.nextTrack : related[randomchoice];
-					this.queue.willNextTrack(nextTrack);
-					this.queue.relatedTracks(related);
-					this.debug(`[Player] Will next track if autoplay: ${nextTrack?.title} (via ${p.name})`);
-					this.emit("willPlay", nextTrack, related);
-					return; // success
+					return related; // success
 				}
 				this.debug(`[Player] ${p.name} returned no related tracks`);
 			} catch (err) {
 				this.debug(`[Player] getRelatedTracks error from ${p.name}:`, err);
+				return [];
 				// try next candidate
 			}
 		}
+		return [];
+	}
+
+	private async generateWillNext(): Promise<void> {
+		const lastTrack = this.queue.previousTracks[this.queue.previousTracks.length - 1] ?? this.queue.currentTrack;
+		if (!lastTrack) return;
+		const related = await this.getRelatedTracks(lastTrack);
+		if (!related || related.length === 0) return;
+		const randomchoice = Math.floor(Math.random() * related.length);
+		const nextTrack = this.queue.nextTrack ? this.queue.nextTrack : related[randomchoice];
+		this.queue.willNextTrack(nextTrack);
+		this.queue.relatedTracks(related);
+		this.debug(`[Player] Will next track if autoplay: ${nextTrack?.title}]`);
+		this.emit("willPlay", nextTrack, related);
 	}
 	//#endregion
 	//#region Play
