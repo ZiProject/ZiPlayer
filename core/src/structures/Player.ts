@@ -13,7 +13,6 @@ import {
 	StreamType,
 } from "@discordjs/voice";
 
-import { VoiceChannel } from "discord.js";
 import { Readable } from "stream";
 import type { BaseExtension } from "../extensions";
 import type {
@@ -26,6 +25,7 @@ import type {
 	LoopMode,
 	StreamInfo,
 	SaveOptions,
+	VoiceChannel,
 	ExtensionPlayRequest,
 	ExtensionPlayResponse,
 	ExtensionAfterPlayPayload,
@@ -1050,9 +1050,20 @@ export class Player extends EventEmitter {
 
 			// Apply filters if any are active
 			let finalStream = streamInfo.stream;
-			if (this.filter.getActiveFilters().length > 0) {
+
+			if (saveOptions.filter || saveOptions.seek) {
+				try {
+					this.filter.clearAll();
+					this.filter.applyFilters(saveOptions.filter || []);
+				} catch (err) {
+					this.debug(`[Player] Error applying save filters:`, err);
+				}
+
 				this.debug(`[Player] Applying filters to save stream: ${this.filter.getFilterString() || "none"}`);
-				finalStream = await this.filter.applyFiltersAndSeek(streamInfo.stream);
+				finalStream = await this.filter.applyFiltersAndSeek(streamInfo.stream, saveOptions.seek || 0).catch((err) => {
+					this.debug(`[Player] Error applying filters to save stream:`, err);
+					return streamInfo!.stream; // Fallback to original stream
+				});
 			}
 
 			// Return the stream directly - caller can pipe it to fs.createWriteStream()
