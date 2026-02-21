@@ -311,6 +311,7 @@ export class YouTubePlugin extends BasePlugin {
 			return { tracks: [track] };
 		}
 
+	if(this.canHandle(query) === false) return { tracks: [] };
 		// Text search → return up to 10 video tracks
 		const res: any = await this.searchClient.search(query, {
 			type: "video" as any,
