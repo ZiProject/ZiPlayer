@@ -38,8 +38,30 @@ export function webStreamToNodeStream(webStream: ReadableStream): Readable {
 	return nodeStream;
 }
 
+function extractVideoId(input: string): string | null {
+	try {
+		const u = new URL(input);
+		const allowedShortHosts = ["youtu.be"];
+		const allowedLongHosts = ["youtube.com", "www.youtube.com", "music.youtube.com", "m.youtube.com"];
+		if (allowedShortHosts.includes(u.hostname)) {
+			return u.pathname.split("/").filter(Boolean)[0] || null;
+		}
+		if (allowedLongHosts.includes(u.hostname)) {
+			// watch?v=, shorts/, embed/
+			if (u.searchParams.get("v")) return u.searchParams.get("v");
+			const path = u.pathname;
+			if (path.startsWith("/shorts/")) return path.replace("/shorts/", "");
+			if (path.startsWith("/embed/")) return path.replace("/embed/", "");
+		}
+		return null;
+	} catch {
+		return null;
+	}
+}
+
 async function getYoutubeStream(url: string): Promise<string | null> {
-	const info = await youtubedl(url, {
+	const URL = "https://youtu.be/" + extractVideoId(url);
+	const info = await youtubedl(URL, {
 		dumpSingleJson: true,
 		noCheckCertificates: true,
 		noWarnings: true,
