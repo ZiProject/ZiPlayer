@@ -86,23 +86,6 @@ export * from "./SpotifyPlugin";
 export * from "./TTSPlugin";
 
 /**
- * YTSR plugin for advanced YouTube search without streaming.
- *
- * Provides comprehensive YouTube search functionality including:
- * - Advanced video search with filters (duration, upload date, sort by)
- * - Playlist and channel search
- * - Multiple search types (video, playlist, channel, all)
- * - Metadata extraction without streaming
- * - Support for YouTube URLs
- *
- * @example
- * const ytsrPlugin = new YTSRPlugin();
- * const result = await ytsrPlugin.search("Never Gonna Give You Up", "user123");
- * const playlistResult = await ytsrPlugin.searchPlaylist("chill music", "user123");
- */
-export * from "./YTSRPlugin";
-
-/**
  * Attachments plugin for handling Discord attachment URLs and audio files.
  *
  * Provides comprehensive support for attachment content including:

@@ -1,6 +1,6 @@
 {
 	"name": "@ziplayer/plugin",
-	"version": "0.1.52",
+	"version": "0.2.1",
 	"description": "A modular Discord voice player with plugin system",
 	"keywords": [
 		"ZiPlayer",
@@ -31,14 +31,15 @@
 		"@zibot/scdl": "^0.0.6",
 		"@zibot/zitts": "^0.0.3",
 		"axios": "^1.13.2",
-		"cli-progress": "^3.12.0",
-		"googlevideo": "^1.0.0",
+		"bgutils-js": "^3.2.0",
+		"googlevideo": "^4.0.4",
+		"jsdom": "^28.1.0",
 		"music-metadata": "^11.9.0",
-		"youtube-sr": "^4.3.4",
 		"youtubei.js": "^16.0.1",
-		"ziplayer": "^0.2.1"
+		"ziplayer": "^0.2.3"
 	},
 	"devDependencies": {
+		"@types/jsdom": "^27.0.0",
 		"@types/node": "^20.0.0",
 		"typescript": "^5.0.0"
 	}
