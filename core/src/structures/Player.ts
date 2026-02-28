@@ -160,6 +160,25 @@ export class Player extends EventEmitter {
 		}
 	}
 
+	/**
+	 * Destroy current stream to prevent memory leaks
+	 * @private
+	 */
+	private destroyCurrentStream(): void {
+		try {
+			// Get the metadata from current resource to find the stream
+			if (this.currentResource) {
+				const stream = (this.currentResource as any)?.metadata?.stream || (this.currentResource as any)?.stream;
+				if (stream && typeof stream.destroy === "function") {
+					stream.destroy();
+					this.debug(`[Player] Destroyed current stream`);
+				}
+			}
+		} catch (error) {
+			this.debug(`[Player] Error destroying current stream:`, error);
+		}
+	}
+
 	//#region Search
 
 	/**
@@ -625,6 +644,18 @@ export class Player extends EventEmitter {
 			// Kiểm tra nếu có stream thực sự để tạo AudioResource
 			if (streamInfo && (streamInfo as any).stream) {
 				try {
+					// Destroy the old stream and resource before creating a new one
+					this.destroyCurrentStream();
+					if (this.currentResource) {
+						try {
+							const oldStream = (this.currentResource as any)._readableState?.stream || (this.currentResource as any).stream;
+							if (oldStream && typeof oldStream.destroy === "function") {
+								oldStream.destroy();
+							}
+						} catch {}
+						this.currentResource = null;
+					}
+
 					this.currentResource = await this.createResource(streamInfo, track, 0);
 					if (this.volumeInterval) {
 						clearInterval(this.volumeInterval);
@@ -743,6 +774,9 @@ export class Player extends EventEmitter {
 			this.audioPlayer.state.status === AudioPlayerStatus.Playing ||
 			this.audioPlayer.state.status === AudioPlayerStatus.Buffering;
 
+		let ttsResource: AudioResource | null = null;
+		let ttsStream: any = null;
+
 		try {
 			if (!this.connection) throw new Error("No voice connection for TTS");
 			const ttsPlayer = this.ensureTTSPlayer();
@@ -752,10 +786,12 @@ export class Player extends EventEmitter {
 			if (!streamInfo) {
 				throw new Error("No stream available for track: ${track.title}");
 			}
+			ttsStream = streamInfo.stream;
 			const resource = await this.createResource(streamInfo as StreamInfo, track);
 			if (!resource) {
 				throw new Error("No resource available for track: ${track.title}");
 			}
+			ttsResource = resource;
 			if (resource.volume) {
 				resource.volume.setVolume((this.options?.tts?.volume ?? this?.volume ?? 100) / 100);
 			}
@@ -794,6 +830,15 @@ export class Player extends EventEmitter {
 			this.debug("[TTS] error while playing:", err);
 			this.emit("playerError", err as Error);
 		} finally {
+			// Clean up TTS stream and resource
+			try {
+				if (ttsStream && typeof ttsStream.destroy === "function") {
+					ttsStream.destroy();
+				}
+			} catch (error) {
+				this.debug("[TTS] Error destroying stream:", error);
+			}
+
 			if (wasPlaying) {
 				try {
 					this.resume();
@@ -1364,6 +1409,9 @@ export class Player extends EventEmitter {
 			this.leaveTimeout = null;
 		}
 
+		// Destroy current stream before stopping audio
+		this.destroyCurrentStream();
+
 		this.audioPlayer.stop(true);
 
 		if (this.ttsPlayer) {
@@ -1384,6 +1432,13 @@ export class Player extends EventEmitter {
 		this.extensionManager.destroy();
 		this.isPlaying = false;
 		this.isPaused = false;
+
+		// Clear any remaining intervals
+		if (this.volumeInterval) {
+			clearInterval(this.volumeInterval);
+			this.volumeInterval = null;
+		}
+
 		this.emit("playerDestroy");
 		this.removeAllListeners();
 	}
@@ -1435,11 +1490,24 @@ export class Player extends EventEmitter {
 			// Create AudioResource with filters and seek to current position
 			const resource = await this.createResource(streaminfo, track, currentPosition);
 
-			// Stop current playback and start new one
+			// Stop current playback and destroy old resource/stream
 			const wasPlaying = this.isPlaying;
 			const wasPaused = this.isPaused;
 
 			this.audioPlayer.stop();
+
+			// Properly destroy the old resource and stream
+			try {
+				if (this.currentResource) {
+					const oldStream = (this.currentResource as any)._readableState?.stream || (this.currentResource as any).stream;
+					if (oldStream && typeof oldStream.destroy === "function") {
+						oldStream.destroy();
+					}
+				}
+			} catch (error) {
+				this.debug(`[Player] Error destroying old stream in refeshPlayerResource:`, error);
+			}
+
 			this.currentResource = resource;
 
 			// Subscribe to new resource

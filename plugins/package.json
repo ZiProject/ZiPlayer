@@ -1,6 +1,6 @@
 {
 	"name": "@ziplayer/plugin",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"description": "A modular Discord voice player with plugin system",
 	"keywords": [
 		"ZiPlayer",

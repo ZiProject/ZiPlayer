@@ -12,6 +12,7 @@ export class FilterManager {
 	private debug: DebugFn;
 	private player: Player;
 	private ffmpeg: FFmpeg | null = null;
+	private currentInputStream: Readable | null = null;
 	public StreamType: "webm/opus" | "ogg/opus" | "mp3" | "arbitrary" = "mp3";
 
 	constructor(player: Player, manager: PlayerManager) {
@@ -33,12 +34,22 @@ export class FilterManager {
 	 */
 	destroy(): void {
 		this.activeFilters = [];
+
+		// Destroy FFmpeg process
 		if (this.ffmpeg) {
 			try {
 				this.ffmpeg.destroy();
 			} catch {}
 			this.ffmpeg = null;
 		}
+
+		// Destroy input stream
+		if (this.currentInputStream && typeof (this.currentInputStream as any).destroy === "function") {
+			try {
+				(this.currentInputStream as any).destroy();
+			} catch {}
+		}
+		this.currentInputStream = null;
 	}
 
 	/**
@@ -234,32 +245,57 @@ export class FilterManager {
 			try {
 				if (this.ffmpeg) {
 					this.ffmpeg.destroy();
+					this.ffmpeg = null;
 				}
-				this.ffmpeg = null;
+				// Destroy previous input stream
+				if (this.currentInputStream && typeof (this.currentInputStream as any).destroy === "function") {
+					try {
+						(this.currentInputStream as any).destroy();
+					} catch {}
+				}
+				this.currentInputStream = null;
 			} catch {}
+
+			// Store reference to input stream
+			this.currentInputStream = stream;
 
 			this.ffmpeg = stream.pipe(new prism.FFmpeg({ args }));
 
 			this.ffmpeg.on("close", () => {
 				this.debug(`[FilterManager] FFmpeg filter+seek processing completed`);
-				if (this.ffmpeg) {
-					this.ffmpeg.destroy();
-					this.ffmpeg = null;
-				}
+				try {
+					if (this.ffmpeg) {
+						this.ffmpeg.destroy();
+						this.ffmpeg = null;
+					}
+				} catch {}
 			});
 
 			this.ffmpeg.on("error", (err: Error) => {
 				this.debug(`[FilterManager] FFmpeg filter+seek error:`, err);
-				if (this.ffmpeg) {
-					this.ffmpeg.destroy();
-				}
-				if (this.ffmpeg) {
-					this.ffmpeg = null;
-				}
+				try {
+					if (this.ffmpeg) {
+						this.ffmpeg.destroy();
+						this.ffmpeg = null;
+					}
+					// Also destroy input stream on error
+					if (this.currentInputStream && typeof (this.currentInputStream as any).destroy === "function") {
+						(this.currentInputStream as any).destroy();
+					}
+				} catch {}
+				this.currentInputStream = null;
 			});
+
 			return this.ffmpeg;
 		} catch (error) {
 			this.debug(`[FilterManager] Error creating FFmpeg instance:`, error);
+			// Destroy input stream if FFmpeg fails
+			if (this.currentInputStream && typeof (this.currentInputStream as any).destroy === "function") {
+				try {
+					(this.currentInputStream as any).destroy();
+				} catch {}
+			}
+			this.currentInputStream = null;
 			// Fallback to original stream if FFmpeg fails
 			throw error;
 		}

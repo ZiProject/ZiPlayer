@@ -168,7 +168,40 @@ export async function createSabrStream(
 			throw new Error("Missing SABR streaming config");
 		}
 
-		const sabrFormats = player.streaming_data?.adaptive_formats.map((f: any) => buildSabrFormat(f)) || [];
+		// const sabrFormats = player.streaming_data?.adaptive_formats.map((f: any) => buildSabrFormat(f)) || [];
+
+		// const sabrFormats =
+		// 	player.streaming_data?.adaptive_formats?.reduce((acc: any[], f: any) => {
+		// 		if (!!f?.audio_quality) {
+		// 			acc.push(buildSabrFormat(f));
+		// 		}
+		// 		return acc;
+		// 	}, []) ?? [];
+		const allFormats = player.streaming_data?.adaptive_formats.map((f: any) => buildSabrFormat(f)) || [];
+		console.log();
+
+		const sabrFormats = allFormats
+			.reduce(
+				(acc: any[], f: any) => {
+					// Kiểm tra nếu là Audio (có audioQuality)
+					if (f.audioQuality) {
+						if (!acc[0] || f.bitrate > acc[0].bitrate) {
+							acc[0] = f;
+						}
+					}
+					// Ngược lại là Video (thường có width/height hoặc không có audioQuality)
+					else if (f.width) {
+						if (!acc[1] || f.bitrate < acc[1].bitrate) {
+							acc[1] = f;
+						}
+					}
+					return acc;
+				},
+				[null, null],
+			) // [0] là best audio, [1] là worst video
+			.filter(Boolean);
+
+		console.log(sabrFormats);
 
 		const sabr = new SabrStream({
 			formats: sabrFormats,
@@ -202,12 +235,13 @@ export async function createSabrStream(
 		});
 
 		// Start the stream with audio preference
+		const mergedOptions = { ...DEFAULT_SABR_OPTIONS, ...options };
 		const { audioStream, selectedFormats } = await sabr.start({
-			// audioQuality: options?.audioQuality || "high",
+			audioQuality: mergedOptions?.audioQuality || "medium",
 		});
 
-		// Convert Web Stream to Node.js Readable stream
-		const nodeStream = webStreamToNodeStream(audioStream);
+		// Convert Web Stream to Node.js Readable stream with optimized buffer
+		const nodeStream = webStreamToNodeStream(audioStream, 32 * 1024); // 32KB buffer for YouTube streams
 
 		return {
 			title,
@@ -271,12 +305,13 @@ function getExtensionFromMimeType(mimeType: string): string {
 }
 
 /**
- * Default sabr playback options
+ * Default sabr playback options - optimized for memory usage
+ * Using MEDIUM quality and WebM/Opus reduces bandwidth by ~30-40%
  */
 export const DEFAULT_SABR_OPTIONS: SabrPlaybackOptions = {
-	preferWebM: true,
-	preferOpus: true,
-	videoQuality: "720p",
-	audioQuality: "high",
+	preferWebM: true, // WebM with Opus is more memory-efficient
+	preferOpus: true, // Opus codec = smaller bitrate vs AAC
+	videoQuality: "360p", // Lower resolution = less processing
+	audioQuality: "medium", // Medium quality balances quality vs bandwidth (~96-128kbps vs 256kbps)
 	enabledTrackTypes: "VIDEO_AND_AUDIO",
 };

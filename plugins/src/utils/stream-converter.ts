@@ -1,36 +1,21 @@
 import { Readable } from "stream";
 
-/**
- * Converts a Web ReadableStream to a Node.js Readable stream
- */
-export function webStreamToNodeStream(webStream: ReadableStream): Readable {
-	const nodeStream = new Readable({
-		read() {
-			// This will be handled by the Web Stream reader
-		},
-	});
-
-	// Create a reader from the Web Stream
+export function webStreamToNodeStream(webStream: ReadableStream, highWaterMark: number = 64 * 1024): Readable {
 	const reader = webStream.getReader();
 
-	// Read chunks and push to Node.js stream
-	const pump = async () => {
-		try {
-			while (true) {
+	return new Readable({
+		highWaterMark: highWaterMark ?? 64 * 1024,
+		async read() {
+			try {
 				const { done, value } = await reader.read();
 				if (done) {
-					nodeStream.push(null); // End the stream
-					break;
+					this.push(null);
+				} else {
+					this.push(value);
 				}
-				nodeStream.push(Buffer.from(value));
+			} catch (err) {
+				this.destroy(err as Error);
 			}
-		} catch (error) {
-			nodeStream.destroy(error as Error);
-		}
-	};
-
-	// Start pumping data
-	pump();
-
-	return nodeStream;
+		},
+	});
 }

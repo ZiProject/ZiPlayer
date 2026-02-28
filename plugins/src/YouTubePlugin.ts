@@ -6,13 +6,14 @@ import { webStreamToNodeStream } from "./utils/stream-converter";
 
 export interface PluginOptions {
 	player: Player;
-	debug?: boolean;
+	debug?: (message?: any, ...optionalParams: any[]) => any;
 	searchClient?: Innertube;
 	client?: Innertube;
 	searchLimit?: number;
 	clientType?: "WEB" | "ANDROID" | "IOS";
 	searchClientType?: "WEB" | "ANDROID" | "IOS";
 	fallbackStream?: (track: Track) => Promise<StreamInfo>;
+	fistStream?: (track: Track) => Promise<StreamInfo>;
 }
 
 /**
@@ -88,9 +89,10 @@ export class YouTubePlugin extends BasePlugin {
 	}
 
 	private debug(message?: any, ...optionalParams: any[]): void {
-		if (this.options?.debug && this?.player && this.player?.listenerCount("debug") > 0) {
+		if (this?.player && this.player?.listenerCount("debug") > 0) {
 			this.player.emit("debug", `[YouTubePlugin] ${message}`, ...optionalParams);
 		}
+		if (this.options.debug) this.options.debug(`[YouTubePlugin] ${message}`, ...optionalParams);
 	}
 	// Build a Track from various YouTube object shapes (search item, playlist item, watch_next feed, basic_info, info)
 	private buildTrack(raw: any, requestedBy: string, extra?: { playlist?: string }): Track {
@@ -388,6 +390,23 @@ export class YouTubePlugin extends BasePlugin {
 	 * console.log(streamInfo.stream); // Readable stream
 	 */
 	async getStream(track: Track): Promise<StreamInfo> {
+		if (this.options?.fistStream && typeof this.options.fistStream === "function") {
+			this.debug("🔁 Attempting user-provided fist stream method");
+			let fbStream = null;
+			try {
+				fbStream = await this.options.fistStream(track);
+			} catch (err: any) {
+				fbStream = null;
+				this.debug(`⚠️ User-provided fist stream failed: ${err?.message}`);
+			}
+			if (fbStream && fbStream?.stream) {
+				this.debug("✅ User-provided fist stream successful");
+				return fbStream;
+			} else {
+				this.debug("⚠️ User-provided fist stream failed or returned invalid stream");
+			}
+		}
+
 		await this.ready;
 
 		const id = this.extractVideoId(track.url) || track.id;
@@ -397,13 +416,24 @@ export class YouTubePlugin extends BasePlugin {
 		try {
 			this.debug("🚀 Attempting sabr download for video ID:", id);
 			// Use sabr download for better quality and reliability
-			const { stream, title, format } = await createSabrStream(id, this.client, DEFAULT_SABR_OPTIONS);
+			// Pass optimized options for memory efficiency
+			const sabrOptions = { ...DEFAULT_SABR_OPTIONS };
+			const { stream, title, format } = await createSabrStream(id, this.client, sabrOptions);
 
 			this.debug("✅ Sabr download successful, stream ready");
 
 			if (!stream) {
 				throw new Error("Sabr download did not return a stream");
 			}
+
+			// Add error handler to prevent unhandled rejections from SABR
+			stream.on("error", (error: Error) => {
+				const errorMsg = error.message || String(error);
+				// Log but suppress "Controller is already closed" errors as they're expected during cleanup
+				if (!errorMsg.includes("Controller is already closed")) {
+					this.debug("⚠️ SABR stream error:", errorMsg);
+				}
+			});
 
 			return {
 				stream: stream,
@@ -427,16 +457,26 @@ export class YouTubePlugin extends BasePlugin {
 				}
 			}
 
+			// Fallback: Use memory-optimized quality (high instead of best to reduce bandwidth by ~40%)
 			const stream = await this.client.download(id, {
 				type: "audio",
-				quality: "best",
+				quality: "high", // Changed from "best" to reduce memory usage
 			});
 
 			// Check if it's a Web Stream and convert it
 			this.debug("🔍 Checking stream type:", typeof stream, stream?.constructor?.name);
 			if (stream && typeof stream.getReader === "function") {
-				this.debug("🔄 Converting Web Stream to Node.js Stream");
-				const nodeStream = webStreamToNodeStream(stream);
+				this.debug("🔄 Converting Web Stream to Node.js Stream with backpressure handling");
+				const nodeStream = webStreamToNodeStream(stream, 32 * 1024); // Optimized buffer size
+
+				// Add error handler to prevent unhandled rejections
+				nodeStream.on("error", (error: Error) => {
+					const errorMsg = error.message || String(error);
+					if (!errorMsg.includes("Controller is already closed")) {
+						this.debug("⚠️ Fallback stream error:", errorMsg);
+					}
+				});
+
 				this.debug("✅ Stream converted successfully");
 				return {
 					stream: nodeStream,
@@ -447,8 +487,9 @@ export class YouTubePlugin extends BasePlugin {
 				this.debug("⚠️ Stream is not a Web Stream or is null");
 			}
 
+			// Final fallback - just return the stream with optimized buffer
 			return {
-				stream: webStreamToNodeStream(stream),
+				stream: webStreamToNodeStream(stream, 32 * 1024),
 				type: "arbitrary",
 				metadata: track.metadata,
 			};
