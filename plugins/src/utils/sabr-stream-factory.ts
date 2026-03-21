@@ -201,8 +201,6 @@ export async function createSabrStream(
 			) // [0] là best audio, [1] là worst video
 			.filter(Boolean);
 
-		console.log(sabrFormats);
-
 		const sabr = new SabrStream({
 			formats: sabrFormats,
 			serverAbrStreamingUrl,

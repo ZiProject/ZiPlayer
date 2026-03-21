@@ -10,7 +10,9 @@
 		"web:start": "npm run start --prefix page"
 	},
 	"devDependencies": {
-		"discord.js": "^14.22.1",
 		"dotenv": "^17.2.2"
+	},
+	"dependencies": {
+		"@ziplayer/plugin": "file:plugins"
 	}
 }

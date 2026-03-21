@@ -136,13 +136,12 @@ export class TTSPlugin extends BasePlugin {
 	 *
 	 * @example
 	 * plugin.canHandle("tts:Hello world"); // true
-	 * plugin.canHandle("say Hello world"); // true
 	 * plugin.canHandle("youtube.com/watch?v=123"); // false
 	 */
 	canHandle(query: string): boolean {
 		if (!query) return false;
 		const q = query.trim().toLowerCase();
-		return q.startsWith("tts:") || q.startsWith("say ");
+		return q.startsWith("tts:");
 	}
 
 	/**

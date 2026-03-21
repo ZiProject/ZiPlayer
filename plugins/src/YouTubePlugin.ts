@@ -5,7 +5,7 @@ import { createSabrStream, DEFAULT_SABR_OPTIONS } from "./utils/sabr-stream-fact
 import { webStreamToNodeStream } from "./utils/stream-converter";
 
 export interface PluginOptions {
-	player: Player;
+	player?: Player;
 	debug?: (message?: any, ...optionalParams: any[]) => any;
 	searchClient?: Innertube;
 	client?: Innertube;
@@ -201,6 +201,7 @@ export class YouTubePlugin extends BasePlugin {
 			}
 		}
 
+		if (q.startsWith("youtube:") || q.startsWith("yt:")) return true;
 		// Avoid intercepting explicit patterns for other extractors
 		if (q.startsWith("tts:") || q.startsWith("say ")) return false;
 		if (q.startsWith("spotify:") || q.includes("open.spotify.com")) return false;

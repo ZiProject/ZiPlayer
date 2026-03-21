@@ -3,12 +3,12 @@ import { BasePlugin, Track, SearchResult, StreamInfo } from "ziplayer";
 const SoundCloud = require("@zibot/scdl");
 import { URL } from "url";
 
-const ALLOWED_SOUNDCLOUD_HOSTS = ["soundcloud.com", "www.soundcloud.com", "m.soundcloud.com"];
-
 function isValidSoundCloudHost(maybeUrl: string): boolean {
+	const ALLOWED_SOUNDCLOUD_HOSTS = ["soundcloud.com", "www.soundcloud.com", "m.soundcloud.com"];
+
 	try {
 		const parsed = new URL(maybeUrl);
-		return ALLOWED_SOUNDCLOUD_HOSTS.includes(parsed.hostname);
+		return !!ALLOWED_SOUNDCLOUD_HOSTS.includes(parsed.hostname);
 	} catch {
 		// Not a valid URL, not handled as host-based
 		return false;
@@ -85,8 +85,11 @@ export class SoundCloudPlugin extends BasePlugin {
 			return isValidSoundCloudHost(query);
 		}
 
-		// Avoid intercepting explicit patterns for other extractors
-		if (q.startsWith("tts:") || q.startsWith("say ")) return false;
+		if (q.startsWith("soundcloud:") || q.startsWith("sc:")) return true;
+
+		if (q.startsWith("tts:"))
+			// Avoid intercepting explicit patterns for other extractors
+			return false;
 		if (q.startsWith("spotify:") || q.includes("open.spotify.com")) return false;
 		if (q.includes("youtube")) return false;
 
