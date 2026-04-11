@@ -76,18 +76,25 @@ export class PluginManager {
 			this.debug(`[Player] getStream failed, trying getFallback:`, streamError);
 			const allplugs = this.getAll();
 			for (const p of allplugs) {
-				if (typeof (p as any).getFallback !== "function" && typeof (p as any).getStream !== "function") {
-					continue;
-				}
 				try {
-					streamInfo = await withTimeout((p as any).getStream(track), timeoutMs, `getStream timed out for plugin ${p.name}`);
-					if ((streamInfo as any)?.stream) {
-						this.debug(`[Player] getStream succeeded with plugin ${p.name} for track: ${track.title}`);
-						break;
+					if (typeof p.getStream == "function") {
+						streamInfo = await withTimeout((p as any).getStream(track), timeoutMs, `getStream timed out for plugin ${p.name}`);
+						if ((streamInfo as any)?.stream) {
+							this.debug(`[Player] getStream succeeded with plugin ${p.name} for track: ${track.title}`);
+							return streamInfo as StreamInfo;
+						}
 					}
-					streamInfo = await withTimeout((p as any).getFallback(track), timeoutMs, `getFallback timed out for plugin ${p.name}`);
-					if (!(streamInfo as any)?.stream) continue;
-					break;
+					if (typeof p.getFallback == "function") {
+						streamInfo = await withTimeout(
+							(p as any).getFallback(track),
+							timeoutMs,
+							`getFallback timed out for plugin ${p.name}`,
+						);
+						if ((streamInfo as any)?.stream) {
+							this.debug(`[Player] getFallback succeeded with plugin ${p.name} for track: ${track.title}`);
+							return streamInfo as StreamInfo;
+						}
+					}
 				} catch (fallbackError) {
 					this.debug(`[Player] getFallback failed with plugin ${p.name}:`, fallbackError);
 				}
