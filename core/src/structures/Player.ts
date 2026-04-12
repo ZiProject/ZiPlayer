@@ -681,7 +681,7 @@ export class Player extends EventEmitter {
 			this.generateWillNext();
 			this.clearLeaveTimeout();
 			this.debug(`[Player] playNext called for track: ${track.title}`);
-			
+
 			try {
 				return await this.startTrack(track);
 			} catch (err) {
