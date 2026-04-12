@@ -44,7 +44,7 @@ export interface PluginOptions {
  */
 export class YouTubePlugin extends BasePlugin {
 	name = "youtube";
-	version = "1.0.0";
+	version = "1.2.0";
 
 	private client!: Innertube;
 	private searchClient!: Innertube;
@@ -391,6 +391,9 @@ export class YouTubePlugin extends BasePlugin {
 	 * console.log(streamInfo.stream); // Readable stream
 	 */
 	async getStream(track: Track): Promise<StreamInfo> {
+		if (!track.url && !track.id && !this.validate(track.url || "")) {
+			throw new Error("Track must have a URL or ID");
+		}
 		if (this.options?.fistStream && typeof this.options.fistStream === "function") {
 			this.debug("🔁 Attempting user-provided fist stream method");
 			let fbStream = null;
@@ -518,9 +521,15 @@ export class YouTubePlugin extends BasePlugin {
 	 * );
 	 * console.log(`Found ${related.length} related tracks`);
 	 */
-	async getRelatedTracks(trackURL: string, opts: { limit?: number; offset?: number; history?: Track[] } = {}): Promise<Track[]> {
+	async getRelatedTracks(
+		track: Track | String,
+		opts: { limit?: number; offset?: number; history?: Track[] } = {},
+	): Promise<Track[]> {
 		await this.ready;
-		this.debug("Getting related tracks for:", trackURL);
+		const trackURL = typeof track === "string" ? track : (track as Track).url;
+		const trackTitle = typeof track === "string" ? track : (track as Track).title;
+		this.debug("Getting related tracks for:" + trackTitle);
+
 		const videoId = this.extractVideoId(trackURL);
 		this.debug("Video ID:", videoId);
 		if (!videoId) {
@@ -563,9 +572,9 @@ export class YouTubePlugin extends BasePlugin {
 	 */
 	async getFallback(track: Track): Promise<StreamInfo> {
 		try {
-			const result = await this.search(track.title, track.requestedBy);
+			const result = await this.search(track.title, "youtube-fallback");
 			const first = result.tracks[0];
-			this.debug("Fallback track:", first);
+			this.debug("Fallback track:" + first.title + " URL:" + first.url);
 			if (!first) throw new Error("No fallback track found");
 			return await this.getStream(first);
 		} catch (e: any) {

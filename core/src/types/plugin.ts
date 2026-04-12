@@ -6,15 +6,17 @@ import type { SearchResult, StreamInfo, Track } from ".";
  * const plugin: SourcePlugin = {
  *   name: "YouTube",
  *   version: "1.0.0"
+ *   priority: 0, // Optional, default is 0. Lower priority plugins are tried first in getStream fallback.
  * };
  */
 export interface SourcePlugin {
 	name: string;
 	version: string;
+	priority?: number;
 	canHandle(query: string): boolean;
 	search(query: string, requestedBy: string): Promise<SearchResult>;
 	getStream(track: Track): Promise<StreamInfo>;
-	getRelatedTracks?(track: string | number, opts?: { limit?: number; offset?: number }): Promise<Track[]>;
+	getRelatedTracks?(track: Track, opts?: { limit?: number; offset?: number }): Promise<Track[]>;
 	validate?(url: string): boolean;
 	extractPlaylist?(url: string, requestedBy: string): Promise<Track[]>;
 }

@@ -165,18 +165,15 @@ export class Player extends EventEmitter {
 	 * @private
 	 */
 	private destroyCurrentStream(): void {
-		try {
-			// Get the metadata from current resource to find the stream
-			if (this.currentResource) {
-				const stream = (this.currentResource as any)?.metadata?.stream || (this.currentResource as any)?.stream;
-				if (stream && typeof stream.destroy === "function") {
-					stream.destroy();
-					this.debug(`[Player] Destroyed current stream`);
-				}
-			}
-		} catch (error) {
-			this.debug(`[Player] Error destroying current stream:`, error);
+		if (!this.currentResource) return;
+
+		const stream = (this.currentResource as any)?.metadata?.stream ?? (this.currentResource as any)?.stream;
+
+		if (stream?.destroy) {
+			stream.destroy();
 		}
+
+		this.currentResource = null;
 	}
 
 	//#region Search
@@ -354,54 +351,10 @@ export class Player extends EventEmitter {
 		};
 	}
 
-	/**
-	 * Get related tracks for a given track
-	 * @param {Track} track Track to find related tracks for
-	 * @returns {Track[]} Related tracks or empty array
-	 * @example
-	 * const related = await player.getRelatedTracks(track);
-	 * console.log(`Found ${related.length} related tracks`);
-	 */
-	async getRelatedTracks(track: Track): Promise<Track[]> {
-		if (!track) return [];
-
-		const preferred = this.pluginManager.findPlugin(track.url) || this.pluginManager.get(track.source);
-
-		const all = this.pluginManager.getAll();
-
-		const candidates = [...(preferred ? [preferred] : []), ...all.filter((p) => p !== preferred)].filter(
-			(p) => typeof (p as any).getRelatedTracks === "function",
-		);
-
-		for (const p of candidates) {
-			try {
-				this.debug(`[Player] Trying related from plugin: ${p.name}`);
-				const related = await withTimeout(
-					(p as any).getRelatedTracks(track.url, {
-						limit: 10,
-						history: this.queue.previousTracks,
-					}),
-					this.options.extractorTimeout ?? 15000,
-					`getRelatedTracks timed out for ${p.name}`,
-				);
-
-				if (Array.isArray(related) && related.length > 0) {
-					return related; // success
-				}
-				this.debug(`[Player] ${p.name} returned no related tracks`);
-			} catch (err) {
-				this.debug(`[Player] getRelatedTracks error from ${p.name}:`, err);
-				return [];
-				// try next candidate
-			}
-		}
-		return [];
-	}
-
 	private async generateWillNext(): Promise<void> {
 		const lastTrack = this.queue.previousTracks[this.queue.previousTracks.length - 1] ?? this.queue.currentTrack;
 		if (!lastTrack) return;
-		const related = await this.getRelatedTracks(lastTrack);
+		const related = await this.pluginManager.getRelatedTracks(lastTrack);
 		if (!related || related.length === 0) return;
 		const randomchoice = Math.floor(Math.random() * related.length);
 		const nextTrack = this.queue.nextTrack ? this.queue.nextTrack : related[randomchoice];
@@ -646,15 +599,6 @@ export class Player extends EventEmitter {
 				try {
 					// Destroy the old stream and resource before creating a new one
 					this.destroyCurrentStream();
-					if (this.currentResource) {
-						try {
-							const oldStream = (this.currentResource as any)._readableState?.stream || (this.currentResource as any).stream;
-							if (oldStream && typeof oldStream.destroy === "function") {
-								oldStream.destroy();
-							}
-						} catch {}
-						this.currentResource = null;
-					}
 
 					this.currentResource = await this.createResource(streamInfo, track, 0);
 					if (this.volumeInterval) {
@@ -710,39 +654,41 @@ export class Player extends EventEmitter {
 	}
 
 	private async playNext(): Promise<boolean> {
-		this.debug(`[Player] playNext called`);
-		const track = this.queue.next(this.skipLoop);
-		this.skipLoop = false;
-		if (!track) {
-			if (this.queue.autoPlay()) {
-				const willnext = this.queue.willNextTrack();
-				if (willnext) {
-					this.debug(`[Player] Auto-playing next track: ${willnext.title}`);
-					this.queue.addMultiple([willnext]);
-					return this.playNext();
+		this.debug(`[Player] playNext called by ${new Error().stack?.split("\n")[2]?.trim()}`);
+		while (true) {
+			const track = this.queue.next(this.skipLoop);
+			this.skipLoop = false;
+
+			if (!track) {
+				if (this.queue.autoPlay()) {
+					const willnext = this.queue.willNextTrack();
+					if (willnext) {
+						this.queue.addMultiple([willnext]);
+						continue;
+					}
 				}
+				this.debug(`[Player] No next track in queue`);
+				this.isPlaying = false;
+				this.emit("queueEnd");
+
+				if (this.options.leaveOnEnd) {
+					this.scheduleLeave();
+				}
+
+				return false;
 			}
 
-			this.debug(`[Player] No next track in queue`);
-			this.isPlaying = false;
-			this.emit("queueEnd");
-
-			if (this.options.leaveOnEnd) {
-				this.scheduleLeave();
+			this.generateWillNext();
+			this.clearLeaveTimeout();
+			this.debug(`[Player] playNext called for track: ${track.title}`);
+			
+			try {
+				return await this.startTrack(track);
+			} catch (err) {
+				this.debug(`[Player] playNext error:`, err);
+				this.emit("playerError", err as Error, track);
+				continue;
 			}
-			return false;
-		}
-
-		this.generateWillNext();
-		// A new track is about to play; ensure we don't leave mid-playback
-		this.clearLeaveTimeout();
-
-		try {
-			return await this.startTrack(track);
-		} catch (error) {
-			this.debug(`[Player] playNext error:`, error);
-			this.emit("playerError", error as Error, track);
-			return this.playNext();
 		}
 	}
 

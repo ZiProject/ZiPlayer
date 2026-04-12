@@ -16,11 +16,8 @@ import { BaseExtension } from "./BaseExtension";
 
 export { BaseExtension } from "./BaseExtension";
 
-type DebugFn = (message?: any, ...optionalParams: any[]) => void;
-
 // Extension factory
 export class ExtensionManager {
-	private debug: DebugFn;
 	private extensions: Map<string, BaseExtension>;
 	private player: Player;
 	private manager: PlayerManager;
@@ -31,12 +28,11 @@ export class ExtensionManager {
 		this.manager = manager;
 		this.extensions = new Map();
 		this.extensionContext = Object.freeze({ player, manager });
-
-		this.debug = (message?: any, ...optionalParams: any[]) => {
-			if (manager.debugEnabled) {
-				manager.emit("debug", `[ExtensionManager] ${message}`, ...optionalParams);
-			}
-		};
+	}
+	debug(message?: any, ...optionalParams: any[]): void {
+		if (this.manager.debugEnabled) {
+			this.manager.emit("debug", `[ExtensionManager] ${message}`, ...optionalParams);
+		}
 	}
 
 	register(extension: BaseExtension): void {

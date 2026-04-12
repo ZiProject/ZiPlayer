@@ -1,6 +1,6 @@
 import { BasePlugin, Track, SearchResult, StreamInfo } from "ziplayer";
 
-const SoundCloud = require("@zibot/scdl");
+import SoundCloud from "@zibot/scdl";
 import { URL } from "url";
 
 function isValidSoundCloudHost(maybeUrl: string): boolean {
@@ -43,8 +43,8 @@ function isValidSoundCloudHost(maybeUrl: string): boolean {
  */
 export class SoundCloudPlugin extends BasePlugin {
 	name = "soundcloud";
-	version = "1.0.0";
-	private client: any;
+	version = "1.2.0";
+	private client!: SoundCloud;
 	private ready: Promise<void>;
 
 	/**
@@ -59,11 +59,11 @@ export class SoundCloudPlugin extends BasePlugin {
 	 */
 	constructor() {
 		super();
+		this.client = new SoundCloud();
 		this.ready = this.init();
 	}
 
 	private async init(): Promise<void> {
-		this.client = new SoundCloud({ init: false });
 		await this.client.init();
 	}
 
@@ -153,7 +153,7 @@ export class SoundCloudPlugin extends BasePlugin {
 						title: info.title,
 						url: info.permalink_url || query,
 						duration: info.duration,
-						thumbnail: info.artwork_url,
+						thumbnail: info.artwork_url ?? undefined,
 						requestedBy,
 						source: this.name,
 						metadata: {
@@ -184,13 +184,13 @@ export class SoundCloudPlugin extends BasePlugin {
 						playlist: {
 							name: playlist.title,
 							url: playlist.permalink_url || query,
-							thumbnail: playlist.artwork_url,
+							thumbnail: playlist?.artwork_url ?? undefined,
 						},
 					};
 				}
 			}
 
-			const results = await this.client.searchTracks({ query, limit: 15 });
+			const results = await this.client.search({ query, limit: 15 });
 			const tracks: Track[] = results.slice(0, 10).map((track: any) => ({
 				id: track.id.toString(),
 				title: track.title,
@@ -269,19 +269,35 @@ export class SoundCloudPlugin extends BasePlugin {
 	 * console.log(`Found ${related.length} related tracks`);
 	 */
 	async getRelatedTracks(
-		trackURL: string | number,
+		track: string | number | Track,
 		opts: { limit?: number; offset?: number; history?: Track[] } = {},
 	): Promise<Track[]> {
 		await this.ready;
 		try {
-			const tracks = await this.client.getRelatedTracks(trackURL, {
-				limit: 30,
-				filter: "tracks",
-			});
+			const trackURL = (track as Track)?.url ?? track;
+			const trackTitle = (track as Track)?.title ?? track;
+			let tracks;
+			if (this.validate(trackURL)) {
+				tracks = await this.client.getRelatedTracks(trackURL, {
+					limit: 30,
+				});
+			}
+			// If no related tracks found, try searching by title as fallback
+			if (!tracks || !tracks?.length) {
+				const SearchTrack = await this.search(trackTitle, "SoundCloud_Related");
+
+				if (!SearchTrack || !SearchTrack.tracks?.length) {
+					return [];
+				}
+				tracks = await this.client.getRelatedTracks(SearchTrack.tracks[0].url, {
+					limit: 30,
+				});
+			}
 
 			if (!tracks || !tracks?.length) {
 				return [];
 			}
+
 			const relatedfilter = tracks.filter((tr: any) => !(opts?.history ?? []).some((t) => t.url === tr.permalink_url));
 
 			const related = relatedfilter.slice(0, opts.limit || 1);

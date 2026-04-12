@@ -35,13 +35,7 @@ import { voiceExt } from "@ziplayer/extension";
 
 const manager = new PlayerManager({
 	plugins: [new SoundCloudPlugin(), new YouTubePlugin(), new SpotifyPlugin()],
-	extensions: [
-		new voiceExt(null, {
-			lang: "vi-VN",
-			minimalVoiceMessageDuration: 1,
-			postSilenceDelayMs: 2000,
-		}),
-	],
+	extensions: [new voiceExt()],
 });
 
 // Create player
@@ -50,9 +44,9 @@ const player = await manager.create(guildId, {
 	leaveTimeout: 30000,
 	userdata: { channel: textChannel }, // store channel for events
 	// Choose extensions for this player (by name or instances)
-	extensions: ["voiceExt"],
+	// extensions: ["voiceExt"],
 	// Apply audio filters
-	filters: ["bassboost", "normalize"],
+	// filters: ["bassboost", "normalize"],
 });
 
 // Connect and play
@@ -134,74 +128,48 @@ Notes
 
 - The detection uses track.source that includes "tts" or query starting with `tts:`.
 - If you need more control, call `player.interruptWithTTSTrack(track)` after building a TTS track via your plugin.
-- For CPU-heavy TTS generation, consider offloading to `worker_threads` or a separate process and pass a stream/buffer to the
-  plugin.
 
-### Player Lifecycle Overview
-
-```
-PlayerManager.create(guild, opts)
-        │
-        ▼
-[Player constructor]
- - setup event listeners
- - freeze ExtensionContext { player, manager }
- - register plugins
-        │
-        ▼
-attachExtension(ext)
- - set ext.player
- - ext.onRegister?(context)
- - ext.active?(...) → false ⇒ detach
-        │
-        ▼
-player.play(query, by)
- - runBeforePlayHooks → extensions may mutate query/tracks/start Lavalink
- - resolve track list / queue updates / TTS interrupt check
- - extensionsProvideStream → extension stream overrides plugin pipeline
- - plugin.getStream / getFallback
-        │
-        ▼
-Audio playback
- - trackStart / queue events emitted
- - runAfterPlayHooks with final outcome
-        │
-        ▼
-player.destroy()
- - stop audio/voice / clear queue & plugins
- - ext.onDestroy?(context) for each attached extension
- - emit playerDestroy & cleanup references
-```
-
-This diagram shows how custom extensions (voice, lyrics, Lavalink, etc.) integrate across the full player lifecycle and where
-their hooks are invoked.
-
-### Lavalink Process
+### extensions and Lavalink Process
 
 Use `lavalinkExt` when you need ZiPlayer to manage an external Lavalink JVM node. The extension starts, stops, and optionally
 restarts the Lavalink jar and forwards lifecycle events through the manager/player.
 
 ```ts
 import { PlayerManager } from "ziplayer";
-import { lavalinkExt } from "@ziplayer/extension";
-
-const lavalink = new lavalinkExt(null, {
-	nodes: [
-		{
-			identifier: "locallavalink",
-			password: "youshallnotpass",
-			host: "localhost",
-			port: 2333,
-			secure: false,
-		},
-	],
-	client: client,
-	searchPrefix: "scsearch",
-});
+import { lavalinkExt, lyricsExt, voiceExt } from "@ziplayer/extension";
 
 const manager = new PlayerManager({
-	extensions: ["lavalinkExt"],
+	extensions: [
+		new lavalinkExt(null, {
+			nodes: [
+				{
+					identifier: "locallavalink",
+					password: "youshallnotpass",
+					host: "localhost",
+					port: 2333,
+					secure: false,
+				},
+			],
+			client: client,
+			searchPrefix: "scsearch",
+		}),
+		new voiceExt(null, { lang: "en-US" }),
+		new lyricsExt(null, { provider: "lrclib" }),
+	],
+	//etc...
 });
+
+//crete player:
+const player = await manager.create("id-player", {
+	extensions: ["lavalinkExt", "voiceExt", "lyricsExt"],
+	//etc... userdata,
+});
+
+//connec voice
+if (!player.connection) await player.connect(interaction?.member?.voice?.channel);
+
+//play music
+await player.play(query, interaction?.user);
 ```
 
 ## Events

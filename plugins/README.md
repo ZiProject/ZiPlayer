@@ -19,12 +19,6 @@ lives in `ziplayer`.
 npm install @ziplayer/plugin ziplayer @discordjs/voice discord.js
 ```
 
-The TTS plugin uses a lightweight Google TTS wrapper and HTTP fetches:
-
-```bash
-npm install @zibot/zitts axios
-```
-
 ## Quick Start
 
 ```ts
