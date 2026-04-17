@@ -1,0 +1,38 @@
+{
+	"name": "@ziplayer/infinity",
+	"version": "0.0.1",
+	"description": "A modular Discord voice player with plugin system",
+	"keywords": [
+		"ZiPlayer",
+		"@ziplayer/infinityplg",
+		"discord",
+		"music",
+		"player",
+		"voice"
+	],
+	"homepage": "https://player.ziji.world",
+	"bugs": {
+		"url": "https://github.com/ZiProject/ZiPlayer/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ZiProject/ZiPlayer.git"
+	},
+	"license": "MIT",
+	"author": "Ziji",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"prepare": "npm run build"
+	},
+	"dependencies": {
+		"ziplayer": "^0.2.6"
+	},
+	"devDependencies": {
+		"@types/jsdom": "^27.0.0",
+		"@types/node": "^20.0.0",
+		"typescript": "^5.0.0"
+	}
+}
