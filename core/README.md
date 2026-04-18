@@ -1,196 +1,259 @@
 <img width="1175" height="305" alt="logo" src="https://raw.githubusercontent.com/ZiProject/ZiPlayer/refs/heads/main/publish/logo.png" />
 
-# ziplayer
+# ZiPlayer
 
-A modular Discord voice player with plugin system for @discordjs/voice.
+A powerful, extensible Discord music engine built on top of `@discordjs/voice`, designed for scalability, flexibility, and
+developer experience.
 
-## Features
+ZiPlayer is not just a player — it's a **full ecosystem** with plugins, extensions, and a modular architecture that lets you build
+advanced music bots quickly.
 
-- 🎵 **Plugin-based architecture** - Easy to extend with new sources
-- 🎶 **Multiple source support** - YouTube, SoundCloud, Spotify (with fallback)
-- 🔊 **Queue management** - Add, remove, shuffle, clear
-- 🎚️ **Volume control** - 0-200% volume range
-- ⏯️ **Playback control** - Play, pause, resume, stop, skip
-- 🔁 **Auto play** - Automatically replay the queue when it ends
-- 🔂 **Loop control** - Repeat a single track or the entire queue
-- 📊 **Progress bar** - Display playback progress with customizable icons
-- 🔔 **Event-driven** - Rich event system for all player actions
-- 🎭 **Multi-guild support** - Manage players across multiple Discord servers
-- 🗃️ **User data** - Attach custom data to each player for later use
-- 🔌 **Lavalink** - Support manage an external Lavalink JVM node
-- 🎛️ **Audio Filters** - Apply real-time audio effects using FFmpeg (bassboost, nightcore, etc.)
+---
 
-## Installation
+## ✨ Highlights
+
+- 🔌 **Plugin-driven architecture** — Easily support new audio sources
+- 🌐 **Multi-source playback** — YouTube, SoundCloud, Spotify (with fallback), TTS, and more
+- 🧠 **Smart fallback system** — Automatically resolves streams across plugins
+- 🎛️ **Advanced audio filters** — Real-time FFmpeg effects (bassboost, nightcore, etc.)
+- 🔁 **Autoplay & looping** — Seamless listening experience
+- 🧩 **Extension system** — Add STT, lyrics, Lavalink, and custom logic
+- 🗂️ **Per-guild player system** — Scales across multiple Discord servers
+- 📡 **Event-driven core** — Full lifecycle hooks for customization
+- 💾 **Custom userdata** — Attach context to each player
+
+---
+
+## 📦 Installation
 
 ```bash
-npm install ziplayer @ziplayer/plugin @ziplayer/extension @discordjs/voice discord.js
+npm install ziplayer @ziplayer/plugin @ziplayer/extension @ziplayer/infinity @discordjs/voice discord.js opusscript
 ```
 
-## Quick Start
+---
 
-```typescript
-import { PlayerManager } from "ziplayer";
-import { SoundCloudPlugin, YouTubePlugin, SpotifyPlugin } from "@ziplayer/plugin";
-import { voiceExt } from "@ziplayer/extension";
-
-const manager = new PlayerManager({
-	plugins: [new SoundCloudPlugin(), new YouTubePlugin(), new SpotifyPlugin()],
-	extensions: [new voiceExt()],
-});
-
-// Create player
-const player = await manager.create(guildId, {
-	leaveOnEnd: true,
-	leaveTimeout: 30000,
-	userdata: { channel: textChannel }, // store channel for events
-	// Choose extensions for this player (by name or instances)
-	// extensions: ["voiceExt"],
-	// Apply audio filters
-	// filters: ["bassboost", "normalize"],
-});
-
-// Connect and play
-await player.connect(voiceChannel);
-await player.play("Never Gonna Give You Up", userId);
-
-// Play a full YouTube playlist
-await player.play("https://www.youtube.com/playlist?list=PL123", userId);
-
-// Enable autoplay
-player.queue.autoPlay(true);
-
-// Play a full SoundCloud playlist
-await player.play("https://soundcloud.com/artist/sets/playlist", userId);
-
-// Events
-player.on("willPlay", (player, track) => {
-	console.log(`Up next: ${track.title}`);
-});
-player.on("trackStart", (player, track) => {
-	console.log(`Now playing: ${track.title}`);
-	player.userdata?.channel?.send(`Now playing: ${track.title}`);
-});
-
-// Audio Filters
-player.filter.applyFilter("bassboost"); // Apply bass boost
-player.filter.applyFilter("nightcore"); // Apply nightcore effect
-player.filter.removeFilter("bassboost"); // Remove specific filter
-player.filter.clearFilters(); // Clear all filters
-
-// Apply custom filter
-player.filter.applyFilter({
-	name: "custom",
-	ffmpegFilter: "volume=1.5,treble=g=5",
-	description: "Volume boost + treble boost",
-});
-
-// Receive transcripts
-manager.on("voiceCreate", (player, evt) => {
-	console.log(`User ${evt.userId} said: ${evt.content}`);
-});
-```
-
-### TTS (Interrupt Mode)
-
-Play short text-to-speech messages without losing music progress. The player pauses music, plays TTS on a dedicated AudioPlayer,
-then resumes.
-
-- Requirements: `@ziplayer/plugin` with `TTSPlugin` installed and registered in `PlayerManager`.
+## 🚀 Quick Start
 
 ```ts
+import { Client, GatewayIntentBits } from "discord.js";
 import { PlayerManager } from "ziplayer";
-import { TTSPlugin, YouTubePlugin, SoundCloudPlugin, SpotifyPlugin } from "@ziplayer/plugin";
+import { YouTubePlugin, SoundCloudPlugin, SpotifyPlugin } from "@ziplayer/plugin";
+import { InfinityPlugin } from "@ziplayer/infinity";
 
-const manager = new PlayerManager({
-	plugins: [new TTSPlugin({ defaultLang: "vi" }), new YouTubePlugin(), new SoundCloudPlugin(), new SpotifyPlugin()],
+const client = new Client({
+	intents: [
+		GatewayIntentBits.Guilds,
+		GatewayIntentBits.GuildVoiceStates,
+		GatewayIntentBits.GuildMessages,
+		GatewayIntentBits.MessageContent,
+	],
 });
 
-// Create a player with TTS interrupt enabled
+const manager = new PlayerManager({
+	plugins: [new YouTubePlugin(), new SoundCloudPlugin(), new SpotifyPlugin(), new InfinityPlugin()],
+});
+
+client.on("messageCreate", async (msg) => {
+	if (!msg.content.startsWith("!play ") || !msg.guildId) return;
+
+	const voiceChannel = msg.member?.voice?.channel;
+	if (!voiceChannel) return msg.reply("Join a voice channel first!");
+
+	const player = await manager.create(msg.guildId, {
+		leaveOnEnd: true,
+		userdata: { channel: msg.channel },
+	});
+
+	if (!player.connection) await player.connect(voiceChannel);
+	await player.play(msg.content.slice(6), msg.author.id);
+});
+
+client.login(process.env.DISCORD_TOKEN);
+```
+
+---
+
+## 🧱 Architecture Overview
+
+```
+PlayerManager (global)
+  └── Player (per guild)
+        ├── Queue
+        ├── PluginManager
+        ├── ExtensionManager
+        └── FilterManager
+```
+
+### Flow
+
+```
+create → connect → play → stream → events → destroy
+```
+
+---
+
+## 🎵 Core Usage
+
+### Play music
+
+```ts
+await player.play("Never Gonna Give You Up", userId);
+await player.play("https://youtube.com/watch?v=...", userId);
+await player.play("tts: Hello world", userId);
+```
+
+### Controls
+
+```ts
+player.pause();
+player.resume();
+player.skip();
+player.stop();
+player.setVolume(100);
+player.loop("track");
+player.shuffle();
+```
+
+### Queue
+
+```ts
+player.queue.add(track);
+player.queue.remove(0);
+player.queue.shuffle();
+player.queue.clear();
+```
+
+---
+
+## 🔌 Plugins
+
+Install via `@ziplayer/plugin`:
+
+- **YouTubePlugin** — YouTube + search
+- **SoundCloudPlugin** — SoundCloud streaming
+- **SpotifyPlugin** — Metadata (uses fallback)
+- **TTSPlugin** — Text-to-speech
+- **AttachmentsPlugin** — Local/URL audio files
+
+### Example
+
+```ts
+import { TTSPlugin } from "@ziplayer/plugin";
+
+new PlayerManager({
+	plugins: [new TTSPlugin({ defaultLang: "en" })],
+});
+```
+
+---
+
+## 🧩 Extensions
+
+Enhance player behavior:
+
+- 🎤 `voiceExt` — Speech-to-text commands
+- 🎤 `lyricsExt` — Auto lyrics (synced support)
+- ⚡ `lavalinkExt` — External Lavalink node
+
+### Example
+
+```ts
+import { voiceExt, lyricsExt } from "@ziplayer/extension";
+
+const manager = new PlayerManager({
+	extensions: [new voiceExt(null, { lang: "en-US" }), new lyricsExt(null, { provider: "lrclib" })],
+});
+```
+
+---
+
+## 🎛️ Audio Filters
+
+Apply FFmpeg filters in real-time:
+
+```ts
+await player.filter.applyFilter("bassboost");
+await player.filter.applyFilter("nightcore");
+await player.filter.clearAll();
+```
+
+### Available filters
+
+- bassboost, trebleboost
+- nightcore, lofi, vaporwave
+- echo, reverb, chorus
+- karaoke
+- normalize, compressor, limiter
+
+---
+
+## 🔊 TTS (Interrupt Mode)
+
+```ts
 const player = await manager.create(guildId, {
 	tts: {
-		createPlayer: true, // pre-create the internal TTS AudioPlayer
-		interrupt: true, // pause music, swap to TTS, then resume
-		volume: 1, // 1 => 100%
+		createPlayer: true,
+		interrupt: true,
 	},
 });
 
-await player.connect(voiceChannel);
-
-// Trigger TTS by playing a TTS query (depends on your TTS plugin)
-await player.play("tts: xin chào mọi người", userId);
-
-// Listen to TTS lifecycle events
-manager.on("ttsStart", (plr, { track }) => console.log("TTS start", track?.title));
-manager.on("ttsEnd", (plr) => console.log("TTS end"));
+await player.play("tts: Hello everyone", userId);
 ```
 
-Notes
+---
 
-- The detection uses track.source that includes "tts" or query starting with `tts:`.
-- If you need more control, call `player.interruptWithTTSTrack(track)` after building a TTS track via your plugin.
+## 📡 Events
 
-### extensions and Lavalink Process
-
-Use `lavalinkExt` when you need ZiPlayer to manage an external Lavalink JVM node. The extension starts, stops, and optionally
-restarts the Lavalink jar and forwards lifecycle events through the manager/player.
+Listen globally via manager:
 
 ```ts
-import { PlayerManager } from "ziplayer";
-import { lavalinkExt, lyricsExt, voiceExt } from "@ziplayer/extension";
-
-const manager = new PlayerManager({
-	extensions: [
-		new lavalinkExt(null, {
-			nodes: [
-				{
-					identifier: "locallavalink",
-					password: "youshallnotpass",
-					host: "localhost",
-					port: 2333,
-					secure: false,
-				},
-			],
-			client: client,
-			searchPrefix: "scsearch",
-		}),
-		new voiceExt(null, { lang: "en-US" }),
-		new lyricsExt(null, { provider: "lrclib" }),
-	],
-	//etc...
-});
-
-//crete player:
-const player = await manager.create("id-player", {
-	extensions: ["lavalinkExt", "voiceExt", "lyricsExt"],
-	//etc... userdata,
-});
-
-//connec voice
-if (!player.connection) await player.connect(interaction?.member?.voice?.channel);
-
-//play music
-await player.play(query, interaction?.user);
+manager.on("trackStart", (player, track) => {});
+manager.on("queueEnd", (player) => {});
+manager.on("playerError", (player, error) => {});
 ```
 
-## Events
+---
 
-All player events are forwarded through the PlayerManager:
+## 🧠 Advanced Features
 
-- `trackStart` - When a track starts playing
-- `willPlay` - Before a track begins playing
-- `trackEnd` - When a track finishes
-- `queueEnd` - When the queue is empty
-- `playerError` - When an error occurs
-- `queueAdd` - When a track is added
-- `volumeChange` - When volume changes
-- And more...
+### Autoplay
 
-## Useful Links
+```ts
+player.queue.autoPlay(true);
+```
 
-[Example](https://github.com/ZiProject/ZiPlayer/tree/main/examples) | [Repo](https://github.com/ZiProject/ZiPlayer) |
-[Package](https://www.npmjs.com/package/ziplayer) | [Plugin](https://www.npmjs.com/package/@ziplayer/plugin) |
-[Extension](https://www.npmjs.com/package/@ziplayer/extension)
+### Insert next track
 
-## License
+```ts
+await player.insert("song", 0);
+```
+
+### Save stream
+
+```ts
+const stream = await player.save(track);
+stream.pipe(fs.createWriteStream("song.mp3"));
+```
+
+---
+
+## ⚠️ Best Practices
+
+- Use **one PlayerManager** per bot
+- Always `await player.connect()` before playing
+- Handle `playerError` events
+- Do not reuse a destroyed player
+
+---
+
+## 📚 Resources
+
+- Examples: [https://github.com/ZiProject/ZiPlayer/tree/main/examples](https://github.com/ZiProject/ZiPlayer/tree/main/examples)
+- GitHub: [https://github.com/ZiProject/ZiPlayer](https://github.com/ZiProject/ZiPlayer)
+- npm: [https://www.npmjs.com/package/ziplayer](https://www.npmjs.com/package/ziplayer)
+
+---
+
+## 📄 License
 
 MIT License

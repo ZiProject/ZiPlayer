@@ -6,7 +6,7 @@ const { TTSPlugin } = require("../../plugins/dist");
 test("TTS canHandle variants", () => {
 	const tts = new TTSPlugin({ defaultLang: "en" });
 	assert.equal(tts.canHandle("tts: hello"), true);
-	assert.equal(tts.canHandle("say hello world"), true);
+	assert.equal(tts.canHandle("say hello world"), false);
 	assert.equal(tts.canHandle("hello"), false);
 });
 

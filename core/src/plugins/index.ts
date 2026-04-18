@@ -10,6 +10,91 @@ type PluginManagerOptions = {
 
 export { BasePlugin } from "./BasePlugin";
 
+function levenshtein(a: string, b: string): number {
+	const matrix = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+
+	for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
+	for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
+
+	for (let i = 1; i <= a.length; i++) {
+		for (let j = 1; j <= b.length; j++) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost);
+		}
+	}
+
+	return matrix[a.length][b.length];
+}
+
+function similarity(a: string, b: string): number {
+	if (!a || !b) return 0;
+
+	const dist = levenshtein(a, b);
+	const maxLen = Math.max(a.length, b.length);
+
+	return 1 - dist / maxLen; // 0 → 1
+}
+
+function normalize(str: string): string {
+	return str
+		.toLowerCase()
+		.replace(/\(.*?\)|\[.*?\]/g, "") // remove (remix), [lyrics]
+		.replace(/[^a-z0-9\s]/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+const MUSIC_KEYWORDS = ["official", "mv", "audio", "lyrics", "remix", "cover", "ft", "feat", "prod", "music video"];
+
+const NON_MUSIC_KEYWORDS = ["reaction", "review", "podcast", "interview", "vlog", "live stream", "news", "tiktok"];
+
+function detectContentType(title: string): number {
+	const t = title.toLowerCase();
+
+	let score = 0;
+
+	for (const k of MUSIC_KEYWORDS) {
+		if (t.includes(k)) score += 2;
+	}
+
+	for (const k of NON_MUSIC_KEYWORDS) {
+		if (t.includes(k)) score -= 3;
+	}
+
+	return score;
+}
+
+function tokenOverlap(a: string, b: string): number {
+	const setA = new Set(a.split(" "));
+	const setB = new Set(b.split(" "));
+
+	let match = 0;
+	for (const word of setA) {
+		if (setB.has(word)) match++;
+	}
+
+	return match / Math.max(setA.size, setB.size);
+}
+
+function scoreTrack(base: Track, candidate: Track): number {
+	const titleA = normalize(base.title);
+	const titleB = normalize(candidate.title);
+
+	let score = 0;
+
+	// ===== FUZZY =====
+	const sim = similarity(titleA, titleB); // 0 → 1
+	score += sim * 50;
+
+	// ===== TOKEN MATCH =====
+	score += tokenOverlap(titleA, titleB) * 30;
+
+	// ===== CONTENT TYPE =====
+	score += detectContentType(candidate.title);
+
+	return score;
+}
+
 // Plugin factory
 export class PluginManager {
 	private options: PluginManagerOptions;
@@ -150,87 +235,54 @@ export class PluginManager {
 		if (!track) return [];
 
 		const timeoutMs = this.options.extractorTimeout ?? 15000;
-		const preferred = this.findPlugin(track.url) || this.get(track.source);
+		const limit = 20;
 
-		// ===== THỬ PREFERRED TRƯỚC =====
-		if (preferred && typeof preferred.getRelatedTracks === "function") {
-			try {
-				this.debug(`[RelatedTracks] Trying preferred: ${preferred.name}`);
-				const related = await withTimeout(
-					preferred.getRelatedTracks(track, {
-						limit: 10,
-						history: this.player.queue.previousTracks,
-					}),
-					timeoutMs,
-					`getRelatedTracks timed out for ${preferred.name}`,
-				);
-
-				if (Array.isArray(related) && related.length > 0) {
-					return related;
-				}
-				this.debug(`[RelatedTracks] ${preferred.name} returned no results → fallback race`);
-			} catch (err) {
-				this.debug(`[RelatedTracks] ${preferred.name} failed → fallback race`, err);
-			}
-		}
-
-		// ===== FALLBACK: RACE THEO PRIORITY GROUP =====
-		const plugins = this.getAll()
-			.filter((p) => p !== preferred && typeof p.getRelatedTracks === "function")
-			.map((p) => {
-				p.priority ??= 0;
-				return p;
-			})
+		const allPlugins = this.getAll()
+			.filter((p) => typeof p.getRelatedTracks === "function")
 			.sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
 
-		// group by priority
-		const groups = new Map<number, BasePlugin[]>();
-		for (const p of plugins) {
-			const key = p.priority ?? 0;
-			if (!groups.has(key)) groups.set(key, []);
-			groups.get(key)!.push(p);
+		const history = this.player.queue.previousTracks;
+
+		const results: Track[] = [];
+
+		// ===== TRY ALL PLUGINS (NOT JUST FIRST SUCCESS) =====
+		await Promise.allSettled(
+			allPlugins.map(async (p) => {
+				try {
+					this.debug(`[RelatedTracks] Querying ${p.name}`);
+
+					const related = await withTimeout(p.getRelatedTracks!(track, { limit, history }), timeoutMs, `Timeout ${p.name}`);
+
+					if (Array.isArray(related)) {
+						results.push(...related);
+					}
+				} catch (err) {
+					this.debug(`[RelatedTracks] ${p.name} failed`, err);
+				}
+			}),
+		);
+
+		if (results.length === 0) {
+			this.debug(`[RelatedTracks] No results`);
+			return [];
 		}
 
-		for (const [priority, group] of groups) {
-			this.debug(`[RelatedTracks] Racing priority=${priority} (${group.map((p) => p.name).join(", ")})`);
-			const controller = new AbortController();
-
-			try {
-				const promises = group.map((p) =>
-					(async () => {
-						try {
-							const related = await withTimeout(
-								p.getRelatedTracks!(track, {
-									limit: 10,
-									history: this.player.queue.previousTracks,
-								}),
-								timeoutMs,
-								`getRelatedTracks timed out for ${p.name}`,
-							);
-
-							if (Array.isArray(related) && related.length > 0) {
-								this.debug(`[RelatedTracks] Success via ${p.name}`);
-								controller.abort();
-								return related;
-							}
-							throw new Error(`${p.name} returned no results`);
-						} catch (err) {
-							if (controller.signal.aborted) throw new Error("Aborted");
-							this.debug(`[RelatedTracks] ${p.name} failed`, err);
-							throw err;
-						}
-					})(),
-				);
-
-				const result = await Promise.any(promises);
-				if (result) return result;
-			} catch {
-				this.debug(`[RelatedTracks] Priority group ${priority} all failed`);
-				controller.abort();
+		// ===== DEDUPE =====
+		const unique = new Map<string, Track>();
+		for (const t of results) {
+			if (!unique.has(t.url)) {
+				unique.set(t.url, t);
 			}
 		}
 
-		this.debug(`[RelatedTracks] All plugins failed for: ${track.title}`);
-		return [];
+		// ===== SCORE + SORT =====
+		const ranked = Array.from(unique.values())
+			.map((t) => ({ track: t, score: scoreTrack(track, t) }))
+			.sort((a, b) => b.score - a.score)
+			.slice(0, limit)
+			.map((x) => x.track);
+
+		this.debug(`[RelatedTracks] Final ${ranked.length} tracks`);
+		return ranked;
 	}
 }
