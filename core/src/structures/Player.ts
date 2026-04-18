@@ -894,7 +894,7 @@ export class Player extends EventEmitter {
 		const result = this.audioPlayer.stop();
 		this.destroyCurrentStream();
 		this.currentResource = null;
-		
+
 		this.isPlaying = false;
 		this.isPaused = false;
 		this.emit("playerStop");
