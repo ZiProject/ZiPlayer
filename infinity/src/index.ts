@@ -66,6 +66,7 @@ const SUPPORTED_HOSTS: readonly string[] = [
 	"dailymotion.com",
 	"dai.ly",
 	"bilibili.com",
+	"bilibili.tv",
 	"b23.tv",
 	"nicovideo.jp",
 	"nico.ms",
@@ -87,6 +88,138 @@ const SUPPORTED_HOSTS: readonly string[] = [
 	"on.soundcloud.com",
 	"bandcamp.com",
 ] as const;
+
+// ─── Metadata resolution ──────────────────────────────────────────────────────
+
+interface MediaMeta {
+	title: string;
+	thumbnail?: string;
+	author?: string;
+}
+
+/**
+ * Maps a normalised hostname (no `www.`) to a function that returns the
+ * appropriate oEmbed endpoint URL.  oEmbed is free, requires no API key, and
+ * returns `title` + `thumbnail_url` + `author_name` for most platforms.
+ */
+const OEMBED_ENDPOINTS: Record<string, (url: string) => string> = {
+	"youtube.com": (u) => `https://www.youtube.com/oembed?url=${encodeURIComponent(u)}&format=json`,
+	"youtu.be": (u) => `https://www.youtube.com/oembed?url=${encodeURIComponent(u)}&format=json`,
+	"music.youtube.com": (u) => `https://www.youtube.com/oembed?url=${encodeURIComponent(u)}&format=json`,
+	"vimeo.com": (u) => `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(u)}`,
+	"soundcloud.com": (u) => `https://soundcloud.com/oembed?url=${encodeURIComponent(u)}&format=json`,
+	"on.soundcloud.com": (u) => `https://soundcloud.com/oembed?url=${encodeURIComponent(u)}&format=json`,
+	"tiktok.com": (u) => `https://www.tiktok.com/oembed?url=${encodeURIComponent(u)}`,
+	"vm.tiktok.com": (u) => `https://www.tiktok.com/oembed?url=${encodeURIComponent(u)}`,
+	"twitter.com": (u) => `https://publish.twitter.com/oembed?url=${encodeURIComponent(u)}`,
+	"x.com": (u) => `https://publish.twitter.com/oembed?url=${encodeURIComponent(u)}`,
+	"reddit.com": (u) => `https://www.reddit.com/oembed?url=${encodeURIComponent(u)}`,
+	"dailymotion.com": (u) => `https://www.dailymotion.com/services/oembed?url=${encodeURIComponent(u)}&format=json`,
+	"dai.ly": (u) => `https://www.dailymotion.com/services/oembed?url=${encodeURIComponent(u)}&format=json`,
+	"streamable.com": (u) => `https://api.streamable.com/oembed.json?url=${encodeURIComponent(u)}`,
+	"tumblr.com": (u) => `https://www.tumblr.com/oembed/1.0?url=${encodeURIComponent(u)}`,
+};
+
+/**
+ * Try the oEmbed endpoint for the given URL's platform.
+ * Returns `null` if the platform has no registered endpoint or the call fails.
+ */
+async function fetchOEmbed(rawUrl: string): Promise<MediaMeta | null> {
+	try {
+		const parsed = new URL(rawUrl);
+		const host = parsed.hostname.replace(/^www\./, "");
+		const endpointFn = OEMBED_ENDPOINTS[host];
+		if (!endpointFn) return null;
+
+		const res = await fetch(endpointFn(rawUrl), {
+			headers: { "User-Agent": "ZiPlayer/1.0 (oEmbed)" },
+			signal: AbortSignal.timeout(5_000),
+		});
+		if (!res.ok) return null;
+
+		const json = (await res.json()) as {
+			title?: string;
+			thumbnail_url?: string;
+			author_name?: string;
+		};
+
+		if (!json.title) return null;
+
+		return {
+			title: json.title,
+			thumbnail: json.thumbnail_url,
+			author: json.author_name,
+		};
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Scrape `og:title` and `og:image` from a page's `<head>`.
+ * We only download the first 20 KB to keep this cheap — enough for the `<head>`.
+ */
+async function fetchOpenGraph(rawUrl: string): Promise<MediaMeta | null> {
+	try {
+		const res = await fetch(rawUrl, {
+			headers: {
+				"User-Agent": "Mozilla/5.0 (compatible; ZiPlayer/1.0; +https://github.com/ZiProject/ZiPlayer)",
+				Accept: "text/html",
+				Range: "bytes=0-20479", // first 20 KB
+			},
+			signal: AbortSignal.timeout(6_000),
+		});
+
+		if (!res.ok) return null;
+
+		const html = await res.text();
+
+		const extract = (prop: string): string | undefined => {
+			// Match both og:X and twitter:X variants
+			const patterns = [
+				new RegExp(`<meta[^>]+property=["']${prop}["'][^>]+content=["']([^"']+)["']`, "i"),
+				new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${prop}["']`, "i"),
+			];
+			for (const re of patterns) {
+				const m = html.match(re);
+				if (m?.[1]) return m[1].trim();
+			}
+			return undefined;
+		};
+
+		const title = extract("og:title") ?? extract("twitter:title") ?? html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim();
+
+		if (!title) return null;
+
+		return {
+			title,
+			thumbnail: extract("og:image") ?? extract("twitter:image"),
+		};
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Resolve human-readable metadata for any supported URL.
+ * Strategy: oEmbed (fast, structured) → Open Graph scrape (universal fallback).
+ * Never throws — always returns at least a minimal object derived from the URL.
+ */
+async function fetchMetadata(rawUrl: string): Promise<MediaMeta> {
+	// 1. oEmbed — preferred: fast, no HTML parsing, returns clean title + thumbnail
+	const oembed = await fetchOEmbed(rawUrl);
+	if (oembed) return oembed;
+
+	// 2. Open Graph — works for platforms without an oEmbed endpoint
+	const og = await fetchOpenGraph(rawUrl);
+	if (og) return og;
+
+	// 3. Last resort — synthesise something readable from the URL itself
+	const parsed = new URL(rawUrl);
+	const host = parsed.hostname.replace(/^www\./, "");
+	const slug = parsed.pathname.split("/").filter(Boolean).pop() ?? "media";
+	return { title: `${host} – ${slug}` };
+}
 
 // ─── Cobalt API types ─────────────────────────────────────────────────────────
 
@@ -374,35 +507,38 @@ export class InfinityPlugin extends BasePlugin {
 	// ── search ─────────────────────────────────────────────────────────────────
 
 	/**
-	 * When given a direct URL this plugin resolves it into a `Track`.
-	 * Plain text search queries are not supported by cobalt and will throw.
+	 * Resolves a direct platform URL into a `Track` with real title and thumbnail.
+	 *
+	 * Metadata is fetched via oEmbed (YouTube, SoundCloud, TikTok, Vimeo, etc.)
+	 * or Open Graph scraping for platforms without an oEmbed endpoint.
+	 * Both strategies are capped at a few seconds so search stays snappy.
+	 *
+	 * Plain text search queries are not supported — provide a direct URL.
 	 */
 	async search(query: string, requestedBy: string): Promise<SearchResult> {
 		if (!this.canHandle(query)) {
 			throw new Error(`InfinityPlugin does not support plain text search. ` + `Provide a direct URL from a supported platform.`);
 		}
 
-		// Derive lightweight metadata from the URL itself.
-		// Cobalt is a downloader, not a metadata API, so we keep this minimal.
-		const url = new URL(query);
-		const host = url.hostname.replace(/^www\./, "");
-		const source = host.split(".")[0]; // e.g. "youtube", "soundcloud"
+		const parsed = new URL(query);
+		const host = parsed.hostname.replace(/^www\./, "");
+		const source = host.split(".")[0]; // e.g. "youtube", "soundcloud", "tiktok"
 
-		// For YouTube we can derive the video ID for the thumbnail
-		const ytId =
-			(host.includes("youtube.com") && url.searchParams.get("v")) || (host === "youtu.be" && url.pathname.slice(1)) || null;
+		// Fetch real metadata — oEmbed first, OG scrape as fallback
+		const meta = await fetchMetadata(query);
 
 		const track: Track = {
 			id: `infinity-${Buffer.from(query).toString("base64url").slice(0, 16)}`,
-			title: ytId ? `YouTube – ${ytId}` : `${source} – ${url.pathname.split("/").filter(Boolean).pop() ?? "media"}`,
+			title: meta.title,
 			url: query,
 			duration: 0, // cobalt provides no duration metadata
-			thumbnail: ytId ? `https://img.youtube.com/vi/${ytId}/maxresdefault.jpg` : undefined,
+			thumbnail: meta.thumbnail,
 			requestedBy,
 			source,
 			metadata: {
 				originalUrl: query,
 				resolvedBy: this.name,
+				...(meta.author ? { artist: meta.author } : {}),
 			},
 		};
 
