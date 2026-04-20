@@ -1,6 +1,6 @@
 ﻿import { BasePlugin, Track, SearchResult, StreamInfo } from "ziplayer";
 import { Readable } from "stream";
-import { getTTSUrls } from "@zibot/zitts";
+import { getTTSUrls, getEdgeTTS, getEdgeTTSVoices, EdgeTTSOptions } from "@ziplayer/tts";
 import axios from "axios";
 import { parseBuffer } from "music-metadata";
 
@@ -25,6 +25,8 @@ export interface TTSPluginOptions {
 	 * - Buffer / Uint8Array / ArrayBuffer
 	 * - Or an object with { stream, type } | { url, type }
 	 */
+	edgeTTSOptions?: EdgeTTSOptions;
+
 	createStream?: (
 		text: string,
 		ctx?: { lang: string; slow: boolean; track?: Track },
@@ -91,8 +93,13 @@ interface TTSConfig {
 export class TTSPlugin extends BasePlugin {
 	name = "tts";
 	version = "1.0.0";
-	private opts: { defaultLang: string; slow: boolean; createStream?: TTSPluginOptions["createStream"] };
-
+	private opts: {
+		defaultLang: string;
+		slow: boolean;
+		createStream?: TTSPluginOptions["createStream"];
+		edgeTTSOptions?: EdgeTTSOptions;
+	};
+	private edgeTTSVoicesCache: Array<{ Name: string; Locale: string }> | null = null;
 	/**
 	 * Creates a new TTSPlugin instance.
 	 *
@@ -125,7 +132,13 @@ export class TTSPlugin extends BasePlugin {
 			defaultLang: opts?.defaultLang || "vi",
 			slow: !!opts?.slow,
 			createStream: opts?.createStream,
+			edgeTTSOptions: opts?.edgeTTSOptions,
 		};
+		this.init();
+	}
+
+	async init() {
+		this.edgeTTSVoicesCache = await getEdgeTTSVoices();
 	}
 
 	/**
@@ -334,6 +347,25 @@ export class TTSPlugin extends BasePlugin {
 				stream = await this.toReadable(out as any);
 			}
 			return { stream, type: type || "arbitrary", metadata: { provider: "custom", ...(metadata || {}) } };
+		}
+		//TRY EDGE TTS FIRST
+		try {
+			if (!this.edgeTTSVoicesCache) {
+				this.edgeTTSVoicesCache = await getEdgeTTSVoices();
+			}
+			const voices = this.edgeTTSVoicesCache;
+			const voicelang = voices.filter((v) => v.Locale.startsWith(cfg.lang + "-"));
+
+			const voice =
+				voicelang.length > 0 ?
+					voicelang[0].Name
+				:	(voices.find((v) => v.Locale.startsWith(this.opts.defaultLang + "-"))?.Name ?? "en-US-AriaNeural");
+
+			const edgeStream = await getEdgeTTS(cfg.text, { ...this.opts.edgeTTSOptions, voice });
+			const streamReadable = await this.toReadable(edgeStream);
+			return { stream: streamReadable, type: "arbitrary", metadata: { provider: "edge-tts" } };
+		} catch (e) {
+			// If Edge TTS fails, fallback to Google TTS
 		}
 
 		const urls = getTTSUrls(cfg.text, { lang: cfg.lang, slow: cfg.slow });
