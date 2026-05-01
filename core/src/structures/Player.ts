@@ -819,9 +819,20 @@ export class Player extends EventEmitter {
 			await entersState(connection, VoiceConnectionStatus.Ready, 50_000);
 			this.connection = connection;
 
-			connection.on(VoiceConnectionStatus.Disconnected, () => {
-				this.debug(`[Player] VoiceConnectionStatus.Disconnected`);
-				this.destroy();
+			connection.on(VoiceConnectionStatus.Disconnected, async () => {
+				try {
+					//  move channel
+					await Promise.race([
+						entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+						entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+					]);
+					//  Signalling/Connecting → reconnect
+					this.debug(`[Player] Reconnecting after channel move...`);
+				} catch {
+					// no reconnect in 5 giây → disconnect
+					this.debug(`[Player] Truly disconnected, destroying player`);
+					this.destroy();
+				}
 			});
 
 			connection.on("error", (error) => {
