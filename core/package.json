@@ -1,6 +1,6 @@
 {
 	"name": "ziplayer",
-	"version": "0.2.7-dev.0",
+	"version": "0.2.7-dev.1",
 	"description": "A modular Discord voice player with plugin system",
 	"keywords": [
 		"ZiPlayer",
@@ -31,6 +31,7 @@
 		"discord-api-types": "^0.38.37",
 		"ffmpeg-static": "^5.2.0",
 		"libsodium-wrappers": "^0.7.15",
+		"lru-cache": "^11.3.6",
 		"opusscript": "^0.1.1",
 		"prism-media": "^1.3.5"
 	},

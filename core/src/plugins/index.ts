@@ -6,6 +6,8 @@ import type { Player } from "../structures/Player";
 
 type PluginManagerOptions = {
 	extractorTimeout: number | undefined;
+	maxFallbackAttempts?: number;
+	enableCache?: boolean;
 };
 
 export { BasePlugin } from "./BasePlugin";
@@ -28,84 +30,73 @@ function levenshtein(a: string, b: string): number {
 
 function similarity(a: string, b: string): number {
 	if (!a || !b) return 0;
-
 	const dist = levenshtein(a, b);
 	const maxLen = Math.max(a.length, b.length);
-
-	return 1 - dist / maxLen; // 0 → 1
+	return 1 - dist / maxLen;
 }
 
 function normalize(str: string): string {
 	return str
 		.toLowerCase()
-		.replace(/\(.*?\)|\[.*?\]/g, "") // remove (remix), [lyrics]
+		.replace(/\(.*?\)|\[.*?\]/g, "")
 		.replace(/[^a-z0-9\s]/g, "")
 		.replace(/\s+/g, " ")
 		.trim();
 }
 
 const MUSIC_KEYWORDS = ["official", "mv", "audio", "lyrics", "remix", "cover", "ft", "feat", "prod", "music video"];
-
 const NON_MUSIC_KEYWORDS = ["reaction", "review", "podcast", "interview", "vlog", "live stream", "news", "tiktok"];
 
 function detectContentType(title: string): number {
 	const t = title.toLowerCase();
-
 	let score = 0;
-
-	for (const k of MUSIC_KEYWORDS) {
-		if (t.includes(k)) score += 2;
-	}
-
-	for (const k of NON_MUSIC_KEYWORDS) {
-		if (t.includes(k)) score -= 3;
-	}
-
+	for (const k of MUSIC_KEYWORDS) if (t.includes(k)) score += 2;
+	for (const k of NON_MUSIC_KEYWORDS) if (t.includes(k)) score -= 3;
 	return score;
 }
 
 function tokenOverlap(a: string, b: string): number {
 	const setA = new Set(a.split(" "));
 	const setB = new Set(b.split(" "));
-
 	let match = 0;
-	for (const word of setA) {
-		if (setB.has(word)) match++;
-	}
-
+	for (const word of setA) if (setB.has(word)) match++;
 	return match / Math.max(setA.size, setB.size);
 }
 
 function scoreTrack(base: Track, candidate: Track): number {
 	const titleA = normalize(base.title);
 	const titleB = normalize(candidate.title);
-
 	let score = 0;
-
-	// ===== FUZZY =====
-	const sim = similarity(titleA, titleB); // 0 → 1
-	score += sim * 50;
-
-	// ===== TOKEN MATCH =====
+	score += similarity(titleA, titleB) * 50;
 	score += tokenOverlap(titleA, titleB) * 30;
-
-	// ===== CONTENT TYPE =====
 	score += detectContentType(candidate.title);
-
 	return score;
 }
 
-// Plugin factory
+// Cache entry for stream results
+interface StreamCacheEntry {
+	streamInfo: StreamInfo;
+	timestamp: number;
+	expiresAt: number;
+}
+
 export class PluginManager {
 	private options: PluginManagerOptions;
 	private player: Player;
 	private manager: PlayerManager;
 	private plugins: Map<string, BasePlugin> = new Map();
+	private streamCache: Map<string, StreamCacheEntry> = new Map();
+	private readonly STREAM_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+	private pendingStreams: Map<string, Promise<StreamInfo | null>> = new Map(); // Dedupe in-flight requests
 
 	constructor(player: Player, manager: PlayerManager, options: PluginManagerOptions) {
 		this.player = player;
 		this.manager = manager;
-		this.options = options;
+		this.options = {
+			maxFallbackAttempts: 3,
+			enableCache: true,
+			...options,
+		};
 	}
 
 	debug(message?: any, ...optionalParams: any[]): void {
@@ -115,11 +106,18 @@ export class PluginManager {
 	}
 
 	register(plugin: BasePlugin): void {
+		if (this.plugins.has(plugin.name)) {
+			this.debug(`Overwriting existing plugin: ${plugin.name}`);
+		}
+		plugin.priority ??= 0;
 		this.plugins.set(plugin.name, plugin);
+		this.debug(`Registered plugin: ${plugin.name} (priority: ${plugin.priority})`);
 	}
 
 	unregister(name: string): boolean {
-		return this.plugins.delete(name);
+		const removed = this.plugins.delete(name);
+		if (removed) this.debug(`Unregistered plugin: ${name}`);
+		return removed;
 	}
 
 	get(name: string): BasePlugin | undefined {
@@ -127,162 +125,279 @@ export class PluginManager {
 	}
 
 	getAll(): BasePlugin[] {
-		return Array.from(this.plugins.values());
+		return Array.from(this.plugins.values()).sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
 	}
 
 	findPlugin(query: string): BasePlugin | undefined {
-		return this.getAll().find((plugin) => plugin.canHandle(query));
+		// First try exact match by source
+		for (const plugin of this.getAll()) {
+			if (plugin.name && query.toLowerCase().includes(plugin.name.toLowerCase())) {
+				return plugin;
+			}
+		}
+
+		// Then try canHandle
+		return this.getAll().find((plugin) => plugin.canHandle?.(query) ?? false);
 	}
 
 	clear(): void {
 		this.plugins.clear();
+		this.streamCache.clear();
+		this.pendingStreams.clear();
 	}
 
-	async getStream(track: Track): Promise<StreamInfo | null> {
+	private getStreamCacheKey(track: Track): string {
+		return `${track.source}:${track.url}:${track.id || track.title}`;
+	}
+
+	private getCachedStream(track: Track): StreamInfo | null {
+		if (!this.options.enableCache) return null;
+
+		const key = this.getStreamCacheKey(track);
+		const cached = this.streamCache.get(key);
+
+		if (cached && Date.now() < cached.expiresAt) {
+			this.debug(`[Cache] Hit for track: ${track.title}`);
+			return cached.streamInfo;
+		}
+
+		if (cached) {
+			this.debug(`[Cache] Expired for track: ${track.title}`);
+			this.streamCache.delete(key);
+		}
+
+		return null;
+	}
+
+	private setCachedStream(track: Track, streamInfo: StreamInfo): void {
+		if (!this.options.enableCache) return;
+
+		const key = this.getStreamCacheKey(track);
+		this.streamCache.set(key, {
+			streamInfo,
+			timestamp: Date.now(),
+			expiresAt: Date.now() + this.STREAM_CACHE_TTL,
+		});
+		this.debug(`[Cache] Stored for track: ${track.title}`);
+	}
+
+	private async getStreamWithDedupe(track: Track, primary: BasePlugin): Promise<StreamInfo | null> {
+		const key = this.getStreamCacheKey(track);
+
+		// Check if there's already an in-flight request
+		if (this.pendingStreams.has(key)) {
+			this.debug(`[Dedupe] Waiting for existing request: ${track.title}`);
+			return this.pendingStreams.get(key)!;
+		}
+
+		// Create new request
+		const promise = this.getStreamInternal(track, primary);
+		this.pendingStreams.set(key, promise);
+
+		try {
+			const result = await promise;
+			return result;
+		} finally {
+			this.pendingStreams.delete(key);
+		}
+	}
+
+	private async getStreamInternal(track: Track, primary: BasePlugin): Promise<StreamInfo | null> {
 		const timeoutMs = this.options.extractorTimeout ?? 50000;
-		const primary = this.get(track.source) || this.findPlugin(track.url);
-		if (!primary) {
-			this.debug(`No plugin found for track: ${track.title}`);
+
+		// Check cache first
+		const cached = this.getCachedStream(track);
+		if (cached) return cached;
+
+		// Try primary plugin first
+		try {
+			this.debug(`[Primary] Trying ${primary.name} for track: ${track.title}`);
+			const controller = new AbortController();
+			const result = await withTimeout(
+				primary.getStream(track, controller.signal),
+				timeoutMs,
+				`Primary timeout: ${primary.name}`,
+			);
+
+			if (result?.stream) {
+				this.debug(`[Primary] Success via ${primary.name}`);
+				this.setCachedStream(track, result);
+				return result;
+			}
+			throw new Error("Primary plugin returned no stream");
+		} catch (error) {
+			this.debug(`[Primary] Failed: ${primary.name}`, error);
+		}
+
+		// Fallback to other plugins
+		const fallbackPlugins = this.getAll()
+			.filter((p) => p !== primary && p.name !== primary.name)
+			.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+
+		if (fallbackPlugins.length === 0) {
+			this.debug(`[Fallback] No fallback plugins available`);
 			return null;
 		}
-		try {
-			const controller = new AbortController();
-			const result = await withTimeout(primary.getStream(track, controller.signal), timeoutMs, "Primary timeout");
-			if (result?.stream) return result;
-			throw new Error("Primary failed");
-		} catch {
-			this.debug("Primary failed → fallback parallel");
-		}
 
-		// ===== FALLBACK PARALLEL =====
-		const plugins = this.getAll()
-			.filter((p) => p !== primary)
-			.map((p) => {
-				p.priority ??= 0;
-				return p;
-			})
-			.sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+		this.debug(`[Fallback] Trying ${fallbackPlugins.length} plugins sequentially`);
 
-		// group by priority
-		const groups = new Map<number, BasePlugin[]>();
-		for (const p of plugins) {
-			if (!groups.has(p.priority ?? 0)) groups.set(p.priority ?? 0, []);
-			groups.get(p.priority ?? 0)!.push(p);
-		}
-		for (const [priority, group] of groups) {
-			this.debug(`Running group priority=${priority}`);
-			const controller = new AbortController();
+		// Try plugins sequentially to avoid overwhelming sources
+		let attempt = 0;
+		for (const plugin of fallbackPlugins) {
+			attempt++;
+			if (attempt > (this.options.maxFallbackAttempts ?? 3)) {
+				this.debug(`[Fallback] Max attempts (${this.options.maxFallbackAttempts}) reached`);
+				break;
+			}
+
 			try {
-				const promises = group.map((p) => {
-					const run = async () => {
-						try {
-							let result: StreamInfo | null = null;
+				this.debug(`[Fallback] Attempt ${attempt}/${fallbackPlugins.length}: ${plugin.name}`);
+				const controller = new AbortController();
 
-							if (p.getStream) {
-								try {
-									result = await withTimeout(p.getStream(track, controller.signal), timeoutMs, `Timeout ${p.name}`);
-								} catch (err) {
-									// getStream thất bại → log rồi thử getFallback
-									this.debug(`getStream failed for ${p.name}, trying getFallback`, err);
-								}
+				let result: StreamInfo | null = null;
 
-								if (result?.stream) {
-									this.debug(`Success via ${p.name}`);
-									controller.abort();
-									return result;
-								}
-							}
+				// Try getStream first
+				if (plugin.getStream) {
+					result = await withTimeout(plugin.getStream(track, controller.signal), timeoutMs, `Timeout: ${plugin.name}`);
+				}
 
-							if (p.getFallback) {
-								result = await withTimeout(p.getFallback(track, controller.signal), timeoutMs, `Fallback timeout ${p.name}`);
-								if (result?.stream) {
-									this.debug(`Fallback via ${p.name}`);
-									controller.abort();
-									return result;
-								}
-							}
+				// Try fallback method if getStream failed
+				if (!result?.stream && plugin.getFallback) {
+					this.debug(`[Fallback] Trying fallback method for ${plugin.name}`);
+					result = await withTimeout(plugin.getFallback(track, controller.signal), timeoutMs, `Fallback timeout: ${plugin.name}`);
+				}
 
-							throw new Error("No stream");
-						} catch (err) {
-							if (controller.signal.aborted) throw new Error("Aborted");
-							this.debug(`Failed ${p.name}`, err);
-							throw err;
-						}
-					};
-					return run();
-				});
-
-				const result = await Promise.any(promises);
-				if (result?.stream) return result;
-			} catch {
-				this.debug(`Priority group ${priority} failed`);
-				controller.abort();
+				if (result?.stream) {
+					this.debug(`[Fallback] Success via ${plugin.name}`);
+					this.setCachedStream(track, result);
+					return result;
+				}
+			} catch (error) {
+				this.debug(`[Fallback] Failed: ${plugin.name}`, error);
 			}
 		}
 
-		throw new Error(`All plugins failed for track: ${track.title}`);
+		this.debug(`[Fallback] All plugins failed for track: ${track.title}`);
+		return null;
+	}
+
+	async getStream(track: Track): Promise<StreamInfo | null> {
+		if (!track) {
+			this.debug(`[getStream] No track provided`);
+			return null;
+		}
+
+		// Find the most appropriate plugin
+		let primary = this.get(track.source);
+		if (!primary) {
+			primary = this.findPlugin(track.url);
+		}
+		if (!primary) {
+			this.debug(`[getStream] No plugin found for track: ${track.title} (source: ${track.source})`);
+			return null;
+		}
+
+		return this.getStreamWithDedupe(track, primary);
 	}
 
 	/**
 	 * Get related tracks for a given track
 	 * @param {Track} track Track to find related tracks for
-	 * @returns {Track[]} Related tracks or empty array
-	 * @example
-	 * const related = await player.getRelatedTracks(track);
-	 * console.log(`Found ${related.length} related tracks`);
+	 * @returns {Promise<Track[]>} Related tracks or empty array
 	 */
 	async getRelatedTracks(track: Track): Promise<Track[]> {
 		if (!track) return [];
 
 		const timeoutMs = this.options.extractorTimeout ?? 15000;
 		const limit = 20;
+		const minSimilarityScore = 10; // Minimum score to consider
 
-		const allPlugins = this.getAll()
+		const relatedPlugins = this.getAll()
 			.filter((p) => typeof p.getRelatedTracks === "function")
-			.sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+			.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
 
-		const history = this.player.queue.previousTracks;
-
-		const results: Track[] = [];
-
-		// ===== TRY ALL PLUGINS (NOT JUST FIRST SUCCESS) =====
-		await Promise.allSettled(
-			allPlugins.map(async (p) => {
-				try {
-					this.debug(`[RelatedTracks] Querying ${p.name}`);
-
-					const related = await withTimeout(p.getRelatedTracks!(track, { limit, history }), timeoutMs, `Timeout ${p.name}`);
-
-					if (Array.isArray(related)) {
-						results.push(...related);
-					}
-				} catch (err) {
-					this.debug(`[RelatedTracks] ${p.name} failed`, err);
-				}
-			}),
-		);
-
-		if (results.length === 0) {
-			this.debug(`[RelatedTracks] No results`);
+		if (relatedPlugins.length === 0) {
+			this.debug(`[RelatedTracks] No plugins support related tracks`);
 			return [];
 		}
 
-		// ===== DEDUPE =====
+		const history = this.player.queue.previousTracks;
+		const historyUrls = new Set(history.map((t) => t.url));
+		const currentTrackUrl = track.url;
+
+		const results: Track[] = [];
+
+		// Try plugins in parallel but with limit
+		const batchSize = 3;
+		for (let i = 0; i < relatedPlugins.length; i += batchSize) {
+			const batch = relatedPlugins.slice(i, i + batchSize);
+			const batchResults = await Promise.allSettled(
+				batch.map(async (plugin) => {
+					try {
+						this.debug(`[RelatedTracks] Querying ${plugin.name}`);
+						const related = await withTimeout(
+							plugin.getRelatedTracks!(track, { limit, history }),
+							timeoutMs,
+							`Timeout ${plugin.name}`,
+						);
+						return Array.isArray(related) ? related : [];
+					} catch (err) {
+						this.debug(`[RelatedTracks] ${plugin.name} failed`, err);
+						return [];
+					}
+				}),
+			);
+
+			for (const result of batchResults) {
+				if (result.status === "fulfilled") {
+					results.push(...result.value);
+				}
+			}
+		}
+
+		if (results.length === 0) {
+			this.debug(`[RelatedTracks] No results from any plugin`);
+			return [];
+		}
+
+		// Deduplicate by URL
 		const unique = new Map<string, Track>();
 		for (const t of results) {
-			if (!unique.has(t.url)) {
+			if (!unique.has(t.url) && t.url !== currentTrackUrl && !historyUrls.has(t.url)) {
 				unique.set(t.url, t);
 			}
 		}
 
-		// ===== SCORE + SORT =====
+		// Score and sort
 		const ranked = Array.from(unique.values())
 			.map((t) => ({ track: t, score: scoreTrack(track, t) }))
+			.filter((item) => item.score >= minSimilarityScore)
 			.sort((a, b) => b.score - a.score)
 			.slice(0, limit)
 			.map((x) => x.track);
 
-		this.debug(`[RelatedTracks] Final ${ranked.length} tracks`);
+		this.debug(`[RelatedTracks] Found ${ranked.length} related tracks (filtered from ${results.length})`);
 		return ranked;
+	}
+
+	/**
+	 * Clear stream cache
+	 */
+	clearStreamCache(): void {
+		const size = this.streamCache.size;
+		this.streamCache.clear();
+		this.debug(`[Cache] Cleared ${size} stream cache entries`);
+	}
+
+	/**
+	 * Get plugin statistics
+	 */
+	getStats(): object {
+		return {
+			totalPlugins: this.plugins.size,
+			pluginNames: Array.from(this.plugins.keys()),
+			cacheSize: this.streamCache.size,
+			pendingRequests: this.pendingStreams.size,
+		};
 	}
 }

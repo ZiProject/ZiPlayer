@@ -14,6 +14,7 @@ import {
 } from "@discordjs/voice";
 
 import { Readable } from "stream";
+import { LRUCache } from "lru-cache";
 import type { BaseExtension } from "../extensions";
 import type {
 	Track,
@@ -26,6 +27,7 @@ import type {
 	StreamInfo,
 	SaveOptions,
 	VoiceChannel,
+	PlayerSession,
 	ExtensionPlayRequest,
 	ExtensionPlayResponse,
 	ExtensionAfterPlayPayload,
@@ -37,6 +39,7 @@ import { PluginManager } from "../plugins";
 import { ExtensionManager } from "../extensions";
 import { withTimeout } from "../utils/timeout";
 import { FilterManager } from "./FilterManager";
+import type { PersistenceManager } from "../persistence/PersistenceManager";
 
 export declare interface Player {
 	on<K extends keyof PlayerEvents>(event: K, listener: (...args: PlayerEvents[K]) => void): this;
@@ -95,14 +98,23 @@ export class Player extends EventEmitter {
 	private leaveTimeout: NodeJS.Timeout | null = null;
 	private currentResource: AudioResource | null = null;
 	private volumeInterval: NodeJS.Timeout | null = null;
+	private stuckTimer: NodeJS.Timeout | null = null;
+
 	private skipLoop = false;
 	private filter!: FilterManager;
-
+	private refreshLock = false;
+	//preloaded resource
+	private preloadedResource: AudioResource | null = null;
+	private preloadedTrack: Track | null = null;
 	// Cache for search results to avoid duplicate calls
-	private searchCache = new Map<string, SearchResult>();
+	private searchCache: LRUCache<string, SearchResult>;
 	private readonly SEARCH_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
-	private searchCacheTimestamps = new Map<string, number>();
 	private ttsPlayer: DiscordAudioPlayer | null = null;
+	private lastDuration: number = 0;
+
+	private persistenceManager?: PersistenceManager;
+	private lastSaveTime: number = 0;
+	private readonly AUTO_SAVE_INTERVAL = 30000; // 30 seconds
 
 	constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
 		super();
@@ -131,7 +143,7 @@ export class Player extends EventEmitter {
 				createPlayer: false,
 				interrupt: true,
 				volume: 100,
-				Max_Time_TTS: 60_000,
+				maxTimeTts: 60_000,
 				...(options?.tts || {}),
 			},
 		};
@@ -143,6 +155,10 @@ export class Player extends EventEmitter {
 
 		this.volume = this.options.volume || 100;
 		this.userdata = this.options.userdata;
+		this.searchCache = new LRUCache<string, SearchResult>({
+			max: 200,
+			ttl: this.SEARCH_CACHE_TTL,
+		});
 		this.setupEventListeners();
 
 		// Initialize filters from options
@@ -165,12 +181,13 @@ export class Player extends EventEmitter {
 	 * @private
 	 */
 	private destroyCurrentStream(): void {
+		this.audioPlayer.stop(true);
 		if (!this.currentResource) return;
 
 		const stream = (this.currentResource as any)?.metadata?.stream ?? (this.currentResource as any)?.stream;
 
-		if (stream?.destroy) {
-			stream.destroy();
+		if (stream && typeof stream.destroy === "function") {
+			stream.destroy().catch((e: any) => this.debug("Stream destroy error:", e));
 		}
 
 		this.currentResource = null;
@@ -190,12 +207,6 @@ export class Player extends EventEmitter {
 	 */
 	async search(query: string, requestedBy: string): Promise<SearchResult> {
 		this.debug(`[Player] Search called with query: ${query}, requestedBy: ${requestedBy}`);
-
-		// Clear expired search cache periodically
-		if (Math.random() < 0.1) {
-			// 10% chance to clean cache
-			this.clearExpiredSearchCache();
-		}
 
 		// Check cache first
 		const cachedResult = this.getCachedSearchResult(query);
@@ -265,15 +276,10 @@ export class Player extends EventEmitter {
 	 */
 	private getCachedSearchResult(query: string): SearchResult | null {
 		const cacheKey = query.toLowerCase().trim();
-		const now = Date.now();
-
-		const cachedTimestamp = this.searchCacheTimestamps.get(cacheKey);
-		if (cachedTimestamp && now - cachedTimestamp < this.SEARCH_CACHE_TTL) {
-			const cachedResult = this.searchCache.get(cacheKey);
-			if (cachedResult) {
-				this.debug(`[SearchCache] Using cached search result for: ${query}`);
-				return cachedResult;
-			}
+		const cached = this.searchCache.get(cacheKey);
+		if (cached) {
+			this.debug(`[SearchCache] Using cached search result for: ${query}`);
+			return cached;
 		}
 
 		return null;
@@ -286,10 +292,7 @@ export class Player extends EventEmitter {
 	 */
 	private cacheSearchResult(query: string, result: SearchResult): void {
 		const cacheKey = query.toLowerCase().trim();
-		const now = Date.now();
-
 		this.searchCache.set(cacheKey, result);
-		this.searchCacheTimestamps.set(cacheKey, now);
 		this.debug(`[SearchCache] Cached search result for: ${query} (${result.tracks.length} tracks)`);
 	}
 
@@ -297,14 +300,8 @@ export class Player extends EventEmitter {
 	 * Clear expired search cache entries
 	 */
 	private clearExpiredSearchCache(): void {
-		const now = Date.now();
-		for (const [key, timestamp] of this.searchCacheTimestamps.entries()) {
-			if (now - timestamp >= this.SEARCH_CACHE_TTL) {
-				this.searchCache.delete(key);
-				this.searchCacheTimestamps.delete(key);
-				this.debug(`[SearchCache] Cleared expired cache entry: ${key}`);
-			}
-		}
+		this.searchCache.purgeStale();
+		this.debug(`[SearchCache] Purged stale search cache entries`);
 	}
 
 	/**
@@ -315,7 +312,6 @@ export class Player extends EventEmitter {
 	public clearSearchCache(): void {
 		const cacheSize = this.searchCache.size;
 		this.searchCache.clear();
-		this.searchCacheTimestamps.clear();
 		this.debug(`[SearchCache] Cleared all ${cacheSize} search cache entries`);
 	}
 
@@ -331,9 +327,8 @@ export class Player extends EventEmitter {
 		ttsFiltered: boolean;
 	} {
 		const cacheKey = query.toLowerCase().trim();
-		const now = Date.now();
-		const cachedTimestamp = this.searchCacheTimestamps.get(cacheKey);
-		const isCached = cachedTimestamp && now - cachedTimestamp < this.SEARCH_CACHE_TTL;
+		const cached = this.searchCache.get(cacheKey);
+		const isCached = !!cached;
 
 		const allPlugins = this.pluginManager.getAll();
 		const plugins = allPlugins.filter((p) => {
@@ -344,8 +339,8 @@ export class Player extends EventEmitter {
 		});
 
 		return {
-			isCached: !!isCached,
-			cacheAge: cachedTimestamp ? now - cachedTimestamp : undefined,
+			isCached,
+			cacheAge: undefined,
 			pluginCount: plugins.length,
 			ttsFiltered: allPlugins.length > plugins.length,
 		};
@@ -419,7 +414,7 @@ export class Player extends EventEmitter {
 				}
 			} else {
 				// Handle other types (string, Track)
-				const hookOutcome = await this.extensionManager.BeforePlayHooks(effectiveRequest);
+				const hookOutcome = await this.extensionManager.beforePlayHooks(effectiveRequest);
 				effectiveRequest = hookOutcome.request;
 				hookResponse = hookOutcome.response;
 				if (effectiveRequest.requestedBy === undefined) {
@@ -437,7 +432,7 @@ export class Player extends EventEmitter {
 						isPlaylist: hookResponse.isPlaylist ?? false,
 						error: hookResponse.error,
 					};
-					await this.extensionManager.AfterPlayHooks(handledPayload);
+					await this.extensionManager.afterPlayHooks(handledPayload);
 					if (hookResponse.error) {
 						this.emit("playerError", hookResponse.error);
 					}
@@ -484,7 +479,7 @@ export class Player extends EventEmitter {
 			) {
 				this.debug(`[Player] Interrupting with TTS: ${tracksToAdd[0].title}`);
 				await this.interruptWithTTSTrack(tracksToAdd[0]);
-				await this.extensionManager.AfterPlayHooks({
+				await this.extensionManager.afterPlayHooks({
 					success: true,
 					query: effectiveRequest.query,
 					requestedBy: effectiveRequest.requestedBy,
@@ -504,7 +499,7 @@ export class Player extends EventEmitter {
 
 			const started = !this.isPlaying ? await this.playNext() : true;
 
-			await this.extensionManager.AfterPlayHooks({
+			await this.extensionManager.afterPlayHooks({
 				success: started,
 				query: effectiveRequest.query,
 				requestedBy: effectiveRequest.requestedBy,
@@ -514,7 +509,7 @@ export class Player extends EventEmitter {
 
 			return started;
 		} catch (error) {
-			await this.extensionManager.AfterPlayHooks({
+			await this.extensionManager.afterPlayHooks({
 				success: false,
 				query: effectiveRequest.query,
 				requestedBy: effectiveRequest.requestedBy,
@@ -525,6 +520,31 @@ export class Player extends EventEmitter {
 			this.debug(`[Player] Play error:`, error);
 			this.emit("playerError", error as Error);
 			return false;
+		}
+	}
+
+	async preloadNext() {
+		const next = this.queue.nextTrack;
+		if (!next) return;
+
+		try {
+			const stream = await this.getStream(next);
+
+			if (!stream || !(stream as any).stream) {
+				this.debug(`[Player] No stream available to preload for track: ${next.title}`);
+				return;
+			}
+
+			const resource = createAudioResource(stream.stream, {
+				inlineVolume: true,
+			});
+
+			this.preloadedResource = resource;
+			this.preloadedTrack = next;
+
+			this.debug("Preloaded next track:", next.title);
+		} catch (err) {
+			this.debug("Preload failed:", err);
 		}
 	}
 
@@ -592,6 +612,30 @@ export class Player extends EventEmitter {
 	 */
 	private async startTrack(track: Track): Promise<boolean> {
 		try {
+			if (
+				this.preloadedResource &&
+				this.preloadedTrack?.id === track.id &&
+				this.preloadedResource.playStream?.readable !== false
+			) {
+				this.debug(`[Player] Using preloaded resource for track: ${track.title}`);
+				this.audioPlayer.stop(true);
+				this.destroyCurrentStream();
+				this.currentResource = this.preloadedResource;
+				this.currentResource.volume?.setVolume(this.volume / 100);
+				this.audioPlayer.play(this.currentResource);
+				await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 5_000);
+
+				if (this.preloadedResource) {
+					try {
+						(this.preloadedResource.playStream as any)?.destroy?.();
+					} catch {}
+				}
+
+				this.preloadedResource = null;
+				this.preloadedTrack = null;
+				return true;
+			}
+
 			let streamInfo: StreamInfo | null = await this.getStream(track);
 			this.debug(`[Player] Using stream for track: ${track.title}`);
 			// Kiểm tra nếu có stream thực sự để tạo AudioResource
@@ -654,7 +698,7 @@ export class Player extends EventEmitter {
 	}
 
 	private async playNext(): Promise<boolean> {
-		this.debug(`[Player] playNext called by ${new Error().stack?.split("\n")[2]?.trim()}`);
+		this.debug("[Player] playNext called");
 		while (true) {
 			const track = this.queue.next(this.skipLoop);
 			this.skipLoop = false;
@@ -678,12 +722,18 @@ export class Player extends EventEmitter {
 				return false;
 			}
 
-			this.generateWillNext();
+			this.generateWillNext().catch((err) => this.debug("[Player] generateWillNext error:", err));
 			this.clearLeaveTimeout();
 			this.debug(`[Player] playNext called for track: ${track.title}`);
 
 			try {
-				return await this.startTrack(track);
+				const started = await this.startTrack(track);
+				if (started) {
+					setImmediate(() => {
+						this.preloadNext();
+					});
+				}
+				return started;
 			} catch (err) {
 				this.debug(`[Player] playNext error:`, err);
 				this.emit("playerError", err as Error, track);
@@ -730,12 +780,12 @@ export class Player extends EventEmitter {
 			// Build resource from plugin stream
 			const streamInfo = await this.pluginManager.getStream(track);
 			if (!streamInfo) {
-				throw new Error("No stream available for track: ${track.title}");
+				throw new Error(`No stream available for track: ${track.title}`);
 			}
 			ttsStream = streamInfo.stream;
 			const resource = await this.createResource(streamInfo as StreamInfo, track);
 			if (!resource) {
-				throw new Error("No resource available for track: ${track.title}");
+				throw new Error(`No resource available for track: ${track.title}`);
 			}
 			ttsResource = resource;
 			if (resource.volume) {
@@ -766,7 +816,7 @@ export class Player extends EventEmitter {
 						declared
 					:	declared * 1000
 				:	undefined;
-			const cap = this.options?.tts?.Max_Time_TTS ?? 60_000;
+			const cap = this.options?.tts?.maxTimeTts ?? 60_000;
 			const idleTimeout = declaredMs ? Math.min(cap, Math.max(1_000, declaredMs + 1_500)) : cap;
 			await entersState(ttsPlayer, AudioPlayerStatus.Idle, idleTimeout).catch(() => null);
 
@@ -883,7 +933,7 @@ export class Player extends EventEmitter {
 				const track = this.queue.currentTrack;
 				if (track) {
 					this.debug(`[Player] Player resumed on track: ${track.title}`);
-					this.emit("playerResume", track);
+					// this.emit("playerResume", track); //đã có trong stateChange
 				}
 			}
 			return result;
@@ -940,13 +990,7 @@ export class Player extends EventEmitter {
 			return false;
 		}
 
-		const streaminfo = await this.getStream(track);
-		if (!streaminfo?.stream) {
-			this.debug(`[Player] No stream to seek`);
-			return false;
-		}
-
-		await this.refeshPlayerResource(true, position);
+		await this.refreshPlayerResource(true, position);
 
 		return true;
 	}
@@ -1058,7 +1102,7 @@ export class Player extends EventEmitter {
 		}
 
 		try {
-			// Try extensions first
+			// Skip extension manager for saving - we want the raw stream without filters/seek applied, and extensions may not support this
 			let streamInfo: StreamInfo | null = await this.pluginManager.getStream(track);
 
 			if (!streamInfo || !streamInfo.stream) {
@@ -1280,7 +1324,6 @@ export class Player extends EventEmitter {
 		}
 		return track;
 	}
-
 	/**
 	 * Get the progress bar of the current track
 	 *
@@ -1289,59 +1332,81 @@ export class Player extends EventEmitter {
 	 * @example
 	 * const progressBar = player.getProgressBar();
 	 * console.log(`Progress bar: ${progressBar}`);
+	 *
+	 * // Custom options
+	 * const customBar = player.getProgressBar({
+	 *   size: 30,
+	 *   barChar: "─",
+	 *   progressChar: "●",
+	 *   timeFormat: "compact" // "compact" = 1:22:12, "full" = 01:22:12
+	 * });
 	 */
 	getProgressBar(options: ProgressBarOptions = {}): string {
-		const { size = 20, barChar = "▬", progressChar = "🔘" } = options;
+		const {
+			size = 20,
+			barChar = "▬",
+			progressChar = "🔘",
+			timeFormat = "compact", // "compact" or "full"
+			showPercentage = false,
+			showTime = true,
+		} = options;
+
 		const track = this.queue.currentTrack;
 		const resource = this.currentResource;
-		if (!track || !resource) return "";
+
+		// Handle live stream
+		if (this.isLive || !track || !resource) {
+			if (this.isLive) return "🔴 LIVE";
+			return "";
+		}
 
 		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
-		if (!total) return this.formatTime(resource.playbackDuration);
+		if (!total) return this.formatTimeCompact(resource.playbackDuration);
 
 		const current = resource.playbackDuration;
-		const ratio = Math.min(current / total, 1);
+		const ratio = Math.min(Math.max(current / total, 0), 1);
 		const progress = Math.round(ratio * size);
-		const bar = barChar.repeat(progress) + progressChar + barChar.repeat(size - progress);
 
-		return `${this.formatTime(current)} | ${bar} | ${this.formatTime(total)}`;
+		// Build progress bar
+		let bar = "";
+		if (progressChar === "none" || options.hideProgressChar) {
+			// Continuous bar without separator
+			const filled = barChar.repeat(progress);
+			const empty = barChar.repeat(size - progress);
+			bar = filled + empty;
+		} else {
+			// Bar with progress character
+			const filled = barChar.repeat(progress);
+			const empty = barChar.repeat(Math.max(0, size - progress));
+			bar = filled + progressChar + empty;
+		}
+
+		// Format time based on option
+		const formatTimeFn = timeFormat === "compact" ? this.formatTimeCompact.bind(this) : this.formatTime.bind(this);
+		const currentTimeStr = formatTimeFn(current);
+		const totalTimeStr = formatTimeFn(total);
+
+		// Build result
+		let result = "";
+		if (showTime) {
+			result = `${currentTimeStr} ${bar} ${totalTimeStr}`;
+		} else {
+			result = bar;
+		}
+
+		// Add percentage if requested
+		if (showPercentage) {
+			const percent = Math.round(ratio * 100);
+			result += ` (${percent}%)`;
+		}
+
+		return result;
 	}
 
 	/**
-	 * Get the time of the current track
-	 *
-	 * @returns {Object} The time of the current track
-	 * @example
-	 * const time = player.getTime();
-	 * console.log(`Time: ${time.current}`);
-	 */
-	getTime() {
-		const resource = this.currentResource;
-		const track = this.queue.currentTrack;
-		if (!track || !resource)
-			return {
-				current: 0,
-				total: 0,
-				format: "00:00",
-			};
-
-		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
-
-		return {
-			current: resource?.playbackDuration,
-			total: total,
-			format: this.formatTime(resource.playbackDuration),
-		};
-	}
-
-	/**
-	 * Format the time in the format of HH:MM:SS
-	 *
-	 * @param {number} ms - The time in milliseconds
-	 * @returns {string} The formatted time
-	 * @example
-	 * const formattedTime = player.formatTime(1000);
-	 * console.log(`Formatted time: ${formattedTime}`);
+	 * Format time with leading zeros (00:00 or 00:00:00)
+	 * @param ms - Time in milliseconds
+	 * @returns Formatted time string with leading zeros
 	 */
 	formatTime(ms: number): string {
 		const totalSeconds = Math.floor(ms / 1000);
@@ -1353,6 +1418,72 @@ export class Player extends EventEmitter {
 		parts.push(String(minutes).padStart(2, "0"));
 		parts.push(String(seconds).padStart(2, "0"));
 		return parts.join(":");
+	}
+
+	/**
+	 * Format time without leading zeros for hours (1:22:12 or 3:45)
+	 * @param ms - Time in milliseconds
+	 * @returns Compact formatted time string
+	 */
+	formatTimeCompact(ms: number): string {
+		const totalSeconds = Math.floor(ms / 1000);
+		const hours = Math.floor(totalSeconds / 3600);
+		const minutes = Math.floor((totalSeconds % 3600) / 60);
+		const seconds = totalSeconds % 60;
+
+		if (hours > 0) {
+			return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+		}
+		return `${minutes}:${String(seconds).padStart(2, "0")}`;
+	}
+
+	/**
+	 * Get the time of the current track
+	 *
+	 * @returns {Object} The time of the current track
+	 * @example
+	 * const time = player.getTime();
+	 * console.log(`Time: ${time.current}`);
+	 * console.log(`Formatted: ${time.formatted.current}`); // "1:22:12" or "3:45"
+	 */
+	getTime() {
+		if (this.isLive)
+			return {
+				current: 0,
+				total: 0,
+				format: "LIVE",
+				formatted: {
+					current: "LIVE",
+					total: "LIVE",
+				},
+			};
+
+		const resource = this.currentResource;
+		const track = this.queue.currentTrack;
+		if (!track || !resource) {
+			return {
+				current: 0,
+				total: 0,
+				format: "00:00",
+				formatted: {
+					current: "00:00",
+					total: "00:00",
+				},
+			};
+		}
+
+		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
+		const current = resource.playbackDuration;
+
+		return {
+			current: current,
+			total: total,
+			format: this.formatTime(current),
+			formatted: {
+				current: this.formatTimeCompact(current),
+				total: this.formatTimeCompact(total),
+			},
+		};
 	}
 
 	/**
@@ -1412,7 +1543,7 @@ export class Player extends EventEmitter {
 			clearTimeout(this.leaveTimeout);
 		}
 
-		if (this.options.leaveOnEmpty && this.options.leaveTimeout) {
+		if (this.options.leaveOnEnd && this.options.leaveTimeout) {
 			this.leaveTimeout = setTimeout(() => {
 				this.debug(`[Player] Leaving voice channel after timeoutMs`);
 				this.destroy();
@@ -1427,14 +1558,15 @@ export class Player extends EventEmitter {
 	 * @param {number} position - Position to seek to in milliseconds
 	 * @returns {Promise<boolean>}
 	 * @example
-	 * const refreshed = await player.refeshPlayerResource(true, 1000);
+	 * const refreshed = await player.refreshPlayerResource(true, 1000);
 	 * console.log(`Refreshed: ${refreshed}`);
 	 */
-	public async refeshPlayerResource(applyToCurrent: boolean = true, position: number = -1): Promise<boolean> {
+	public async refreshPlayerResource(applyToCurrent: boolean = true, position: number = -1): Promise<boolean> {
 		if (!applyToCurrent || !this.queue.currentTrack || !(this.isPlaying || this.isPaused)) {
 			return false;
 		}
-
+		if (this.refreshLock) return false;
+		this.refreshLock = true;
 		try {
 			const track = this.queue.currentTrack;
 			this.debug(`[Player] Refreshing player resource for track: ${track.title}`);
@@ -1466,7 +1598,9 @@ export class Player extends EventEmitter {
 					}
 				}
 			} catch (error) {
-				this.debug(`[Player] Error destroying old stream in refeshPlayerResource:`, error);
+				this.debug(`[Player] Error destroying old stream in refreshPlayerResource:`, error);
+			} finally {
+				this.refreshLock = false;
 			}
 
 			this.currentResource = resource;
@@ -1588,6 +1722,18 @@ export class Player extends EventEmitter {
 				this.debug(`[Player] AudioPlayerStatus.AutoPaused`);
 			} else if (newState.status === AudioPlayerStatus.Buffering) {
 				this.debug(`[Player] AudioPlayerStatus.Buffering`);
+				this.lastDuration = this.currentResource?.playbackDuration || 0;
+				this.stuckTimer = setTimeout(() => {
+					if (this.currentResource?.playbackDuration === this.lastDuration) {
+						this.emit("trackStuck", this.currentTrack);
+						this.skip();
+					}
+				}, 10000);
+			} else {
+				if (this.stuckTimer) {
+					clearTimeout(this.stuckTimer);
+					this.stuckTimer = null;
+				}
 			}
 		});
 		this.audioPlayer.on("error", (error) => {
@@ -1612,7 +1758,116 @@ export class Player extends EventEmitter {
 		this.debug(`[Player] Removing plugin: ${name}`);
 		return this.pluginManager.unregister(name);
 	}
+	/**
+	 * Save the current session of the player, including queue, current track, position, volume, loop mode, auto-play mode, and active extensions/plugins.
+	 *
+	 * @returns {PlayerSession} The saved session data
+	 */
+	saveSession(): PlayerSession {
+		return {
+			guildId: this.guildId,
+			currentTrack: this.currentTrack,
+			position: this.currentResource?.playbackDuration || null,
+			volume: this.volume,
+			queue: this.queue.getTracks(),
+			loopMode: this.queue.loop(),
+			autoPlay: this.queue.autoPlay(),
+			extensions: this.extensionManager.getAll().map((ext) => ext.name),
+			plugins: this.pluginManager.getAll().map((plugin) => plugin.name),
+		};
+	}
+	/**
+	 * Set persistence manager for auto-save
+	 */
+	setPersistenceManager(manager: PersistenceManager): void {
+		this.persistenceManager = manager;
+		this.startAutoSaveTracking();
+	}
 
+	private startAutoSaveTracking(): void {
+		// Track state changes for auto-save
+		const trackChanges = () => {
+			this.scheduleAutoSave();
+		};
+
+		this.on("trackStart", trackChanges);
+		this.on("trackEnd", trackChanges);
+		this.on("queueAdd", trackChanges);
+		this.on("queueRemove", trackChanges);
+		this.on("volumeChange", trackChanges);
+
+		// Save periodically
+		setInterval(() => {
+			this.saveIfNeeded();
+		}, this.AUTO_SAVE_INTERVAL);
+	}
+
+	private scheduleAutoSave(): void {
+		if (!this.persistenceManager) return;
+		this.lastSaveTime = Date.now();
+		// Can implement debounced save here
+	}
+
+	private async saveIfNeeded(): Promise<void> {
+		if (!this.persistenceManager) return;
+		if (Date.now() - this.lastSaveTime < this.AUTO_SAVE_INTERVAL) return;
+
+		await this.persistenceManager.savePlayer(this);
+		this.lastSaveTime = Date.now();
+	}
+
+	/**
+	 * Save current player state
+	 */
+	async savePlayer(): Promise<boolean> {
+		if (!this.persistenceManager) {
+			this.debug("[Player] No persistence manager configured");
+			return false;
+		}
+		return await this.persistenceManager.savePlayer(this);
+	}
+
+	/**
+	 * Get serializable state (for manual persistence)
+	 */
+	getSerializableState(): object {
+		return {
+			guildId: this.guildId,
+			queue: this.queue.getTracks(),
+			currentTrack: this.currentTrack,
+			volume: this.volume,
+			isPlaying: this.isPlaying,
+			isPaused: this.isPaused,
+			loopMode: this.queue.loop(),
+			autoPlay: this.queue.autoPlay(),
+			filters: this.filter.getFilterString(),
+			timestamp: Date.now(),
+		};
+	}
+
+	/**
+	 * Restore from saved state
+	 */
+	async restoreState(state: any): Promise<boolean> {
+		try {
+			if (state.volume) this.setVolume(state.volume);
+			if (state.loopMode) this.queue.loop(state.loopMode);
+			if (typeof state.autoPlay === "boolean") this.queue.autoPlay(state.autoPlay);
+			if (state.filters) await this.filter.applyFilters(state.filters.split(","));
+
+			// Restore queue
+			if (state.queue && Array.isArray(state.queue)) {
+				this.queue.clear();
+				this.queue.addMultiple(state.queue);
+			}
+
+			this.debug("[Player] State restored");
+			return true;
+		} catch (error) {
+			this.debug("[Player] Failed to restore state:", error);
+			return false;
+		}
+	}
 	//#endregion
 	//#region Getters
 
@@ -1700,5 +1955,8 @@ export class Player extends EventEmitter {
 		return this.queue.relatedTracks();
 	}
 
+	get isLive(): boolean {
+		return this.currentTrack?.isLive === true;
+	}
 	//#endregion
 }

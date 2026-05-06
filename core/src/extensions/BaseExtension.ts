@@ -14,6 +14,7 @@ import type { Player } from "../structures/Player";
 export abstract class BaseExtension implements SourceExtension {
 	abstract name: string;
 	abstract version: string;
+	priority?: number; // Higher = run first
 	abstract player: Player | null;
 	abstract active(alas: any): boolean | Promise<boolean>;
 

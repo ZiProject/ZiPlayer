@@ -21,6 +21,9 @@ advanced music bots quickly.
 - 🗂️ **Per-guild player system** — Scales across multiple Discord servers
 - 📡 **Event-driven core** — Full lifecycle hooks for customization
 - 💾 **Custom userdata** — Attach context to each player
+- 💿 **Persistence** — Auto-save and restore player state across restarts
+- ⚡ **Smart caching** — Search and stream caching for better performance
+- 🎯 **Queue management** — Advanced queue operations (move, swap, batch remove)
 
 ---
 
@@ -29,7 +32,6 @@ advanced music bots quickly.
 ```bash
 npm install ziplayer @ziplayer/plugin @ziplayer/extension @ziplayer/infinity @discordjs/voice discord.js opusscript
 ```
-
 ---
 
 ## 🚀 Quick Start
@@ -77,17 +79,22 @@ client.login(process.env.DISCORD_TOKEN);
 
 ```
 PlayerManager (global)
+  ├── PersistenceManager (auto-save/load)
   └── Player (per guild)
-        ├── Queue
-        ├── PluginManager
-        ├── ExtensionManager
-        └── FilterManager
+        ├── Queue (advanced operations)
+        ├── PluginManager (with caching & fallback)
+        ├── ExtensionManager (with priority & caching)
+        └── FilterManager (FFmpeg filters)
 ```
 
 ### Flow
 
 ```
 create → connect → play → stream → events → destroy
+         ↓
+    auto-save (periodic)
+         ↓
+    restore on restart
 ```
 
 ---
@@ -100,6 +107,8 @@ create → connect → play → stream → events → destroy
 await player.play("Never Gonna Give You Up", userId);
 await player.play("https://youtube.com/watch?v=...", userId);
 await player.play("tts: Hello world", userId);
+await player.play(searchResult, userId); // Play from SearchResult
+await player.play(null); // Resume from queue
 ```
 
 ### Controls
@@ -108,19 +117,94 @@ await player.play("tts: Hello world", userId);
 player.pause();
 player.resume();
 player.skip();
+player.skip(2); // Skip to track at index 2
 player.stop();
 player.setVolume(100);
-player.loop("track");
+player.loop("track"); // Loop current track
+player.loop("queue"); // Loop entire queue
+player.loop(1); // Number mode: 0=off, 1=track, 2=queue
 player.shuffle();
+player.seek(30000); // Seek to 30 seconds
+player.previous(); // Go back to previous track
 ```
 
-### Queue
+### Queue Management
 
 ```ts
+// Basic operations
 player.queue.add(track);
+player.queue.addMultiple([track1, track2]);
 player.queue.remove(0);
-player.queue.shuffle();
+player.queue.removeMultiple([0, 2, 5]); // Remove multiple indices
+player.queue.removeWhere((t) => t.source === "youtube"); // Remove by condition
 player.queue.clear();
+
+// Queue manipulation
+player.queue.move(3, 0); // Move track at index 3 to front
+player.queue.swap(1, 3); // Swap positions 1 and 3
+player.queue.shuffle();
+
+// Queue inspection
+player.queue.size;
+player.queue.isEmpty;
+player.queue.currentTrack;
+player.queue.nextTrack;
+player.queue.lastTrack;
+player.queue.previousTracks;
+player.queue.getTrack(5);
+player.queue.findTracks((t) => t.duration > 300000);
+player.queue.indexOf(track);
+player.queue.has(track);
+
+// History navigation
+player.queue.jumpToHistory(2); // Go back 2 tracks
+```
+
+---
+
+## 💾 Persistence (Auto-save & Restore)
+
+Automatically save and restore player state across bot restarts.
+
+### Setup
+
+```ts
+const manager = new PlayerManager({
+	plugins: [new YouTubePlugin()],
+	persistence: {
+		enabled: true,
+		provider: "file", // "file", "redis", or "database"
+		filePath: "./player_data",
+		saveInterval: 60000, // Save every minute
+		autoLoad: true, // Auto-load on startup
+		compress: true, // Compress saved data
+		maxBackups: 5, // Keep 5 backups
+	},
+});
+
+// Listen to persistence events
+manager.on("playerSaved", (guildId) => console.log(`Saved ${guildId}`));
+manager.on("playerLoaded", (guildId, data) => console.log(`Loaded ${guildId} from ${new Date(data.lastUpdate)}`));
+```
+
+### Manual Persistence
+
+```ts
+// Save specific player
+await manager.savePlayer(guildId);
+await player.save(); // From player instance
+
+// Save all players
+await manager.saveAllPlayers();
+
+// Load players
+await manager.loadPlayer(guildId, true); // Restore playback position
+await manager.loadAllPlayers();
+
+// Delete saved data
+const persistence = manager.getPersistence();
+await persistence?.deletePlayer(guildId);
+await persistence?.restoreBackup(guildId); // Restore from backup
 ```
 
 ---
@@ -145,6 +229,16 @@ new PlayerManager({
 });
 ```
 
+### Dynamic Plugin Registration
+
+```ts
+// Register plugin after initialization
+manager.registerPlugin(new YouTubePlugin());
+
+// Get all registered plugins
+const plugins = manager.getPlugins();
+```
+
 ---
 
 ## 🧩 Extensions
@@ -165,6 +259,14 @@ const manager = new PlayerManager({
 });
 ```
 
+### Extension Capabilities
+
+Extensions can now provide:
+
+- **Search** — Custom search handling
+- **Stream** — Custom stream sources (Lavalink, etc.)
+- **Before/After play hooks** — Modify playback behavior
+
 ---
 
 ## 🎛️ Audio Filters
@@ -174,6 +276,8 @@ Apply FFmpeg filters in real-time:
 ```ts
 await player.filter.applyFilter("bassboost");
 await player.filter.applyFilter("nightcore");
+await player.filter.applyFilters(["bassboost", "trebleboost"]); // Multiple filters
+await player.filter.getFilterString(); // "bassboost,trebleboost"
 await player.filter.clearAll();
 ```
 
@@ -194,6 +298,8 @@ const player = await manager.create(guildId, {
 	tts: {
 		createPlayer: true,
 		interrupt: true,
+		volume: 100,
+		maxTimeTts: 60000,
 	},
 });
 
@@ -208,8 +314,24 @@ Listen globally via manager:
 
 ```ts
 manager.on("trackStart", (player, track) => {});
+manager.on("trackEnd", (player, track) => {});
 manager.on("queueEnd", (player) => {});
-manager.on("playerError", (player, error) => {});
+manager.on("playerError", (player, error, track) => {});
+manager.on("playerPause", (player, track) => {});
+manager.on("playerResume", (player, track) => {});
+manager.on("volumeChange", (player, oldVolume, newVolume) => {});
+manager.on("queueAdd", (player, track) => {});
+manager.on("queueAddList", (player, tracks) => {});
+manager.on("queueRemove", (player, track, index) => {});
+manager.on("playerDestroy", (player) => {});
+manager.on("ttsStart", (player, payload) => {});
+manager.on("ttsEnd", (player) => {});
+
+// Persistence events
+manager.on("playerSaved", (guildId) => {});
+manager.on("playerLoaded", (guildId, data) => {});
+manager.on("savedAll", (results) => {});
+manager.on("loadedAll", (results) => {});
 ```
 
 ---
@@ -225,14 +347,130 @@ player.queue.autoPlay(true);
 ### Insert next track
 
 ```ts
-await player.insert("song", 0);
+await player.insert("song", 0); // Insert at position 0 (play next)
+await player.insert([track1, track2], 2); // Insert multiple at index 2
 ```
 
-### Save stream
+### Save stream to file
 
 ```ts
 const stream = await player.save(track);
 stream.pipe(fs.createWriteStream("song.mp3"));
+
+// Save with filters
+const filteredStream = await player.save(track, {
+	filter: ["bassboost"],
+	seek: 30000, // Start from 30 seconds
+});
+```
+
+### Progress Bar
+
+```ts
+// Default (compact time format)
+console.log(player.getProgressBar());
+// Output: "1:22:12 ▬▬▬▬▬▬▬▬▬▬🔘▬▬▬▬▬▬▬▬ 1:45:30"
+
+// Custom options
+console.log(
+	player.getProgressBar({
+		size: 30,
+		barChar: "─",
+		progressChar: "●",
+		timeFormat: "full", // "full" or "compact"
+		showPercentage: true,
+	}),
+);
+// Output: "01:22:12 ───────●───────────────────── 01:45:30 (47%)"
+```
+
+### Time Formatting
+
+```ts
+const time = player.getTime();
+console.log(time.formatted.current); // "1:22:12" (compact)
+console.log(time.format); // "01:22:12" (full with leading zeros)
+```
+
+### Batch Operations
+
+```ts
+// Broadcast action to all players
+manager.broadcast("setVolume", 50);
+manager.broadcast("pause");
+
+// Get players by filter
+const activePlayers = manager.getPlayersByFilter((p) => p.isPlaying);
+
+// Delete multiple players
+manager.deleteWhere((p) => p.queue.isEmpty && !p.isPlaying);
+```
+
+---
+
+## ⚙️ Advanced Configuration
+
+### PlayerManager Options
+
+```ts
+const manager = new PlayerManager({
+	plugins: [...],
+	extensions: [...],
+	extractorTimeout: 30000,      // Timeout for stream extraction
+	autoCleanup: true,            // Auto cleanup inactive players
+	cleanupInterval: 120000,      // Cleanup interval (ms)
+	enableSearchCache: true,      // Cache search results
+	enableStatsCollection: true,  // Enable stats events
+	persistence: {...}            // Persistence configuration
+});
+```
+
+### Player Options
+
+```ts
+const player = await manager.create(guildId, {
+	volume: 100,
+	quality: "high",
+	leaveOnEnd: true,
+	leaveOnEmpty: true,
+	leaveTimeout: 100000,
+	selfDeaf: true,
+	selfMute: false,
+	extractorTimeout: 50000,
+	filters: ["bassboost", "nightcore"],
+	tts: {
+		createPlayer: false,
+		interrupt: true,
+		volume: 100,
+		maxTimeTts: 60000,
+	},
+	userdata: { customField: "value" },
+});
+```
+
+---
+
+## 📊 Monitoring & Stats
+
+```ts
+// Get manager statistics
+const stats = manager.getStats();
+console.log({
+	totalPlayers: stats.totalPlayers,
+	activePlayers: stats.activePlayers,
+	pausedPlayers: stats.pausedPlayers,
+	connectedPlayers: stats.connectedPlayers,
+	totalTracksInQueue: stats.totalTracksInQueue,
+});
+
+// Get plugin/extension stats
+console.log(manager.getConfig());
+console.log(player.pluginManager.getStats());
+console.log(player.extensionManager.getStats());
+
+// Clear caches
+player.clearSearchCache();
+player.extensionManager.clearCache("search");
 ```
 
 ---
@@ -243,6 +481,21 @@ stream.pipe(fs.createWriteStream("song.mp3"));
 - Always `await player.connect()` before playing
 - Handle `playerError` events
 - Do not reuse a destroyed player
+- Enable **persistence** for production bots to survive restarts
+- Use **autoCleanup** to prevent memory leaks
+- Set appropriate **extractorTimeout** based on your network (default: 10-50 seconds)
+
+---
+
+## 🌟 Migration Guide
+
+### From v1.x to v2.x
+
+- `player.getTime()` now returns `{ current, total, format, formatted }`
+- `player.getProgressBar()` supports new options
+- `player.queue.remove(index)` removed track is now returned
+- New `queue.removeMultiple()`, `queue.move()`, `queue.swap()` methods
+- Extension hooks now support async properly
 
 ---
 
@@ -257,3 +510,4 @@ stream.pipe(fs.createWriteStream("song.mp3"));
 ## 📄 License
 
 MIT License
+````

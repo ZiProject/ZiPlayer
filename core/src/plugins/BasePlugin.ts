@@ -3,7 +3,7 @@ import { SourcePlugin, Track, SearchResult, StreamInfo } from "../types";
 export abstract class BasePlugin implements SourcePlugin {
 	abstract name: string;
 	abstract version: string;
-	priority?: number = 0;
+	priority?: number = 0; // Higher = run first
 
 	abstract canHandle(query: string): boolean;
 	abstract search(query: string, requestedBy: string): Promise<SearchResult>;

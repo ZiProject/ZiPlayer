@@ -3,7 +3,7 @@ import { Player } from "../structures/Player";
 import type { PlayerManager } from "../structures/PlayerManager";
 import type { AudioFilter } from "./fillter";
 import type { SourcePluginLike } from "./plugin";
-
+import type { PersistenceOptions } from "./persistence";
 /**
  * Represents a music track with metadata and streaming information.
  *
@@ -60,6 +60,7 @@ export interface Track {
 	requestedBy: string;
 	source: string;
 	metadata?: Record<string, any>;
+	isLive?: boolean;
 }
 
 /**
@@ -129,7 +130,7 @@ export interface StreamInfo {
  *     createPlayer: true,
  *     interrupt: true,
  *     volume: 1.0,
- *     Max_Time_TTS: 30000
+ *     maxTimeTts: 30000
  *   }
  * };
  */
@@ -160,7 +161,7 @@ export interface PlayerOptions {
 		/** Default TTS volume multiplier 1 => 100% */
 		volume?: number;
 		/** Max time tts playback Duration */
-		Max_Time_TTS?: number;
+		maxTimeTts?: number;
 	};
 	/**
 	 * Optional per-player extension selection. When provided, only these
@@ -182,11 +183,12 @@ export interface PlayerOptions {
 export interface PlayerManagerOptions {
 	plugins?: SourcePluginLike[];
 	extensions?: any[];
-	/**
-	 * Timeout in milliseconds for manager-level operations (e.g. search)
-	 * when running without a Player instance.
-	 */
 	extractorTimeout?: number;
+	autoCleanup?: boolean; // Auto cleanup inactive players
+	cleanupInterval?: number; // Cleanup interval in ms
+	enableSearchCache?: boolean; // Enable search result caching
+	enableStatsCollection?: boolean; // Enable stats collection events
+	persistence?: PersistenceOptions;
 }
 
 /**
@@ -200,9 +202,13 @@ export interface PlayerManagerOptions {
  * };
  */
 export interface ProgressBarOptions {
-	size?: number;
-	barChar?: string;
-	progressChar?: string;
+	size?: number; // Bar length (default: 20)
+	barChar?: string; // Character for empty bar (default: "▬")
+	progressChar?: string; // Character for progress pointer (default: "🔘")
+	timeFormat?: "compact" | "full"; // Time format style (default: "compact")
+	showPercentage?: boolean; // Show percentage at end (default: false)
+	showTime?: boolean; // Show time labels (default: true)
+	hideProgressChar?: boolean; // Hide progress character (default: false)
 }
 
 /**
@@ -228,6 +234,26 @@ export interface SaveOptions {
 	filter?: AudioFilter[];
 	/** Seek position in milliseconds to start saving from */
 	seek?: number;
+}
+export interface PlayerSession {
+	guildId: string;
+	queue: Track[];
+	currentTrack: Track | null;
+	volume: number;
+	loopMode: LoopMode;
+	autoPlay: boolean;
+	position: number | null;
+	extensions: string[];
+	plugins: string[];
+	userdata?: Record<string, any>;
+}
+
+export interface PlayerStats {
+	totalPlayers: number;
+	activePlayers: number;
+	pausedPlayers: number;
+	connectedPlayers: number;
+	totalTracksInQueue: number;
 }
 
 export type LoopMode = "off" | "track" | "queue";
@@ -337,6 +363,11 @@ export interface ManagerEvents {
 	lyricsCreate: [player: Player, track: Track, lyrics: any];
 	lyricsChange: [player: Player, track: Track, lyrics: any];
 	voiceCreate: [player: Player, evt: any];
+	stats: [stats: PlayerStats];
+	playerSaved: [guildId: string];
+	playerLoaded: [guildId: string, data: any];
+	savedAll: [results: Map<string, boolean>];
+	loadedAll: [results: Map<string, boolean>];
 }
 export interface PlayerEvents {
 	debug: [message: string, ...args: any[]];
@@ -366,8 +397,10 @@ export interface PlayerEvents {
 	filterRemoved: [filter: AudioFilter];
 	/** Emitted when all filters are cleared */
 	filtersCleared: [];
+	trackStuck: [track: Track | null];
 }
 
 export * from "./fillter";
 export * from "./plugin";
 export * from "./extension";
+export * from "./persistence";

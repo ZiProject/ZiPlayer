@@ -181,7 +181,7 @@ export class AttachmentsPlugin extends BasePlugin {
 					const headResponse = await axios.head(query, { timeout: 5000 });
 					const contentLength = headResponse.headers["content-length"];
 					if (contentLength) {
-						fileSize = parseInt(contentLength, 10);
+						fileSize = parseInt(contentLength as string, 10);
 
 						// Check file size limit
 						if (fileSize > this.opts.maxFileSize!) {
@@ -282,11 +282,11 @@ export class AttachmentsPlugin extends BasePlugin {
 
 			this.debug("Download successful:", {
 				contentType,
-				contentLength: contentLength ? parseInt(contentLength, 10) : "unknown",
+				contentLength: contentLength ? parseInt(contentLength as string, 10) : "unknown",
 			});
 
 			// Determine stream type based on content type or file extension
-			const streamType = this.getStreamType(contentType, track.metadata?.extension);
+			const streamType = this.getStreamType(contentType as string, track.metadata?.extension);
 
 			return {
 				stream,
@@ -294,7 +294,7 @@ export class AttachmentsPlugin extends BasePlugin {
 				metadata: {
 					...track.metadata,
 					contentType,
-					contentLength: contentLength ? parseInt(contentLength, 10) : undefined,
+					contentLength: contentLength ? parseInt(contentLength as string, 10) : undefined,
 				},
 			};
 		} catch (error: any) {
