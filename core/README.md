@@ -32,6 +32,7 @@ advanced music bots quickly.
 ```bash
 npm install ziplayer @ziplayer/plugin @ziplayer/extension @ziplayer/infinity @discordjs/voice discord.js opusscript
 ```
+
 ---
 
 ## 🚀 Quick Start
@@ -173,12 +174,19 @@ const manager = new PlayerManager({
 	plugins: [new YouTubePlugin()],
 	persistence: {
 		enabled: true,
-		provider: "file", // "file", "redis", or "database"
 		filePath: "./player_data",
-		saveInterval: 60000, // Save every minute
-		autoLoad: true, // Auto-load on startup
-		compress: true, // Compress saved data
-		maxBackups: 5, // Keep 5 backups
+
+		// Backup management
+		maxBackups: 3, // Keep only 3 backups per player
+		maxTotalBackups: 20, // Keep max 20 total backup files
+		autoCleanupBackupsOnStart: true, // Clean old backups on startup
+		backupRetentionDays: 3, // Delete backups older than 3 days
+
+		// Auto restore
+		autoRestoreOnRestart: true,
+		restoreDelay: 3000,
+
+		compress: true,
 	},
 });
 
@@ -510,4 +518,7 @@ player.extensionManager.clearCache("search");
 ## 📄 License
 
 MIT License
-````
+
+```
+
+```

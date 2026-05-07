@@ -9,6 +9,7 @@ import {
 	ManagerEvents,
 	PlayerStats,
 	PersistenceOptions,
+	DestroyedRecord,
 } from "../types";
 import type { BaseExtension } from "../extensions";
 import { withTimeout } from "../utils/timeout";
@@ -367,36 +368,51 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	private setupEventForwarding(player: Player, guildId: string): void {
-		player.on("willPlay", (track, tracks) => this.emit("willPlay", player, track as Track, tracks as Track[]));
-		player.on("trackStart", (track) => {
-			(player as any)._lastActivity = Date.now();
-			this.emit("trackStart", player, track as Track);
-		});
-		player.on("trackEnd", (track) => this.emit("trackEnd", player, track as Track));
-		player.on("queueEnd", () => this.emit("queueEnd", player));
-		player.on("playerError", (error, track) => this.emit("playerError", player, error, track as Track));
-		player.on("connectionError", (error) => this.emit("connectionError", player, error));
-		player.on("volumeChange", (oldVol, newVol) => this.emit("volumeChange", player, oldVol as number, newVol as number));
-		player.on("queueAdd", (track) => this.emit("queueAdd", player, track as Track));
-		player.on("queueAddList", (tracks) => this.emit("queueAddList", player, tracks as Track[]));
-		player.on("queueRemove", (track, index) => this.emit("queueRemove", player, track as Track, index as number));
-		player.on("playerPause", (track) => this.emit("playerPause", player, track as Track));
-		player.on("playerResume", (track) => this.emit("playerResume", player, track as Track));
-		player.on("playerStop", () => this.emit("playerStop", player));
+		const forwardEvents = {
+			willPlay: "willPlay",
+			trackStart: "trackStart",
+			trackEnd: "trackEnd",
+			queueEnd: "queueEnd",
+			playerError: "playerError",
+			connectionError: "connectionError",
+			volumeChange: "volumeChange",
+			queueAdd: "queueAdd",
+			queueAddList: "queueAddList",
+			queueRemove: "queueRemove",
+			playerPause: "playerPause",
+			playerResume: "playerResume",
+			playerStop: "playerStop",
+			ttsStart: "ttsStart",
+			ttsEnd: "ttsEnd",
+		} as const satisfies Record<string, keyof ManagerEvents>;
+
+		for (const [sourceEvent, targetEvent] of Object.entries(forwardEvents) as [
+			keyof typeof forwardEvents,
+			keyof ManagerEvents,
+		][]) {
+			player.on(sourceEvent, (...args: any[]) => {
+				if (sourceEvent === "trackStart") {
+					player._lastActivity = Date.now();
+				}
+
+				(this.emit as any)(targetEvent, player, ...args);
+			});
+		}
+
 		player.on("playerDestroy", () => {
 			this.emit("playerDestroy", player);
+
 			this.players.delete(guildId);
+
 			this.debug(`Player destroyed for guildId: ${guildId}`);
 		});
-		player.on("ttsStart", (payload) => this.emit("ttsStart", player, payload));
-		player.on("ttsEnd", () => this.emit("ttsEnd", player));
+
 		player.on("debug", (...args) => {
 			if (this.listenerCount("debug") > 0) {
 				this.emit("debug", ...args);
 			}
 		});
 	}
-
 	/**
 	 * Get an existing player for a guild
 	 *
@@ -715,24 +731,42 @@ export class PlayerManager extends EventEmitter {
 	private initPersistence(persistenceOptions: PersistenceOptions): void {
 		this.persistenceManager = new PersistenceManager(this, persistenceOptions);
 
-		// Forward persistence events
-		this.persistenceManager.on("playerSaved", (guildId) => {
-			this.emit("playerSaved", guildId);
-		});
+		const forwardEvents = {
+			playerSaved: "playerSaved",
+			playerLoaded: "playerLoaded",
 
-		this.persistenceManager.on("playerLoaded", (guildId, data) => {
-			this.emit("playerLoaded", guildId, data);
-		});
+			playerSkipped: "RTSkipped",
+			playerMarkedDestroyed: "RTMarkedDestroyed",
+			playerDestroyedCleared: "RTDestroyedCleared",
 
-		this.persistenceManager.on("savedAll", (results) => {
-			this.emit("savedAll", results);
-		});
+			savedAll: "savedAll",
+			loadedAll: "loadedAll",
 
-		this.persistenceManager.on("loadedAll", (results) => {
-			this.emit("loadedAll", results);
-		});
+			backupsCleaned: "backupsCleaned",
+			allBackupsCleaned: "allBackupsCleaned",
+
+			backupStats: "backupStats",
+			backupCleanupDone: "backupCleanupDone",
+		} as const satisfies Record<string, keyof ManagerEvents>;
+
+		for (const [sourceEvent, targetEvent] of Object.entries(forwardEvents) as [
+			keyof typeof forwardEvents,
+			keyof ManagerEvents,
+		][]) {
+			this.persistenceManager.on(sourceEvent, (...args: any[]) => {
+				this.emit(targetEvent, ...(args as ManagerEvents[typeof targetEvent]));
+			});
+		}
 
 		this.debug("Persistence manager initialized");
+	}
+
+	isAutoRestoreEnabled(): boolean {
+		return this.persistenceManager?.isAutoRestoreEnabled() ?? false;
+	}
+
+	getDestroyedPlayers(): DestroyedRecord[] {
+		return this.persistenceManager?.getDestroyedPlayers() ?? [];
 	}
 
 	/**

@@ -363,11 +363,20 @@ export interface ManagerEvents {
 	lyricsCreate: [player: Player, track: Track, lyrics: any];
 	lyricsChange: [player: Player, track: Track, lyrics: any];
 	voiceCreate: [player: Player, evt: any];
+	
+	// Persistence events
 	stats: [stats: PlayerStats];
 	playerSaved: [guildId: string];
 	playerLoaded: [guildId: string, data: any];
 	savedAll: [results: Map<string, boolean>];
 	loadedAll: [results: Map<string, boolean>];
+	RTSkipped: [guildId: string, reason: string];
+	RTMarkedDestroyed: [guildId: string];
+	RTDestroyedCleared: [guildId: string];
+	backupsCleaned: [guildId: string, count: number];
+	allBackupsCleaned: [count: number];
+	backupStats: [stats: any];
+	backupCleanupDone: [];
 }
 export interface PlayerEvents {
 	debug: [message: string, ...args: any[]];

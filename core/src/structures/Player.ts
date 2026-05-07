@@ -94,6 +94,7 @@ export class Player extends EventEmitter {
 	public pluginManager: PluginManager;
 	public extensionManager: ExtensionManager;
 	public userdata?: Record<string, any>;
+	public _lastActivity: number = Date.now();
 	private manager: PlayerManager;
 	private leaveTimeout: NodeJS.Timeout | null = null;
 	private currentResource: AudioResource | null = null;
@@ -1495,6 +1496,11 @@ export class Player extends EventEmitter {
 	 */
 	destroy(): void {
 		this.debug(`[Player] destroy called`);
+
+		if (this.manager.getPersistence()) {
+			this.manager.getPersistence()?.markPlayerDestroyed(this.guildId, "player_destroy_called");
+		}
+
 		if (this.leaveTimeout) {
 			clearTimeout(this.leaveTimeout);
 			this.leaveTimeout = null;
