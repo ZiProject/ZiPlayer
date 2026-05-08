@@ -23,6 +23,8 @@ advanced music bots quickly.
 - 💾 **Custom userdata** — Attach context to each player
 - ⚡ **Smart caching** — Search and stream caching for better performance
 - 🎯 **Queue management** — Advanced queue operations (move, swap, batch remove)
+- 💹 **Preload** - Auto Preload next Track
+- 🔃 **Crossfade** - Suport crossfade for new/slip Track
 
 ---
 
@@ -391,9 +393,41 @@ const player = await manager.create(guildId, {
 		volume: 100,
 		maxTimeTts: 60000,
 	},
+	// Runtime profile
+	lowPerformance: false,
+	preload: {
+		enabled: true,
+		autoDisableInLowPerformance: true,
+	},
+	crossfade: {
+		enabled: undefined, // omit to let autoEnable decide
+		autoEnable: true,
+		autoDisableInLowPerformance: true,
+		durationMs: 500,
+	},
 	userdata: { customField: "value" },
 });
 ```
+
+### Crossfade + Low Performance
+
+```ts
+// Auto mode: crossfade/preload enabled unless lowPerformance is on
+const player = await manager.create(guildId, {
+	lowPerformance: false,
+	preload: { enabled: true, autoDisableInLowPerformance: true },
+	crossfade: { autoEnable: true, autoDisableInLowPerformance: true, durationMs: 4000 },
+});
+
+// Low performance mode: auto disable preload and crossfade
+const litePlayer = await manager.create(guildId, {
+	lowPerformance: true,
+	preload: { enabled: true, autoDisableInLowPerformance: true }, // resolved: disabled
+	crossfade: { autoEnable: true, autoDisableInLowPerformance: true }, // resolved: disabled
+});
+```
+
+> Crossfade is applied when switching to the next track and when calling `player.skip()`.
 
 ---
 

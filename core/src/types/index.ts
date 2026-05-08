@@ -187,6 +187,51 @@ export interface PlayerOptions {
 	 * - Multiple filters can be combined
 	 */
 	filters?: (string | AudioFilter)[];
+	/**
+	 * Enable low performance mode.
+	 * When enabled, heavy features such as preload and crossfade can be auto-disabled.
+	 */
+	lowPerformance?: boolean;
+	/**
+	 * Preload behavior configuration.
+	 */
+	preload?: {
+		/**
+		 * Enable/disable preload explicitly.
+		 * Default: true
+		 */
+		enabled?: boolean;
+		/**
+		 * Auto disable preload when lowPerformance is enabled.
+		 * Default: true
+		 */
+		autoDisableInLowPerformance?: boolean;
+	};
+	/**
+	 * Crossfade behavior configuration.
+	 */
+	crossfade?: {
+		/**
+		 * Enable/disable crossfade explicitly.
+		 * If omitted and autoEnable=true, ZiPlayer may enable it automatically.
+		 */
+		enabled?: boolean;
+		/**
+		 * Auto enable crossfade if runtime profile allows.
+		 * Default: true
+		 */
+		autoEnable?: boolean;
+		/**
+		 * Auto disable crossfade when lowPerformance is enabled.
+		 * Default: true
+		 */
+		autoDisableInLowPerformance?: boolean;
+		/**
+		 * Target crossfade duration in milliseconds.
+		 * Default: 5000
+		 */
+		durationMs?: number;
+	};
 }
 
 export interface PlayerManagerOptions {

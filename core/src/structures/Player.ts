@@ -138,9 +138,12 @@ export class Player extends EventEmitter {
 		isLoading: false,
 		loadPromise: null,
 	};
-	private preloadQueue: Track | null = null;
 	private preloadLock = false;
-	private isLoadingNext = false;
+	private preloadEnabled = true;
+	private crossfadeEnabled = true;
+	private crossfadeDurationMs = 500;
+	private lowPerformanceMode = false;
+	private crossfadeTransitionLock = false;
 
 	// Cache for search results to avoid duplicate calls
 	private searchCache: LRUCache<string, SearchResult>;
@@ -179,6 +182,33 @@ export class Player extends EventEmitter {
 				...(options?.tts || {}),
 			},
 		};
+		this.lowPerformanceMode = this.options.lowPerformance ?? this.options.quality === "low";
+
+		const preloadOptions = this.options.preload || {};
+		const preloadAutoDisable = preloadOptions.autoDisableInLowPerformance ?? true;
+		this.preloadEnabled = preloadOptions.enabled ?? true;
+		if (this.lowPerformanceMode && preloadAutoDisable) {
+			this.preloadEnabled = false;
+		}
+
+		const crossfadeOptions = this.options.crossfade || {};
+		const crossfadeAutoEnable = crossfadeOptions.autoEnable ?? true;
+		const crossfadeAutoDisable = crossfadeOptions.autoDisableInLowPerformance ?? true;
+		this.crossfadeDurationMs = Math.max(0, crossfadeOptions.durationMs ?? 5000);
+
+		if (typeof crossfadeOptions.enabled === "boolean") {
+			this.crossfadeEnabled = crossfadeOptions.enabled;
+		} else {
+			this.crossfadeEnabled = crossfadeAutoEnable;
+		}
+
+		if (this.lowPerformanceMode && crossfadeAutoDisable) {
+			this.crossfadeEnabled = false;
+		}
+
+		this.debug(
+			`[Player] Runtime options resolved: lowPerformance=${this.lowPerformanceMode}, preload=${this.preloadEnabled}, crossfade=${this.crossfadeEnabled} (${this.crossfadeDurationMs}ms)`,
+		);
 		this.filter = new FilterManager(this, this.manager);
 		this.extensionManager = new ExtensionManager(this, this.manager);
 		this.pluginManager = new PluginManager(this, this.manager, {
@@ -545,6 +575,11 @@ export class Player extends EventEmitter {
 	 * Main preload method - only one at a time
 	 */
 	private async preloadNextTrack(): Promise<void> {
+		if (!this.preloadEnabled) {
+			this.debug(`[Preload] Disabled by options/runtime profile`);
+			return;
+		}
+
 		// Prevent concurrent preloads
 		if (this.preloadLock) {
 			this.debug(`[Preload] Already preloading, skipping`);
@@ -755,6 +790,11 @@ export class Player extends EventEmitter {
 	 * Preload next track with proper error handling and cleanup
 	 */
 	async preloadNext(): Promise<void> {
+		if (!this.preloadEnabled) {
+			this.debug(`[Preload] Disabled by options/runtime profile`);
+			return;
+		}
+
 		this.cancelPreload();
 
 		const next = this.queue.nextTrack;
@@ -839,6 +879,57 @@ export class Player extends EventEmitter {
 			this.cancelPreload();
 		} finally {
 			this.isPreloading = false;
+		}
+	}
+
+	private async fadeResourceVolume(resource: AudioResource, from: number, to: number, durationMs: number): Promise<void> {
+		if (!resource.volume) return;
+
+		const safeDuration = Math.max(0, durationMs);
+		if (safeDuration === 0) {
+			resource.volume.setVolume(to);
+			return;
+		}
+
+		const steps = Math.max(1, Math.floor(safeDuration / 50));
+		const stepDuration = Math.max(20, Math.floor(safeDuration / steps));
+		const delta = (to - from) / steps;
+
+		resource.volume.setVolume(from);
+		for (let i = 1; i <= steps; i++) {
+			await new Promise((resolve) => setTimeout(resolve, stepDuration));
+			resource.volume.setVolume(from + delta * i);
+		}
+	}
+
+	private async applyCrossfadeIn(resource: AudioResource): Promise<void> {
+		if (!this.crossfadeEnabled || !resource.volume) return;
+		const targetVolume = this.volume / 100;
+		await this.fadeResourceVolume(resource, 0, targetVolume, this.crossfadeDurationMs);
+	}
+
+	private async applyCrossfadeOutCurrent(): Promise<void> {
+		if (!this.crossfadeEnabled) return;
+		const current = this.currentSlot.resource || this.currentResource;
+		if (!current?.volume) return;
+		const currentVolume = current.volume.volume ?? this.volume / 100;
+		await this.fadeResourceVolume(current, currentVolume, 0, this.crossfadeDurationMs);
+	}
+
+	private async crossfadeSkipAndStop(): Promise<void> {
+		if (!this.crossfadeEnabled) {
+			this.audioPlayer.stop();
+			return;
+		}
+		if (this.crossfadeTransitionLock) {
+			return;
+		}
+		this.crossfadeTransitionLock = true;
+		try {
+			await this.applyCrossfadeOutCurrent();
+			this.audioPlayer.stop();
+		} finally {
+			this.crossfadeTransitionLock = false;
 		}
 	}
 
@@ -1086,12 +1177,13 @@ export class Player extends EventEmitter {
 
 				// Apply volume
 				if (currentResource.volume) {
-					currentResource.volume.setVolume(this.volume / 100);
+					currentResource.volume.setVolume(this.crossfadeEnabled ? 0 : this.volume / 100);
 				}
 
 				// Play
 				this.audioPlayer.play(currentResource);
 				await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
+				await this.applyCrossfadeIn(currentResource);
 
 				// Start preloading next track (async, don't await)
 				this.preloadNextTrack().catch((err) => {
@@ -1145,7 +1237,7 @@ export class Player extends EventEmitter {
 
 		// Apply volume
 		if (currentResource.volume) {
-			currentResource.volume.setVolume(this.volume / 100);
+			currentResource.volume.setVolume(this.crossfadeEnabled ? 0 : this.volume / 100);
 		}
 
 		// Play
@@ -1153,6 +1245,7 @@ export class Player extends EventEmitter {
 
 		try {
 			await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
+			await this.applyCrossfadeIn(currentResource);
 
 			// Start preloading next track
 			this.preloadNextTrack().catch((err) => {
@@ -1204,13 +1297,14 @@ export class Player extends EventEmitter {
 
 			// Apply volume
 			if (resource.volume) {
-				resource.volume.setVolume(this.volume / 100);
+				resource.volume.setVolume(this.crossfadeEnabled ? 0 : this.volume / 100);
 			}
 
 			// Play
 			this.audioPlayer.stop(true);
 			this.audioPlayer.play(resource);
 			await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
+			await this.applyCrossfadeIn(resource);
 
 			// Preload next (async)
 			this.preloadNextTrack().catch((err) => {
@@ -1565,8 +1659,11 @@ export class Player extends EventEmitter {
 
 			if (this.isPlaying || this.isPaused) {
 				this.skipLoop = true;
-				// Just stop - preload will be used in playNext -> startTrack
-				return this.audioPlayer.stop();
+				void this.crossfadeSkipAndStop().catch((error) => {
+					this.debug(`[Player] crossfade skip error:`, error);
+					this.audioPlayer.stop();
+				});
+				return true;
 			}
 
 			return true;

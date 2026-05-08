@@ -44,6 +44,7 @@ A comprehensive guide for AI assistants and developers working with ZiPlayer - a
 | `PluginManager`    | Audio source resolution, streaming, fallback logic |
 | `ExtensionManager` | Custom hooks (search, stream, before/after play)   |
 | `FilterManager`    | FFmpeg audio effects                               |
+| `StreamManager`    | Centralized stream management/Auto cleanup         |
 
 ---
 
@@ -113,6 +114,29 @@ interface PlayerManagerOptions {
 	enableStatsCollection?: boolean; // Default: false
 }
 ```
+
+#### Player Runtime Options (Performance Profile)
+
+```typescript
+interface PlayerOptions {
+	lowPerformance?: boolean; // Default: false (or true when quality === "low")
+	preload?: {
+		enabled?: boolean; // Default: true
+		autoDisableInLowPerformance?: boolean; // Default: true
+	};
+	crossfade?: {
+		enabled?: boolean; // Explicit on/off
+		autoEnable?: boolean; // Default: true when enabled is undefined
+		autoDisableInLowPerformance?: boolean; // Default: true
+		durationMs?: number; // Default: 5000
+	};
+}
+```
+
+- If `lowPerformance=true`, preload and crossfade are auto-disabled by default.
+- `crossfade.autoEnable=true` allows crossfade to be enabled automatically when `crossfade.enabled` is not explicitly set.
+- You can still force behavior by setting `enabled` flags directly.
+- Runtime behavior: crossfade is used for next-track transitions and `skip()`.
 
 #### Key Methods
 
@@ -242,6 +266,12 @@ client.on("messageCreate", async (msg) => {
 		const query = msg.content.slice(6);
 		await player.play(query, msg.author.id);
 	}
+});
+
+const player = await manager.create(guildId, {
+	lowPerformance: false,
+	preload: { enabled: true, autoDisableInLowPerformance: true },
+	crossfade: { autoEnable: true, autoDisableInLowPerformance: true, durationMs: 5000 },
 });
 ```
 
