@@ -45,6 +45,7 @@ export interface PluginOptions {
 export class YouTubePlugin extends BasePlugin {
 	name = "youtube";
 	version = "1.2.0";
+	priority = 10; // Higher priority to handle YouTube URLs before more generic plugins
 
 	private client!: Innertube;
 	private searchClient!: Innertube;
@@ -257,6 +258,7 @@ export class YouTubePlugin extends BasePlugin {
 		if (this.validate(query)) {
 			const listId = this.extractListId(query);
 			this.debug("List ID:", listId);
+
 			if (listId) {
 				if (this.isMixListId(listId)) {
 					const anchorVideoId = this.extractVideoId(query);
@@ -305,17 +307,37 @@ export class YouTubePlugin extends BasePlugin {
 				}
 			}
 
+			// FIX: Handle single video URL correctly - get the specific video info
 			const videoId = this.extractVideoId(query);
-			if (!videoId) throw new Error("Invalid YouTube URL");
-			const res: any = await this.searchClient.search(videoId, {
+			this.debug("Video ID:", videoId);
+
+			if (videoId) {
+				try {
+					// Get the specific video info directly
+					const info: any = await (this.searchClient as any).getInfo(videoId);
+					this.debug("Video info:", info);
+
+					if (info && info.basic_info) {
+						const track = this.buildTrack(info.basic_info, requestedBy);
+						this.debug("Track created:", track);
+						return { tracks: [track] };
+					}
+				} catch (error) {
+					this.debug("Failed to get video info:", error);
+					// Fall through to search as backup
+				}
+			}
+
+			// If we get here, either no videoId or getInfo failed - try search as fallback
+			const res: any = await this.searchClient.search(videoId || query, {
 				type: "video" as any,
 			});
 			const items: any[] = res?.items || res?.videos || res?.results || [];
-
 			const tracks: Track[] = items.slice(0, this.options?.searchLimit ?? 10).map((v: any) => this.buildTrack(v, requestedBy));
 			return { tracks };
 		}
 
+		// Rest of the method for non-URL queries...
 		if (this.canHandle(query) === false) return { tracks: [] };
 
 		// Text search → return up to 10 video tracks
@@ -394,6 +416,9 @@ export class YouTubePlugin extends BasePlugin {
 		if (!track.url && !track.id && !this.validate(track.url || "")) {
 			throw new Error("Track must have a URL or ID");
 		}
+		const expectedTitle = track.title.toLowerCase().trim();
+		const expectedId = this.extractVideoId(track.url) || track.id;
+
 		if (this.options?.fistStream && typeof this.options.fistStream === "function") {
 			this.debug("🔁 Attempting user-provided fist stream method");
 			let fbStream = null;
@@ -417,10 +442,24 @@ export class YouTubePlugin extends BasePlugin {
 
 		if (!id) throw new Error("Invalid track id");
 
+		if (expectedId && expectedId !== id) {
+			this.debug(`⚠️ ID mismatch! Expected: ${expectedId}, Got: ${id}`);
+		}
 		try {
 			this.debug("🚀 Attempting sabr download for video ID:", id);
-			// Use sabr download for better quality and reliability
-			// Pass optimized options for memory efficiency
+			const videoInfo = await this.client.getInfo(id);
+			const actualTitle = videoInfo.basic_info?.title || "";
+			const similarity = this.calculateTitleSimilarity(expectedTitle, actualTitle);
+
+			if (similarity < 60 && track.url && this.validate(track.url)) {
+				this.debug(`⚠️ Title mismatch! Expected "${expectedTitle}" but got "${actualTitle}"`);
+				throw new Error(`Wrong video: Expected "${track.title}" but got "${actualTitle}"`);
+			}
+
+			this.debug(`Title similarity: ${similarity}%`);
+			this.debug(`Expected: "${expectedTitle}"`);
+			this.debug(`Actual: "${actualTitle}"`);
+
 			const sabrOptions = { ...DEFAULT_SABR_OPTIONS };
 			const { stream, title, format } = await createSabrStream(id, this.client, sabrOptions);
 
@@ -615,5 +654,28 @@ export class YouTubePlugin extends BasePlugin {
 		} catch {
 			return null;
 		}
+	}
+	private calculateTitleSimilarity(title1: string, title2: string): number {
+		const normalize = (str: string) =>
+			str
+				.toLowerCase()
+				.replace(/[\(\[].*?[\)\]]/g, "")
+				.replace(/[^\w\s]/g, "")
+				.replace(/\s+/g, " ")
+				.trim();
+
+		const norm1 = normalize(title1);
+		const norm2 = normalize(title2);
+
+		if (norm1 === norm2) return 100;
+		if (norm1.includes(norm2) || norm2.includes(norm1)) return 85;
+
+		// Word overlap
+		const words1 = new Set(norm1.split(" "));
+		const words2 = new Set(norm2.split(" "));
+		const intersection = new Set([...words1].filter((x) => words2.has(x)));
+		const union = new Set([...words1, ...words2]);
+
+		return (intersection.size / union.size) * 100;
 	}
 }

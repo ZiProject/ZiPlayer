@@ -21,6 +21,16 @@ advanced music bots quickly.
 - 🗂️ **Per-guild player system** — Scales across multiple Discord servers
 - 📡 **Event-driven core** — Full lifecycle hooks for customization
 - 💾 **Custom userdata** — Attach context to each player
+- ⚡ **Smart caching** — Search and stream caching for better performance
+- 🎯 **Queue management** — Advanced queue operations (move, swap, batch remove)
+- 💹 **Preload** - Auto Preload next Track
+- 🔃 **Crossfade** - Suport crossfade for new/slip Track
+- 🧠 **Transition Engine** - BPM/genre-aware crossfade (chill → long fade, EDM → short fade) with beat-aligned entry instead of
+  blind time-based fading
+- 🔄 **Anti-Stuck Recovery 2.0** - Automatic stream failure recovery: reuse preload → fallback plugin → reduce quality →
+  controlled skip (no chaotic skipping)
+- 🔊 **Loudness Normalization** - LUFS-based normalization prevents sudden volume jumps between tracks, with gentle limiter to
+  avoid distortion
 
 ---
 
@@ -78,16 +88,20 @@ client.login(process.env.DISCORD_TOKEN);
 ```
 PlayerManager (global)
   └── Player (per guild)
-        ├── Queue
-        ├── PluginManager
-        ├── ExtensionManager
-        └── FilterManager
+        ├── Queue (advanced operations)
+        ├── PluginManager (with caching & fallback)
+        ├── ExtensionManager (with priority & caching)
+        └── FilterManager (FFmpeg filters)
 ```
 
 ### Flow
 
 ```
 create → connect → play → stream → events → destroy
+         ↓
+    auto-save (periodic)
+         ↓
+    restore on restart
 ```
 
 ---
@@ -100,6 +114,8 @@ create → connect → play → stream → events → destroy
 await player.play("Never Gonna Give You Up", userId);
 await player.play("https://youtube.com/watch?v=...", userId);
 await player.play("tts: Hello world", userId);
+await player.play(searchResult, userId); // Play from SearchResult
+await player.play(null); // Resume from queue
 ```
 
 ### Controls
@@ -108,19 +124,47 @@ await player.play("tts: Hello world", userId);
 player.pause();
 player.resume();
 player.skip();
+player.skip(2); // Skip to track at index 2
 player.stop();
 player.setVolume(100);
-player.loop("track");
+player.loop("track"); // Loop current track
+player.loop("queue"); // Loop entire queue
+player.loop(1); // Number mode: 0=off, 1=track, 2=queue
 player.shuffle();
+player.seek(30000); // Seek to 30 seconds
+player.previous(); // Go back to previous track
 ```
 
-### Queue
+### Queue Management
 
 ```ts
+// Basic operations
 player.queue.add(track);
+player.queue.addMultiple([track1, track2]);
 player.queue.remove(0);
-player.queue.shuffle();
+player.queue.removeMultiple([0, 2, 5]); // Remove multiple indices
+player.queue.removeWhere((t) => t.source === "youtube"); // Remove by condition
 player.queue.clear();
+
+// Queue manipulation
+player.queue.move(3, 0); // Move track at index 3 to front
+player.queue.swap(1, 3); // Swap positions 1 and 3
+player.queue.shuffle();
+
+// Queue inspection
+player.queue.size;
+player.queue.isEmpty;
+player.queue.currentTrack;
+player.queue.nextTrack;
+player.queue.lastTrack;
+player.queue.previousTracks;
+player.queue.getTrack(5);
+player.queue.findTracks((t) => t.duration > 300000);
+player.queue.indexOf(track);
+player.queue.has(track);
+
+// History navigation
+player.queue.jumpToHistory(2); // Go back 2 tracks
 ```
 
 ---
@@ -145,6 +189,16 @@ new PlayerManager({
 });
 ```
 
+### Dynamic Plugin Registration
+
+```ts
+// Register plugin after initialization
+manager.registerPlugin(new YouTubePlugin());
+
+// Get all registered plugins
+const plugins = manager.getPlugins();
+```
+
 ---
 
 ## 🧩 Extensions
@@ -165,6 +219,14 @@ const manager = new PlayerManager({
 });
 ```
 
+### Extension Capabilities
+
+Extensions can now provide:
+
+- **Search** — Custom search handling
+- **Stream** — Custom stream sources (Lavalink, etc.)
+- **Before/After play hooks** — Modify playback behavior
+
 ---
 
 ## 🎛️ Audio Filters
@@ -174,6 +236,8 @@ Apply FFmpeg filters in real-time:
 ```ts
 await player.filter.applyFilter("bassboost");
 await player.filter.applyFilter("nightcore");
+await player.filter.applyFilters(["bassboost", "trebleboost"]); // Multiple filters
+await player.filter.getFilterString(); // "bassboost,trebleboost"
 await player.filter.clearAll();
 ```
 
@@ -194,6 +258,8 @@ const player = await manager.create(guildId, {
 	tts: {
 		createPlayer: true,
 		interrupt: true,
+		volume: 100,
+		maxTimeTts: 60000,
 	},
 });
 
@@ -208,8 +274,19 @@ Listen globally via manager:
 
 ```ts
 manager.on("trackStart", (player, track) => {});
+manager.on("trackEnd", (player, track) => {});
 manager.on("queueEnd", (player) => {});
-manager.on("playerError", (player, error) => {});
+manager.on("playerError", (player, error, track) => {});
+manager.on("playerPause", (player, track) => {});
+manager.on("playerResume", (player, track) => {});
+manager.on("volumeChange", (player, oldVolume, newVolume) => {});
+manager.on("queueAdd", (player, track) => {});
+manager.on("queueAddList", (player, tracks) => {});
+manager.on("queueRemove", (player, track, index) => {});
+manager.on("playerDestroy", (player) => {});
+manager.on("ttsStart", (player, payload) => {});
+manager.on("ttsEnd", (player) => {});
+manager.on("stats", (PlayerStats) => {});
 ```
 
 ---
@@ -225,14 +302,189 @@ player.queue.autoPlay(true);
 ### Insert next track
 
 ```ts
-await player.insert("song", 0);
+await player.insert("song", 0); // Insert at position 0 (play next)
+await player.insert([track1, track2], 2); // Insert multiple at index 2
 ```
 
-### Save stream
+### Save stream to file
 
 ```ts
 const stream = await player.save(track);
 stream.pipe(fs.createWriteStream("song.mp3"));
+
+// Save with filters
+const filteredStream = await player.save(track, {
+	filter: ["bassboost"],
+	seek: 30000, // Start from 30 seconds
+});
+```
+
+### Progress Bar
+
+```ts
+// Default (compact time format)
+console.log(player.getProgressBar());
+// Output: "1:22:12 ▬▬▬▬▬▬▬▬▬▬🔘▬▬▬▬▬▬▬▬ 1:45:30"
+
+// Custom options
+console.log(
+	player.getProgressBar({
+		size: 30,
+		barChar: "─",
+		progressChar: "●",
+		timeFormat: "full", // "full" or "compact"
+		showPercentage: true,
+	}),
+);
+// Output: "01:22:12 ───────●───────────────────── 01:45:30 (47%)"
+```
+
+### Time Formatting
+
+```ts
+const time = player.getTime();
+console.log(time.formatted.current); // "1:22:12" (compact)
+console.log(time.format); // "01:22:12" (full with leading zeros)
+```
+
+### Batch Operations
+
+```ts
+// Broadcast action to all players
+manager.broadcast("setVolume", 50);
+manager.broadcast("pause");
+
+// Get players by filter
+const activePlayers = manager.getPlayersByFilter((p) => p.isPlaying);
+
+// Delete multiple players
+manager.deleteWhere((p) => p.queue.isEmpty && !p.isPlaying);
+```
+
+---
+
+## ⚙️ Advanced Configuration
+
+### PlayerManager Options
+
+```ts
+const manager = new PlayerManager({
+	plugins: [...],
+	extensions: [...],
+	extractorTimeout: 30000,      // Timeout for stream extraction
+	autoCleanup: true,            // Auto cleanup inactive players
+	cleanupInterval: 120000,      // Cleanup interval (ms)
+	enableSearchCache: true,      // Cache search results
+	enableStatsCollection: true,  // Enable stats events
+	persistence: {...}            // Persistence configuration
+});
+```
+
+### Player Options
+
+```ts
+const player = await manager.create(guildId, {
+	volume: 100,
+	quality: "high",
+	leaveOnEnd: true,
+	leaveOnEmpty: true,
+	leaveTimeout: 100000,
+	selfDeaf: true,
+	selfMute: false,
+	extractorTimeout: 50000,
+	filters: ["bassboost", "nightcore"],
+	tts: {
+		createPlayer: false,
+		interrupt: true,
+		volume: 100,
+		maxTimeTts: 60000,
+	},
+	// Runtime profile
+	lowPerformance: false,
+	preload: {
+		enabled: true,
+		autoDisableInLowPerformance: true,
+	},
+	crossfade: {
+		enabled: undefined, // omit to let autoEnable decide
+		autoEnable: true,
+		autoDisableInLowPerformance: true,
+		durationMs: 5000,
+	},
+	smartTransition: {
+		enabled: true,
+		genreAware: true,
+		beatAlign: true,
+		baseDurationMs: 5000,
+		minDurationMs: 1200,
+		maxDurationMs: 8000,
+		genreDurations: { chill: 7000, edm: 2200 },
+		beatAlignMaxWaitMs: 1200,
+	},
+	antiStuck: {
+		enabled: true,
+		maxRetries: 2,
+		retryDelayMs: 900,
+		reusePreloadFirst: true,
+		reduceQualityOnRetry: true,
+		controlledSkipThreshold: 3,
+	},
+	loudnessNormalization: {
+		enabled: true,
+		targetLUFS: -14,
+		maxBoostDb: 8,
+		maxCutDb: 10,
+		limiterCeiling: 0.95,
+	},
+	userdata: { customField: "value" },
+});
+```
+
+### Crossfade + Low Performance
+
+```ts
+// Auto mode: crossfade/preload enabled unless lowPerformance is on
+const player = await manager.create(guildId, {
+	lowPerformance: false,
+	preload: { enabled: true, autoDisableInLowPerformance: true },
+	crossfade: { autoEnable: true, autoDisableInLowPerformance: true, durationMs: 4000 },
+});
+
+// Low performance mode: auto disable preload and crossfade
+const litePlayer = await manager.create(guildId, {
+	lowPerformance: true,
+	preload: { enabled: true, autoDisableInLowPerformance: true }, // resolved: disabled
+	crossfade: { autoEnable: true, autoDisableInLowPerformance: true }, // resolved: disabled
+});
+```
+
+> Crossfade is applied when switching to the next track and when calling `player.skip()`. Smart transition adapts fade by
+> `metadata.genre` and can align to beat using `metadata.bpm`. Loudness normalization uses `metadata.lufs` when available and
+> applies a limiter ceiling.
+
+---
+
+## 📊 Monitoring & Stats
+
+```ts
+// Get manager statistics
+const stats = manager.getStats();
+console.log({
+	totalPlayers: stats.totalPlayers,
+	activePlayers: stats.activePlayers,
+	pausedPlayers: stats.pausedPlayers,
+	connectedPlayers: stats.connectedPlayers,
+	totalTracksInQueue: stats.totalTracksInQueue,
+});
+
+// Get plugin/extension stats
+console.log(manager.getConfig());
+console.log(player.pluginManager.getStats());
+console.log(player.extensionManager.getStats());
+
+// Clear caches
+player.clearSearchCache();
+player.extensionManager.clearCache("search");
 ```
 
 ---
@@ -243,6 +495,21 @@ stream.pipe(fs.createWriteStream("song.mp3"));
 - Always `await player.connect()` before playing
 - Handle `playerError` events
 - Do not reuse a destroyed player
+- Enable **persistence** for production bots to survive restarts
+- Use **autoCleanup** to prevent memory leaks
+- Set appropriate **extractorTimeout** based on your network (default: 10-50 seconds)
+
+---
+
+## 🌟 Migration Guide
+
+### From v1.x to v2.x
+
+- `player.getTime()` now returns `{ current, total, format, formatted }`
+- `player.getProgressBar()` supports new options
+- `player.queue.remove(index)` removed track is now returned
+- New `queue.removeMultiple()`, `queue.move()`, `queue.swap()` methods
+- Extension hooks now support async properly
 
 ---
 

@@ -480,7 +480,7 @@ export class InfinityPlugin extends BasePlugin {
 	 * Lower priority than platform-specific plugins (e.g. a dedicated YouTube
 	 * plugin) so those get a chance first.
 	 */
-	readonly priority = 10;
+	readonly priority = 5;
 
 	// ── canHandle ──────────────────────────────────────────────────────────────
 

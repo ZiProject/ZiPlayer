@@ -156,7 +156,7 @@ export class FilterManager {
 
 		this.activeFilters.push(audioFilter);
 		this.debug(`[FilterManager] Applied filter: ${audioFilter.name} - ${audioFilter.description}`);
-		return await this.player.refeshPlayerResource();
+		return await this.player.refreshPlayerResource();
 	}
 
 	/**
@@ -195,7 +195,7 @@ export class FilterManager {
 		}
 		const removed = this.activeFilters.splice(index, 1)[0];
 		this.debug(`[FilterManager] Removed filter: ${removed.name}`);
-		return await this.player.refeshPlayerResource();
+		return await this.player.refreshPlayerResource();
 	}
 
 	/**
@@ -209,7 +209,7 @@ export class FilterManager {
 		const count = this.activeFilters.length;
 		this.activeFilters = [];
 		this.debug(`[FilterManager] Cleared ${count} filters`);
-		return await this.player.refeshPlayerResource();
+		return await this.player.refreshPlayerResource();
 	}
 
 	/**

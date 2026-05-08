@@ -33,7 +33,7 @@ import { BasePlugin, Track, SearchResult, StreamInfo } from "ziplayer";
 export class SpotifyPlugin extends BasePlugin {
 	name = "spotify";
 	version = "1.1.0";
-
+	priority = 1; // Higher priority to handle Spotify URLs before more generic plugins
 	/**
 	 * Determines if this plugin can handle the given query.
 	 *

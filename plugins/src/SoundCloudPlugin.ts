@@ -44,6 +44,7 @@ function isValidSoundCloudHost(maybeUrl: string): boolean {
 export class SoundCloudPlugin extends BasePlugin {
 	name = "soundcloud";
 	version = "1.2.0";
+	priority = 10; // Higher priority to handle SoundCloud URLs before more generic plugins
 	private client!: SoundCloud;
 	private ready: Promise<void>;
 

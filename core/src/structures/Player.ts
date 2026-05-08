@@ -14,6 +14,7 @@ import {
 } from "@discordjs/voice";
 
 import { Readable } from "stream";
+import { LRUCache } from "lru-cache";
 import type { BaseExtension } from "../extensions";
 import type {
 	Track,
@@ -26,9 +27,12 @@ import type {
 	StreamInfo,
 	SaveOptions,
 	VoiceChannel,
+	PlayerSession,
 	ExtensionPlayRequest,
 	ExtensionPlayResponse,
 	ExtensionAfterPlayPayload,
+	PreloadState,
+	StreamSlot,
 } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 
@@ -37,6 +41,7 @@ import { PluginManager } from "../plugins";
 import { ExtensionManager } from "../extensions";
 import { withTimeout } from "../utils/timeout";
 import { FilterManager } from "./FilterManager";
+import { StreamManager } from "./StreamManager";
 
 export declare interface Player {
 	on<K extends keyof PlayerEvents>(event: K, listener: (...args: PlayerEvents[K]) => void): this;
@@ -90,19 +95,90 @@ export class Player extends EventEmitter {
 	public options: PlayerOptions;
 	public pluginManager: PluginManager;
 	public extensionManager: ExtensionManager;
+	public streamManager: StreamManager;
+
 	public userdata?: Record<string, any>;
+	public _lastActivity: number = Date.now();
 	private manager: PlayerManager;
 	private leaveTimeout: NodeJS.Timeout | null = null;
 	private currentResource: AudioResource | null = null;
 	private volumeInterval: NodeJS.Timeout | null = null;
+	private stuckTimer: NodeJS.Timeout | null = null;
+
 	private skipLoop = false;
 	private filter!: FilterManager;
+	private refreshLock = false;
+	//preloaded resource
+
+	private preloadState: PreloadState = {
+		resource: null,
+		track: null,
+		abortController: null,
+		timeoutId: null,
+		isValid: false,
+		isBeingUsed: false,
+	};
+	private isPreloading = false;
+	private currentSlot: StreamSlot = {
+		resource: null,
+		track: null,
+		streamId: null,
+		abortController: null,
+		isValid: false,
+		isLoading: false,
+		loadPromise: null,
+	};
+
+	private preloadSlot: StreamSlot = {
+		resource: null,
+		track: null,
+		streamId: null,
+		abortController: null,
+		isValid: false,
+		isLoading: false,
+		loadPromise: null,
+	};
+	private preloadLock = false;
+	private preloadEnabled = true;
+	private crossfadeEnabled = true;
+	private crossfadeDurationMs = 500;
+	private lowPerformanceMode = false;
+	private crossfadeTransitionLock = false;
+	private smartTransitionEnabled = true;
+	private smartTransitionGenreAware = true;
+	private smartTransitionBeatAlign = true;
+	private smartTransitionBaseMs = 800;
+	private smartTransitionMinMs = 120;
+	private smartTransitionMaxMs = 8000;
+	private smartTransitionGenreDurations: Record<string, number> = {
+		chill: 700,
+		ambient: 750,
+		lofi: 650,
+		pop: 450,
+		rock: 350,
+		edm: 220,
+		house: 250,
+		techno: 200,
+	};
+	private smartTransitionBeatAlignMaxWaitMs = 180;
+	private antiStuckEnabled = true;
+	private antiStuckMaxRetries = 2;
+	private antiStuckRetryDelayMs = 900;
+	private antiStuckReusePreloadFirst = true;
+	private antiStuckReduceQualityOnRetry = true;
+	private antiStuckControlledSkipThreshold = 3;
+	private antiStuckConsecutiveFailures = 0;
+	private loudnessNormalizationEnabled = false;
+	private loudnessTargetLUFS = -14;
+	private loudnessMaxBoostDb = 8;
+	private loudnessMaxCutDb = 10;
+	private loudnessLimiterCeiling = 0.95;
 
 	// Cache for search results to avoid duplicate calls
-	private searchCache = new Map<string, SearchResult>();
+	private searchCache: LRUCache<string, SearchResult>;
 	private readonly SEARCH_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
-	private searchCacheTimestamps = new Map<string, number>();
 	private ttsPlayer: DiscordAudioPlayer | null = null;
+	private lastDuration: number = 0;
 
 	constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
 		super();
@@ -131,18 +207,91 @@ export class Player extends EventEmitter {
 				createPlayer: false,
 				interrupt: true,
 				volume: 100,
-				Max_Time_TTS: 60_000,
+				maxTimeTts: 60_000,
 				...(options?.tts || {}),
 			},
 		};
+		this.lowPerformanceMode = this.options.lowPerformance ?? this.options.quality === "low";
+
+		const preloadOptions = this.options.preload || {};
+		const preloadAutoDisable = preloadOptions.autoDisableInLowPerformance ?? true;
+		this.preloadEnabled = preloadOptions.enabled ?? true;
+		if (this.lowPerformanceMode && preloadAutoDisable) {
+			this.preloadEnabled = false;
+		}
+
+		const crossfadeOptions = this.options.crossfade || {};
+		const crossfadeAutoEnable = crossfadeOptions.autoEnable ?? true;
+		const crossfadeAutoDisable = crossfadeOptions.autoDisableInLowPerformance ?? true;
+		this.crossfadeDurationMs = Math.max(0, crossfadeOptions.durationMs ?? 5000);
+
+		if (typeof crossfadeOptions.enabled === "boolean") {
+			this.crossfadeEnabled = crossfadeOptions.enabled;
+		} else {
+			this.crossfadeEnabled = crossfadeAutoEnable;
+		}
+
+		if (this.lowPerformanceMode && crossfadeAutoDisable) {
+			this.crossfadeEnabled = false;
+		}
+
+		const smartTransitionOptions = this.options.smartTransition || {};
+		this.smartTransitionEnabled = smartTransitionOptions.enabled ?? true;
+		this.smartTransitionGenreAware = smartTransitionOptions.genreAware ?? true;
+		this.smartTransitionBeatAlign = smartTransitionOptions.beatAlign ?? true;
+		this.smartTransitionBaseMs = Math.max(0, smartTransitionOptions.baseDurationMs ?? this.crossfadeDurationMs);
+		this.smartTransitionMinMs = Math.max(0, smartTransitionOptions.minDurationMs ?? 1200);
+		this.smartTransitionMaxMs = Math.max(this.smartTransitionMinMs, smartTransitionOptions.maxDurationMs ?? 8000);
+		this.smartTransitionBeatAlignMaxWaitMs = Math.max(0, smartTransitionOptions.beatAlignMaxWaitMs ?? 1200);
+		this.smartTransitionGenreDurations = {
+			...this.smartTransitionGenreDurations,
+			...(smartTransitionOptions.genreDurations || {}),
+		};
+
+		const antiStuckOptions = this.options.antiStuck || {};
+		this.antiStuckEnabled = antiStuckOptions.enabled ?? true;
+		this.antiStuckMaxRetries = Math.max(0, antiStuckOptions.maxRetries ?? 2);
+		this.antiStuckRetryDelayMs = Math.max(0, antiStuckOptions.retryDelayMs ?? 900);
+		this.antiStuckReusePreloadFirst = antiStuckOptions.reusePreloadFirst ?? true;
+		this.antiStuckReduceQualityOnRetry = antiStuckOptions.reduceQualityOnRetry ?? true;
+		this.antiStuckControlledSkipThreshold = Math.max(1, antiStuckOptions.controlledSkipThreshold ?? 3);
+
+		const loudnessOptions = this.options.loudnessNormalization || {};
+		this.loudnessNormalizationEnabled = loudnessOptions.enabled ?? false;
+		this.loudnessTargetLUFS = loudnessOptions.targetLUFS ?? -14;
+		this.loudnessMaxBoostDb = Math.max(0, loudnessOptions.maxBoostDb ?? 8);
+		this.loudnessMaxCutDb = Math.max(0, loudnessOptions.maxCutDb ?? 10);
+		this.loudnessLimiterCeiling = Math.min(1, Math.max(0.1, loudnessOptions.limiterCeiling ?? 0.95));
+
+		this.debug(
+			`[Player] Runtime options resolved: lowPerformance=${this.lowPerformanceMode}, preload=${this.preloadEnabled}, crossfade=${this.crossfadeEnabled} (${this.crossfadeDurationMs}ms), smartTransition=${this.smartTransitionEnabled}, antiStuck=${this.antiStuckEnabled}, loudnessNormalization=${this.loudnessNormalizationEnabled}`,
+		);
 		this.filter = new FilterManager(this, this.manager);
 		this.extensionManager = new ExtensionManager(this, this.manager);
 		this.pluginManager = new PluginManager(this, this.manager, {
 			extractorTimeout: this.options.extractorTimeout,
 		});
-
+		this.streamManager = new StreamManager({
+			maxConcurrentStreams: 20,
+			streamTimeout: 5 * 60 * 1000,
+			maxListenersPerStream: 15,
+			enableMetrics: true,
+			autoDestroy: true,
+		});
 		this.volume = this.options.volume || 100;
 		this.userdata = this.options.userdata;
+		this.searchCache = new LRUCache<string, SearchResult>({
+			max: 200,
+			ttl: this.SEARCH_CACHE_TTL,
+			dispose: (value, key, reason) => {
+				if (this.listenerCount("debug") > 0) {
+					this.debug(`[SearchCache] Disposed cache entry: ${key}, reason: ${reason}`);
+				}
+			},
+			allowStale: false,
+			updateAgeOnGet: true,
+		});
+
 		this.setupEventListeners();
 
 		// Initialize filters from options
@@ -165,12 +314,13 @@ export class Player extends EventEmitter {
 	 * @private
 	 */
 	private destroyCurrentStream(): void {
+		this.audioPlayer.stop(true);
 		if (!this.currentResource) return;
 
 		const stream = (this.currentResource as any)?.metadata?.stream ?? (this.currentResource as any)?.stream;
 
-		if (stream?.destroy) {
-			stream.destroy();
+		if (stream && typeof stream.destroy === "function") {
+			stream.destroy().catch((e: any) => this.debug("Stream destroy error:", e));
 		}
 
 		this.currentResource = null;
@@ -191,13 +341,7 @@ export class Player extends EventEmitter {
 	async search(query: string, requestedBy: string): Promise<SearchResult> {
 		this.debug(`[Player] Search called with query: ${query}, requestedBy: ${requestedBy}`);
 
-		// Clear expired search cache periodically
-		if (Math.random() < 0.1) {
-			// 10% chance to clean cache
-			this.clearExpiredSearchCache();
-		}
-
-		// Check cache first
+		// Check player cache first (LRU)
 		const cachedResult = this.getCachedSearchResult(query);
 		if (cachedResult) {
 			return cachedResult;
@@ -211,51 +355,22 @@ export class Player extends EventEmitter {
 			return extensionResult;
 		}
 
-		// Get plugins and filter out TTS for regular searches
-		const allPlugins = this.pluginManager.getAll();
-		const plugins = allPlugins.filter((p) => {
-			// Skip TTS plugin for regular searches (unless query starts with "tts:")
-			if (p.name.toLowerCase() === "tts" && !query.toLowerCase().startsWith("tts:")) {
-				this.debug(`[Player] Skipping TTS plugin for regular search: ${query}`);
-				return false;
+		// Use PluginManager for search with deduplication and evaluation
+		const pluginResult = await this.pluginManager.search(query, requestedBy);
+
+		if (pluginResult && pluginResult.tracks.length > 0) {
+			this.debug(`[Player] Plugin search returned ${pluginResult.tracks.length} tracks (score: ${pluginResult.score?.score}%)`);
+
+			if (pluginResult.score) {
+				this.debug(`[Player] Search evaluation - ${pluginResult.score.reason}`);
 			}
-			return true;
-		});
 
-		this.debug(`[Player] Using ${plugins.length} plugins for search (filtered from ${allPlugins.length})`);
-
-		let lastError: any = null;
-		let searchAttempts = 0;
-
-		for (const p of plugins) {
-			searchAttempts++;
-			try {
-				this.debug(`[Player] Trying plugin for search: ${p.name} (attempt ${searchAttempts}/${plugins.length})`);
-				const startTime = Date.now();
-				const res = await withTimeout(
-					p.search(query, requestedBy),
-					this.options.extractorTimeout ?? 15000,
-					`Search operation timed out for ${p.name}`,
-				);
-				const duration = Date.now() - startTime;
-
-				if (res && Array.isArray(res.tracks) && res.tracks.length > 0) {
-					this.debug(`[Player] Plugin '${p.name}' returned ${res.tracks.length} tracks in ${duration}ms`);
-					this.cacheSearchResult(query, res);
-					return res;
-				}
-				this.debug(`[Player] Plugin '${p.name}' returned no tracks in ${duration}ms`);
-			} catch (error) {
-				const errorMessage = error instanceof Error ? error.message : String(error);
-				this.debug(`[Player] Search via plugin '${p.name}' failed: ${errorMessage}`);
-				lastError = error;
-				// Continue to next plugin
-			}
+			this.cacheSearchResult(query, pluginResult);
+			return pluginResult;
 		}
 
-		this.debug(`[Player] No plugins returned results for query: ${query} (tried ${searchAttempts} plugins)`);
-		if (lastError) this.emit("playerError", lastError as Error);
-		throw new Error(`No plugin found to handle: ${query}`);
+		this.debug(`[Player] No search results for query: ${query}`);
+		throw new Error(`No results found for: ${query}`);
 	}
 
 	/**
@@ -265,15 +380,10 @@ export class Player extends EventEmitter {
 	 */
 	private getCachedSearchResult(query: string): SearchResult | null {
 		const cacheKey = query.toLowerCase().trim();
-		const now = Date.now();
-
-		const cachedTimestamp = this.searchCacheTimestamps.get(cacheKey);
-		if (cachedTimestamp && now - cachedTimestamp < this.SEARCH_CACHE_TTL) {
-			const cachedResult = this.searchCache.get(cacheKey);
-			if (cachedResult) {
-				this.debug(`[SearchCache] Using cached search result for: ${query}`);
-				return cachedResult;
-			}
+		const cached = this.searchCache.get(cacheKey);
+		if (cached) {
+			this.debug(`[SearchCache] Using cached search result for: ${query}`);
+			return cached;
 		}
 
 		return null;
@@ -286,10 +396,7 @@ export class Player extends EventEmitter {
 	 */
 	private cacheSearchResult(query: string, result: SearchResult): void {
 		const cacheKey = query.toLowerCase().trim();
-		const now = Date.now();
-
 		this.searchCache.set(cacheKey, result);
-		this.searchCacheTimestamps.set(cacheKey, now);
 		this.debug(`[SearchCache] Cached search result for: ${query} (${result.tracks.length} tracks)`);
 	}
 
@@ -297,14 +404,8 @@ export class Player extends EventEmitter {
 	 * Clear expired search cache entries
 	 */
 	private clearExpiredSearchCache(): void {
-		const now = Date.now();
-		for (const [key, timestamp] of this.searchCacheTimestamps.entries()) {
-			if (now - timestamp >= this.SEARCH_CACHE_TTL) {
-				this.searchCache.delete(key);
-				this.searchCacheTimestamps.delete(key);
-				this.debug(`[SearchCache] Cleared expired cache entry: ${key}`);
-			}
-		}
+		this.searchCache.purgeStale();
+		this.debug(`[SearchCache] Purged stale search cache entries`);
 	}
 
 	/**
@@ -315,7 +416,6 @@ export class Player extends EventEmitter {
 	public clearSearchCache(): void {
 		const cacheSize = this.searchCache.size;
 		this.searchCache.clear();
-		this.searchCacheTimestamps.clear();
 		this.debug(`[SearchCache] Cleared all ${cacheSize} search cache entries`);
 	}
 
@@ -331,9 +431,8 @@ export class Player extends EventEmitter {
 		ttsFiltered: boolean;
 	} {
 		const cacheKey = query.toLowerCase().trim();
-		const now = Date.now();
-		const cachedTimestamp = this.searchCacheTimestamps.get(cacheKey);
-		const isCached = cachedTimestamp && now - cachedTimestamp < this.SEARCH_CACHE_TTL;
+		const cached = this.searchCache.get(cacheKey);
+		const isCached = !!cached;
 
 		const allPlugins = this.pluginManager.getAll();
 		const plugins = allPlugins.filter((p) => {
@@ -344,8 +443,8 @@ export class Player extends EventEmitter {
 		});
 
 		return {
-			isCached: !!isCached,
-			cacheAge: cachedTimestamp ? now - cachedTimestamp : undefined,
+			isCached,
+			cacheAge: undefined,
 			pluginCount: plugins.length,
 			ttsFiltered: allPlugins.length > plugins.length,
 		};
@@ -419,7 +518,7 @@ export class Player extends EventEmitter {
 				}
 			} else {
 				// Handle other types (string, Track)
-				const hookOutcome = await this.extensionManager.BeforePlayHooks(effectiveRequest);
+				const hookOutcome = await this.extensionManager.beforePlayHooks(effectiveRequest);
 				effectiveRequest = hookOutcome.request;
 				hookResponse = hookOutcome.response;
 				if (effectiveRequest.requestedBy === undefined) {
@@ -437,7 +536,7 @@ export class Player extends EventEmitter {
 						isPlaylist: hookResponse.isPlaylist ?? false,
 						error: hookResponse.error,
 					};
-					await this.extensionManager.AfterPlayHooks(handledPayload);
+					await this.extensionManager.afterPlayHooks(handledPayload);
 					if (hookResponse.error) {
 						this.emit("playerError", hookResponse.error);
 					}
@@ -484,7 +583,7 @@ export class Player extends EventEmitter {
 			) {
 				this.debug(`[Player] Interrupting with TTS: ${tracksToAdd[0].title}`);
 				await this.interruptWithTTSTrack(tracksToAdd[0]);
-				await this.extensionManager.AfterPlayHooks({
+				await this.extensionManager.afterPlayHooks({
 					success: true,
 					query: effectiveRequest.query,
 					requestedBy: effectiveRequest.requestedBy,
@@ -504,7 +603,7 @@ export class Player extends EventEmitter {
 
 			const started = !this.isPlaying ? await this.playNext() : true;
 
-			await this.extensionManager.AfterPlayHooks({
+			await this.extensionManager.afterPlayHooks({
 				success: started,
 				query: effectiveRequest.query,
 				requestedBy: effectiveRequest.requestedBy,
@@ -514,7 +613,7 @@ export class Player extends EventEmitter {
 
 			return started;
 		} catch (error) {
-			await this.extensionManager.AfterPlayHooks({
+			await this.extensionManager.afterPlayHooks({
 				success: false,
 				query: effectiveRequest.query,
 				requestedBy: effectiveRequest.requestedBy,
@@ -526,6 +625,600 @@ export class Player extends EventEmitter {
 			this.emit("playerError", error as Error);
 			return false;
 		}
+	}
+	//#endregion
+	//#region Preload
+	/**
+	 * Main preload method - only one at a time
+	 */
+	private async preloadNextTrack(): Promise<void> {
+		if (!this.preloadEnabled) {
+			this.debug(`[Preload] Disabled by options/runtime profile`);
+			return;
+		}
+
+		// Prevent concurrent preloads
+		if (this.preloadLock) {
+			this.debug(`[Preload] Already preloading, skipping`);
+			return;
+		}
+
+		const nextTrack = this.queue.nextTrack;
+		if (!nextTrack) {
+			this.debug(`[Preload] No next track to preload`);
+			return;
+		}
+
+		// Check if already preloaded correctly
+		if (this.preloadSlot.isValid && this.preloadSlot.track?.id === nextTrack.id && this.preloadSlot.resource) {
+			this.debug(`[Preload] Already have valid preload for: ${nextTrack.title}`);
+			return;
+		}
+
+		// Check if currently loading the same track
+		if (this.preloadSlot.isLoading && this.preloadSlot.track?.id === nextTrack.id) {
+			this.debug(`[Preload] Currently loading same track, waiting...`);
+			if (this.preloadSlot.loadPromise) {
+				await this.preloadSlot.loadPromise;
+			}
+			return;
+		}
+
+		// Cancel old preload if different track
+		if (this.preloadSlot.isValid && this.preloadSlot.track?.id !== nextTrack.id) {
+			this.debug(`[Preload] Cancelling old preload for different track: ${this.preloadSlot.track?.title}`);
+			await this.safeCancelPreload();
+		}
+
+		this.preloadLock = true;
+
+		// Create new abort controller
+		const abortController = new AbortController();
+
+		// Setup preload slot
+		this.preloadSlot.track = nextTrack;
+		this.preloadSlot.abortController = abortController;
+		this.preloadSlot.isLoading = true;
+
+		// Create load promise
+		const loadPromise = this.executePreload(nextTrack, abortController);
+		this.preloadSlot.loadPromise = loadPromise;
+
+		try {
+			await loadPromise;
+		} catch (err) {
+			if (err instanceof Error && err.message === "PRELOAD_CANCELLED") {
+				this.debug(`[Preload] Cancelled for ${nextTrack.title}`);
+			} else {
+				this.debug(`[Preload] Failed for ${nextTrack.title}:`, err);
+			}
+			this.clearSlot(this.preloadSlot);
+		} finally {
+			this.preloadLock = false;
+			this.preloadSlot.isLoading = false;
+			this.preloadSlot.loadPromise = null;
+		}
+	}
+
+	/**
+	 * Execute actual preload
+	 */
+	private async executePreload(track: Track, abortController: AbortController): Promise<void> {
+		this.debug(`[Preload] Starting preload for: ${track.title}`);
+
+		// Check for cancellation
+		if (abortController.signal.aborted) {
+			throw new Error("PRELOAD_CANCELLED");
+		}
+
+		// Check if track still relevant
+		if (this.queue.nextTrack?.id !== track.id) {
+			this.debug(`[Preload] Track changed, cancelling`);
+			throw new Error("PRELOAD_CANCELLED");
+		}
+
+		try {
+			// Get stream with abort support - NO TIMEOUT
+			const streamInfo = await this.getStreamWithCancel(track, abortController.signal);
+
+			// Check cancellation
+			if (abortController.signal.aborted) {
+				throw new Error("PRELOAD_CANCELLED");
+			}
+
+			// Check track relevance again
+			if (this.queue.nextTrack?.id !== track.id) {
+				this.debug(`[Preload] Track changed after stream fetch`);
+				throw new Error("PRELOAD_CANCELLED");
+			}
+
+			if (!streamInfo?.stream) {
+				throw new Error(`No stream available`);
+			}
+
+			// Register with StreamManager as preload
+			const streamId = this.streamManager.registerStream(streamInfo.stream, track, {
+				source: track.source || "preload",
+				isPreload: true,
+				priority: 5,
+			});
+
+			// Create resource
+			const resource = createAudioResource(streamInfo.stream, {
+				inlineVolume: true,
+				metadata: { ...track, preloaded: true },
+			});
+
+			// Verify resource is valid
+			if (!resource.playStream || resource.playStream.readable === false) {
+				throw new Error("Resource not readable");
+			}
+
+			// Update preload slot
+			this.preloadSlot.resource = resource;
+			this.preloadSlot.streamId = streamId;
+			this.preloadSlot.isValid = true;
+			this.preloadSlot.track = track;
+
+			this.debug(`[Preload] Successfully preloaded: ${track.title} (Stream ID: ${streamId})`);
+		} catch (err) {
+			if (err instanceof Error && err.message === "PRELOAD_CANCELLED") {
+				throw err;
+			}
+			this.debug(`[Preload] Error during preload:`, err);
+			throw err;
+		}
+	}
+
+	/**
+	 * Safe cancel preload - doesn't throw
+	 */
+	private async safeCancelPreload(): Promise<void> {
+		if (!this.preloadSlot.abortController && !this.preloadSlot.resource) {
+			return;
+		}
+
+		this.debug(`[Preload] Safely cancelling preload for: ${this.preloadSlot.track?.title || "unknown"}`);
+
+		// Abort the operation
+		if (this.preloadSlot.abortController) {
+			this.preloadSlot.abortController.abort();
+			this.preloadSlot.abortController = null;
+		}
+
+		// Clean up stream
+		if (this.preloadSlot.streamId && this.streamManager) {
+			this.streamManager.unregisterStream(this.preloadSlot.streamId, true);
+		}
+
+		// Clean up resource
+		if (this.preloadSlot.resource) {
+			try {
+				const stream = this.preloadSlot.resource.playStream;
+				if (stream && typeof stream.destroy === "function" && !stream.destroyed) {
+					stream.destroy();
+				}
+			} catch (err) {
+				// Ignore destroy errors
+			}
+		}
+
+		// Clear slot
+		this.clearSlot(this.preloadSlot);
+	}
+
+	/**
+	 * Get stream with proper cancellation
+	 */
+	private async getStreamWithCancel(track: Track, signal: AbortSignal): Promise<StreamInfo | null> {
+		// Create abort promise
+		const abortPromise = new Promise<never>((_, reject) => {
+			if (signal.aborted) {
+				reject(new Error("PRELOAD_CANCELLED"));
+				return;
+			}
+			const handler = () => {
+				signal.removeEventListener("abort", handler);
+				reject(new Error("PRELOAD_CANCELLED"));
+			};
+			signal.addEventListener("abort", handler);
+		});
+
+		try {
+			// Check if stream already exists and is valid
+			const existingStream = this.streamManager.getStreamByTrack(track.id || track.title);
+			if (existingStream && !existingStream.destroyed && existingStream.readable !== false) {
+				this.debug(`[Stream] Using existing stream for preload: ${track.title}`);
+				return { stream: existingStream, type: "arbitrary" };
+			}
+
+			// Race between stream fetch and abort
+			const streamPromise = this.getStream(track);
+			const result = await Promise.race([streamPromise, abortPromise]);
+			return result as StreamInfo | null;
+		} catch (err) {
+			if (err instanceof Error && err.message === "PRELOAD_CANCELLED") {
+				throw err;
+			}
+			throw err;
+		}
+	}
+	/**
+	 * Preload next track with proper error handling and cleanup
+	 */
+	async preloadNext(): Promise<void> {
+		if (!this.preloadEnabled) {
+			this.debug(`[Preload] Disabled by options/runtime profile`);
+			return;
+		}
+
+		this.cancelPreload();
+
+		const next = this.queue.nextTrack;
+		if (!next || this.isPreloading) {
+			this.debug(`[Preload] Skipped - ${!next ? "no next track" : "already preloading"}`);
+			return;
+		}
+
+		this.isPreloading = true;
+
+		// Create new AbortController
+		const abortController = new AbortController();
+		const timeoutId = setTimeout(() => {
+			// this.debug(`[Preload] Timeout for track: ${next.title}`);
+			// abortController.abort();
+		}, 30000);
+
+		this.preloadState.abortController = abortController;
+		this.preloadState.timeoutId = timeoutId;
+
+		try {
+			this.debug(`[Preload] Starting preload for: ${next.title}`);
+
+			// Check if already aborted
+			if (abortController.signal.aborted) {
+				throw new Error("Preload aborted before start");
+			}
+
+			// Check if this track is still the next one
+			if (this.queue.nextTrack?.id !== next.id) {
+				this.debug(`[Preload] Track changed, cancelling preload`);
+				return;
+			}
+
+			const streamInfo = await this.getStreamWithCancel(next, abortController.signal);
+
+			// Double check
+			if (abortController.signal.aborted) {
+				throw new Error("Preload aborted after stream fetch");
+			}
+
+			if (this.queue.nextTrack?.id !== next.id) {
+				this.debug(`[Preload] Track changed after stream fetch`);
+				return;
+			}
+
+			if (!streamInfo?.stream) {
+				throw new Error(`No stream available`);
+			}
+
+			// Register with StreamManager
+			const streamId = this.streamManager.registerStream(streamInfo.stream, next, {
+				source: next.source || "preload",
+				isPreload: true,
+				priority: 8,
+			});
+
+			// Create resource
+			const resource = createAudioResource(streamInfo.stream, {
+				inlineVolume: true,
+				metadata: { ...next, preloaded: true },
+			});
+
+			// Store preload state
+			this.preloadState = {
+				resource,
+				track: next,
+				abortController,
+				timeoutId,
+				isValid: true,
+				isBeingUsed: false,
+				streamId,
+			};
+
+			this.debug(`[Preload] Successfully preloaded: ${next.title} (Stream ID: ${streamId})`);
+		} catch (err) {
+			if (err instanceof Error && err.message.includes("aborted")) {
+				this.debug(`[Preload] Cancelled for ${next.title}`);
+			} else {
+				this.debug(`[Preload] Failed for ${next?.title}:`, err);
+			}
+			this.cancelPreload();
+		} finally {
+			this.isPreloading = false;
+		}
+	}
+
+	private async fadeResourceVolume(resource: AudioResource, from: number, to: number, durationMs: number): Promise<void> {
+		if (!resource.volume) return;
+
+		const safeDuration = Math.max(0, durationMs);
+		if (safeDuration === 0) {
+			resource.volume.setVolume(to);
+			return;
+		}
+
+		const steps = Math.max(1, Math.floor(safeDuration / 50));
+		const stepDuration = Math.max(20, Math.floor(safeDuration / steps));
+		const delta = (to - from) / steps;
+
+		resource.volume.setVolume(from);
+		for (let i = 1; i <= steps; i++) {
+			await new Promise((resolve) => setTimeout(resolve, stepDuration));
+			resource.volume.setVolume(from + delta * i);
+		}
+	}
+
+	private async applyCrossfadeIn(resource: AudioResource, track: Track): Promise<void> {
+		if (!this.crossfadeEnabled || !resource.volume) return;
+		const targetVolume = this.getTrackTargetVolume(track);
+		const transitionMs = this.resolveSmartTransitionDuration(track);
+		await this.fadeResourceVolume(resource, 0, targetVolume, transitionMs);
+	}
+
+	private async applyCrossfadeOutCurrent(): Promise<void> {
+		if (!this.crossfadeEnabled) return;
+		const current = this.currentSlot.resource || this.currentResource;
+		if (!current?.volume) return;
+		const currentVolume = current.volume.volume ?? this.volume / 100;
+		const currentTrack = this.queue.currentTrack;
+		const transitionMs =
+			currentTrack ? this.resolveSmartTransitionDuration(currentTrack) : this.resolveSmartTransitionDuration({} as Track);
+		await this.fadeResourceVolume(current, currentVolume, 0, transitionMs);
+	}
+
+	private async crossfadeSkipAndStop(): Promise<void> {
+		if (!this.crossfadeEnabled) {
+			this.audioPlayer.stop();
+			return;
+		}
+		if (this.crossfadeTransitionLock) {
+			return;
+		}
+		this.crossfadeTransitionLock = true;
+		try {
+			await this.applyCrossfadeOutCurrent();
+			this.audioPlayer.stop();
+		} finally {
+			this.crossfadeTransitionLock = false;
+		}
+	}
+
+	private getTrackMetadataValue(track: Track, key: string): any {
+		const md = track?.metadata as Record<string, any> | undefined;
+		if (!md) return undefined;
+		return md[key];
+	}
+
+	private resolveSmartTransitionDuration(track: Track): number {
+		if (!this.smartTransitionEnabled) {
+			return this.crossfadeDurationMs;
+		}
+
+		let duration = this.smartTransitionBaseMs;
+		if (this.smartTransitionGenreAware) {
+			const rawGenre = this.getTrackMetadataValue(track, "genre");
+			const genre = typeof rawGenre === "string" ? rawGenre.toLowerCase().trim() : "";
+			if (genre && this.smartTransitionGenreDurations[genre] !== undefined) {
+				duration = this.smartTransitionGenreDurations[genre];
+			}
+		}
+
+		return Math.min(this.smartTransitionMaxMs, Math.max(this.smartTransitionMinMs, duration));
+	}
+
+	private async maybeAlignToBeatBoundary(): Promise<void> {
+		if (!this.smartTransitionEnabled || !this.smartTransitionBeatAlign) return;
+		const currentTrack = this.queue.currentTrack;
+		if (!currentTrack || !this.currentResource) return;
+
+		const bpmRaw = this.getTrackMetadataValue(currentTrack, "bpm");
+		const bpm = typeof bpmRaw === "number" ? bpmRaw : Number(bpmRaw);
+		if (!Number.isFinite(bpm) || bpm <= 0) return;
+
+		const beatMs = 60000 / bpm;
+		const positionMs = this.currentResource.playbackDuration;
+		const remainder = positionMs % beatMs;
+		const waitMs = beatMs - remainder;
+		if (waitMs > 0 && waitMs <= this.smartTransitionBeatAlignMaxWaitMs) {
+			await new Promise((resolve) => setTimeout(resolve, waitMs));
+		}
+	}
+
+	private getTrackTargetVolume(track: Track): number {
+		const base = this.volume / 100;
+		if (!this.loudnessNormalizationEnabled) {
+			return base;
+		}
+
+		const lufsRaw = this.getTrackMetadataValue(track, "lufs");
+		const trackLufs = typeof lufsRaw === "number" ? lufsRaw : Number(lufsRaw);
+		if (!Number.isFinite(trackLufs)) {
+			return Math.min(base, this.loudnessLimiterCeiling);
+		}
+
+		const deltaDbRaw = this.loudnessTargetLUFS - trackLufs;
+		const maxBoost = this.loudnessMaxBoostDb;
+		const maxCut = this.loudnessMaxCutDb;
+		const deltaDb = Math.max(-maxCut, Math.min(maxBoost, deltaDbRaw));
+		const multiplier = Math.pow(10, deltaDb / 20);
+		const adjusted = base * multiplier;
+		return Math.min(this.loudnessLimiterCeiling, Math.max(0, adjusted));
+	}
+
+	private async attemptTrackRecovery(track: Track, reason: unknown): Promise<boolean> {
+		if (!this.antiStuckEnabled) return false;
+		this.debug(`[AntiStuck] Recovery started for: ${track.title}`, reason);
+
+		const originalQuality = this.options.quality;
+		let attempted = 0;
+
+		while (attempted < this.antiStuckMaxRetries) {
+			attempted++;
+			if (this.antiStuckReduceQualityOnRetry) {
+				this.options.quality = "low";
+			}
+
+			if (this.antiStuckRetryDelayMs > 0) {
+				await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
+			}
+
+			try {
+				if (this.antiStuckReusePreloadFirst && this.preloadSlot.isValid && this.preloadSlot.track?.id === track.id) {
+					const startedFromPreload = await this.startTrack(track);
+					if (startedFromPreload) {
+						this.antiStuckConsecutiveFailures = 0;
+						this.options.quality = originalQuality;
+						return true;
+					}
+				}
+
+				const started = await this.loadFreshStream(track);
+				if (started) {
+					this.antiStuckConsecutiveFailures = 0;
+					this.options.quality = originalQuality;
+					return true;
+				}
+			} catch (error) {
+				this.debug(`[AntiStuck] Retry ${attempted} failed for ${track.title}:`, error);
+			}
+		}
+
+		this.options.quality = originalQuality;
+		this.antiStuckConsecutiveFailures++;
+		if (this.antiStuckConsecutiveFailures >= this.antiStuckControlledSkipThreshold) {
+			this.debug(`[AntiStuck] Controlled skip threshold reached for ${track.title}`);
+			return false;
+		}
+
+		// Avoid hard skip storm by leaving track for next natural retry window.
+		this.debug(`[AntiStuck] Keeping track for controlled retry window: ${track.title}`);
+		return false;
+	}
+
+	/**
+	 * Clear preloaded resource with proper cleanup
+	 */
+	private clearPreload(): void {
+		// Abort ongoing preload
+		if (this.preloadState.abortController) {
+			this.preloadState.abortController.abort();
+			this.preloadState.abortController = null;
+		}
+
+		// Clean up stream
+		const stream = (this.preloadState as any).stream;
+		if (stream && typeof stream.destroy === "function") {
+			try {
+				stream.destroy();
+			} catch (err) {
+				this.debug(`[Preload] Error destroying stream:`, err);
+			}
+		}
+
+		// Clean up resource
+		if (this.preloadState.resource) {
+			try {
+				const playStream = this.preloadState.resource.playStream;
+				if (playStream && typeof playStream.destroy === "function") {
+					playStream.destroy();
+				}
+			} catch (err) {
+				this.debug(`[Preload] Error destroying resource:`, err);
+			}
+		}
+
+		this.preloadState = {
+			resource: null,
+			track: null,
+			abortController: null,
+			timeoutId: null,
+			isValid: false,
+			isBeingUsed: false,
+			streamId: undefined,
+		};
+	}
+
+	/**
+	 * Cancel preload (when skipping or stopping)
+	 */
+	private cancelPreload(): void {
+		if (this.preloadSlot.abortController) {
+			this.debug(`[Preload] Cancelling preload for: ${this.preloadSlot.track?.title}`);
+			this.preloadSlot.abortController.abort();
+		}
+
+		if (this.preloadSlot.streamId && this.streamManager) {
+			this.streamManager.unregisterStream(this.preloadSlot.streamId, true);
+		}
+
+		this.clearSlot(this.preloadSlot);
+	}
+
+	/**
+	 * Clear a stream slot
+	 */
+	private clearSlot(slot: StreamSlot): void {
+		if (slot.resource) {
+			try {
+				const stream = slot.resource.playStream;
+				if (stream && typeof stream.destroy === "function" && !stream.destroyed) {
+					stream.destroy();
+				}
+			} catch (err) {
+				// Ignore
+			}
+		}
+
+		if (slot.streamId && this.streamManager) {
+			// Don't wait for unregister
+			this.streamManager.unregisterStream(slot.streamId, true);
+		}
+
+		slot.resource = null;
+		slot.track = null;
+		slot.streamId = null;
+		slot.abortController = null;
+		slot.isValid = false;
+		slot.isLoading = false;
+		slot.loadPromise = null;
+	}
+
+	/**
+	 * Promote preload slot to current slot without destroying promoted stream.
+	 */
+	private promotePreloadToCurrent(track: Track): void {
+		const promotedResource = this.preloadSlot.resource;
+		const promotedStreamId = this.preloadSlot.streamId;
+
+		// Move ownership to current slot.
+		this.currentSlot.resource = promotedResource;
+		this.currentSlot.track = track;
+		this.currentSlot.streamId = promotedStreamId;
+		this.currentSlot.abortController = null;
+		this.currentSlot.isValid = !!promotedResource;
+		this.currentSlot.isLoading = false;
+		this.currentSlot.loadPromise = null;
+		this.currentResource = promotedResource;
+
+		// Reset preload slot only (do not destroy promoted resource/stream).
+		this.preloadSlot.resource = null;
+		this.preloadSlot.track = null;
+		this.preloadSlot.streamId = null;
+		this.preloadSlot.abortController = null;
+		this.preloadSlot.isValid = false;
+		this.preloadSlot.isLoading = false;
+		this.preloadSlot.loadPromise = null;
 	}
 
 	/**
@@ -579,11 +1272,45 @@ export class Player extends EventEmitter {
 			}
 		}
 	}
+
 	private async getStream(track: Track): Promise<StreamInfo | null> {
+		const trackId = track.id || track.url || track.title;
+		const existingStream = this.streamManager.getStreamByTrack(trackId);
+
+		if (existingStream && !existingStream.destroyed) {
+			this.debug(`[Stream] Using existing stream from manager for: ${track.title}`);
+			return { stream: existingStream, type: "arbitrary" };
+		}
+
 		let stream = await this.extensionManager.provideStream(track);
-		if (stream?.stream) return stream;
+		if (stream?.stream) {
+			// Register with StreamManager
+			const streamId = this.streamManager.registerStream(stream.stream, track, {
+				source: "extension",
+				isPreload: false,
+				priority: 10,
+			});
+			this.debug(`[Stream] Extension stream registered with ID: ${streamId}`);
+			return stream;
+		}
+
 		stream = await this.pluginManager.getStream(track);
-		if (stream?.stream) return stream;
+		if (stream?.stream) {
+			const existingAgain = this.streamManager.getStreamByTrack(trackId);
+			if (existingAgain && !existingAgain.destroyed) {
+				if (stream.stream.destroy) stream.stream.destroy();
+				return { stream: existingAgain, type: "arbitrary" };
+			}
+			// Register with StreamManager
+			const streamId = this.streamManager.registerStream(stream.stream, track, {
+				source: track.source || "plugin",
+				isPreload: false,
+				priority: 5,
+			});
+			this.debug(`[Stream] Plugin stream registered with ID: ${streamId}`);
+			return stream;
+		}
+
 		throw new Error(`No stream available for track: ${track.title}`);
 	}
 
@@ -592,60 +1319,58 @@ export class Player extends EventEmitter {
 	 */
 	private async startTrack(track: Track): Promise<boolean> {
 		try {
-			let streamInfo: StreamInfo | null = await this.getStream(track);
-			this.debug(`[Player] Using stream for track: ${track.title}`);
-			// Kiểm tra nếu có stream thực sự để tạo AudioResource
-			if (streamInfo && (streamInfo as any).stream) {
-				try {
-					// Destroy the old stream and resource before creating a new one
-					this.destroyCurrentStream();
+			// Try to use preloaded resource
+			if (
+				this.preloadSlot.isValid &&
+				this.preloadSlot.track?.id === track.id &&
+				this.preloadSlot.resource &&
+				this.preloadSlot.resource.playStream?.readable !== false
+			) {
+				this.debug(`[Player] Using preloaded stream for: ${track.title}`);
 
-					this.currentResource = await this.createResource(streamInfo, track, 0);
-					if (this.volumeInterval) {
-						clearInterval(this.volumeInterval);
-						this.volumeInterval = null;
-					}
-					this.currentResource.volume?.setVolume(this.volume / 100);
+				// Stop current playback
+				this.audioPlayer.stop(true);
 
-					this.debug(`[Player] Playing resource for track: ${track.title}`);
-					this.audioPlayer.play(this.currentResource);
-
-					await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 5_000);
-					return true;
-				} catch (resourceError) {
-					this.debug(`[Player] Error creating/playing resource:`, resourceError);
-					// Try fallback without filters
-					try {
-						this.debug(`[Player] Attempting fallback without filters`);
-						const fallbackResource = createAudioResource(streamInfo.stream, {
-							metadata: track,
-							inputType:
-								streamInfo.type === "webm/opus" ? StreamType.WebmOpus
-								: streamInfo.type === "ogg/opus" ? StreamType.OggOpus
-								: StreamType.Arbitrary,
-							inlineVolume: true,
-						});
-
-						this.currentResource = fallbackResource;
-						this.currentResource.volume?.setVolume(this.volume / 100);
-						this.audioPlayer.play(this.currentResource);
-						await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 5_000);
-						return true;
-					} catch (fallbackError) {
-						this.debug(`[Player] Fallback also failed:`, fallbackError);
-						throw fallbackError;
-					}
+				// Clean up old current stream (but delay to be safe)
+				const oldStreamId = this.currentSlot.streamId;
+				if (oldStreamId && this.streamManager) {
+					setTimeout(() => {
+						if (this.currentSlot.streamId === oldStreamId) {
+							this.streamManager.unregisterStream(oldStreamId, true);
+						}
+					}, 3000);
 				}
-			} else if (streamInfo && !(streamInfo as any).stream) {
-				// Extension đang xử lý phát nhạc (như Lavalink) - chỉ đánh dấu đang phát
-				this.debug(`[Player] Extension is handling playback for track: ${track.title}`);
-				this.isPlaying = true;
-				this.isPaused = false;
-				this.emit("trackStart", track);
+
+				// Set current slot from preload
+				this.promotePreloadToCurrent(track);
+				const currentResource = this.currentSlot.resource;
+				if (!currentResource) {
+					return false;
+				}
+				const targetVolume = this.getTrackTargetVolume(track);
+
+				// Apply volume
+				if (currentResource.volume) {
+					currentResource.volume.setVolume(this.crossfadeEnabled ? 0 : targetVolume);
+				}
+
+				// Play
+				await this.maybeAlignToBeatBoundary();
+				this.audioPlayer.play(currentResource);
+				await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
+				await this.applyCrossfadeIn(currentResource, track);
+
+				// Start preloading next track (async, don't await)
+				this.preloadNextTrack().catch((err) => {
+					this.debug(`[Player] Preload error:`, err);
+				});
+
 				return true;
-			} else {
-				throw new Error(`No stream available for track: ${track.title}`);
 			}
+
+			// No valid preload, load fresh
+			this.debug(`[Player] No preload available, loading fresh: ${track.title}`);
+			return await this.loadFreshStream(track);
 		} catch (error) {
 			this.debug(`[Player] startTrack error:`, error);
 			this.emit("playerError", error as Error, track);
@@ -653,8 +1378,134 @@ export class Player extends EventEmitter {
 		}
 	}
 
+	/**
+	 * Swap preload slot to current slot
+	 */
+	private async swapToCurrent(track: Track): Promise<boolean> {
+		// Store preload resource
+		const newResource = this.preloadSlot.resource;
+		const oldStreamId = this.currentSlot.streamId;
+
+		if (!newResource) {
+			return false;
+		}
+
+		// Stop current playback
+		this.audioPlayer.stop(true);
+
+		// Clean up old current stream (but keep it for a moment)
+		if (oldStreamId && this.streamManager) {
+			// Delay cleanup to avoid destroying if still needed
+			setTimeout(() => {
+				if (this.currentSlot.streamId === oldStreamId) {
+					this.streamManager.unregisterStream(oldStreamId, true);
+				}
+			}, 5000);
+		}
+
+		// Set new current
+		this.promotePreloadToCurrent(track);
+		const currentResource = this.currentSlot.resource;
+		if (!currentResource) {
+			return false;
+		}
+		const targetVolume = this.getTrackTargetVolume(track);
+
+		// Apply volume
+		if (currentResource.volume) {
+			currentResource.volume.setVolume(this.crossfadeEnabled ? 0 : targetVolume);
+		}
+
+		// Play
+		await this.maybeAlignToBeatBoundary();
+		this.audioPlayer.play(currentResource);
+
+		try {
+			await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
+			await this.applyCrossfadeIn(currentResource, track);
+
+			// Start preloading next track
+			this.preloadNextTrack().catch((err) => {
+				this.debug(`[Player] Preload error:`, err);
+			});
+
+			return true;
+		} catch (err) {
+			this.debug(`[Player] Failed to play swapped track:`, err);
+			return false;
+		}
+	}
+
+	/**
+	 * Load fresh stream when no preload available
+	 */
+	private async loadFreshStream(track: Track): Promise<boolean> {
+		// Cancel preload to free resources
+		await this.safeCancelPreload();
+
+		try {
+			const streamInfo = await this.getStream(track);
+
+			if (!streamInfo?.stream) {
+				throw new Error(`No stream available`);
+			}
+
+			// Register with StreamManager
+			const streamId = this.streamManager.registerStream(streamInfo.stream, track, {
+				source: track.source || "stream",
+				isPreload: false,
+				priority: 10,
+			});
+
+			// Create resource
+			const resource = await this.createResource(streamInfo, track, 0);
+
+			// Clean up old current
+			if (this.currentSlot.streamId && this.currentSlot.streamId !== streamId) {
+				this.streamManager.unregisterStream(this.currentSlot.streamId, true);
+			}
+
+			// Set current slot
+			this.currentSlot.resource = resource;
+			this.currentSlot.track = track;
+			this.currentSlot.streamId = streamId;
+			this.currentSlot.isValid = true;
+			this.currentResource = resource;
+
+			// Apply volume
+			const targetVolume = this.getTrackTargetVolume(track);
+			if (resource.volume) {
+				resource.volume.setVolume(this.crossfadeEnabled ? 0 : targetVolume);
+			}
+
+			// Play
+			await this.maybeAlignToBeatBoundary();
+			this.audioPlayer.stop(true);
+			this.audioPlayer.play(resource);
+			await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
+			await this.applyCrossfadeIn(resource, track);
+
+			// Preload next (async)
+			this.preloadNextTrack().catch((err) => {
+				this.debug(`[Player] Preload error:`, err);
+			});
+
+			return true;
+		} catch (error) {
+			this.debug(`[Player] loadFreshStream error:`, error);
+			throw error;
+		}
+	}
+
+	/**
+	 * Play the next track in the queue, handling errors and edge cases gracefully
+	 */
 	private async playNext(): Promise<boolean> {
-		this.debug(`[Player] playNext called by ${new Error().stack?.split("\n")[2]?.trim()}`);
+		this.debug("[Player] playNext called");
+
+		// Don't cancel preload here unless absolutely necessary
+		// Let startTrack handle it
+
 		while (true) {
 			const track = this.queue.next(this.skipLoop);
 			this.skipLoop = false;
@@ -667,9 +1518,14 @@ export class Player extends EventEmitter {
 						continue;
 					}
 				}
+
 				this.debug(`[Player] No next track in queue`);
 				this.isPlaying = false;
 				this.emit("queueEnd");
+
+				// Clean up both slots when queue is empty
+				this.clearSlot(this.currentSlot);
+				await this.safeCancelPreload();
 
 				if (this.options.leaveOnEnd) {
 					this.scheduleLeave();
@@ -678,15 +1534,39 @@ export class Player extends EventEmitter {
 				return false;
 			}
 
-			this.generateWillNext();
+			this.generateWillNext().catch((err) => this.debug("[Player] generateWillNext error:", err));
 			this.clearLeaveTimeout();
 			this.debug(`[Player] playNext called for track: ${track.title}`);
 
 			try {
-				return await this.startTrack(track);
+				const started = await this.startTrack(track);
+				if (started) {
+					this.antiStuckConsecutiveFailures = 0;
+					return true;
+				}
+				const recovered = await this.attemptTrackRecovery(track, new Error("TRACK_START_RETURNED_FALSE"));
+				if (recovered) {
+					return true;
+				}
+				if (this.antiStuckEnabled && this.antiStuckConsecutiveFailures < this.antiStuckControlledSkipThreshold) {
+					this.queue.insert(track, 0);
+					if (this.antiStuckRetryDelayMs > 0) {
+						await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
+					}
+				}
 			} catch (err) {
 				this.debug(`[Player] playNext error:`, err);
 				this.emit("playerError", err as Error, track);
+				const recovered = await this.attemptTrackRecovery(track, err);
+				if (recovered) {
+					return true;
+				}
+				if (this.antiStuckEnabled && this.antiStuckConsecutiveFailures < this.antiStuckControlledSkipThreshold) {
+					this.queue.insert(track, 0);
+					if (this.antiStuckRetryDelayMs > 0) {
+						await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
+					}
+				}
 				continue;
 			}
 		}
@@ -730,12 +1610,12 @@ export class Player extends EventEmitter {
 			// Build resource from plugin stream
 			const streamInfo = await this.pluginManager.getStream(track);
 			if (!streamInfo) {
-				throw new Error("No stream available for track: ${track.title}");
+				throw new Error(`No stream available for track: ${track.title}`);
 			}
 			ttsStream = streamInfo.stream;
 			const resource = await this.createResource(streamInfo as StreamInfo, track);
 			if (!resource) {
-				throw new Error("No resource available for track: ${track.title}");
+				throw new Error(`No resource available for track: ${track.title}`);
 			}
 			ttsResource = resource;
 			if (resource.volume) {
@@ -766,7 +1646,7 @@ export class Player extends EventEmitter {
 						declared
 					:	declared * 1000
 				:	undefined;
-			const cap = this.options?.tts?.Max_Time_TTS ?? 60_000;
+			const cap = this.options?.tts?.maxTimeTts ?? 60_000;
 			const idleTimeout = declaredMs ? Math.min(cap, Math.max(1_000, declaredMs + 1_500)) : cap;
 			await entersState(ttsPlayer, AudioPlayerStatus.Idle, idleTimeout).catch(() => null);
 
@@ -883,7 +1763,7 @@ export class Player extends EventEmitter {
 				const track = this.queue.currentTrack;
 				if (track) {
 					this.debug(`[Player] Player resumed on track: ${track.title}`);
-					this.emit("playerResume", track);
+					// this.emit("playerResume", track); //đã có trong stateChange
 				}
 			}
 			return result;
@@ -901,6 +1781,10 @@ export class Player extends EventEmitter {
 	 */
 	stop(): boolean {
 		this.debug(`[Player] stop called`);
+
+		// Cancel preload when stopping
+		this.cancelPreload();
+
 		this.queue.clear();
 		const result = this.audioPlayer.stop();
 		this.destroyCurrentStream();
@@ -940,13 +1824,7 @@ export class Player extends EventEmitter {
 			return false;
 		}
 
-		const streaminfo = await this.getStream(track);
-		if (!streaminfo?.stream) {
-			this.debug(`[Player] No stream to seek`);
-			return false;
-		}
-
-		await this.refeshPlayerResource(true, position);
+		await this.refreshPlayerResource(true, position);
 
 		return true;
 	}
@@ -963,31 +1841,29 @@ export class Player extends EventEmitter {
 	 */
 	skip(index?: number): boolean {
 		this.debug(`[Player] skip called with index: ${index}`);
+
 		try {
 			if (typeof index === "number" && index >= 0) {
-				// Skip to specific index
 				const targetTrack = this.queue.getTrack(index);
 				if (!targetTrack) {
 					this.debug(`[Player] No track found at index ${index}`);
 					return false;
 				}
 
-				// Remove tracks from 0 to index-1
 				for (let i = 0; i < index; i++) {
 					this.queue.remove(0);
 				}
 
 				this.debug(`[Player] Skipped to track at index ${index}: ${targetTrack.title}`);
-				if (this.isPlaying || this.isPaused) {
-					this.skipLoop = true;
-					return this.audioPlayer.stop();
-				}
-				return true;
 			}
 
 			if (this.isPlaying || this.isPaused) {
 				this.skipLoop = true;
-				return this.audioPlayer.stop();
+				void this.crossfadeSkipAndStop().catch((error) => {
+					this.debug(`[Player] crossfade skip error:`, error);
+					this.audioPlayer.stop();
+				});
+				return true;
 			}
 
 			return true;
@@ -1058,7 +1934,7 @@ export class Player extends EventEmitter {
 		}
 
 		try {
-			// Try extensions first
+			// Skip extension manager for saving - we want the raw stream without filters/seek applied, and extensions may not support this
 			let streamInfo: StreamInfo | null = await this.pluginManager.getStream(track);
 
 			if (!streamInfo || !streamInfo.stream) {
@@ -1280,7 +2156,6 @@ export class Player extends EventEmitter {
 		}
 		return track;
 	}
-
 	/**
 	 * Get the progress bar of the current track
 	 *
@@ -1289,59 +2164,81 @@ export class Player extends EventEmitter {
 	 * @example
 	 * const progressBar = player.getProgressBar();
 	 * console.log(`Progress bar: ${progressBar}`);
+	 *
+	 * // Custom options
+	 * const customBar = player.getProgressBar({
+	 *   size: 30,
+	 *   barChar: "─",
+	 *   progressChar: "●",
+	 *   timeFormat: "compact" // "compact" = 1:22:12, "full" = 01:22:12
+	 * });
 	 */
 	getProgressBar(options: ProgressBarOptions = {}): string {
-		const { size = 20, barChar = "▬", progressChar = "🔘" } = options;
+		const {
+			size = 20,
+			barChar = "▬",
+			progressChar = "🔘",
+			timeFormat = "compact", // "compact" or "full"
+			showPercentage = false,
+			showTime = true,
+		} = options;
+
 		const track = this.queue.currentTrack;
 		const resource = this.currentResource;
-		if (!track || !resource) return "";
+
+		// Handle live stream
+		if (this.isLive || !track || !resource) {
+			if (this.isLive) return "🔴 LIVE";
+			return "";
+		}
 
 		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
-		if (!total) return this.formatTime(resource.playbackDuration);
+		if (!total) return this.formatTimeCompact(resource.playbackDuration);
 
 		const current = resource.playbackDuration;
-		const ratio = Math.min(current / total, 1);
+		const ratio = Math.min(Math.max(current / total, 0), 1);
 		const progress = Math.round(ratio * size);
-		const bar = barChar.repeat(progress) + progressChar + barChar.repeat(size - progress);
 
-		return `${this.formatTime(current)} | ${bar} | ${this.formatTime(total)}`;
+		// Build progress bar
+		let bar = "";
+		if (progressChar === "none" || options.hideProgressChar) {
+			// Continuous bar without separator
+			const filled = barChar.repeat(progress);
+			const empty = barChar.repeat(size - progress);
+			bar = filled + empty;
+		} else {
+			// Bar with progress character
+			const filled = barChar.repeat(progress);
+			const empty = barChar.repeat(Math.max(0, size - progress));
+			bar = filled + progressChar + empty;
+		}
+
+		// Format time based on option
+		const formatTimeFn = timeFormat === "compact" ? this.formatTimeCompact.bind(this) : this.formatTime.bind(this);
+		const currentTimeStr = formatTimeFn(current);
+		const totalTimeStr = formatTimeFn(total);
+
+		// Build result
+		let result = "";
+		if (showTime) {
+			result = `${currentTimeStr} ${bar} ${totalTimeStr}`;
+		} else {
+			result = bar;
+		}
+
+		// Add percentage if requested
+		if (showPercentage) {
+			const percent = Math.round(ratio * 100);
+			result += ` (${percent}%)`;
+		}
+
+		return result;
 	}
 
 	/**
-	 * Get the time of the current track
-	 *
-	 * @returns {Object} The time of the current track
-	 * @example
-	 * const time = player.getTime();
-	 * console.log(`Time: ${time.current}`);
-	 */
-	getTime() {
-		const resource = this.currentResource;
-		const track = this.queue.currentTrack;
-		if (!track || !resource)
-			return {
-				current: 0,
-				total: 0,
-				format: "00:00",
-			};
-
-		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
-
-		return {
-			current: resource?.playbackDuration,
-			total: total,
-			format: this.formatTime(resource.playbackDuration),
-		};
-	}
-
-	/**
-	 * Format the time in the format of HH:MM:SS
-	 *
-	 * @param {number} ms - The time in milliseconds
-	 * @returns {string} The formatted time
-	 * @example
-	 * const formattedTime = player.formatTime(1000);
-	 * console.log(`Formatted time: ${formattedTime}`);
+	 * Format time with leading zeros (00:00 or 00:00:00)
+	 * @param ms - Time in milliseconds
+	 * @returns Formatted time string with leading zeros
 	 */
 	formatTime(ms: number): string {
 		const totalSeconds = Math.floor(ms / 1000);
@@ -1356,6 +2253,72 @@ export class Player extends EventEmitter {
 	}
 
 	/**
+	 * Format time without leading zeros for hours (1:22:12 or 3:45)
+	 * @param ms - Time in milliseconds
+	 * @returns Compact formatted time string
+	 */
+	formatTimeCompact(ms: number): string {
+		const totalSeconds = Math.floor(ms / 1000);
+		const hours = Math.floor(totalSeconds / 3600);
+		const minutes = Math.floor((totalSeconds % 3600) / 60);
+		const seconds = totalSeconds % 60;
+
+		if (hours > 0) {
+			return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+		}
+		return `${minutes}:${String(seconds).padStart(2, "0")}`;
+	}
+
+	/**
+	 * Get the time of the current track
+	 *
+	 * @returns {Object} The time of the current track
+	 * @example
+	 * const time = player.getTime();
+	 * console.log(`Time: ${time.current}`);
+	 * console.log(`Formatted: ${time.formatted.current}`); // "1:22:12" or "3:45"
+	 */
+	getTime() {
+		if (this.isLive)
+			return {
+				current: 0,
+				total: 0,
+				format: "LIVE",
+				formatted: {
+					current: "LIVE",
+					total: "LIVE",
+				},
+			};
+
+		const resource = this.currentResource;
+		const track = this.queue.currentTrack;
+		if (!track || !resource) {
+			return {
+				current: 0,
+				total: 0,
+				format: "00:00",
+				formatted: {
+					current: "00:00",
+					total: "00:00",
+				},
+			};
+		}
+
+		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
+		const current = resource.playbackDuration;
+
+		return {
+			current: current,
+			total: total,
+			format: this.formatTime(current),
+			formatted: {
+				current: this.formatTimeCompact(current),
+				total: this.formatTimeCompact(total),
+			},
+		};
+	}
+
+	/**
 	 * Destroy the player
 	 *
 	 * @returns {void}
@@ -1364,16 +2327,21 @@ export class Player extends EventEmitter {
 	 */
 	destroy(): void {
 		this.debug(`[Player] destroy called`);
+
 		if (this.leaveTimeout) {
 			clearTimeout(this.leaveTimeout);
 			this.leaveTimeout = null;
 		}
-
+		this.streamManager.destroyAll(true);
 		// Destroy current stream before stopping audio
 		this.destroyCurrentStream();
 
+		this.clearSlot(this.currentSlot);
+		this.clearSlot(this.preloadSlot);
+
 		this.audioPlayer.removeAllListeners();
 		this.audioPlayer.stop(true);
+		this.clearPreload();
 
 		if (this.ttsPlayer) {
 			try {
@@ -1412,7 +2380,7 @@ export class Player extends EventEmitter {
 			clearTimeout(this.leaveTimeout);
 		}
 
-		if (this.options.leaveOnEmpty && this.options.leaveTimeout) {
+		if (this.options.leaveOnEnd && this.options.leaveTimeout) {
 			this.leaveTimeout = setTimeout(() => {
 				this.debug(`[Player] Leaving voice channel after timeoutMs`);
 				this.destroy();
@@ -1427,14 +2395,15 @@ export class Player extends EventEmitter {
 	 * @param {number} position - Position to seek to in milliseconds
 	 * @returns {Promise<boolean>}
 	 * @example
-	 * const refreshed = await player.refeshPlayerResource(true, 1000);
+	 * const refreshed = await player.refreshPlayerResource(true, 1000);
 	 * console.log(`Refreshed: ${refreshed}`);
 	 */
-	public async refeshPlayerResource(applyToCurrent: boolean = true, position: number = -1): Promise<boolean> {
+	public async refreshPlayerResource(applyToCurrent: boolean = true, position: number = -1): Promise<boolean> {
 		if (!applyToCurrent || !this.queue.currentTrack || !(this.isPlaying || this.isPaused)) {
 			return false;
 		}
-
+		if (this.refreshLock) return false;
+		this.refreshLock = true;
 		try {
 			const track = this.queue.currentTrack;
 			this.debug(`[Player] Refreshing player resource for track: ${track.title}`);
@@ -1466,7 +2435,9 @@ export class Player extends EventEmitter {
 					}
 				}
 			} catch (error) {
-				this.debug(`[Player] Error destroying old stream in refeshPlayerResource:`, error);
+				this.debug(`[Player] Error destroying old stream in refreshPlayerResource:`, error);
+			} finally {
+				this.refreshLock = false;
 			}
 
 			this.currentResource = resource;
@@ -1588,11 +2559,41 @@ export class Player extends EventEmitter {
 				this.debug(`[Player] AudioPlayerStatus.AutoPaused`);
 			} else if (newState.status === AudioPlayerStatus.Buffering) {
 				this.debug(`[Player] AudioPlayerStatus.Buffering`);
+				this.lastDuration = this.currentResource?.playbackDuration || 0;
+				this.stuckTimer = setTimeout(() => {
+					if (this.currentResource?.playbackDuration === this.lastDuration) {
+						this.emit("trackStuck", this.currentTrack);
+						const stuckTrack = this.currentTrack;
+						if (stuckTrack && this.antiStuckEnabled) {
+							void this.attemptTrackRecovery(stuckTrack, new Error("TRACK_STUCK")).then((recovered) => {
+								if (!recovered) {
+									this.skip();
+								}
+							});
+							return;
+						}
+						this.skip();
+					}
+				}, 10000);
+			} else {
+				if (this.stuckTimer) {
+					clearTimeout(this.stuckTimer);
+					this.stuckTimer = null;
+				}
 			}
 		});
 		this.audioPlayer.on("error", (error) => {
 			this.debug(`[Player] AudioPlayer error:`, error);
 			this.emit("playerError", error, this.queue.currentTrack || undefined);
+			const track = this.queue.currentTrack;
+			if (track && this.antiStuckEnabled) {
+				void this.attemptTrackRecovery(track, error).then((recovered) => {
+					if (!recovered) {
+						this.playNext();
+					}
+				});
+				return;
+			}
 			this.playNext();
 		});
 
@@ -1600,6 +2601,24 @@ export class Player extends EventEmitter {
 			if (this.manager.debugEnabled) {
 				this.emit("debug", ...args);
 			}
+		});
+		//stream Manager events
+
+		this.streamManager.on("streamError", ({ streamId, error }) => {
+			this.debug(`[StreamManager] Error for stream ${streamId}:`, error);
+			this.emit("streamError", error, this.queue.currentTrack || null);
+		});
+
+		this.streamManager.on("streamRegistered", ({ streamId, track, metadata }) => {
+			this.debug(`[StreamManager] Stream registered: ${track.title} (preload: ${metadata.isPreload})`);
+		});
+
+		this.streamManager.on("streamUnregistered", ({ streamId, track, reason }) => {
+			this.debug(`[StreamManager] Stream unregistered: ${track.title} (reason: ${reason})`);
+		});
+
+		this.streamManager.on("debug", (...args) => {
+			this.debug(...args);
 		});
 	}
 
@@ -1612,7 +2631,77 @@ export class Player extends EventEmitter {
 		this.debug(`[Player] Removing plugin: ${name}`);
 		return this.pluginManager.unregister(name);
 	}
+	/**
+	 * Save the current session of the player, including queue, current track, position, volume, loop mode, auto-play mode, and active extensions/plugins.
+	 *
+	 * @returns {PlayerSession} The saved session data
+	 */
+	saveSession(): PlayerSession {
+		return {
+			guildId: this.guildId,
+			currentTrack: this.currentTrack,
+			position: this.currentResource?.playbackDuration || null,
+			volume: this.volume,
+			queue: this.queue.getTracks(),
+			loopMode: this.queue.loop(),
+			autoPlay: this.queue.autoPlay(),
+			extensions: this.extensionManager.getAll().map((ext) => ext.name),
+			plugins: this.pluginManager.getAll().map((plugin) => plugin.name),
+		};
+	}
 
+	/**
+	 * Get serializable state (for manual persistence)
+	 */
+	getSerializableState(): object {
+		return {
+			guildId: this.guildId,
+			queue: this.queue.getTracks(),
+			currentTrack: this.currentTrack,
+			volume: this.volume,
+			isPlaying: this.isPlaying,
+			isPaused: this.isPaused,
+			loopMode: this.queue.loop(),
+			autoPlay: this.queue.autoPlay(),
+			filters: this.filter.getFilterString(),
+			timestamp: Date.now(),
+		};
+	}
+
+	/**
+	 * Restore from saved state
+	 */
+	async restoreState(state: any): Promise<boolean> {
+		try {
+			if (state.volume) this.setVolume(state.volume);
+			if (state.loopMode) this.queue.loop(state.loopMode);
+			if (typeof state.autoPlay === "boolean") this.queue.autoPlay(state.autoPlay);
+			if (state.filters) await this.filter.applyFilters(state.filters.split(","));
+
+			// Restore queue
+			if (state.queue && Array.isArray(state.queue)) {
+				this.queue.clear();
+				this.queue.addMultiple(state.queue);
+			}
+
+			this.debug("[Player] State restored");
+			return true;
+		} catch (error) {
+			this.debug("[Player] Failed to restore state:", error);
+			return false;
+		}
+	}
+
+	/**
+	 * Get stream manager stats
+	 */
+	getStreamManagerStats() {
+		return {
+			metrics: this.streamManager.getMetrics(),
+			stats: this.streamManager.getStats(),
+			totalStreams: this.streamManager.getStreamCount(),
+		};
+	}
 	//#endregion
 	//#region Getters
 
@@ -1698,6 +2787,10 @@ export class Player extends EventEmitter {
 	 */
 	get relatedTracks(): Track[] | null {
 		return this.queue.relatedTracks();
+	}
+
+	get isLive(): boolean {
+		return this.currentTrack?.isLive === true;
 	}
 
 	//#endregion

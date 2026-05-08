@@ -76,7 +76,7 @@ root
 
 ```bash
 # replace YOURUSER with your GitHub username
-git clone https://github.com/YOURUSER/ZiPlayer
+git clone https://github.com/ZiProject/ZiPlayer
 cd ZiPlayer
 ```
 
@@ -92,10 +92,9 @@ npm install
 npm run build
 ```
 
-**4) Lint & format (if configured)**
+**4) format (if configured)**
 
 ```bash
-npm run lint
 npm run format
 ```
 

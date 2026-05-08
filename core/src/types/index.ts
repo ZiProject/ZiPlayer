@@ -3,7 +3,7 @@ import { Player } from "../structures/Player";
 import type { PlayerManager } from "../structures/PlayerManager";
 import type { AudioFilter } from "./fillter";
 import type { SourcePluginLike } from "./plugin";
-
+import type { AudioResource } from "@discordjs/voice";
 /**
  * Represents a music track with metadata and streaming information.
  *
@@ -60,6 +60,7 @@ export interface Track {
 	requestedBy: string;
 	source: string;
 	metadata?: Record<string, any>;
+	isLive?: boolean;
 }
 
 /**
@@ -88,11 +89,20 @@ export interface SearchResult {
 	tracks: Track[];
 	playlist?: {
 		name: string;
-		url: string;
+		url?: string;
 		thumbnail?: string;
-	};
+	} | null;
+	query?: string;
+	score?: SearchScore;
+	source?: string;
 }
 
+export interface SearchScore {
+	score: number; // 0-100
+	reason: string; // Lý do đạt điểm
+	matchedBy: "url" | "title" | "partial" | "none" | "playlist";
+	exactMatch: boolean;
+}
 /**
  * Contains streaming information for audio playback.
  *
@@ -129,7 +139,7 @@ export interface StreamInfo {
  *     createPlayer: true,
  *     interrupt: true,
  *     volume: 1.0,
- *     Max_Time_TTS: 30000
+ *     maxTimeTts: 30000
  *   }
  * };
  */
@@ -160,7 +170,7 @@ export interface PlayerOptions {
 		/** Default TTS volume multiplier 1 => 100% */
 		volume?: number;
 		/** Max time tts playback Duration */
-		Max_Time_TTS?: number;
+		maxTimeTts?: number;
 	};
 	/**
 	 * Optional per-player extension selection. When provided, only these
@@ -177,16 +187,131 @@ export interface PlayerOptions {
 	 * - Multiple filters can be combined
 	 */
 	filters?: (string | AudioFilter)[];
+	/**
+	 * Enable low performance mode.
+	 * When enabled, heavy features such as preload and crossfade can be auto-disabled.
+	 */
+	lowPerformance?: boolean;
+	/**
+	 * Preload behavior configuration.
+	 */
+	preload?: {
+		/**
+		 * Enable/disable preload explicitly.
+		 * Default: true
+		 */
+		enabled?: boolean;
+		/**
+		 * Auto disable preload when lowPerformance is enabled.
+		 * Default: true
+		 */
+		autoDisableInLowPerformance?: boolean;
+	};
+	/**
+	 * Crossfade behavior configuration.
+	 */
+	crossfade?: {
+		/**
+		 * Enable/disable crossfade explicitly.
+		 * If omitted and autoEnable=true, ZiPlayer may enable it automatically.
+		 */
+		enabled?: boolean;
+		/**
+		 * Auto enable crossfade if runtime profile allows.
+		 * Default: true
+		 */
+		autoEnable?: boolean;
+		/**
+		 * Auto disable crossfade when lowPerformance is enabled.
+		 * Default: true
+		 */
+		autoDisableInLowPerformance?: boolean;
+		/**
+		 * Target crossfade duration in milliseconds.
+		 * Default: 5000
+		 */
+		durationMs?: number;
+	};
+	/**
+	 * Smart transition engine settings.
+	 */
+	smartTransition?: {
+		enabled?: boolean;
+		/**
+		 * Prefer genre-aware fade duration when metadata.genre is available.
+		 */
+		genreAware?: boolean;
+		/**
+		 * Try to align transition with beat boundary using metadata.bpm.
+		 */
+		beatAlign?: boolean;
+		/**
+		 * Base duration in milliseconds when no specific profile matched.
+		 */
+		baseDurationMs?: number;
+		minDurationMs?: number;
+		maxDurationMs?: number;
+		/**
+		 * Genre profiles in milliseconds (e.g. chill, edm, pop, rock).
+		 */
+		genreDurations?: Record<string, number>;
+		/**
+		 * Max wait time while trying to align to beat boundary.
+		 */
+		beatAlignMaxWaitMs?: number;
+	};
+	/**
+	 * Recovery strategy for stream/player failures.
+	 */
+	antiStuck?: {
+		enabled?: boolean;
+		maxRetries?: number;
+		retryDelayMs?: number;
+		/**
+		 * Reuse preload/current cached stream before hard retries.
+		 */
+		reusePreloadFirst?: boolean;
+		/**
+		 * Temporarily force low quality during retry attempts.
+		 */
+		reduceQualityOnRetry?: boolean;
+		/**
+		 * If consecutive failures exceed this threshold, allow skipping track.
+		 */
+		controlledSkipThreshold?: number;
+	};
+	/**
+	 * Loudness normalization and limiter.
+	 */
+	loudnessNormalization?: {
+		enabled?: boolean;
+		/**
+		 * Target LUFS (integrated). Track metadata.lufs is used if available.
+		 */
+		targetLUFS?: number;
+		/**
+		 * Cap gain boost to avoid over-amplification.
+		 */
+		maxBoostDb?: number;
+		/**
+		 * Cap attenuation.
+		 */
+		maxCutDb?: number;
+		/**
+		 * Output ceiling multiplier (<= 1.0), acts as soft limiter ceiling.
+		 */
+		limiterCeiling?: number;
+	};
 }
 
 export interface PlayerManagerOptions {
 	plugins?: SourcePluginLike[];
 	extensions?: any[];
-	/**
-	 * Timeout in milliseconds for manager-level operations (e.g. search)
-	 * when running without a Player instance.
-	 */
 	extractorTimeout?: number;
+	autoCleanup?: boolean; // Auto cleanup inactive players
+	cleanupInterval?: number; // Cleanup interval in ms
+	enableSearchCache?: boolean; // Enable search result caching
+	enableStatsCollection?: boolean; // Enable stats collection events
 }
 
 /**
@@ -200,9 +325,13 @@ export interface PlayerManagerOptions {
  * };
  */
 export interface ProgressBarOptions {
-	size?: number;
-	barChar?: string;
-	progressChar?: string;
+	size?: number; // Bar length (default: 20)
+	barChar?: string; // Character for empty bar (default: "▬")
+	progressChar?: string; // Character for progress pointer (default: "🔘")
+	timeFormat?: "compact" | "full"; // Time format style (default: "compact")
+	showPercentage?: boolean; // Show percentage at end (default: false)
+	showTime?: boolean; // Show time labels (default: true)
+	hideProgressChar?: boolean; // Hide progress character (default: false)
 }
 
 /**
@@ -228,6 +357,46 @@ export interface SaveOptions {
 	filter?: AudioFilter[];
 	/** Seek position in milliseconds to start saving from */
 	seek?: number;
+}
+export interface PlayerSession {
+	guildId: string;
+	queue: Track[];
+	currentTrack: Track | null;
+	volume: number;
+	loopMode: LoopMode;
+	autoPlay: boolean;
+	position: number | null;
+	extensions: string[];
+	plugins: string[];
+	userdata?: Record<string, any>;
+}
+
+export interface PreloadState {
+	resource: AudioResource | null;
+	track: Track | null;
+	abortController: AbortController | null;
+	timeoutId: NodeJS.Timeout | null;
+	isValid: boolean;
+	streamId?: string;
+	isBeingUsed: boolean;
+}
+
+export interface PlayerStats {
+	totalPlayers: number;
+	activePlayers: number;
+	pausedPlayers: number;
+	connectedPlayers: number;
+	totalTracksInQueue: number;
+}
+
+export interface StreamSlot {
+	resource: AudioResource | null;
+	track: Track | null;
+	streamId: string | null;
+	abortController: AbortController | null;
+	isValid: boolean;
+	isLoading: boolean;
+	loadPromise: Promise<void> | null;
 }
 
 export type LoopMode = "off" | "track" | "queue";
@@ -337,6 +506,8 @@ export interface ManagerEvents {
 	lyricsCreate: [player: Player, track: Track, lyrics: any];
 	lyricsChange: [player: Player, track: Track, lyrics: any];
 	voiceCreate: [player: Player, evt: any];
+	stats: [stats: PlayerStats];
+	streamError: [error: Error, track: Track | null];
 }
 export interface PlayerEvents {
 	debug: [message: string, ...args: any[]];
@@ -366,6 +537,10 @@ export interface PlayerEvents {
 	filterRemoved: [filter: AudioFilter];
 	/** Emitted when all filters are cleared */
 	filtersCleared: [];
+	trackStuck: [track: Track | null];
+	streamError: [error: Error, track: Track | null];
+	/** Emitted when player stats are updated (if enabled) */
+	stats: [stats: PlayerStats];
 }
 
 export * from "./fillter";

@@ -12,7 +12,7 @@ import type { SearchResult, StreamInfo, Track } from ".";
 export interface SourcePlugin {
 	name: string;
 	version: string;
-	priority?: number;
+	priority?: number; // Higher = run first, default is 0. Lower priority plugins are tried first in getStream fallback.
 	canHandle(query: string): boolean;
 	search(query: string, requestedBy: string): Promise<SearchResult>;
 	getStream(track: Track): Promise<StreamInfo>;

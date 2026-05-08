@@ -14,7 +14,7 @@ the issue tracker, DSF events, and any other forums created by the project team 
 addition, violations of this code outside these spaces may affect a person's ability to participate within them.
 
 If you believe someone is violating the code of conduct, we ask that you report it by emailing
-[contact@ziji.world](mailto:contact@ziji.world). For more details please see our
+[contact@ziji.world](https://discord.gg/XA3ySqzHeQ). For more details please see our
 [Reporting guidelines](https://github.com/ZiProject/ZiPlayer/issues)
 
 - **Be friendly and patient.**
@@ -52,4 +52,4 @@ Original text courtesy of the [Speak Up! project](http://web.archive.org/web/201
 ## Questions?
 
 If you have questions, please see [Faq](https://github.com/ZiProject/ZiPlayer/wiki). If that doesn't answer your questions, feel
-free to [contact us](mailto:contact@ziji.world).
+free to [contact us](https://discord.gg/XA3ySqzHeQ).
