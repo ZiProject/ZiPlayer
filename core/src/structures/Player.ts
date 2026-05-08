@@ -144,6 +144,35 @@ export class Player extends EventEmitter {
 	private crossfadeDurationMs = 500;
 	private lowPerformanceMode = false;
 	private crossfadeTransitionLock = false;
+	private smartTransitionEnabled = true;
+	private smartTransitionGenreAware = true;
+	private smartTransitionBeatAlign = true;
+	private smartTransitionBaseMs = 800;
+	private smartTransitionMinMs = 120;
+	private smartTransitionMaxMs = 8000;
+	private smartTransitionGenreDurations: Record<string, number> = {
+		chill: 700,
+		ambient: 750,
+		lofi: 650,
+		pop: 450,
+		rock: 350,
+		edm: 220,
+		house: 250,
+		techno: 200,
+	};
+	private smartTransitionBeatAlignMaxWaitMs = 180;
+	private antiStuckEnabled = true;
+	private antiStuckMaxRetries = 2;
+	private antiStuckRetryDelayMs = 900;
+	private antiStuckReusePreloadFirst = true;
+	private antiStuckReduceQualityOnRetry = true;
+	private antiStuckControlledSkipThreshold = 3;
+	private antiStuckConsecutiveFailures = 0;
+	private loudnessNormalizationEnabled = false;
+	private loudnessTargetLUFS = -14;
+	private loudnessMaxBoostDb = 8;
+	private loudnessMaxCutDb = 10;
+	private loudnessLimiterCeiling = 0.95;
 
 	// Cache for search results to avoid duplicate calls
 	private searchCache: LRUCache<string, SearchResult>;
@@ -206,8 +235,36 @@ export class Player extends EventEmitter {
 			this.crossfadeEnabled = false;
 		}
 
+		const smartTransitionOptions = this.options.smartTransition || {};
+		this.smartTransitionEnabled = smartTransitionOptions.enabled ?? true;
+		this.smartTransitionGenreAware = smartTransitionOptions.genreAware ?? true;
+		this.smartTransitionBeatAlign = smartTransitionOptions.beatAlign ?? true;
+		this.smartTransitionBaseMs = Math.max(0, smartTransitionOptions.baseDurationMs ?? this.crossfadeDurationMs);
+		this.smartTransitionMinMs = Math.max(0, smartTransitionOptions.minDurationMs ?? 1200);
+		this.smartTransitionMaxMs = Math.max(this.smartTransitionMinMs, smartTransitionOptions.maxDurationMs ?? 8000);
+		this.smartTransitionBeatAlignMaxWaitMs = Math.max(0, smartTransitionOptions.beatAlignMaxWaitMs ?? 1200);
+		this.smartTransitionGenreDurations = {
+			...this.smartTransitionGenreDurations,
+			...(smartTransitionOptions.genreDurations || {}),
+		};
+
+		const antiStuckOptions = this.options.antiStuck || {};
+		this.antiStuckEnabled = antiStuckOptions.enabled ?? true;
+		this.antiStuckMaxRetries = Math.max(0, antiStuckOptions.maxRetries ?? 2);
+		this.antiStuckRetryDelayMs = Math.max(0, antiStuckOptions.retryDelayMs ?? 900);
+		this.antiStuckReusePreloadFirst = antiStuckOptions.reusePreloadFirst ?? true;
+		this.antiStuckReduceQualityOnRetry = antiStuckOptions.reduceQualityOnRetry ?? true;
+		this.antiStuckControlledSkipThreshold = Math.max(1, antiStuckOptions.controlledSkipThreshold ?? 3);
+
+		const loudnessOptions = this.options.loudnessNormalization || {};
+		this.loudnessNormalizationEnabled = loudnessOptions.enabled ?? false;
+		this.loudnessTargetLUFS = loudnessOptions.targetLUFS ?? -14;
+		this.loudnessMaxBoostDb = Math.max(0, loudnessOptions.maxBoostDb ?? 8);
+		this.loudnessMaxCutDb = Math.max(0, loudnessOptions.maxCutDb ?? 10);
+		this.loudnessLimiterCeiling = Math.min(1, Math.max(0.1, loudnessOptions.limiterCeiling ?? 0.95));
+
 		this.debug(
-			`[Player] Runtime options resolved: lowPerformance=${this.lowPerformanceMode}, preload=${this.preloadEnabled}, crossfade=${this.crossfadeEnabled} (${this.crossfadeDurationMs}ms)`,
+			`[Player] Runtime options resolved: lowPerformance=${this.lowPerformanceMode}, preload=${this.preloadEnabled}, crossfade=${this.crossfadeEnabled} (${this.crossfadeDurationMs}ms), smartTransition=${this.smartTransitionEnabled}, antiStuck=${this.antiStuckEnabled}, loudnessNormalization=${this.loudnessNormalizationEnabled}`,
 		);
 		this.filter = new FilterManager(this, this.manager);
 		this.extensionManager = new ExtensionManager(this, this.manager);
@@ -902,10 +959,11 @@ export class Player extends EventEmitter {
 		}
 	}
 
-	private async applyCrossfadeIn(resource: AudioResource): Promise<void> {
+	private async applyCrossfadeIn(resource: AudioResource, track: Track): Promise<void> {
 		if (!this.crossfadeEnabled || !resource.volume) return;
-		const targetVolume = this.volume / 100;
-		await this.fadeResourceVolume(resource, 0, targetVolume, this.crossfadeDurationMs);
+		const targetVolume = this.getTrackTargetVolume(track);
+		const transitionMs = this.resolveSmartTransitionDuration(track);
+		await this.fadeResourceVolume(resource, 0, targetVolume, transitionMs);
 	}
 
 	private async applyCrossfadeOutCurrent(): Promise<void> {
@@ -913,7 +971,10 @@ export class Player extends EventEmitter {
 		const current = this.currentSlot.resource || this.currentResource;
 		if (!current?.volume) return;
 		const currentVolume = current.volume.volume ?? this.volume / 100;
-		await this.fadeResourceVolume(current, currentVolume, 0, this.crossfadeDurationMs);
+		const currentTrack = this.queue.currentTrack;
+		const transitionMs =
+			currentTrack ? this.resolveSmartTransitionDuration(currentTrack) : this.resolveSmartTransitionDuration({} as Track);
+		await this.fadeResourceVolume(current, currentVolume, 0, transitionMs);
 	}
 
 	private async crossfadeSkipAndStop(): Promise<void> {
@@ -931,6 +992,118 @@ export class Player extends EventEmitter {
 		} finally {
 			this.crossfadeTransitionLock = false;
 		}
+	}
+
+	private getTrackMetadataValue(track: Track, key: string): any {
+		const md = track?.metadata as Record<string, any> | undefined;
+		if (!md) return undefined;
+		return md[key];
+	}
+
+	private resolveSmartTransitionDuration(track: Track): number {
+		if (!this.smartTransitionEnabled) {
+			return this.crossfadeDurationMs;
+		}
+
+		let duration = this.smartTransitionBaseMs;
+		if (this.smartTransitionGenreAware) {
+			const rawGenre = this.getTrackMetadataValue(track, "genre");
+			const genre = typeof rawGenre === "string" ? rawGenre.toLowerCase().trim() : "";
+			if (genre && this.smartTransitionGenreDurations[genre] !== undefined) {
+				duration = this.smartTransitionGenreDurations[genre];
+			}
+		}
+
+		return Math.min(this.smartTransitionMaxMs, Math.max(this.smartTransitionMinMs, duration));
+	}
+
+	private async maybeAlignToBeatBoundary(): Promise<void> {
+		if (!this.smartTransitionEnabled || !this.smartTransitionBeatAlign) return;
+		const currentTrack = this.queue.currentTrack;
+		if (!currentTrack || !this.currentResource) return;
+
+		const bpmRaw = this.getTrackMetadataValue(currentTrack, "bpm");
+		const bpm = typeof bpmRaw === "number" ? bpmRaw : Number(bpmRaw);
+		if (!Number.isFinite(bpm) || bpm <= 0) return;
+
+		const beatMs = 60000 / bpm;
+		const positionMs = this.currentResource.playbackDuration;
+		const remainder = positionMs % beatMs;
+		const waitMs = beatMs - remainder;
+		if (waitMs > 0 && waitMs <= this.smartTransitionBeatAlignMaxWaitMs) {
+			await new Promise((resolve) => setTimeout(resolve, waitMs));
+		}
+	}
+
+	private getTrackTargetVolume(track: Track): number {
+		const base = this.volume / 100;
+		if (!this.loudnessNormalizationEnabled) {
+			return base;
+		}
+
+		const lufsRaw = this.getTrackMetadataValue(track, "lufs");
+		const trackLufs = typeof lufsRaw === "number" ? lufsRaw : Number(lufsRaw);
+		if (!Number.isFinite(trackLufs)) {
+			return Math.min(base, this.loudnessLimiterCeiling);
+		}
+
+		const deltaDbRaw = this.loudnessTargetLUFS - trackLufs;
+		const maxBoost = this.loudnessMaxBoostDb;
+		const maxCut = this.loudnessMaxCutDb;
+		const deltaDb = Math.max(-maxCut, Math.min(maxBoost, deltaDbRaw));
+		const multiplier = Math.pow(10, deltaDb / 20);
+		const adjusted = base * multiplier;
+		return Math.min(this.loudnessLimiterCeiling, Math.max(0, adjusted));
+	}
+
+	private async attemptTrackRecovery(track: Track, reason: unknown): Promise<boolean> {
+		if (!this.antiStuckEnabled) return false;
+		this.debug(`[AntiStuck] Recovery started for: ${track.title}`, reason);
+
+		const originalQuality = this.options.quality;
+		let attempted = 0;
+
+		while (attempted < this.antiStuckMaxRetries) {
+			attempted++;
+			if (this.antiStuckReduceQualityOnRetry) {
+				this.options.quality = "low";
+			}
+
+			if (this.antiStuckRetryDelayMs > 0) {
+				await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
+			}
+
+			try {
+				if (this.antiStuckReusePreloadFirst && this.preloadSlot.isValid && this.preloadSlot.track?.id === track.id) {
+					const startedFromPreload = await this.startTrack(track);
+					if (startedFromPreload) {
+						this.antiStuckConsecutiveFailures = 0;
+						this.options.quality = originalQuality;
+						return true;
+					}
+				}
+
+				const started = await this.loadFreshStream(track);
+				if (started) {
+					this.antiStuckConsecutiveFailures = 0;
+					this.options.quality = originalQuality;
+					return true;
+				}
+			} catch (error) {
+				this.debug(`[AntiStuck] Retry ${attempted} failed for ${track.title}:`, error);
+			}
+		}
+
+		this.options.quality = originalQuality;
+		this.antiStuckConsecutiveFailures++;
+		if (this.antiStuckConsecutiveFailures >= this.antiStuckControlledSkipThreshold) {
+			this.debug(`[AntiStuck] Controlled skip threshold reached for ${track.title}`);
+			return false;
+		}
+
+		// Avoid hard skip storm by leaving track for next natural retry window.
+		this.debug(`[AntiStuck] Keeping track for controlled retry window: ${track.title}`);
+		return false;
 	}
 
 	/**
@@ -1174,16 +1347,18 @@ export class Player extends EventEmitter {
 				if (!currentResource) {
 					return false;
 				}
+				const targetVolume = this.getTrackTargetVolume(track);
 
 				// Apply volume
 				if (currentResource.volume) {
-					currentResource.volume.setVolume(this.crossfadeEnabled ? 0 : this.volume / 100);
+					currentResource.volume.setVolume(this.crossfadeEnabled ? 0 : targetVolume);
 				}
 
 				// Play
+				await this.maybeAlignToBeatBoundary();
 				this.audioPlayer.play(currentResource);
 				await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
-				await this.applyCrossfadeIn(currentResource);
+				await this.applyCrossfadeIn(currentResource, track);
 
 				// Start preloading next track (async, don't await)
 				this.preloadNextTrack().catch((err) => {
@@ -1234,18 +1409,20 @@ export class Player extends EventEmitter {
 		if (!currentResource) {
 			return false;
 		}
+		const targetVolume = this.getTrackTargetVolume(track);
 
 		// Apply volume
 		if (currentResource.volume) {
-			currentResource.volume.setVolume(this.crossfadeEnabled ? 0 : this.volume / 100);
+			currentResource.volume.setVolume(this.crossfadeEnabled ? 0 : targetVolume);
 		}
 
 		// Play
+		await this.maybeAlignToBeatBoundary();
 		this.audioPlayer.play(currentResource);
 
 		try {
 			await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
-			await this.applyCrossfadeIn(currentResource);
+			await this.applyCrossfadeIn(currentResource, track);
 
 			// Start preloading next track
 			this.preloadNextTrack().catch((err) => {
@@ -1296,15 +1473,17 @@ export class Player extends EventEmitter {
 			this.currentResource = resource;
 
 			// Apply volume
+			const targetVolume = this.getTrackTargetVolume(track);
 			if (resource.volume) {
-				resource.volume.setVolume(this.crossfadeEnabled ? 0 : this.volume / 100);
+				resource.volume.setVolume(this.crossfadeEnabled ? 0 : targetVolume);
 			}
 
 			// Play
+			await this.maybeAlignToBeatBoundary();
 			this.audioPlayer.stop(true);
 			this.audioPlayer.play(resource);
 			await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
-			await this.applyCrossfadeIn(resource);
+			await this.applyCrossfadeIn(resource, track);
 
 			// Preload next (async)
 			this.preloadNextTrack().catch((err) => {
@@ -1362,11 +1541,32 @@ export class Player extends EventEmitter {
 			try {
 				const started = await this.startTrack(track);
 				if (started) {
+					this.antiStuckConsecutiveFailures = 0;
 					return true;
+				}
+				const recovered = await this.attemptTrackRecovery(track, new Error("TRACK_START_RETURNED_FALSE"));
+				if (recovered) {
+					return true;
+				}
+				if (this.antiStuckEnabled && this.antiStuckConsecutiveFailures < this.antiStuckControlledSkipThreshold) {
+					this.queue.insert(track, 0);
+					if (this.antiStuckRetryDelayMs > 0) {
+						await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
+					}
 				}
 			} catch (err) {
 				this.debug(`[Player] playNext error:`, err);
 				this.emit("playerError", err as Error, track);
+				const recovered = await this.attemptTrackRecovery(track, err);
+				if (recovered) {
+					return true;
+				}
+				if (this.antiStuckEnabled && this.antiStuckConsecutiveFailures < this.antiStuckControlledSkipThreshold) {
+					this.queue.insert(track, 0);
+					if (this.antiStuckRetryDelayMs > 0) {
+						await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
+					}
+				}
 				continue;
 			}
 		}
@@ -2363,6 +2563,15 @@ export class Player extends EventEmitter {
 				this.stuckTimer = setTimeout(() => {
 					if (this.currentResource?.playbackDuration === this.lastDuration) {
 						this.emit("trackStuck", this.currentTrack);
+						const stuckTrack = this.currentTrack;
+						if (stuckTrack && this.antiStuckEnabled) {
+							void this.attemptTrackRecovery(stuckTrack, new Error("TRACK_STUCK")).then((recovered) => {
+								if (!recovered) {
+									this.skip();
+								}
+							});
+							return;
+						}
 						this.skip();
 					}
 				}, 10000);
@@ -2376,6 +2585,15 @@ export class Player extends EventEmitter {
 		this.audioPlayer.on("error", (error) => {
 			this.debug(`[Player] AudioPlayer error:`, error);
 			this.emit("playerError", error, this.queue.currentTrack || undefined);
+			const track = this.queue.currentTrack;
+			if (track && this.antiStuckEnabled) {
+				void this.attemptTrackRecovery(track, error).then((recovered) => {
+					if (!recovered) {
+						this.playNext();
+					}
+				});
+				return;
+			}
 			this.playNext();
 		});
 

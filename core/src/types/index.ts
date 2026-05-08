@@ -232,6 +232,76 @@ export interface PlayerOptions {
 		 */
 		durationMs?: number;
 	};
+	/**
+	 * Smart transition engine settings.
+	 */
+	smartTransition?: {
+		enabled?: boolean;
+		/**
+		 * Prefer genre-aware fade duration when metadata.genre is available.
+		 */
+		genreAware?: boolean;
+		/**
+		 * Try to align transition with beat boundary using metadata.bpm.
+		 */
+		beatAlign?: boolean;
+		/**
+		 * Base duration in milliseconds when no specific profile matched.
+		 */
+		baseDurationMs?: number;
+		minDurationMs?: number;
+		maxDurationMs?: number;
+		/**
+		 * Genre profiles in milliseconds (e.g. chill, edm, pop, rock).
+		 */
+		genreDurations?: Record<string, number>;
+		/**
+		 * Max wait time while trying to align to beat boundary.
+		 */
+		beatAlignMaxWaitMs?: number;
+	};
+	/**
+	 * Recovery strategy for stream/player failures.
+	 */
+	antiStuck?: {
+		enabled?: boolean;
+		maxRetries?: number;
+		retryDelayMs?: number;
+		/**
+		 * Reuse preload/current cached stream before hard retries.
+		 */
+		reusePreloadFirst?: boolean;
+		/**
+		 * Temporarily force low quality during retry attempts.
+		 */
+		reduceQualityOnRetry?: boolean;
+		/**
+		 * If consecutive failures exceed this threshold, allow skipping track.
+		 */
+		controlledSkipThreshold?: number;
+	};
+	/**
+	 * Loudness normalization and limiter.
+	 */
+	loudnessNormalization?: {
+		enabled?: boolean;
+		/**
+		 * Target LUFS (integrated). Track metadata.lufs is used if available.
+		 */
+		targetLUFS?: number;
+		/**
+		 * Cap gain boost to avoid over-amplification.
+		 */
+		maxBoostDb?: number;
+		/**
+		 * Cap attenuation.
+		 */
+		maxCutDb?: number;
+		/**
+		 * Output ceiling multiplier (<= 1.0), acts as soft limiter ceiling.
+		 */
+		limiterCeiling?: number;
+	};
 }
 
 export interface PlayerManagerOptions {

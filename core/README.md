@@ -25,6 +25,9 @@ advanced music bots quickly.
 - 🎯 **Queue management** — Advanced queue operations (move, swap, batch remove)
 - 💹 **Preload** - Auto Preload next Track
 - 🔃 **Crossfade** - Suport crossfade for new/slip Track
+- 🧠 **Transition Engine** - BPM/genre-aware crossfade (chill → long fade, EDM → short fade) with beat-aligned entry instead of blind time-based fading
+- 🔄 **Anti-Stuck Recovery 2.0** - Automatic stream failure recovery: reuse preload → fallback plugin → reduce quality → controlled skip (no chaotic skipping)
+- 🔊 **Loudness Normalization** - LUFS-based normalization prevents sudden volume jumps between tracks, with gentle limiter to avoid distortion
 
 ---
 
@@ -403,7 +406,32 @@ const player = await manager.create(guildId, {
 		enabled: undefined, // omit to let autoEnable decide
 		autoEnable: true,
 		autoDisableInLowPerformance: true,
-		durationMs: 500,
+		durationMs: 5000,
+	},
+	smartTransition: {
+		enabled: true,
+		genreAware: true,
+		beatAlign: true,
+		baseDurationMs: 5000,
+		minDurationMs: 1200,
+		maxDurationMs: 8000,
+		genreDurations: { chill: 7000, edm: 2200 },
+		beatAlignMaxWaitMs: 1200,
+	},
+	antiStuck: {
+		enabled: true,
+		maxRetries: 2,
+		retryDelayMs: 900,
+		reusePreloadFirst: true,
+		reduceQualityOnRetry: true,
+		controlledSkipThreshold: 3,
+	},
+	loudnessNormalization: {
+		enabled: true,
+		targetLUFS: -14,
+		maxBoostDb: 8,
+		maxCutDb: 10,
+		limiterCeiling: 0.95,
 	},
 	userdata: { customField: "value" },
 });
@@ -428,6 +456,8 @@ const litePlayer = await manager.create(guildId, {
 ```
 
 > Crossfade is applied when switching to the next track and when calling `player.skip()`.
+> Smart transition adapts fade by `metadata.genre` and can align to beat using `metadata.bpm`.
+> Loudness normalization uses `metadata.lufs` when available and applies a limiter ceiling.
 
 ---
 
@@ -491,7 +521,3 @@ player.extensionManager.clearCache("search");
 ## 📄 License
 
 MIT License
-
-```
-
-```

@@ -130,6 +130,31 @@ interface PlayerOptions {
 		autoDisableInLowPerformance?: boolean; // Default: true
 		durationMs?: number; // Default: 5000
 	};
+	smartTransition?: {
+		enabled?: boolean;
+		genreAware?: boolean;
+		beatAlign?: boolean;
+		baseDurationMs?: number;
+		minDurationMs?: number;
+		maxDurationMs?: number;
+		genreDurations?: Record<string, number>;
+		beatAlignMaxWaitMs?: number;
+	};
+	antiStuck?: {
+		enabled?: boolean;
+		maxRetries?: number;
+		retryDelayMs?: number;
+		reusePreloadFirst?: boolean;
+		reduceQualityOnRetry?: boolean;
+		controlledSkipThreshold?: number;
+	};
+	loudnessNormalization?: {
+		enabled?: boolean;
+		targetLUFS?: number;
+		maxBoostDb?: number;
+		maxCutDb?: number;
+		limiterCeiling?: number;
+	};
 }
 ```
 
@@ -137,6 +162,9 @@ interface PlayerOptions {
 - `crossfade.autoEnable=true` allows crossfade to be enabled automatically when `crossfade.enabled` is not explicitly set.
 - You can still force behavior by setting `enabled` flags directly.
 - Runtime behavior: crossfade is used for next-track transitions and `skip()`.
+- Smart transition can tune fade by `metadata.genre` and beat-align by `metadata.bpm`.
+- Loudness normalization uses `metadata.lufs` with limiter ceiling protection.
+- Anti-stuck retries in-place before controlled skip to avoid skip storms.
 
 #### Key Methods
 
@@ -272,6 +300,26 @@ const player = await manager.create(guildId, {
 	lowPerformance: false,
 	preload: { enabled: true, autoDisableInLowPerformance: true },
 	crossfade: { autoEnable: true, autoDisableInLowPerformance: true, durationMs: 5000 },
+	smartTransition: {
+		enabled: true,
+		genreAware: true,
+		beatAlign: true,
+		baseDurationMs: 5000,
+		genreDurations: { chill: 7000, edm: 2200 },
+	},
+	antiStuck: {
+		enabled: true,
+		maxRetries: 2,
+		retryDelayMs: 900,
+		reusePreloadFirst: true,
+		reduceQualityOnRetry: true,
+		controlledSkipThreshold: 3,
+	},
+	loudnessNormalization: {
+		enabled: true,
+		targetLUFS: -14,
+		limiterCeiling: 0.95,
+	},
 });
 ```
 
