@@ -291,19 +291,6 @@ export class StreamManager extends EventEmitter {
 	}
 
 	/**
-	 * Get stream by track ID
-	 */
-	getStreamByTrack(trackId: string): Readable | null {
-		for (const managed of this.streams.values()) {
-			if (managed.track.id === trackId && managed.status === "active") {
-				managed.lastAccessed = Date.now();
-				return managed.stream;
-			}
-		}
-		return null;
-	}
-
-	/**
 	 * Update stream metadata
 	 */
 	updateMetadata(streamId: string, metadata: Partial<ManagedStream["metadata"]>): boolean {
@@ -350,22 +337,15 @@ export class StreamManager extends EventEmitter {
 	 * Evict oldest stream when limit reached
 	 */
 	private evictOldestStream(): void {
-		let oldest: ManagedStream | null = null;
-		let oldestTime = Infinity;
+		// Evict lowest priority streams first
+		const sorted = Array.from(this.streams.values()).sort((a, b) => a.metadata.priority - b.metadata.priority);
 
-		for (const managed of this.streams.values()) {
-			// Don't evict high priority streams
-			if (managed.metadata.priority > 5) continue;
-
-			if (managed.createdAt < oldestTime) {
-				oldestTime = managed.createdAt;
-				oldest = managed;
+		for (const managed of sorted) {
+			if (managed.metadata.isPreload && managed.metadata.priority < 5) {
+				this.debug(`Evicting low priority preload stream: ${managed.track.title}`);
+				this.unregisterStream(managed.id, true);
+				break;
 			}
-		}
-
-		if (oldest) {
-			this.debug(`Evicting oldest stream: ${oldest.track.title}`);
-			this.unregisterStream(oldest.id, true);
 		}
 	}
 
@@ -430,6 +410,32 @@ export class StreamManager extends EventEmitter {
 		return Array.from(this.streams.values()).filter((s) => s.status === status);
 	}
 
+	/**
+	 * Get stream by track ID (using track.id, track.url, or track.title as identifier)
+	 */
+	getStreamByTrack(trackId: string): Readable | null {
+		for (const managed of this.streams.values()) {
+			const managedTrackId = managed.track.id || managed.track.url || managed.track.title;
+			if (managedTrackId === trackId && managed.status === "active") {
+				managed.lastAccessed = Date.now();
+				return managed.stream;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Check if a stream exists for a given track ID
+	 */
+	hasStream(trackId: string): boolean {
+		for (const managed of this.streams.values()) {
+			const managedTrackId = managed.track.id || managed.track.url || managed.track.title;
+			if (managedTrackId === trackId && managed.status === "active") {
+				return true;
+			}
+		}
+		return false;
+	}
 	/**
 	 * Get stream count
 	 */

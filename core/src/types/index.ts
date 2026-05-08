@@ -262,6 +262,8 @@ export interface PreloadState {
 	abortController: AbortController | null;
 	timeoutId: NodeJS.Timeout | null;
 	isValid: boolean;
+	streamId?: string;
+	isBeingUsed: boolean;
 }
 
 export interface PlayerStats {
@@ -270,6 +272,16 @@ export interface PlayerStats {
 	pausedPlayers: number;
 	connectedPlayers: number;
 	totalTracksInQueue: number;
+}
+
+export interface StreamSlot {
+	resource: AudioResource | null;
+	track: Track | null;
+	streamId: string | null;
+	abortController: AbortController | null;
+	isValid: boolean;
+	isLoading: boolean;
+	loadPromise: Promise<void> | null;
 }
 
 export type LoopMode = "off" | "track" | "queue";
