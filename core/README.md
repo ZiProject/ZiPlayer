@@ -25,9 +25,12 @@ advanced music bots quickly.
 - 🎯 **Queue management** — Advanced queue operations (move, swap, batch remove)
 - 💹 **Preload** - Auto Preload next Track
 - 🔃 **Crossfade** - Suport crossfade for new/slip Track
-- 🧠 **Transition Engine** - BPM/genre-aware crossfade (chill → long fade, EDM → short fade) with beat-aligned entry instead of blind time-based fading
-- 🔄 **Anti-Stuck Recovery 2.0** - Automatic stream failure recovery: reuse preload → fallback plugin → reduce quality → controlled skip (no chaotic skipping)
-- 🔊 **Loudness Normalization** - LUFS-based normalization prevents sudden volume jumps between tracks, with gentle limiter to avoid distortion
+- 🧠 **Transition Engine** - BPM/genre-aware crossfade (chill → long fade, EDM → short fade) with beat-aligned entry instead of
+  blind time-based fading
+- 🔄 **Anti-Stuck Recovery 2.0** - Automatic stream failure recovery: reuse preload → fallback plugin → reduce quality →
+  controlled skip (no chaotic skipping)
+- 🔊 **Loudness Normalization** - LUFS-based normalization prevents sudden volume jumps between tracks, with gentle limiter to
+  avoid distortion
 
 ---
 
@@ -455,9 +458,9 @@ const litePlayer = await manager.create(guildId, {
 });
 ```
 
-> Crossfade is applied when switching to the next track and when calling `player.skip()`.
-> Smart transition adapts fade by `metadata.genre` and can align to beat using `metadata.bpm`.
-> Loudness normalization uses `metadata.lufs` when available and applies a limiter ceiling.
+> Crossfade is applied when switching to the next track and when calling `player.skip()`. Smart transition adapts fade by
+> `metadata.genre` and can align to beat using `metadata.bpm`. Loudness normalization uses `metadata.lufs` when available and
+> applies a limiter ceiling.
 
 ---
 

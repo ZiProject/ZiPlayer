@@ -522,7 +522,7 @@ export class Queue {
 	getTracks(): Track[] {
 		return [...this.tracks];
 	}
-	
+
 	/**
 	 * Get serializable queue data
 	 */
