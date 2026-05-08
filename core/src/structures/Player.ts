@@ -931,6 +931,33 @@ export class Player extends EventEmitter {
 	}
 
 	/**
+	 * Promote preload slot to current slot without destroying promoted stream.
+	 */
+	private promotePreloadToCurrent(track: Track): void {
+		const promotedResource = this.preloadSlot.resource;
+		const promotedStreamId = this.preloadSlot.streamId;
+
+		// Move ownership to current slot.
+		this.currentSlot.resource = promotedResource;
+		this.currentSlot.track = track;
+		this.currentSlot.streamId = promotedStreamId;
+		this.currentSlot.abortController = null;
+		this.currentSlot.isValid = !!promotedResource;
+		this.currentSlot.isLoading = false;
+		this.currentSlot.loadPromise = null;
+		this.currentResource = promotedResource;
+
+		// Reset preload slot only (do not destroy promoted resource/stream).
+		this.preloadSlot.resource = null;
+		this.preloadSlot.track = null;
+		this.preloadSlot.streamId = null;
+		this.preloadSlot.abortController = null;
+		this.preloadSlot.isValid = false;
+		this.preloadSlot.isLoading = false;
+		this.preloadSlot.loadPromise = null;
+	}
+
+	/**
 	 * Create AudioResource with filters and seek applied
 	 *
 	 * @param {StreamInfo} streamInfo - The stream information
@@ -1037,10 +1064,6 @@ export class Player extends EventEmitter {
 			) {
 				this.debug(`[Player] Using preloaded stream for: ${track.title}`);
 
-				// Transfer preload to current
-				const preloadResource = this.preloadSlot.resource;
-				const preloadStreamId = this.preloadSlot.streamId;
-
 				// Stop current playback
 				this.audioPlayer.stop(true);
 
@@ -1055,22 +1078,20 @@ export class Player extends EventEmitter {
 				}
 
 				// Set current slot from preload
-				this.currentSlot.resource = preloadResource;
-				this.currentSlot.track = track;
-				this.currentSlot.streamId = preloadStreamId;
-				this.currentSlot.isValid = true;
+				this.promotePreloadToCurrent(track);
+				const currentResource = this.currentSlot.resource;
+				if (!currentResource) {
+					return false;
+				}
 
 				// Apply volume
-				if (this.currentSlot.resource.volume) {
-					this.currentSlot.resource.volume.setVolume(this.volume / 100);
+				if (currentResource.volume) {
+					currentResource.volume.setVolume(this.volume / 100);
 				}
 
 				// Play
-				this.audioPlayer.play(this.currentSlot.resource);
+				this.audioPlayer.play(currentResource);
 				await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
-
-				// Clear preload slot (already transferred)
-				this.clearSlot(this.preloadSlot);
 
 				// Start preloading next track (async, don't await)
 				this.preloadNextTrack().catch((err) => {
@@ -1116,24 +1137,22 @@ export class Player extends EventEmitter {
 		}
 
 		// Set new current
-		this.currentSlot.resource = newResource;
-		this.currentSlot.track = track;
-		this.currentSlot.streamId = this.preloadSlot.streamId;
-		this.currentSlot.isValid = true;
+		this.promotePreloadToCurrent(track);
+		const currentResource = this.currentSlot.resource;
+		if (!currentResource) {
+			return false;
+		}
 
 		// Apply volume
-		if (this.currentSlot.resource.volume) {
-			this.currentSlot.resource.volume.setVolume(this.volume / 100);
+		if (currentResource.volume) {
+			currentResource.volume.setVolume(this.volume / 100);
 		}
 
 		// Play
-		this.audioPlayer.play(this.currentSlot.resource);
+		this.audioPlayer.play(currentResource);
 
 		try {
 			await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
-
-			// Clear preload slot (already transferred)
-			this.clearSlot(this.preloadSlot);
 
 			// Start preloading next track
 			this.preloadNextTrack().catch((err) => {
@@ -1181,6 +1200,7 @@ export class Player extends EventEmitter {
 			this.currentSlot.track = track;
 			this.currentSlot.streamId = streamId;
 			this.currentSlot.isValid = true;
+			this.currentResource = resource;
 
 			// Apply volume
 			if (resource.volume) {
