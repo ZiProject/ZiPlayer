@@ -1,19 +1,8 @@
 import { EventEmitter } from "events";
 import { Player } from "./Player";
-import {
-	PlayerManagerOptions,
-	PlayerOptions,
-	Track,
-	SourcePlugin,
-	SearchResult,
-	ManagerEvents,
-	PlayerStats,
-	PersistenceOptions,
-	DestroyedRecord,
-} from "../types";
+import { PlayerManagerOptions, PlayerOptions, Track, SourcePlugin, SearchResult, ManagerEvents, PlayerStats } from "../types";
 import type { BaseExtension } from "../extensions";
 import { withTimeout } from "../utils/timeout";
-import { PersistenceManager } from "../persistence/PersistenceManager";
 
 const GLOBAL_MANAGER_KEY: symbol = Symbol.for("ziplayer.PlayerManager.instance");
 
@@ -94,7 +83,6 @@ export class PlayerManager extends EventEmitter {
 	private cleanupInterval: NodeJS.Timeout | null = null;
 	private statsInterval: NodeJS.Timeout | null = null;
 
-	private persistenceManager?: PersistenceManager;
 	static async default(opt?: PlayerOptions): Promise<Player> {
 		let globaldef = getGlobalManager();
 		if (!globaldef) {
@@ -147,9 +135,6 @@ export class PlayerManager extends EventEmitter {
 		this.cleanupTimeout = options.cleanupInterval ?? 60000;
 		this.enableSearchCache = options.enableSearchCache ?? true;
 
-		if (options.persistence) {
-			this.initPersistence(options.persistence);
-		}
 		// Setup auto cleanup
 		if (this.autoCleanup) {
 			this.startAutoCleanup();
@@ -384,6 +369,7 @@ export class PlayerManager extends EventEmitter {
 			playerStop: "playerStop",
 			ttsStart: "ttsStart",
 			ttsEnd: "ttsEnd",
+			streamError: "streamError",
 		} as const satisfies Record<string, keyof ManagerEvents>;
 
 		for (const [sourceEvent, targetEvent] of Object.entries(forwardEvents) as [
@@ -591,12 +577,6 @@ export class PlayerManager extends EventEmitter {
 	destroy(): void {
 		this.debug(`Destroying all players`);
 
-		if (this.persistenceManager) {
-			this.persistenceManager.saveAll().catch((err) => {
-				this.debug("Failed to save players before destroy:", err);
-			});
-			this.persistenceManager.shutdown().catch(console.error);
-		}
 		// Stop cleanup intervals
 		if (this.cleanupInterval) {
 			clearInterval(this.cleanupInterval);
@@ -727,83 +707,6 @@ export class PlayerManager extends EventEmitter {
 			extensionsCount: this.extensions.length,
 			playersCount: this.players.size,
 		};
-	}
-	private initPersistence(persistenceOptions: PersistenceOptions): void {
-		this.persistenceManager = new PersistenceManager(this, persistenceOptions);
-
-		const forwardEvents = {
-			playerSaved: "playerSaved",
-			playerLoaded: "playerLoaded",
-
-			playerSkipped: "RTSkipped",
-			playerMarkedDestroyed: "RTMarkedDestroyed",
-			playerDestroyedCleared: "RTDestroyedCleared",
-
-			savedAll: "savedAll",
-			loadedAll: "loadedAll",
-
-			backupsCleaned: "backupsCleaned",
-			allBackupsCleaned: "allBackupsCleaned",
-
-			backupStats: "backupStats",
-			backupCleanupDone: "backupCleanupDone",
-		} as const satisfies Record<string, keyof ManagerEvents>;
-
-		for (const [sourceEvent, targetEvent] of Object.entries(forwardEvents) as [
-			keyof typeof forwardEvents,
-			keyof ManagerEvents,
-		][]) {
-			this.persistenceManager.on(sourceEvent, (...args: any[]) => {
-				this.emit(targetEvent, ...(args as ManagerEvents[typeof targetEvent]));
-			});
-		}
-
-		this.debug("Persistence manager initialized");
-	}
-
-	isAutoRestoreEnabled(): boolean {
-		return this.persistenceManager?.isAutoRestoreEnabled() ?? false;
-	}
-
-	getDestroyedPlayers(): DestroyedRecord[] {
-		return this.persistenceManager?.getDestroyedPlayers() ?? [];
-	}
-
-	/**
-	 * Get persistence manager
-	 */
-	getPersistence(): PersistenceManager | undefined {
-		return this.persistenceManager;
-	}
-
-	/**
-	 * Save all players
-	 */
-	async saveAllPlayers(): Promise<Map<string, boolean>> {
-		if (!this.persistenceManager) {
-			throw new Error("Persistence not enabled");
-		}
-		return await this.persistenceManager.saveAll();
-	}
-
-	/**
-	 * Load all players
-	 */
-	async loadAllPlayers(restorePosition: boolean = true): Promise<Map<string, boolean>> {
-		if (!this.persistenceManager) {
-			throw new Error("Persistence not enabled");
-		}
-		return await this.persistenceManager.loadAll(restorePosition);
-	}
-
-	/**
-	 * Save a specific player
-	 */
-	async savePlayer(guildId: string): Promise<boolean> {
-		if (!this.persistenceManager) return false;
-		const player = this.get(guildId);
-		if (!player) return false;
-		return await this.persistenceManager.savePlayer(player);
 	}
 }
 

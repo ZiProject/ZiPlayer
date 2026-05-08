@@ -31,6 +31,7 @@ import type {
 	ExtensionPlayRequest,
 	ExtensionPlayResponse,
 	ExtensionAfterPlayPayload,
+	PreloadState,
 } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 
@@ -39,7 +40,7 @@ import { PluginManager } from "../plugins";
 import { ExtensionManager } from "../extensions";
 import { withTimeout } from "../utils/timeout";
 import { FilterManager } from "./FilterManager";
-import type { PersistenceManager } from "../persistence/PersistenceManager";
+import { StreamManager } from "./StreamManager";
 
 export declare interface Player {
 	on<K extends keyof PlayerEvents>(event: K, listener: (...args: PlayerEvents[K]) => void): this;
@@ -93,6 +94,8 @@ export class Player extends EventEmitter {
 	public options: PlayerOptions;
 	public pluginManager: PluginManager;
 	public extensionManager: ExtensionManager;
+	public streamManager: StreamManager;
+
 	public userdata?: Record<string, any>;
 	public _lastActivity: number = Date.now();
 	private manager: PlayerManager;
@@ -107,15 +110,20 @@ export class Player extends EventEmitter {
 	//preloaded resource
 	private preloadedResource: AudioResource | null = null;
 	private preloadedTrack: Track | null = null;
+	private preloadState: PreloadState = {
+		resource: null,
+		track: null,
+		abortController: null,
+		timeoutId: null,
+		isValid: false,
+	};
+	private isPreloading = false;
+
 	// Cache for search results to avoid duplicate calls
 	private searchCache: LRUCache<string, SearchResult>;
 	private readonly SEARCH_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 	private ttsPlayer: DiscordAudioPlayer | null = null;
 	private lastDuration: number = 0;
-
-	private persistenceManager?: PersistenceManager;
-	private lastSaveTime: number = 0;
-	private readonly AUTO_SAVE_INTERVAL = 30000; // 30 seconds
 
 	constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
 		super();
@@ -153,13 +161,27 @@ export class Player extends EventEmitter {
 		this.pluginManager = new PluginManager(this, this.manager, {
 			extractorTimeout: this.options.extractorTimeout,
 		});
-
+		this.streamManager = new StreamManager({
+			maxConcurrentStreams: 20,
+			streamTimeout: 5 * 60 * 1000,
+			maxListenersPerStream: 15,
+			enableMetrics: true,
+			autoDestroy: true,
+		});
 		this.volume = this.options.volume || 100;
 		this.userdata = this.options.userdata;
 		this.searchCache = new LRUCache<string, SearchResult>({
 			max: 200,
 			ttl: this.SEARCH_CACHE_TTL,
+			dispose: (value, key, reason) => {
+				if (this.listenerCount("debug") > 0) {
+					this.debug(`[SearchCache] Disposed cache entry: ${key}, reason: ${reason}`);
+				}
+			},
+			allowStale: false,
+			updateAgeOnGet: true,
 		});
+
 		this.setupEventListeners();
 
 		// Initialize filters from options
@@ -209,7 +231,7 @@ export class Player extends EventEmitter {
 	async search(query: string, requestedBy: string): Promise<SearchResult> {
 		this.debug(`[Player] Search called with query: ${query}, requestedBy: ${requestedBy}`);
 
-		// Check cache first
+		// Check player cache first (LRU)
 		const cachedResult = this.getCachedSearchResult(query);
 		if (cachedResult) {
 			return cachedResult;
@@ -223,51 +245,22 @@ export class Player extends EventEmitter {
 			return extensionResult;
 		}
 
-		// Get plugins and filter out TTS for regular searches
-		const allPlugins = this.pluginManager.getAll();
-		const plugins = allPlugins.filter((p) => {
-			// Skip TTS plugin for regular searches (unless query starts with "tts:")
-			if (p.name.toLowerCase() === "tts" && !query.toLowerCase().startsWith("tts:")) {
-				this.debug(`[Player] Skipping TTS plugin for regular search: ${query}`);
-				return false;
+		// Use PluginManager for search with deduplication and evaluation
+		const pluginResult = await this.pluginManager.search(query, requestedBy);
+
+		if (pluginResult && pluginResult.tracks.length > 0) {
+			this.debug(`[Player] Plugin search returned ${pluginResult.tracks.length} tracks (score: ${pluginResult.score?.score}%)`);
+
+			if (pluginResult.score) {
+				this.debug(`[Player] Search evaluation - ${pluginResult.score.reason}`);
 			}
-			return true;
-		});
 
-		this.debug(`[Player] Using ${plugins.length} plugins for search (filtered from ${allPlugins.length})`);
-
-		let lastError: any = null;
-		let searchAttempts = 0;
-
-		for (const p of plugins) {
-			searchAttempts++;
-			try {
-				this.debug(`[Player] Trying plugin for search: ${p.name} (attempt ${searchAttempts}/${plugins.length})`);
-				const startTime = Date.now();
-				const res = await withTimeout(
-					p.search(query, requestedBy),
-					this.options.extractorTimeout ?? 15000,
-					`Search operation timed out for ${p.name}`,
-				);
-				const duration = Date.now() - startTime;
-
-				if (res && Array.isArray(res.tracks) && res.tracks.length > 0) {
-					this.debug(`[Player] Plugin '${p.name}' returned ${res.tracks.length} tracks in ${duration}ms`);
-					this.cacheSearchResult(query, res);
-					return res;
-				}
-				this.debug(`[Player] Plugin '${p.name}' returned no tracks in ${duration}ms`);
-			} catch (error) {
-				const errorMessage = error instanceof Error ? error.message : String(error);
-				this.debug(`[Player] Search via plugin '${p.name}' failed: ${errorMessage}`);
-				lastError = error;
-				// Continue to next plugin
-			}
+			this.cacheSearchResult(query, pluginResult);
+			return pluginResult;
 		}
 
-		this.debug(`[Player] No plugins returned results for query: ${query} (tried ${searchAttempts} plugins)`);
-		if (lastError) this.emit("playerError", lastError as Error);
-		throw new Error(`No plugin found to handle: ${query}`);
+		this.debug(`[Player] No search results for query: ${query}`);
+		throw new Error(`No results found for: ${query}`);
 	}
 
 	/**
@@ -524,29 +517,279 @@ export class Player extends EventEmitter {
 		}
 	}
 
-	async preloadNext() {
+	/**
+	 * Preload next track with proper error handling and cleanup
+	 */
+	async preloadNext(): Promise<void> {
+		this.cancelPreload();
+
 		const next = this.queue.nextTrack;
-		if (!next) return;
+		if (!next || this.isPreloading) return;
+
+		this.isPreloading = true;
+		const abortController = new AbortController();
+		this.preloadState.abortController = abortController;
 
 		try {
-			const stream = await this.getStream(next);
+			this.debug(`[Preload] Starting preload for: ${next.title}`);
 
-			if (!stream || !(stream as any).stream) {
-				this.debug(`[Player] No stream available to preload for track: ${next.title}`);
+			// Check if already preloaded in StreamManager
+			const existingStream = this.streamManager.getStreamByTrack(next.id || next.title);
+			if (existingStream) {
+				this.debug(`[Preload] Stream already exists in manager for: ${next.title}`);
+				const resource = createAudioResource(existingStream, { inlineVolume: true });
+				this.preloadState = {
+					resource,
+					track: next,
+					abortController,
+					timeoutId: null,
+					isValid: true,
+				};
 				return;
 			}
 
-			const resource = createAudioResource(stream.stream, {
-				inlineVolume: true,
+			const streamInfo = await this.getStream(next);
+
+			if (abortController.signal.aborted) {
+				throw new Error("Preload aborted");
+			}
+
+			if (!streamInfo?.stream) {
+				throw new Error(`No stream available`);
+			}
+
+			// Register as preload stream
+			const streamId = this.streamManager.registerStream(streamInfo.stream, next, {
+				source: next.source || "preload",
+				isPreload: true,
+				priority: 8,
 			});
 
-			this.preloadedResource = resource;
-			this.preloadedTrack = next;
+			this.debug(`[Preload] Stream registered as preload with ID: ${streamId}`);
 
-			this.debug("Preloaded next track:", next.title);
+			const resource = createAudioResource(streamInfo.stream, {
+				inlineVolume: true,
+				metadata: { ...next, preloaded: true },
+			});
+
+			this.preloadState = {
+				resource,
+				track: next,
+				abortController,
+				timeoutId: null,
+				isValid: true,
+			};
+
+			// Store streamId in preload state for cleanup
+			(this.preloadState as any).streamId = streamId;
+
+			this.debug(`[Preload] Successfully preloaded: ${next.title}`);
 		} catch (err) {
-			this.debug("Preload failed:", err);
+			this.debug(`[Preload] Failed:`, err);
+			this.cancelPreload();
+		} finally {
+			this.isPreloading = false;
 		}
+	}
+	/**
+	 * Create preload resource with abort support
+	 */
+	private async createPreloadResource(stream: Readable, track: Track): Promise<AudioResource> {
+		return new Promise((resolve, reject) => {
+			try {
+				const resource = createAudioResource(stream, {
+					inlineVolume: true,
+					metadata: { ...track, preloaded: true },
+				});
+
+				// Verify resource is valid
+				if (!resource || !resource.playStream) {
+					reject(new Error("Failed to create audio resource"));
+					return;
+				}
+
+				// Check if stream is still readable after a short delay
+				setTimeout(() => {
+					if (stream.readable === false || stream.destroyed) {
+						reject(new Error("Stream became unreadable"));
+					} else {
+						resolve(resource);
+					}
+				}, 100);
+			} catch (err) {
+				reject(err);
+			}
+		});
+	}
+
+	/**
+	 * Get stream with abort support
+	 */
+	private async getStreamWithAbort(track: Track, signal: AbortSignal): Promise<StreamInfo | null> {
+		// Create abort promise
+		const abortPromise = new Promise<never>((_, reject) => {
+			if (signal.aborted) {
+				reject(new Error("Aborted"));
+				return;
+			}
+			signal.addEventListener("abort", () => reject(new Error("Aborted")));
+		});
+
+		try {
+			// Race between actual stream fetch and abort
+			const streamInfo = await Promise.race([this.getStream(track), abortPromise]);
+
+			return streamInfo as StreamInfo | null;
+		} catch (err) {
+			if (err instanceof Error && err.message === "Aborted") {
+				this.debug(`[Preload] Stream fetch aborted for ${track.title}`);
+			}
+			throw err;
+		}
+	}
+
+	/**
+	 * Clear preloaded resource with proper cleanup
+	 */
+	private clearPreload(): void {
+		// Abort ongoing preload
+		if (this.preloadState.abortController) {
+			this.preloadState.abortController.abort();
+			this.preloadState.abortController = null;
+		}
+
+		// Clean up stream
+		const stream = (this.preloadState as any).stream;
+		if (stream && typeof stream.destroy === "function") {
+			try {
+				stream.destroy();
+			} catch (err) {
+				this.debug(`[Preload] Error destroying stream:`, err);
+			}
+		}
+
+		// Clean up resource
+		if (this.preloadState.resource) {
+			try {
+				const playStream = this.preloadState.resource.playStream;
+				if (playStream && typeof playStream.destroy === "function") {
+					playStream.destroy();
+				}
+			} catch (err) {
+				this.debug(`[Preload] Error destroying resource:`, err);
+			}
+		}
+
+		this.preloadState = {
+			resource: null,
+			track: null,
+			abortController: null,
+			timeoutId: null,
+			isValid: false,
+		};
+	}
+
+	/**
+	 * Cancel current preload operation
+	 */
+	public cancelPreload(): void {
+		if (!this.preloadState.abortController && !this.preloadState.resource) {
+			return;
+		}
+		// Clean up via StreamManager
+		const streamId = (this.preloadState as any).streamId;
+		if (streamId) {
+			this.streamManager.unregisterStream(streamId, true);
+		}
+
+		this.debug(`[Preload] Cancelling preload for: ${this.preloadState.track?.title || "unknown"}`);
+
+		// Abort the operation
+		if (this.preloadState.abortController) {
+			this.preloadState.abortController.abort();
+			this.preloadState.abortController = null;
+		}
+
+		// Clear timeout
+		if (this.preloadState.timeoutId) {
+			clearTimeout(this.preloadState.timeoutId);
+			this.preloadState.timeoutId = null;
+		}
+
+		// Clean up stream
+		const stream = (this.preloadState as any).stream;
+		if (stream && typeof stream.destroy === "function") {
+			try {
+				stream.destroy();
+				this.debug(`[Preload] Stream destroyed`);
+			} catch (err) {
+				this.debug(`[Preload] Error destroying stream:`, err);
+			}
+		}
+
+		// Clean up resource
+		if (this.preloadState.resource) {
+			try {
+				const playStream = this.preloadState.resource.playStream;
+				if (playStream && typeof playStream.destroy === "function") {
+					playStream.destroy();
+				}
+			} catch (err) {
+				this.debug(`[Preload] Error destroying resource:`, err);
+			}
+		}
+
+		// Reset state
+		this.preloadState = {
+			resource: null,
+			track: null,
+			abortController: null,
+			timeoutId: null,
+			isValid: false,
+		};
+
+		this.isPreloading = false;
+	}
+
+	/**
+	 * Get preloaded resource with validation
+	 */
+	private getPreloadedResource(track: Track): AudioResource | null {
+		// Check if preload exists and matches
+		if (!this.preloadState.isValid || !this.preloadState.resource || this.preloadState.track?.id !== track.id) {
+			return null;
+		}
+
+		// Verify resource hasn been aborted
+		if (this.preloadState.abortController?.signal.aborted) {
+			this.debug(`[Preload] Preload was aborted`);
+			this.cancelPreload();
+			return null;
+		}
+
+		// Verify stream is still readable
+		const stream = this.preloadState.resource.playStream;
+		if (!stream || stream.readable === false || stream.destroyed) {
+			this.debug(`[Preload] Preloaded stream no longer valid`);
+			this.cancelPreload();
+			return null;
+		}
+
+		this.debug(`[Preload] Using preloaded resource for: ${track.title}`);
+
+		// Transfer resource ownership (don't cleanup here)
+		const resource = this.preloadState.resource;
+
+		// Clear preload state without destroying resource
+		this.preloadState = {
+			resource: null,
+			track: null,
+			abortController: null,
+			timeoutId: null,
+			isValid: false,
+		};
+
+		return resource;
 	}
 
 	/**
@@ -600,11 +843,39 @@ export class Player extends EventEmitter {
 			}
 		}
 	}
+
 	private async getStream(track: Track): Promise<StreamInfo | null> {
+		// Check if stream already exists in manager
+		const existingStream = this.streamManager.getStreamByTrack(track.id || track.title);
+		if (existingStream) {
+			this.debug(`[Stream] Using existing stream from manager for: ${track.title}`);
+			return { stream: existingStream, type: "arbitrary" };
+		}
+
 		let stream = await this.extensionManager.provideStream(track);
-		if (stream?.stream) return stream;
+		if (stream?.stream) {
+			// Register with StreamManager
+			const streamId = this.streamManager.registerStream(stream.stream, track, {
+				source: "extension",
+				isPreload: false,
+				priority: 10,
+			});
+			this.debug(`[Stream] Extension stream registered with ID: ${streamId}`);
+			return stream;
+		}
+
 		stream = await this.pluginManager.getStream(track);
-		if (stream?.stream) return stream;
+		if (stream?.stream) {
+			// Register with StreamManager
+			const streamId = this.streamManager.registerStream(stream.stream, track, {
+				source: track.source || "plugin",
+				isPreload: false,
+				priority: 5,
+			});
+			this.debug(`[Stream] Plugin stream registered with ID: ${streamId}`);
+			return stream;
+		}
+
 		throw new Error(`No stream available for track: ${track.title}`);
 	}
 
@@ -613,27 +884,17 @@ export class Player extends EventEmitter {
 	 */
 	private async startTrack(track: Track): Promise<boolean> {
 		try {
-			if (
-				this.preloadedResource &&
-				this.preloadedTrack?.id === track.id &&
-				this.preloadedResource.playStream?.readable !== false
-			) {
+			// Try to use preloaded resource
+			const preloaded = this.getPreloadedResource(track);
+			if (preloaded) {
 				this.debug(`[Player] Using preloaded resource for track: ${track.title}`);
 				this.audioPlayer.stop(true);
 				this.destroyCurrentStream();
-				this.currentResource = this.preloadedResource;
+				this.currentResource = preloaded;
 				this.currentResource.volume?.setVolume(this.volume / 100);
 				this.audioPlayer.play(this.currentResource);
+
 				await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 5_000);
-
-				if (this.preloadedResource) {
-					try {
-						(this.preloadedResource.playStream as any)?.destroy?.();
-					} catch {}
-				}
-
-				this.preloadedResource = null;
-				this.preloadedTrack = null;
 				return true;
 			}
 
@@ -698,8 +959,15 @@ export class Player extends EventEmitter {
 		}
 	}
 
+	/**
+	 * Play the next track in the queue, handling errors and edge cases gracefully
+	 */
 	private async playNext(): Promise<boolean> {
 		this.debug("[Player] playNext called");
+
+		// Cancel any ongoing preload when switching tracks
+		this.cancelPreload();
+
 		while (true) {
 			const track = this.queue.next(this.skipLoop);
 			this.skipLoop = false;
@@ -719,7 +987,6 @@ export class Player extends EventEmitter {
 				if (this.options.leaveOnEnd) {
 					this.scheduleLeave();
 				}
-
 				return false;
 			}
 
@@ -730,8 +997,11 @@ export class Player extends EventEmitter {
 			try {
 				const started = await this.startTrack(track);
 				if (started) {
+					// Preload next track (will cancel existing preload automatically)
 					setImmediate(() => {
-						this.preloadNext();
+						this.preloadNext().catch((err) => {
+							this.debug(`[Player] Preload error:`, err);
+						});
 					});
 				}
 				return started;
@@ -952,6 +1222,10 @@ export class Player extends EventEmitter {
 	 */
 	stop(): boolean {
 		this.debug(`[Player] stop called`);
+
+		// Cancel preload when stopping
+		this.cancelPreload();
+
 		this.queue.clear();
 		const result = this.audioPlayer.stop();
 		this.destroyCurrentStream();
@@ -1008,6 +1282,9 @@ export class Player extends EventEmitter {
 	 */
 	skip(index?: number): boolean {
 		this.debug(`[Player] skip called with index: ${index}`);
+
+		this.cancelPreload();
+
 		try {
 			if (typeof index === "number" && index >= 0) {
 				// Skip to specific index
@@ -1497,20 +1774,17 @@ export class Player extends EventEmitter {
 	destroy(): void {
 		this.debug(`[Player] destroy called`);
 
-		if (this.manager.getPersistence()) {
-			this.manager.getPersistence()?.markPlayerDestroyed(this.guildId, "player_destroy_called");
-		}
-
 		if (this.leaveTimeout) {
 			clearTimeout(this.leaveTimeout);
 			this.leaveTimeout = null;
 		}
-
+		this.streamManager.destroyAll(true);
 		// Destroy current stream before stopping audio
 		this.destroyCurrentStream();
 
 		this.audioPlayer.removeAllListeners();
 		this.audioPlayer.stop(true);
+		this.clearPreload();
 
 		if (this.ttsPlayer) {
 			try {
@@ -1753,6 +2027,24 @@ export class Player extends EventEmitter {
 				this.emit("debug", ...args);
 			}
 		});
+		//stream Manager events
+
+		this.streamManager.on("streamError", ({ streamId, error }) => {
+			this.debug(`[StreamManager] Error for stream ${streamId}:`, error);
+			this.emit("streamError", error, this.queue.currentTrack || null);
+		});
+
+		this.streamManager.on("streamRegistered", ({ streamId, track, metadata }) => {
+			this.debug(`[StreamManager] Stream registered: ${track.title} (preload: ${metadata.isPreload})`);
+		});
+
+		this.streamManager.on("streamUnregistered", ({ streamId, track, reason }) => {
+			this.debug(`[StreamManager] Stream unregistered: ${track.title} (reason: ${reason})`);
+		});
+
+		this.streamManager.on("debug", (...args) => {
+			this.debug(...args);
+		});
 	}
 
 	addPlugin(plugin: SourcePlugin): void {
@@ -1781,56 +2073,6 @@ export class Player extends EventEmitter {
 			extensions: this.extensionManager.getAll().map((ext) => ext.name),
 			plugins: this.pluginManager.getAll().map((plugin) => plugin.name),
 		};
-	}
-	/**
-	 * Set persistence manager for auto-save
-	 */
-	setPersistenceManager(manager: PersistenceManager): void {
-		this.persistenceManager = manager;
-		this.startAutoSaveTracking();
-	}
-
-	private startAutoSaveTracking(): void {
-		// Track state changes for auto-save
-		const trackChanges = () => {
-			this.scheduleAutoSave();
-		};
-
-		this.on("trackStart", trackChanges);
-		this.on("trackEnd", trackChanges);
-		this.on("queueAdd", trackChanges);
-		this.on("queueRemove", trackChanges);
-		this.on("volumeChange", trackChanges);
-
-		// Save periodically
-		setInterval(() => {
-			this.saveIfNeeded();
-		}, this.AUTO_SAVE_INTERVAL);
-	}
-
-	private scheduleAutoSave(): void {
-		if (!this.persistenceManager) return;
-		this.lastSaveTime = Date.now();
-		// Can implement debounced save here
-	}
-
-	private async saveIfNeeded(): Promise<void> {
-		if (!this.persistenceManager) return;
-		if (Date.now() - this.lastSaveTime < this.AUTO_SAVE_INTERVAL) return;
-
-		await this.persistenceManager.savePlayer(this);
-		this.lastSaveTime = Date.now();
-	}
-
-	/**
-	 * Save current player state
-	 */
-	async savePlayer(): Promise<boolean> {
-		if (!this.persistenceManager) {
-			this.debug("[Player] No persistence manager configured");
-			return false;
-		}
-		return await this.persistenceManager.savePlayer(this);
 	}
 
 	/**
@@ -1873,6 +2115,17 @@ export class Player extends EventEmitter {
 			this.debug("[Player] Failed to restore state:", error);
 			return false;
 		}
+	}
+
+	/**
+	 * Get stream manager stats
+	 */
+	getStreamManagerStats() {
+		return {
+			metrics: this.streamManager.getMetrics(),
+			stats: this.streamManager.getStats(),
+			totalStreams: this.streamManager.getStreamCount(),
+		};
 	}
 	//#endregion
 	//#region Getters
@@ -1964,5 +2217,6 @@ export class Player extends EventEmitter {
 	get isLive(): boolean {
 		return this.currentTrack?.isLive === true;
 	}
+
 	//#endregion
 }

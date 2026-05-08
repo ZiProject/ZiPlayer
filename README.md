@@ -21,7 +21,6 @@ advanced music bots quickly.
 - 🗂️ **Per-guild player system** — Scales across multiple Discord servers
 - 📡 **Event-driven core** — Full lifecycle hooks for customization
 - 💾 **Custom userdata** — Attach context to each player
-- 💿 **Persistence** — Auto-save and restore player state across restarts
 - ⚡ **Smart caching** — Search and stream caching for better performance
 - 🎯 **Queue management** — Advanced queue operations (move, swap, batch remove)
 
@@ -80,7 +79,6 @@ client.login(process.env.DISCORD_TOKEN);
 
 ```
 PlayerManager (global)
-  ├── PersistenceManager (auto-save/load)
   └── Player (per guild)
         ├── Queue (advanced operations)
         ├── PluginManager (with caching & fallback)
@@ -159,53 +157,6 @@ player.queue.has(track);
 
 // History navigation
 player.queue.jumpToHistory(2); // Go back 2 tracks
-```
-
----
-
-## 💾 Persistence (Auto-save & Restore)
-
-Automatically save and restore player state across bot restarts.
-
-### Setup
-
-```ts
-const manager = new PlayerManager({
-	plugins: [new YouTubePlugin()],
-	persistence: {
-		enabled: true,
-		provider: "file", // "file", "redis", or "database"
-		filePath: "./player_data",
-		saveInterval: 60000, // Save every minute
-		autoLoad: true, // Auto-load on startup
-		compress: true, // Compress saved data
-		maxBackups: 5, // Keep 5 backups
-	},
-});
-
-// Listen to persistence events
-manager.on("playerSaved", (guildId) => console.log(`Saved ${guildId}`));
-manager.on("playerLoaded", (guildId, data) => console.log(`Loaded ${guildId} from ${new Date(data.lastUpdate)}`));
-```
-
-### Manual Persistence
-
-```ts
-// Save specific player
-await manager.savePlayer(guildId);
-await player.save(); // From player instance
-
-// Save all players
-await manager.saveAllPlayers();
-
-// Load players
-await manager.loadPlayer(guildId, true); // Restore playback position
-await manager.loadAllPlayers();
-
-// Delete saved data
-const persistence = manager.getPersistence();
-await persistence?.deletePlayer(guildId);
-await persistence?.restoreBackup(guildId); // Restore from backup
 ```
 
 ---
@@ -327,12 +278,7 @@ manager.on("queueRemove", (player, track, index) => {});
 manager.on("playerDestroy", (player) => {});
 manager.on("ttsStart", (player, payload) => {});
 manager.on("ttsEnd", (player) => {});
-
-// Persistence events
-manager.on("playerSaved", (guildId) => {});
-manager.on("playerLoaded", (guildId, data) => {});
-manager.on("savedAll", (results) => {});
-manager.on("loadedAll", (results) => {});
+manager.on("stats", (PlayerStats) => {});
 ```
 
 ---

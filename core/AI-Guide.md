@@ -23,7 +23,6 @@ A comprehensive guide for AI assistants and developers working with ZiPlayer - a
 - Plugin-driven architecture (YouTube, SoundCloud, Spotify, TTS)
 - Extension system (voice commands, lyrics, Lavalink)
 - Audio filters (bassboost, nightcore, etc.)
-- Auto-save/restore (persistence)
 - Smart caching and fallback system
 
 ### Tech Stack
@@ -35,30 +34,16 @@ A comprehensive guide for AI assistants and developers working with ZiPlayer - a
 
 ---
 
-## 🧱 Architecture
-
-```
-
-┌─────────────────────────────────────────────────────────────┐ │ PlayerManager (Global) │ │
-┌─────────────────────────────────────────────────────────┐│ │ │ PersistenceManager (Auto-save) ││ │
-└─────────────────────────────────────────────────────────┘│ │ │ │ │ ┌────────────┴────────────┐ │ │ ▼ ▼ │ │ ┌──────────────┐
-┌──────────────┐ │ │ │ Player 1 │ │ Player 2 │ │ │ │ (Guild A) │ │ (Guild B) │ │ │ └──────────────┘ └──────────────┘ │ │ │ │ │ │
-┌───────┴────────┐ ┌───────┴────────┐ │ │ ▼ ▼ ▼ ▼ │ │ Queue Filter Queue Filter │ │ PluginMgr ExtMgr PluginMgr ExtMgr │
-└─────────────────────────────────────────────────────────────┘
-
-```
-
 ### Component Responsibilities
 
-| Component            | Responsibility                                         |
-| -------------------- | ------------------------------------------------------ |
-| `PlayerManager`      | Creates/manages players, global event bus, persistence |
-| `Player`             | Per-guild audio playback, controls, event emission     |
-| `Queue`              | Track management, loop modes, history, auto-play       |
-| `PluginManager`      | Audio source resolution, streaming, fallback logic     |
-| `ExtensionManager`   | Custom hooks (search, stream, before/after play)       |
-| `FilterManager`      | FFmpeg audio effects                                   |
-| `PersistenceManager` | Auto-save/restore player state                         |
+| Component          | Responsibility                                     |
+| ------------------ | -------------------------------------------------- |
+| `PlayerManager`    | Creates/manages players, global event bus          |
+| `Player`           | Per-guild audio playback, controls, event emission |
+| `Queue`            | Track management, loop modes, history, auto-play   |
+| `PluginManager`    | Audio source resolution, streaming, fallback logic |
+| `ExtensionManager` | Custom hooks (search, stream, before/after play)   |
+| `FilterManager`    | FFmpeg audio effects                               |
 
 ---
 
@@ -126,7 +111,6 @@ interface PlayerManagerOptions {
 	cleanupInterval?: number; // Default: 60000ms
 	enableSearchCache?: boolean; // Default: true
 	enableStatsCollection?: boolean; // Default: false
-	persistence?: PersistenceOptions; // Auto-save config
 }
 ```
 
@@ -139,8 +123,6 @@ interface PlayerManagerOptions {
 | `delete(guildId)`            | Destroy and remove player  |
 | `getAll()`                   | Get all players            |
 | `broadcast(action, ...args)` | Send action to all players |
-| `saveAllPlayers()`           | Manual save all players    |
-| `loadAllPlayers()`           | Manual load all players    |
 
 ### Player
 
@@ -225,37 +207,6 @@ await player.filter.clear("bassboost");
 const filterString = player.filter.getFilterString(); // "bassboost,nightcore"
 ```
 
-### PersistenceManager
-
-#### Options
-
-```typescript
-interface PersistenceOptions {
-	enabled: boolean; // Enable persistence
-	provider: "file" | "redis" | "database";
-	filePath?: string; // For file provider
-	saveInterval?: number; // Auto-save interval (ms)
-	autoLoad?: boolean; // Auto-load on start
-	compress?: boolean; // Compress data
-	maxBackups?: number; // Max backup files
-}
-```
-
-#### Methods
-
-```typescript
-const persistence = manager.getPersistence();
-
-await persistence.savePlayer(player);
-await persistence.saveAll();
-await persistence.loadPlayer(guildId, restorePosition);
-await persistence.loadAll();
-await persistence.deletePlayer(guildId);
-await persistence.restoreBackup(guildId, timestamp);
-```
-
----
-
 ## 🔧 Common Patterns
 
 ### 1. Basic Music Bot Setup
@@ -272,10 +223,6 @@ const client = new Client({
 const manager = new PlayerManager({
 	plugins: [new YouTubePlugin(), new SpotifyPlugin()],
 	autoCleanup: true,
-	persistence: {
-		enabled: true,
-		filePath: "./data/players",
-	},
 });
 
 client.on("ready", async () => {
@@ -418,14 +365,13 @@ manager.on("stats", (stats) => {
 
 ### Common Issues
 
-| Issue                      | Solution                                                    |
-| -------------------------- | ----------------------------------------------------------- |
-| **No audio**               | Check `player.connection` exists, voice channel permissions |
-| **Plugin not working**     | Verify `canHandle()` returns true, check priority           |
-| **Filters not applying**   | Call `refreshPlayerResource(true)` after applying           |
-| **Persistence not saving** | Check `enabled: true`, file path writable                   |
-| **Memory leak**            | Enable `autoCleanup`, call `player.destroy()` when done     |
-| **Rate limiting**          | Use search cache, increase `extractorTimeout`               |
+| Issue                    | Solution                                                    |
+| ------------------------ | ----------------------------------------------------------- |
+| **No audio**             | Check `player.connection` exists, voice channel permissions |
+| **Plugin not working**   | Verify `canHandle()` returns true, check priority           |
+| **Filters not applying** | Call `refreshPlayerResource(true)` after applying           |
+| **Memory leak**          | Enable `autoCleanup`, call `player.destroy()` when done     |
+| **Rate limiting**        | Use search cache, increase `extractorTimeout`               |
 
 ### Debug Mode
 
@@ -444,10 +390,9 @@ if (manager.debugEnabled) {
 ### Performance Tips
 
 1. **Enable caching** for search and stream results
-2. **Use persistence** to avoid re-fetching on restart
-3. **Set appropriate timeouts** based on network conditions
-4. **Batch operations** when modifying queue
-5. **Destroy players** when no longer needed
+2. **Set appropriate timeouts** based on network conditions
+3. **Batch operations** when modifying queue
+4. **Destroy players** when no longer needed
 
 ---
 
@@ -473,12 +418,6 @@ const manager = new PlayerManager({
 	plugins: [new YouTubePlugin(), new SpotifyPlugin(), new TTSPlugin()],
 	autoCleanup: true,
 	extractorTimeout: 30000,
-	persistence: {
-		enabled: true,
-		filePath: "./player_data",
-		saveInterval: 60000,
-		autoLoad: true,
-	},
 });
 
 client.on("messageCreate", async (msg) => {

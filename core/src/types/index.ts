@@ -3,7 +3,7 @@ import { Player } from "../structures/Player";
 import type { PlayerManager } from "../structures/PlayerManager";
 import type { AudioFilter } from "./fillter";
 import type { SourcePluginLike } from "./plugin";
-import type { PersistenceOptions } from "./persistence";
+import type { AudioResource } from "@discordjs/voice";
 /**
  * Represents a music track with metadata and streaming information.
  *
@@ -89,11 +89,20 @@ export interface SearchResult {
 	tracks: Track[];
 	playlist?: {
 		name: string;
-		url: string;
+		url?: string;
 		thumbnail?: string;
-	};
+	} | null;
+	query?: string;
+	score?: SearchScore;
+	source?: string;
 }
 
+export interface SearchScore {
+	score: number; // 0-100
+	reason: string; // Lý do đạt điểm
+	matchedBy: "url" | "title" | "partial" | "none" | "playlist";
+	exactMatch: boolean;
+}
 /**
  * Contains streaming information for audio playback.
  *
@@ -188,7 +197,6 @@ export interface PlayerManagerOptions {
 	cleanupInterval?: number; // Cleanup interval in ms
 	enableSearchCache?: boolean; // Enable search result caching
 	enableStatsCollection?: boolean; // Enable stats collection events
-	persistence?: PersistenceOptions;
 }
 
 /**
@@ -246,6 +254,14 @@ export interface PlayerSession {
 	extensions: string[];
 	plugins: string[];
 	userdata?: Record<string, any>;
+}
+
+export interface PreloadState {
+	resource: AudioResource | null;
+	track: Track | null;
+	abortController: AbortController | null;
+	timeoutId: NodeJS.Timeout | null;
+	isValid: boolean;
 }
 
 export interface PlayerStats {
@@ -363,20 +379,8 @@ export interface ManagerEvents {
 	lyricsCreate: [player: Player, track: Track, lyrics: any];
 	lyricsChange: [player: Player, track: Track, lyrics: any];
 	voiceCreate: [player: Player, evt: any];
-	
-	// Persistence events
 	stats: [stats: PlayerStats];
-	playerSaved: [guildId: string];
-	playerLoaded: [guildId: string, data: any];
-	savedAll: [results: Map<string, boolean>];
-	loadedAll: [results: Map<string, boolean>];
-	RTSkipped: [guildId: string, reason: string];
-	RTMarkedDestroyed: [guildId: string];
-	RTDestroyedCleared: [guildId: string];
-	backupsCleaned: [guildId: string, count: number];
-	allBackupsCleaned: [count: number];
-	backupStats: [stats: any];
-	backupCleanupDone: [];
+	streamError: [error: Error, track: Track | null];
 }
 export interface PlayerEvents {
 	debug: [message: string, ...args: any[]];
@@ -407,9 +411,11 @@ export interface PlayerEvents {
 	/** Emitted when all filters are cleared */
 	filtersCleared: [];
 	trackStuck: [track: Track | null];
+	streamError: [error: Error, track: Track | null];
+	/** Emitted when player stats are updated (if enabled) */
+	stats: [stats: PlayerStats];
 }
 
 export * from "./fillter";
 export * from "./plugin";
 export * from "./extension";
-export * from "./persistence";

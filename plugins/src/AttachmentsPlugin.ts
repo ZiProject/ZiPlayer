@@ -50,7 +50,7 @@ export interface AttachmentsPluginOptions {
 export class AttachmentsPlugin extends BasePlugin {
 	name = "attachments";
 	version = "1.0.0";
-
+	priority = 0; // Higher priority to handle attachment URLs before more generic plugins
 	private opts: AttachmentsPluginOptions;
 	private readonly defaultAllowedExtensions = ["mp3", "wav", "ogg", "m4a", "flac", "aac", "wma", "opus", "webm"];
 
