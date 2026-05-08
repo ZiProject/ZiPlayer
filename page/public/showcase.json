@@ -43,7 +43,8 @@
 			"version": "1.0.0",
 			"npm": "https://www.npmjs.com/package/@ziplayer/extension",
 			"features": ["Voice extension", "Lyrics extension", "Lavalink extension"]
-		},		{
+		},
+		{
 			"name": "@ziplayer/infinity",
 			"description": "A ZiPlayer source plugin powered by cobalt",
 			"version": "0.0.3",
