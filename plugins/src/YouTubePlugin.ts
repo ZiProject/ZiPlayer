@@ -121,14 +121,14 @@ export class YouTubePlugin extends BasePlugin {
 			"Unknown title",
 		);
 
-		const duration = pickFirst(
+		const duration = Number(pickFirst(
 			raw?.length_seconds,
 			raw?.duration?.seconds,
 			raw?.duration?.text,
 			raw?.duration,
 			raw?.length_text,
 			raw?.basic_info?.duration,
-		);
+		)) * 1000;
 
 		const thumb = pickFirst(
 			raw?.thumbnails?.[0]?.url,

@@ -1311,7 +1311,16 @@ export class Player extends EventEmitter {
 			return stream;
 		}
 
+		if (!this.pluginManager.hasStreamCandidate(track)) {
+			throw new Error(`UNRECOVERABLE_NO_PLUGIN:${track.title}`);
+		}
+
 		throw new Error(`No stream available for track: ${track.title}`);
+	}
+
+	private isUnrecoverableStreamError(error: unknown): boolean {
+		if (!(error instanceof Error)) return false;
+		return error.message.startsWith("UNRECOVERABLE_NO_PLUGIN:");
 	}
 
 	/**
@@ -1557,6 +1566,10 @@ export class Player extends EventEmitter {
 			} catch (err) {
 				this.debug(`[Player] playNext error:`, err);
 				this.emit("playerError", err as Error, track);
+				if (this.isUnrecoverableStreamError(err)) {
+					this.debug(`[Player] Skipping unrecoverable track (no plugin): ${track.title}`);
+					continue;
+				}
 				const recovered = await this.attemptTrackRecovery(track, err);
 				if (recovered) {
 					return true;

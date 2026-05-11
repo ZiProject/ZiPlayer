@@ -825,6 +825,14 @@ export class PluginManager {
 		return this.getStreamWithDedupe(track, primary);
 	}
 
+	hasStreamCandidate(track: Track): boolean {
+		if (!track) return false;
+		if (this.get(track.source)) return true;
+		const query = track.url || track.title || track.source;
+		if (!query) return false;
+		return !!this.findPlugin(query);
+	}
+
 	async getRelatedTracks(track: Track): Promise<Track[]> {
 		if (!track) return [];
 
