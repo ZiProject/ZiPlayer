@@ -37,6 +37,7 @@ export interface StreamManagerOptions {
 
 export class StreamManager extends EventEmitter {
 	private streams = new Map<string, ManagedStream>();
+	private suppressPrematureCloseErrors = new Set<string>();
 	private options: Required<StreamManagerOptions>;
 	private cleanupTimer: NodeJS.Timeout | null = null;
 	private metrics = {
@@ -72,6 +73,20 @@ export class StreamManager extends EventEmitter {
 	 * Register a new stream
 	 */
 	registerStream(stream: Readable, track: Track, metadata: Partial<ManagedStream["metadata"]> = {}): string {
+		for (const existing of this.streams.values()) {
+			if (existing.stream === stream) {
+				existing.lastAccessed = Date.now();
+				existing.track = track;
+				existing.metadata = {
+					...existing.metadata,
+					source: track.source || existing.metadata.source || "unknown",
+					...metadata,
+				};
+				this.debug(`Stream already managed, reusing ID: ${existing.id}`);
+				return existing.id;
+			}
+		}
+
 		const streamId = this.generateStreamId(track);
 
 		// Check if stream already exists
@@ -81,8 +96,9 @@ export class StreamManager extends EventEmitter {
 		}
 
 		// Check concurrent limit
-		if (this.streams.size >= this.options.maxConcurrentStreams) {
-			this.evictOldestStream();
+		while (this.streams.size >= this.options.maxConcurrentStreams) {
+			const evicted = this.evictOldestStream();
+			if (!evicted) break;
 		}
 
 		// Configure stream
@@ -141,6 +157,14 @@ export class StreamManager extends EventEmitter {
 	private createStreamListeners(streamId: string): ManagedStream["listeners"] {
 		return {
 			error: (err: Error) => {
+				const isPrematureClose = err?.message?.toLowerCase().includes("premature close");
+				if (isPrematureClose && this.suppressPrematureCloseErrors.has(streamId)) {
+					this.debug(`Ignored expected premature close [${streamId}] during controlled destroy`);
+					this.suppressPrematureCloseErrors.delete(streamId);
+					this.unregisterStream(streamId, false);
+					return;
+				}
+
 				this.debug(`Stream error [${streamId}]:`, err);
 				if (this.options.enableMetrics) {
 					this.metrics.totalErrors++;
@@ -232,6 +256,7 @@ export class StreamManager extends EventEmitter {
 	unregisterStream(streamId: string, forceDestroy: boolean = true): boolean {
 		const managed = this.streams.get(streamId);
 		if (!managed) {
+			this.suppressPrematureCloseErrors.delete(streamId);
 			return false;
 		}
 
@@ -258,9 +283,11 @@ export class StreamManager extends EventEmitter {
 			// Force destroy if needed
 			if (forceDestroy && !stream.destroyed && typeof stream.destroy === "function") {
 				try {
+					this.suppressPrematureCloseErrors.add(streamId);
 					stream.destroy();
 					managed.status = "destroyed";
 				} catch (err) {
+					this.suppressPrematureCloseErrors.delete(streamId);
 					this.debug(`Error destroying stream:`, err);
 				}
 			}
@@ -274,6 +301,7 @@ export class StreamManager extends EventEmitter {
 		}
 
 		this.emit("streamUnregistered", { streamId, track: managed.track, reason: forceDestroy ? "destroyed" : "natural" });
+		this.suppressPrematureCloseErrors.delete(streamId);
 
 		return true;
 	}
@@ -336,7 +364,7 @@ export class StreamManager extends EventEmitter {
 	/**
 	 * Evict oldest stream when limit reached
 	 */
-	private evictOldestStream(): void {
+	private evictOldestStream(): boolean {
 		// Evict lowest priority streams first
 		const sorted = Array.from(this.streams.values()).sort((a, b) => a.metadata.priority - b.metadata.priority);
 
@@ -344,9 +372,18 @@ export class StreamManager extends EventEmitter {
 			if (managed.metadata.isPreload && managed.metadata.priority < 5) {
 				this.debug(`Evicting low priority preload stream: ${managed.track.title}`);
 				this.unregisterStream(managed.id, true);
-				break;
+				return true;
 			}
 		}
+
+		if (sorted.length > 0) {
+			const fallback = sorted[0];
+			this.debug(`Evicting fallback stream to enforce limit: ${fallback.track.title}`);
+			this.unregisterStream(fallback.id, true);
+			return true;
+		}
+
+		return false;
 	}
 
 	/**

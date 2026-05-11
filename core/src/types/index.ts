@@ -228,7 +228,7 @@ export interface PlayerOptions {
 		autoDisableInLowPerformance?: boolean;
 		/**
 		 * Target crossfade duration in milliseconds.
-		 * Default: 5000
+		 * Default: 500
 		 */
 		durationMs?: number;
 	};
