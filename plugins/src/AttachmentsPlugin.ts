@@ -2,6 +2,10 @@ import { BasePlugin, Track, SearchResult, StreamInfo } from "ziplayer";
 import { Readable } from "stream";
 import axios from "axios";
 import { parseBuffer } from "music-metadata";
+import fs from "fs";
+import path from "path";
+import mime from "mime-types";
+import { fileTypeFromBuffer } from "file-type";
 
 /**
  * Configuration options for the AttachmentsPlugin.
@@ -76,7 +80,7 @@ export class AttachmentsPlugin extends BasePlugin {
 	constructor(opts?: AttachmentsPluginOptions) {
 		super();
 		this.opts = {
-			maxFileSize: opts?.maxFileSize || 25 * 1024 * 1024, // 25MB default
+			maxFileSize: opts?.maxFileSize || 200 * 1024 * 1024, // 200MB default
 			allowedExtensions: opts?.allowedExtensions || this.defaultAllowedExtensions,
 			debug: opts?.debug || false,
 		};
@@ -115,9 +119,18 @@ export class AttachmentsPlugin extends BasePlugin {
 			}
 		}
 
-		// Check if it's a local file path (basic check)
-		if (q.includes("/") || q.includes("\\")) {
-			return this.isAudioFile(q);
+		// Local path
+		const isLocal =
+			q.startsWith("./") ||
+			q.startsWith("../") ||
+			q.startsWith("file://") ||
+			/^[a-zA-Z]:\\/.test(q) ||
+			q.includes("/") ||
+			q.includes("\\");
+
+		if (isLocal) {
+			const normalized = this.normalizeFilePath(q);
+			return fs.existsSync(normalized) && this.isAudioFile(normalized);
 		}
 
 		return false;
@@ -167,9 +180,9 @@ export class AttachmentsPlugin extends BasePlugin {
 		}
 
 		try {
-			const filename = this.extractFilename(query);
+			let filename = this.extractFilename(query);
 			const fileExtension = this.getFileExtension(filename);
-			let title = filename || `Audio File (${fileExtension})`;
+			let title = this.cleanTitle(filename || `Audio File (${fileExtension})`);
 
 			// Get file size if it's a URL
 			let fileSize = 0;
@@ -179,6 +192,7 @@ export class AttachmentsPlugin extends BasePlugin {
 			if (query.startsWith("http://") || query.startsWith("https://")) {
 				try {
 					const headResponse = await axios.head(query, { timeout: 5000 });
+					filename = this.extractRemoteFilename(query, headResponse.headers);
 					const contentLength = headResponse.headers["content-length"];
 					if (contentLength) {
 						fileSize = parseInt(contentLength as string, 10);
@@ -206,6 +220,8 @@ export class AttachmentsPlugin extends BasePlugin {
 						if (finalTitle.trim()) {
 							title = finalTitle;
 						}
+					} else {
+						title = this.cleanTitle(filename);
 					}
 				} catch (error) {
 					this.debug("Could not analyze audio metadata:", error);
@@ -265,32 +281,64 @@ export class AttachmentsPlugin extends BasePlugin {
 		if (!url) {
 			throw new Error("No URL provided for track");
 		}
-
 		try {
+			// LOCAL FILE
+			if (!url.startsWith("http://") && !url.startsWith("https://")) {
+				this.debug("Reading local file:", url);
+
+				if (!fs.existsSync(url)) {
+					throw new Error(`Local file not found: ${url}`);
+				}
+
+				const stats = fs.statSync(url);
+
+				if (stats.size > this.opts.maxFileSize!) {
+					throw new Error(`File too large: ${this.formatBytes(stats.size)}`);
+				}
+
+				const stream = fs.createReadStream(url);
+
+				return {
+					stream,
+					type: this.getStreamType("", path.extname(url).slice(1)),
+					metadata: {
+						...track.metadata,
+						contentLength: stats.size,
+						isLocalFile: true,
+					},
+				};
+			}
+
+			// REMOTE URL
 			this.debug("Downloading audio from:", url);
 
-			// Download the file
 			const response = await axios.get(url, {
 				responseType: "stream",
-				timeout: 30000, // 30 second timeout
+				timeout: 30000,
 				maxContentLength: this.opts.maxFileSize,
 			});
 
 			const stream = response.data as Readable;
 			const contentType = response.headers["content-type"] || "";
 			const contentLength = response.headers["content-length"];
+			const probeChunks: Buffer[] = [];
 
-			this.debug("Download successful:", {
-				contentType,
-				contentLength: contentLength ? parseInt(contentLength as string, 10) : "unknown",
+			stream.once("data", async (chunk: Buffer) => {
+				probeChunks.push(chunk);
+
+				const probe = Buffer.concat(probeChunks);
+
+				const isValid = await this.validateAudioFile(probe, track.metadata?.extension);
+
+				if (!isValid) {
+					stream.destroy();
+					throw new Error("Invalid audio MIME type");
+				}
 			});
-
-			// Determine stream type based on content type or file extension
-			const streamType = this.getStreamType(contentType as string, track.metadata?.extension);
 
 			return {
 				stream,
-				type: streamType,
+				type: this.getStreamType(contentType as string, track.metadata?.extension),
 				metadata: {
 					...track.metadata,
 					contentType,
@@ -298,18 +346,6 @@ export class AttachmentsPlugin extends BasePlugin {
 				},
 			};
 		} catch (error: any) {
-			if (error.code === "ECONNABORTED") {
-				throw new Error(`Download timeout for ${url}`);
-			}
-			if (error.response?.status === 404) {
-				throw new Error(`File not found: ${url}`);
-			}
-			if (error.response?.status === 403) {
-				throw new Error(`Access denied: ${url}`);
-			}
-			if (error.message?.includes("maxContentLength")) {
-				throw new Error(`File too large: ${url}`);
-			}
 			throw new Error(`Failed to download audio: ${error.message || error}`);
 		}
 	}
@@ -401,6 +437,65 @@ export class AttachmentsPlugin extends BasePlugin {
 		return Math.abs(hash).toString(36);
 	}
 
+	private cleanTitle(filename: string): string {
+		return filename
+			.replace(/\.[^/.]+$/, "")
+			.replace(/[_-]/g, " ")
+			.replace(/\([^)]*\)/g, "")
+			.replace(/\[[^\]]*\]/g, "")
+			.replace(/\s+/g, " ")
+			.trim();
+	}
+
+	private extractRemoteFilename(url: string, headers?: any): string {
+		// content-disposition
+		const disposition = headers?.["content-disposition"];
+
+		if (disposition) {
+			const match = disposition.match(/filename="?(.+?)"?$/i);
+
+			if (match?.[1]) {
+				return match[1];
+			}
+		}
+
+		// URL pathname
+		try {
+			const parsed = new URL(url);
+
+			const pathname = parsed.pathname;
+
+			const name = pathname.split("/").pop();
+
+			if (name && name.includes(".")) {
+				return decodeURIComponent(name);
+			}
+		} catch {}
+
+		// MIME fallback
+		const contentType = headers?.["content-type"];
+
+		if (contentType) {
+			const ext = mime.extension(contentType);
+
+			if (ext) {
+				return `audio.${ext}`;
+			}
+		}
+
+		return "Unknown Audio";
+	}
+
+	private normalizeFilePath(input: string): string {
+		// file:// protocol
+		if (input.startsWith("file://")) {
+			try {
+				return decodeURIComponent(new URL(input).pathname);
+			} catch {}
+		}
+
+		return path.resolve(input);
+	}
 	/**
 	 * Determines the appropriate stream type based on content type and file extension.
 	 */
@@ -439,28 +534,37 @@ export class AttachmentsPlugin extends BasePlugin {
 	 */
 	private async analyzeAudioMetadata(url: string): Promise<{ duration: number; metadata?: any }> {
 		try {
-			this.debug("Analyzing audio metadata for:", url);
+			let buffer: Buffer;
 
-			// Download a small portion of the file to analyze metadata
-			const response = await axios.get(url, {
-				responseType: "arraybuffer",
-				timeout: 10000, // 10 second timeout for metadata analysis
-				maxContentLength: 1024 * 1024, // Only download first 1MB for metadata
-				headers: {
-					Range: "bytes=0-1048575", // Request first 1MB
-				},
-			});
+			// LOCAL FILE
+			if (!url.startsWith("http://") && !url.startsWith("https://")) {
+				buffer = fs.readFileSync(url);
+			} else {
+				// REMOTE FILE
+				const response = await axios.get(url, {
+					responseType: "arraybuffer",
+					timeout: 10000,
+					maxContentLength: 1024 * 1024,
+					headers: {
+						Range: "bytes=0-1048575",
+					},
+				});
 
-			const buffer = Buffer.from(response.data);
+				buffer = Buffer.from(response.data);
+			}
+
 			const metadata = await parseBuffer(buffer);
 
 			const duration = metadata.format.duration || 0;
-			this.debug("Audio metadata analysis result:", {
-				duration: `${duration}s`,
-				format: metadata.format.container,
-				codec: metadata.format.codec,
-				bitrate: metadata.format.bitrate,
-			});
+			const picture = metadata.common.picture?.[0];
+
+			let thumbnail: string | undefined;
+
+			if (picture) {
+				const imageBuffer = Buffer.from(picture.data);
+
+				thumbnail = `data:${picture.format};base64,${imageBuffer.toString("base64")}`;
+			}
 
 			return {
 				duration: Math.round(duration),
@@ -475,43 +579,34 @@ export class AttachmentsPlugin extends BasePlugin {
 					album: metadata.common.album,
 					year: metadata.common.year,
 					genre: metadata.common.genre,
+					thumbnail,
 				},
 			};
-		} catch (error: any) {
-			this.debug("Failed to analyze audio metadata:", error.message);
-
-			// Fallback: try without Range header for some servers that don't support it
-			try {
-				const response = await axios.get(url, {
-					responseType: "arraybuffer",
-					timeout: 10000,
-					maxContentLength: 1024 * 1024, // 1MB limit
-				});
-
-				const buffer = Buffer.from(response.data);
-				const metadata = await parseBuffer(buffer);
-
-				const duration = metadata.format.duration || 0;
-				this.debug("Audio metadata analysis (fallback) result:", {
-					duration: `${duration}s`,
-					format: metadata.format.container,
-				});
-
-				return {
-					duration: Math.round(duration),
-					metadata: {
-						format: metadata.format.container,
-						codec: metadata.format.codec,
-						bitrate: metadata.format.bitrate,
-					},
-				};
-			} catch (fallbackError: any) {
-				this.debug("Fallback metadata analysis also failed:", fallbackError.message);
-				return { duration: 0 };
-			}
+		} catch {
+			return { duration: 0 };
 		}
 	}
 
+	private async validateAudioFile(buffer: Buffer, expectedExtension?: string): Promise<boolean> {
+		try {
+			const detected = await fileTypeFromBuffer(buffer);
+
+			if (!detected) return false;
+
+			const validMime = detected.mime.startsWith("audio/");
+			const validExt = this.opts.allowedExtensions!.includes(detected.ext.toLowerCase());
+
+			if (expectedExtension) {
+				if (detected.ext !== expectedExtension.toLowerCase()) {
+					this.debug(`Extension mismatch: expected ${expectedExtension}, got ${detected.ext}`);
+				}
+			}
+
+			return validMime && validExt;
+		} catch {
+			return false;
+		}
+	}
 	/**
 	 * Debug logging helper.
 	 */
