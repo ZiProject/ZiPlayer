@@ -421,7 +421,7 @@ export class Queue {
 	setCurrentTrack(track: Track | null): void {
 		this.current = track;
 	}
-	
+
 	/**
 	 * Get the previous tracks
 	 */
