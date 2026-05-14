@@ -1,8 +1,20 @@
 import { EventEmitter } from "events";
 import { Player } from "./Player";
-import { PlayerManagerOptions, PlayerOptions, Track, SourcePlugin, SearchResult, ManagerEvents, PlayerStats } from "../types";
+import {
+	PlayerManagerOptions,
+	PlayerOptions,
+	type Track,
+	SourcePlugin,
+	SearchResult,
+	ManagerEvents,
+	PlayerStats,
+	type PlaybackMirrorOptions,
+	type TrackMiddleware,
+	normalizeTrackMiddleware,
+} from "../types";
 import type { BaseExtension } from "../extensions";
 import { withTimeout } from "../utils/timeout";
+import { PluginManager } from "../plugins";
 
 const GLOBAL_MANAGER_KEY: symbol = Symbol.for("ziplayer.PlayerManager.instance");
 
@@ -92,12 +104,15 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	private plugins: SourcePlugin[];
+	private pluginManager: PluginManager;
 	private extensions: any[];
 	private B_debug: boolean = false;
 	private extractorTimeout: number = 10000;
 	private autoCleanup: boolean = true;
 	private cleanupTimeout: number = 60000; // 1 minute
 	private enableSearchCache: boolean = true;
+	private trackMiddlewareFromOptions: TrackMiddleware[] = [];
+	private playbackMirrorUnsubscribes = new Map<string, () => void>();
 
 	private debug(message?: any, ...optionalParams: any[]): void {
 		if (this.listenerCount("debug") > 0) {
@@ -111,17 +126,26 @@ export class PlayerManager extends EventEmitter {
 	constructor(options: PlayerManagerOptions = {}) {
 		super();
 		this.plugins = [];
+		this.pluginManager = new PluginManager(null as any, this, {
+			extractorTimeout: this.extractorTimeout,
+		});
 		this.searchCache = new Map();
 
 		// Initialize plugins
 		const provided = options.plugins || [];
 		for (const p of provided as any[]) {
 			try {
+				let instance: SourcePlugin | null = null;
+
 				if (p && typeof p === "object") {
-					this.plugins.push(p as SourcePlugin);
+					instance = p as SourcePlugin;
 				} else if (typeof p === "function") {
-					const instance = new (p as any)();
-					this.plugins.push(instance as SourcePlugin);
+					instance = new (p as any)();
+				}
+
+				if (instance) {
+					this.plugins.push(instance);
+					this.pluginManager.register(instance);
 				}
 				this.debug(`Registered plugin: ${p.name || "unnamed"}`);
 			} catch (e) {
@@ -134,6 +158,7 @@ export class PlayerManager extends EventEmitter {
 		this.autoCleanup = options.autoCleanup ?? true;
 		this.cleanupTimeout = options.cleanupInterval ?? 60000;
 		this.enableSearchCache = options.enableSearchCache ?? true;
+		this.trackMiddlewareFromOptions = normalizeTrackMiddleware(options.trackMiddleware);
 
 		// Setup auto cleanup
 		if (this.autoCleanup) {
@@ -147,11 +172,6 @@ export class PlayerManager extends EventEmitter {
 
 		setGlobalManager(this);
 		this.debug(`Initialized with ${this.plugins.length} plugins, ${this.extensions.length} extensions`);
-	}
-
-	private withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
-		const timeout = this.extractorTimeout;
-		return Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(message)), timeout))]);
 	}
 
 	private resolveGuildId(guildOrId: string | { id: string }): string {
@@ -572,10 +592,206 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	/**
+	 * Like {@link broadcast} but awaits every return value (for async methods such as `play`).
+	 * Uses `Promise.allSettled` — failures are captured per guild, not thrown as a whole.
+	 */
+	async broadcastAsync(action: string, ...args: any[]): Promise<PromiseSettledResult<unknown>[]> {
+		const pending: Promise<unknown>[] = [];
+		for (const player of this.players.values()) {
+			const fn = (player as any)[action];
+			if (typeof fn !== "function") continue;
+			try {
+				pending.push(Promise.resolve(fn.apply(player, args)));
+			} catch (error) {
+				pending.push(Promise.reject(error));
+			}
+		}
+		return Promise.allSettled(pending);
+	}
+
+	/**
+	 * Broadcast a player method only to the given guild ids (players must already exist).
+	 */
+	broadcastGuilds(guildIds: readonly string[], action: string, ...args: any[]): void {
+		const wanted = new Set(guildIds);
+		for (const player of this.players.values()) {
+			if (!wanted.has(player.guildId)) continue;
+			if (typeof (player as any)[action] === "function") {
+				try {
+					(player as any)[action](...args);
+				} catch (error) {
+					this.debug(`Error broadcasting ${action} to ${player.guildId}:`, error);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Global {@link TrackMiddleware} configured on this manager (applied before per-player middleware).
+	 */
+	getTrackMiddlewareChain(): TrackMiddleware[] {
+		return [...this.trackMiddlewareFromOptions];
+	}
+
+	/**
+	 * Mirror playback controls from a leader guild to follower guilds (each guild must already have a {@link Player} via
+	 * {@link create}). Followers receive the same track on `trackStart`, and pause/resume/stop/volume from the leader when
+	 * applicable.
+	 *
+	 * @returns Unsubscribe function — also runs when the leader player is destroyed.
+	 */
+	subscribePlaybackMirror(options: PlaybackMirrorOptions): () => void {
+		const leader = this.get(options.leaderGuildId);
+		if (!leader) {
+			throw new Error(`subscribePlaybackMirror: no player for leader guild ${options.leaderGuildId}`);
+		}
+
+		const followers = [...new Set(options.followerGuildIds)].filter((id) => id !== options.leaderGuildId);
+		const mirrorUserId = options.mirrorUserId;
+		const syncVolume = options.syncVolume ?? true;
+		const forwardMode = options.forwardMode ?? true;
+
+		const existing = this.playbackMirrorUnsubscribes.get(options.leaderGuildId);
+		existing?.();
+
+		const runFollowers = (fn: (p: Player) => void | Promise<void>) => {
+			for (const gid of followers) {
+				const fp = this.get(gid);
+				if (!fp) {
+					this.debug(`Playback mirror: no player for follower guild ${gid}`);
+					continue;
+				}
+				Promise.resolve(fn(fp)).catch((e) => this.debug(`Playback mirror follower error (${gid}):`, e));
+			}
+		};
+
+		const onTrackStart = async (track: Track) => {
+			if (!forwardMode) {
+				runFollowers(async (fp) => {
+					fp.stop();
+					await fp.play(track, mirrorUserId);
+				});
+				return;
+			}
+
+			runFollowers((fp) => {
+				if (!fp.connection || !leader.connection) {
+					this.debug(`Playback mirror forwardMode: missing connection for follower ${fp.guildId}`);
+					return;
+				}
+
+				try {
+					// sync state
+					fp.queue.clear();
+
+					// optional fake current track sync
+					if (track) {
+						fp.queue.setCurrentTrack(track);
+					}
+
+					// subscribe directly to leader player
+					fp.subscribeTo(leader);
+					fp.isPlaying = leader.isPlaying;
+					fp.isPaused = leader.isPaused;
+
+					fp.emit("trackStart", track);
+					this.debug(`Playback mirror forwardMode subscribed ${fp.guildId} -> ${leader.guildId}`);
+				} catch (e) {
+					this.debug(`Playback mirror forwardMode error (${fp.guildId}):`, e);
+				}
+			});
+		};
+
+		const onPause = () => {
+			runFollowers((fp) => {
+				if (forwardMode) {
+					fp.isPaused = true;
+					fp.isPlaying = false;
+					return;
+				}
+
+				fp.pause();
+			});
+		};
+
+		const onResume = () => {
+			runFollowers((fp) => {
+				if (forwardMode) {
+					fp.isPaused = false;
+					fp.isPlaying = true;
+					return;
+				}
+
+				fp.resume();
+			});
+		};
+
+		const onStop = () => {
+			runFollowers((fp) => {
+				if (forwardMode) {
+					try {
+						fp.connection?.subscribe(fp.audioPlayer);
+
+						fp.isPlaying = false;
+						fp.isPaused = false;
+
+						fp.audioPlayer.stop(true);
+					} catch {}
+					return;
+				}
+
+				fp.stop();
+			});
+		};
+
+		const onVolume = (_oldVol: number, newVol: number) => {
+			if (!syncVolume) return;
+			runFollowers((fp) => {
+				fp.setVolume(newVol);
+			});
+		};
+
+		let closed = false;
+		const unsubscribe = () => {
+			if (closed) return;
+			closed = true;
+			leader.off("trackStart", onTrackStart);
+			leader.off("playerPause", onPause);
+			leader.off("playerResume", onResume);
+			leader.off("playerStop", onStop);
+			leader.off("volumeChange", onVolume);
+			leader.off("playerDestroy", onLeaderDestroy);
+			onStop();
+			this.playbackMirrorUnsubscribes.delete(options.leaderGuildId);
+		};
+
+		const onLeaderDestroy = () => {
+			unsubscribe();
+		};
+
+		leader.on("trackStart", onTrackStart);
+		leader.on("playerPause", onPause);
+		leader.on("playerResume", onResume);
+		leader.on("playerStop", onStop);
+		leader.on("volumeChange", onVolume);
+		leader.on("playerDestroy", onLeaderDestroy);
+		if (leader?.currentTrack) onTrackStart(leader.currentTrack);
+		this.playbackMirrorUnsubscribes.set(options.leaderGuildId, unsubscribe);
+		return unsubscribe;
+	}
+
+	/**
 	 * Destroy all players and clean up
 	 */
 	destroy(): void {
 		this.debug(`Destroying all players`);
+
+		for (const unsub of this.playbackMirrorUnsubscribes.values()) {
+			try {
+				unsub();
+			} catch {}
+		}
+		this.playbackMirrorUnsubscribes.clear();
 
 		// Stop cleanup intervals
 		if (this.cleanupInterval) {
@@ -600,30 +816,42 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	/**
-	 * Search using registered plugins without creating a Player.
+	 * Search using PluginManager without creating a Player.
 	 *
-	 * @param {string} query - The query to search for
-	 * @param {string} requestedBy - The user ID who requested the search
-	 * @returns {Promise<SearchResult>} The search result
+	 * Uses the same search pipeline as Player.search():
+	 * - cache
+	 * - plugin deduplication
+	 * - plugin scoring/evaluation
+	 * - fallback handling
+	 *
+	 * @param {string} query
+	 * @param {string} requestedBy
+	 * @returns {Promise<SearchResult>}
 	 */
 	async search(query: string, requestedBy: string): Promise<SearchResult> {
 		this.debug(`Search called with query: ${query}, requestedBy: ${requestedBy}`);
 
-		// Check cache first
+		// Cache
 		const cached = this.getCachedSearch(query);
 		if (cached) {
 			return cached;
 		}
 
-		const plugin = this.plugins.find((p) => p.canHandle(query));
-		if (!plugin) {
-			this.debug(`No plugin found to handle: ${query}`);
-			throw new Error(`No plugin found to handle: ${query}`);
-		}
-
 		try {
-			const result = await this.withTimeout(plugin.search(query, requestedBy), "Search operation timed out");
+			const result = await this.pluginManager.search(query, requestedBy);
+
+			if (!result || !Array.isArray(result.tracks) || result.tracks.length === 0) {
+				throw new Error(`No results found for: ${query}`);
+			}
+
+			this.debug(`Plugin search returned ${result.tracks.length} tracks (score: ${result.score?.score ?? "unknown"}%)`);
+
+			if (result.score) {
+				this.debug(`Search evaluation - ${result.score.reason}`);
+			}
+
 			this.setCachedSearch(query, result);
+
 			return result;
 		} catch (error) {
 			this.debug(`Search error:`, error);
@@ -647,9 +875,10 @@ export class PlayerManager extends EventEmitter {
 	 */
 	registerPlugin(plugin: SourcePlugin): void {
 		this.plugins.push(plugin);
+		this.pluginManager.register(plugin);
+
 		this.debug(`Registered plugin: ${plugin.name}`);
 
-		// Register plugin with all existing players
 		for (const player of this.players.values()) {
 			player.addPlugin(plugin);
 		}
@@ -666,9 +895,10 @@ export class PlayerManager extends EventEmitter {
 		if (index === -1) return false;
 
 		this.plugins.splice(index, 1);
+		this.pluginManager.unregister(name);
+
 		this.debug(`Unregistered plugin: ${name}`);
 
-		// Note: Cannot easily remove plugins from existing players
 		return true;
 	}
 

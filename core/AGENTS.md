@@ -1,4 +1,4 @@
-# 🤖 AI Guide for ZiPlayer
+# AI / agent notes — ZiPlayer core
 
 A comprehensive guide for AI assistants and developers working with ZiPlayer - a powerful Discord music player library.
 
@@ -57,7 +57,6 @@ A comprehensive guide for AI assistants and developers working with ZiPlayer - a
 const player = await manager.create(guildId, options);
 await player.connect(voiceChannel);
 await player.play(query, userId);
-// ... auto-saves periodically
 player.destroy();
 ```
 
@@ -275,11 +274,6 @@ const client = new Client({
 const manager = new PlayerManager({
 	plugins: [new YouTubePlugin(), new SpotifyPlugin()],
 	autoCleanup: true,
-});
-
-client.on("ready", async () => {
-	// Auto-load saved players
-	await manager.loadAllPlayers();
 });
 
 client.on("messageCreate", async (msg) => {
@@ -610,6 +604,41 @@ interface SearchResult {
 	playlist?: { name: string; url?: string };
 }
 ```
+
+## Terminology
+
+- **Plugins** (`SourcePlugin`): search, `getStream`, playlists — audio **sources** (YouTube, SoundCloud, etc.).
+- **Extensions** (`SourceExtension` / `BaseExtension`): cross-cutting behavior — **not** the same as **`trackMiddleware`**.
+
+## Track transforms before stream
+
+| Goal                                                                                                                                                               | Mechanism                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Enrich every queued track right before stream extraction (preload, playback, `save`, TTS interrupt path uses middleware before raw plugin stream where applicable) | **`trackMiddleware`** on `PlayerManagerOptions` / `PlayerOptions` — ordered chain; merged order: manager chain first, then per-player chain. Implemented in `Player.applyTrackMiddleware` → called at start of `Player.getStream`, and before direct `pluginManager.getStream` in TTS interrupt / `save`. |
+| Change query or inject tracks before search resolves                                                                                                               | Extension **`beforePlay`** — mutate `payload.query` or return `{ tracks }`.                                                                                                                                                                                                                               |
+| Custom stream backend                                                                                                                                              | Extension **`provideStream`** — runs **after** track middleware, before plugins.                                                                                                                                                                                                                          |
+
+Types: `TrackMiddleware`, `TrackMiddlewareContext`, `normalizeTrackMiddleware` in `src/types/index.ts`.
+
+When returning a **new** `Track` from middleware, the core **merges** into the original reference (`mergeTrackPreserveRef`) so
+queue pointers stay valid.
+
+## Metadata: BPM, LUFS, genre
+
+Advanced playback reads **`track.metadata`**:
+
+- **`bpm`**, **`genre`**, **`lufs`** — smart transition + loudness (see `Player`).
+
+## Multi-guild broadcast & mirror
+
+| API                                                                                       | Behavior                                                                                                                                                                                      |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `broadcast(action, ...args)`                                                              | Sync fan-out of `player[action]` to **all** players.                                                                                                                                          |
+| `broadcastAsync(action, ...args)`                                                         | Same, but `Promise.allSettled` on return values (use for `play`).                                                                                                                             |
+| `broadcastGuilds(guildIds, action, ...args)`                                              | Subset of guilds.                                                                                                                                                                             |
+| `subscribePlaybackMirror({ leaderGuildId, followerGuildIds, mirrorUserId, syncVolume? })` | Leader `trackStart` → followers `stop()` + `play(track, mirrorUserId)`; mirrors pause/resume/stop/volume (volume optional). Unsubscribe returned; also cleans up when leader player destroys. |
+
+Followers must already exist (`create`). One mirror subscription per leader id replaces the previous.
 
 ---
 

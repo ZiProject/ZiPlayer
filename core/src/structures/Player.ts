@@ -16,22 +16,24 @@ import {
 import { Readable } from "stream";
 import { LRUCache } from "lru-cache";
 import type { BaseExtension } from "../extensions";
-import type {
-	Track,
-	PlayerOptions,
-	PlayerEvents,
-	SourcePlugin,
-	SearchResult,
-	ProgressBarOptions,
-	LoopMode,
-	StreamInfo,
-	SaveOptions,
-	VoiceChannel,
-	PlayerSession,
-	ExtensionPlayRequest,
-	ExtensionPlayResponse,
-	ExtensionAfterPlayPayload,
-	StreamSlot,
+import {
+	normalizeTrackMiddleware,
+	type Track,
+	type PlayerOptions,
+	type PlayerEvents,
+	type SourcePlugin,
+	type SearchResult,
+	type ProgressBarOptions,
+	type LoopMode,
+	type StreamInfo,
+	type SaveOptions,
+	type VoiceChannel,
+	type PlayerSession,
+	type ExtensionPlayRequest,
+	type ExtensionPlayResponse,
+	type ExtensionAfterPlayPayload,
+	type StreamSlot,
+	type TrackMiddleware,
 } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 
@@ -96,6 +98,7 @@ export class Player extends EventEmitter {
 	public extensionManager: ExtensionManager;
 	public streamManager: StreamManager;
 	public preloadManager: PreloadManager;
+	public forwardMode: Boolean = false;
 
 	public userdata?: Record<string, any>;
 	public _lastActivity: number = Date.now();
@@ -154,6 +157,7 @@ export class Player extends EventEmitter {
 	private loudnessMaxCutDb = 10;
 	private loudnessLimiterCeiling = 0.95;
 	private destroyed = false;
+	private readonly trackMiddlewareChain: TrackMiddleware[];
 
 	// Cache for search results to avoid duplicate calls
 	private searchCache: LRUCache<string, SearchResult>;
@@ -247,6 +251,9 @@ export class Player extends EventEmitter {
 		this.debug(
 			`[Player] Runtime options resolved: lowPerformance=${this.lowPerformanceMode}, preload=${this.preloadEnabled}, crossfade=${this.crossfadeEnabled} (${this.crossfadeDurationMs}ms), smartTransition=${this.smartTransitionEnabled}, antiStuck=${this.antiStuckEnabled}, loudnessNormalization=${this.loudnessNormalizationEnabled}`,
 		);
+
+		this.trackMiddlewareChain = [...this.manager.getTrackMiddlewareChain(), ...normalizeTrackMiddleware(options.trackMiddleware)];
+
 		this.filter = new FilterManager(this, this.manager);
 		this.extensionManager = new ExtensionManager(this, this.manager);
 		this.pluginManager = new PluginManager(this, this.manager, {
@@ -906,10 +913,36 @@ export class Player extends EventEmitter {
 		}
 	}
 
+	private mergeTrackPreserveRef(target: Track, source: Track): void {
+		if (source === target) return;
+		const mergedMeta = {
+			...(target.metadata || {}),
+			...(source.metadata || {}),
+		};
+		Object.assign(target, source);
+		target.metadata = mergedMeta;
+	}
+
+	private async applyTrackMiddleware(track: Track): Promise<void> {
+		if (this.trackMiddlewareChain.length === 0) return;
+		const ctx = { player: this, manager: this.manager };
+		for (const mw of this.trackMiddlewareChain) {
+			try {
+				const out = await mw(track, ctx);
+				if (out != null && out !== track) {
+					this.mergeTrackPreserveRef(track, out);
+				}
+			} catch (err) {
+				this.debug(`[TrackMiddleware] Error:`, err);
+			}
+		}
+	}
+
 	private async getStream(track: Track): Promise<StreamInfo | null> {
 		if (this.destroyed) {
 			throw new Error("PLAYER_DESTROYED");
 		}
+		await this.applyTrackMiddleware(track);
 		const trackId = track.id || track.url || track.title;
 		const existingStream = this.streamManager.getStreamByTrack(trackId);
 
@@ -1263,6 +1296,8 @@ export class Player extends EventEmitter {
 			if (!this.connection) throw new Error("No voice connection for TTS");
 			const ttsPlayer = this.ensureTTSPlayer();
 
+			await this.applyTrackMiddleware(track);
+
 			// Build resource from plugin stream
 			const streamInfo = await this.pluginManager.getStream(track);
 			if (!streamInfo) {
@@ -1385,6 +1420,56 @@ export class Player extends EventEmitter {
 			this.connection?.destroy();
 			throw error;
 		}
+	}
+
+	/**
+	 * Subscribe this player's voice connection
+	 * to another player's audio stream.
+	 *
+	 * This is primarily used for:
+	 * - playback mirroring
+	 * - radio/broadcast systems
+	 * - multi-guild synchronized playback
+	 * - forwardMode shared streaming
+	 *
+	 * Instead of creating a separate audio stream,
+	 * this player will directly receive audio packets
+	 * from the target player's AudioPlayer instance.
+	 *
+	 * Benefits:
+	 * - drastically lower CPU usage
+	 * - only one ffmpeg/extractor stream
+	 * - lower bandwidth and memory usage
+	 * - perfect sync across guilds
+	 *
+	 * Important:
+	 * - both players must already have active voice connections
+	 * - this does NOT transfer queue ownership
+	 * - this does NOT clone playback state automatically
+	 *
+	 * @param {Player} player - Source player to subscribe to
+	 *
+	 * @returns {boolean}
+	 * Returns true if subscription succeeded,
+	 * otherwise false.
+	 *
+	 * @example
+	 * follower.subscribeTo(leader);
+	 *
+	 * @example
+	 * if (!player.subscribeTo(leader)) {
+	 *   console.log("Failed to subscribe");
+	 * }
+	 */
+	public subscribeTo(player: Player): boolean {
+		if (!this.connection) return false;
+
+		this.connection.subscribe(player.audioPlayer);
+
+		this.isPlaying = player.isPlaying;
+		this.isPaused = player.isPaused;
+		this.forwardMode = true;
+		return true;
 	}
 
 	/**
@@ -1590,6 +1675,8 @@ export class Player extends EventEmitter {
 		}
 
 		try {
+			await this.applyTrackMiddleware(track);
+
 			// Skip extension manager for saving - we want the raw stream without filters/seek applied, and extensions may not support this
 			let streamInfo: StreamInfo | null = await this.pluginManager.getStream(track);
 

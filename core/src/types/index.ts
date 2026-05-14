@@ -122,6 +122,43 @@ export interface StreamInfo {
 	metadata?: Record<string, any>;
 }
 
+/** Passed to each {@link TrackMiddleware} run (before stream resolution). */
+export interface TrackMiddlewareContext {
+	player: Player;
+	manager: PlayerManager;
+}
+
+/**
+ * Runs immediately before stream extraction (`Player.getStream`): after enqueue, before extension `provideStream` and plugins.
+ * Prefer mutating `track` in place (especially `metadata`). If you return another object, its fields are merged into the original
+ * `track` reference so queue/current-track pointers stay valid.
+ */
+export type TrackMiddleware = (track: Track, context: TrackMiddlewareContext) => void | Track | Promise<void | Track>;
+
+/** Options for {@link PlayerManager.subscribePlaybackMirror}. */
+export interface PlaybackMirrorOptions {
+	leaderGuildId: string;
+	followerGuildIds: string[];
+	/** User id passed to follower `play()` (often the bot application id). */
+	mirrorUserId: string;
+	/** When true (default), follower `setVolume` tracks the leader. */
+	syncVolume?: boolean;
+	/**
+	 * When enabled, follower connections subscribe directly
+	 * to leader.audioPlayer instead of creating their own streams.
+	 *
+	 * Greatly reduces bandwidth/CPU usage.
+	 *
+	 * Default: true
+	 */
+	forwardMode?: boolean;
+}
+
+export function normalizeTrackMiddleware(input?: TrackMiddleware | TrackMiddleware[]): TrackMiddleware[] {
+	if (!input) return [];
+	return Array.isArray(input) ? input : [input];
+}
+
 /**
  * Configuration options for creating a new player instance.
  *
@@ -302,6 +339,11 @@ export interface PlayerOptions {
 		 */
 		limiterCeiling?: number;
 	};
+	/**
+	 * Chain of middleware applied to every track immediately before stream extraction (after queueing).
+	 * Merged after {@link PlayerManagerOptions.trackMiddleware} from the manager.
+	 */
+	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
 }
 
 export interface PlayerManagerOptions {
@@ -312,6 +354,10 @@ export interface PlayerManagerOptions {
 	cleanupInterval?: number; // Cleanup interval in ms
 	enableSearchCache?: boolean; // Enable search result caching
 	enableStatsCollection?: boolean; // Enable stats collection events
+	/**
+	 * Global track middleware for every {@link Player} created from this manager (before per-player middleware).
+	 */
+	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
 }
 
 /**

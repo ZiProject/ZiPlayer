@@ -401,6 +401,28 @@ export class Queue {
 	}
 
 	/**
+	 * Force set current playing track.
+	 *
+	 * Mainly used internally for playback synchronization,
+	 * playback mirroring, restoring player state,
+	 * or forward-mode shared audio sessions.
+	 *
+	 * This does NOT modify queue order/history automatically.
+	 * It only updates the current active track reference.
+	 *
+	 * @param {Track | null} track - Track to set as current
+	 *
+	 * @example
+	 * queue.setCurrentTrack(track);
+	 *
+	 * @example
+	 * queue.setCurrentTrack(null);
+	 */
+	setCurrentTrack(track: Track | null): void {
+		this.current = track;
+	}
+	
+	/**
 	 * Get the previous tracks
 	 */
 	get previousTracks(): Track[] {

@@ -31,6 +31,10 @@ advanced music bots quickly.
   controlled skip (no chaotic skipping)
 - 🔊 **Loudness Normalization** - LUFS-based normalization prevents sudden volume jumps between tracks, with gentle limiter to
   avoid distortion
+- 🧪 **Track middleware (extensions)** — Transform or enrich tracks before streaming (for example fill `metadata.bpm`,
+  `metadata.lufs`, `metadata.genre` from an audio-analysis HTTP API instead of manual entry)
+- 📻 **Multi-guild broadcast** — Fan out the same Player API calls to every active guild with `manager.broadcast()` (shared
+  controls / mirrored sessions across servers)
 
 ---
 
@@ -227,6 +231,59 @@ Extensions can now provide:
 - **Stream** — Custom stream sources (Lavalink, etc.)
 - **Before/After play hooks** — Modify playback behavior
 
+### Track middleware (metadata before stream)
+
+Core exposes **`trackMiddleware`** on **`PlayerManager`** options and **`Player`** options: an ordered chain of async/sync
+functions `(track, { player, manager }) => void | Track`. They run **once per stream resolution**, immediately before extension
+`provideStream` and plugins — including preload and `player.save()`.
+
+Prefer mutating **`track.metadata`** in place. If you return a **new** object, its enumerable fields (and merged `metadata`) are
+copied onto the original track reference so queue/current-track pointers stay stable.
+
+```ts
+const manager = new PlayerManager({
+	plugins: [...],
+	trackMiddleware: async (track, { player }) => {
+		const analysis = await fetchAnalysis(track.url); // your HTTP API
+		track.metadata = {
+			...track.metadata,
+			bpm: analysis.bpm,
+			lufs: analysis.lufs,
+			genre: analysis.genre,
+		};
+	},
+});
+
+// Per-player middleware runs after manager-level middleware
+await manager.create(guildId, {
+	trackMiddleware: [(track) => {
+		track.metadata = { ...track.metadata, sourcePreset: "guild-radio" };
+	}],
+});
+```
+
+Extensions remain useful for **`beforePlay`** (rewrite query / inject tracks before search) and **`provideStream`** (custom
+backends):
+
+1. **`beforePlay`** (capability `beforePlay`) runs inside `player.play()` before search resolution. You can:
+   - Adjust `payload.query` when it is a string (rewrite query) or a **`Track`** (mutate the object, including `track.metadata`).
+   - Return **`tracks`** to inject or replace the list of tracks (with enriched metadata).
+   - Set **`handled: true`** to short-circuit normal handling when you fully control the outcome.
+
+2. **`provideStream`** (capability `stream`) runs **after** track middleware and **before** plugin extraction in
+   `Player.getStream()`. Use it to supply a stream from Lavalink or another backend while still using plugins for search.
+
+Core features read optional **`Track.metadata`** fields:
+
+| Key (in `track.metadata`) | Used by                                                                    |
+| ------------------------- | -------------------------------------------------------------------------- |
+| `bpm`                     | Smart transition beat alignment (`smartTransition.beatAlign`)              |
+| `genre`                   | Genre-aware fade duration (`smartTransition.genreAware`, `genreDurations`) |
+| `lufs`                    | Loudness normalization (`loudnessNormalization`)                           |
+
+Example sketch (extension path): in `beforePlay`, if `payload.query` is a `Track`, call your analysis service (or cache), then
+assign `track.metadata = { ...track.metadata, bpm, lufs, genre }` before returning.
+
 ---
 
 ## 🎛️ Audio Filters
@@ -361,6 +418,59 @@ const activePlayers = manager.getPlayersByFilter((p) => p.isPlaying);
 manager.deleteWhere((p) => p.queue.isEmpty && !p.isPlaying);
 ```
 
+### Multi-room / multi-guild broadcast
+
+`PlayerManager.broadcast(action, ...args)` loops every registered **`Player`** and, if `player[action]` is a function, calls
+`player[action](...args)`. It is a **control fan-out**: the same method name runs on all guild players (pause, volume, skip,etc.).
+It does **not** multiplex one Discord voice stream to many guilds—each guild still has its own voice connection and decoder.
+
+Use **`broadcastAsync`** when you need to await async methods (for example `play`):
+
+```ts
+const results = await manager.broadcastAsync("play", "https://youtu.be/...", botUserId);
+```
+
+Use **`broadcastGuilds`** to target a subset of guild ids:
+
+```ts
+manager.broadcastGuilds(["guildA", "guildB"], "pause");
+```
+
+**Built-in playback mirror (`subscribePlaybackMirror`)** — designate a **leader** guild; **follower** guilds receive the same
+track on each leader `trackStart`, and pause / resume stop / volume (optional) when the leader does. Each guild must already have
+a player (`create` + `connect` to voice).
+
+```ts
+const stopMirror = manager.subscribePlaybackMirror({
+	leaderGuildId: "123",
+	followerGuildIds: ["456", "789"],
+	mirrorUserId: client.user.id,
+	syncVolume: true,
+	forwardMode: true,
+});
+// later: stopMirror();
+```
+
+**“Subscribe” pattern (manual):**
+
+1. Call `await manager.create(guildId, options)` (and `player.connect(voiceChannel)`) for **each** guild that should participate
+   so each server has a player instance.
+2. Drive playback from your bot logic: mirror API above, or issue the same `play` / queue commands per guild, or use `broadcast`
+   for **synchronized controls** only.
+3. Plain `broadcast` is **synchronous** and does not `await` async methods. Prefer `broadcastAsync` or a `for` loop with `await`
+   when order/errors matter.
+
+```ts
+// Same control on every guild that already has a player
+manager.broadcast("pause");
+manager.broadcast("setVolume", 75);
+
+// Prefer explicit awaits if you need ordered or error-handled play on many guilds
+for (const player of manager.getAll()) {
+	await player.play(sharedQueueUrl, botUserId).catch(console.error);
+}
+```
+
 ---
 
 ## ⚙️ Advanced Configuration
@@ -376,6 +486,7 @@ const manager = new PlayerManager({
 	cleanupInterval: 120000,      // Cleanup interval (ms)
 	enableSearchCache: true,      // Cache search results
 	enableStatsCollection: true,  // Enable stats events
+	trackMiddleware: [...],       // Global pre-stream track transforms (before per-player middleware)
 	persistence: {...}            // Persistence configuration
 });
 ```
@@ -436,6 +547,7 @@ const player = await manager.create(guildId, {
 		maxCutDb: 10,
 		limiterCeiling: 0.95,
 	},
+	trackMiddleware: [], // Optional per-player chain (after manager trackMiddleware)
 	userdata: { customField: "value" },
 });
 ```
@@ -518,6 +630,7 @@ player.extensionManager.clearCache("search");
 - Examples: [https://github.com/ZiProject/ZiPlayer/tree/main/examples](https://github.com/ZiProject/ZiPlayer/tree/main/examples)
 - GitHub: [https://github.com/ZiProject/ZiPlayer](https://github.com/ZiProject/ZiPlayer)
 - npm: [https://www.npmjs.com/package/ziplayer](https://www.npmjs.com/package/ziplayer)
+- AI/agent-oriented notes (middleware metadata, broadcast semantics): see `AGENTS.md` in this repo
 
 ---
 

@@ -848,7 +848,7 @@ export class PluginManager {
 			return [];
 		}
 
-		const history = this.player.queue.previousTracks;
+		const history = this.player?.queue?.previousTracks || [];
 		const historyUrls = new Set(history.map((t) => t.url));
 		const currentTrackUrl = track.url;
 
