@@ -187,7 +187,7 @@ export function Layout({ children }: PropsWithChildren) {
 									GitHub
 								</a>
 								<a
-									href='https://discord.gg/zaskhD7PTW'
+									href='https://discord.gg/yHsbXkEuwN'
 									target='_blank'
 									rel='noopener noreferrer'
 									className='block text-white/60 hover:text-brand-300 transition-colors duration-200'>
