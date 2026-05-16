@@ -1534,7 +1534,7 @@ export class Player extends EventEmitter {
 			return false;
 		}
 	}
-	
+
 	/**
 	 * Unsubscribe this player from its current playback leader.
 	 *
