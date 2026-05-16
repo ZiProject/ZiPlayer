@@ -21,6 +21,7 @@
 	"license": "MIT",
 	"author": "Ziji",
 	"main": "dist/index.js",
+	"type": "module",
 	"types": "dist/index.d.ts",
 	"scripts": {
 		"build": "tsc",
