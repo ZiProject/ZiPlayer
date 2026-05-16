@@ -139,16 +139,9 @@ export type TrackMiddleware = (track: Track, context: TrackMiddlewareContext) =>
 export interface PlaybackMirrorOptions {
 	leaderGuildId: string;
 	followerGuildIds: string[];
-	/** User id passed to follower `play()` (often the bot application id). */
-	mirrorUserId: string;
-	/** When true (default), follower `setVolume` tracks the leader. */
-	syncVolume?: boolean;
 	/**
 	 * When enabled, follower connections subscribe directly
-	 * to leader.audioPlayer instead of creating their own streams.
-	 *
-	 * Greatly reduces bandwidth/CPU usage.
-	 *
+	 * to leader.audioPlayer
 	 * Default: true
 	 */
 	forwardMode?: boolean;
@@ -556,7 +549,7 @@ export interface ManagerEvents {
 	streamError: [player: Player, error: Error, track: Track | null];
 
 	forwardModeStart: [player: Player, leader: Player];
-	forwardModeEnd: [player: Player, leader: Player];
+	forwardModeEnd: [player: Player, leader: Player, reason: string | undefined];
 }
 export interface PlayerEvents {
 	debug: [message: string, ...args: any[]];
@@ -591,7 +584,7 @@ export interface PlayerEvents {
 	/** Emitted when player stats are updated (if enabled) */
 	stats: [stats: PlayerStats];
 	forwardModeStart: [leader: Player];
-	forwardModeEnd: [leader: Player];
+	forwardModeEnd: [leader: Player, reason: string | undefined];
 }
 
 export * from "./fillter";

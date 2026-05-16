@@ -95,6 +95,7 @@ export class Player extends EventEmitter {
 	public userdata?: Record<string, any>;
 	public _lastActivity: number = Date.now();
 	public currentResource: AudioResource | null = null;
+	public destroyed: boolean = false;
 
 	public manager: PlayerManager;
 	public pluginManager: PluginManager;
@@ -103,10 +104,9 @@ export class Player extends EventEmitter {
 	public preloadManager: PreloadManager;
 	public filter!: FilterManager;
 
-	public forwardMode: Boolean = false;
+	public forwardMode: boolean = false;
 	public forwardFollowers = new Set<Player>();
 	public forwardLeader: Player | null = null;
-	private forwardSyncVolume: boolean = true;
 
 	private leaveTimeout: NodeJS.Timeout | null = null;
 	private volumeInterval: NodeJS.Timeout | null = null;
@@ -159,7 +159,6 @@ export class Player extends EventEmitter {
 	private loudnessMaxBoostDb = 8;
 	private loudnessMaxCutDb = 10;
 	private loudnessLimiterCeiling = 0.95;
-	private destroyed = false;
 	private readonly trackMiddlewareChain: TrackMiddleware[];
 
 	// Cache for search results to avoid duplicate calls
@@ -479,6 +478,10 @@ export class Player extends EventEmitter {
 	 * await player.play(null); // play from queue
 	 */
 	async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
+		if (this.forwardMode) {
+			this.debug("[Player] Cannot play while subscribed to another player. Call unsubscribeForward() first.");
+			return false;
+		}
 		const debugInfo =
 			query === null ? "null"
 			: typeof query === "string" ? query
@@ -1471,7 +1474,6 @@ export class Player extends EventEmitter {
 	public subscribeTo(
 		leader: Player,
 		options?: {
-			syncVolume?: boolean;
 			forwardMode?: boolean;
 		},
 	): boolean {
@@ -1482,6 +1484,24 @@ export class Player extends EventEmitter {
 			return false;
 		}
 
+		if (leader.destroyed) {
+			this.debug("[Player] Cannot subscribe to destroyed leader");
+
+			return false;
+		}
+
+		if (this.destroyed) {
+			this.debug("[Player] Cannot subscribe destroyed player");
+
+			return false;
+		}
+
+		if (!!leader.forwardLeader) {
+			this.debug("[Player] Cannot subscribe to follower player");
+
+			return false;
+		}
+
 		if (!this.connection || !leader.connection) {
 			this.debug(`[Player] Missing connection for subscribeTo`);
 			return false;
@@ -1489,20 +1509,25 @@ export class Player extends EventEmitter {
 
 		// cleanup old leader
 		if (this.forwardLeader) {
-			this.unsubscribeForward();
+			this.unsubscribeForward("This Player new subscribeTo " + leader.guildId);
 		}
 
 		this.forwardLeader = leader;
-
-		this.forwardMode = options?.forwardMode ?? true;
-
-		this.forwardSyncVolume = options?.syncVolume ?? true;
 
 		leader.forwardFollowers.add(this);
 
 		try {
 			// clear local playback
 			this.stop();
+
+			// detach current followers first
+			for (const fp of [...this.forwardFollowers]) {
+				try {
+					fp.unsubscribeForward("Leader new subscribeTo " + leader.guildId);
+				} catch {}
+			}
+
+			this.forwardFollowers.clear();
 
 			this.queue.clear();
 
@@ -1514,10 +1539,9 @@ export class Player extends EventEmitter {
 				this.connection.subscribe(leader.audioPlayer);
 			}
 
-			// sync state
-			if (this.forwardSyncVolume) {
-				this.setVolume(leader.volume);
-			}
+			this.volume = leader.volume;
+
+			this.forwardMode = options?.forwardMode ?? true;
 
 			this.emit("forwardModeStart", leader);
 
@@ -1554,7 +1578,7 @@ export class Player extends EventEmitter {
 	 * @example
 	 * follower.unsubscribeForward();
 	 */
-	public unsubscribeForward(): boolean {
+	public unsubscribeForward(reason?: string | undefined): boolean {
 		if (!this.forwardLeader) {
 			return false;
 		}
@@ -1571,9 +1595,11 @@ export class Player extends EventEmitter {
 			this.connection?.subscribe(this.audioPlayer);
 		} catch {}
 
-		this.emit("forwardModeEnd", leader);
+		this.queue.clear();
 
-		this.debug(`[Player] Forward mode unsubscribed ${this.guildId} <- ${leader.guildId}`);
+		this.emit("forwardModeEnd", leader, reason);
+
+		this.debug(`[Player] Forward mode unsubscribed ${this.guildId} <- ${leader.guildId}: ${reason ?? null}`);
 
 		return true;
 	}
@@ -1587,6 +1613,10 @@ export class Player extends EventEmitter {
 	 * console.log(`Paused: ${paused}`);
 	 */
 	pause(): boolean {
+		if (this.forwardMode) {
+			this.debug("[Player] Cannot pause while subscribed to another player");
+			return false;
+		}
 		this.debug(`[Player] pause called`);
 		if (this.isPlaying && !this.isPaused) {
 			return this.audioPlayer.pause();
@@ -1603,6 +1633,10 @@ export class Player extends EventEmitter {
 	 * console.log(`Resumed: ${resumed}`);
 	 */
 	resume(): boolean {
+		if (this.forwardMode) {
+			this.debug("[Player] Cannot resume while subscribed to another player");
+			return false;
+		}
 		this.debug(`[Player] resume called`);
 		if (this.isPaused) {
 			const result = this.audioPlayer.unpause();
@@ -1627,6 +1661,10 @@ export class Player extends EventEmitter {
 	 * console.log(`Stopped: ${stopped}`);
 	 */
 	stop(): boolean {
+		if (this.forwardMode) {
+			this.debug("[Player] Cannot stop while subscribed to another player");
+			return false;
+		}
 		this.debug(`[Player] stop called`);
 
 		// Cancel preload when stopping
@@ -1664,6 +1702,10 @@ export class Player extends EventEmitter {
 	 * await player.seek(90000);
 	 */
 	async seek(position: number): Promise<boolean> {
+		if (this.forwardMode) {
+			this.debug("[Player] Cannot seek while subscribed to another player");
+			return false;
+		}
 		this.debug(`[Player] seek called with position: ${position}ms`);
 
 		const track = this.queue.currentTrack;
@@ -1694,6 +1736,10 @@ export class Player extends EventEmitter {
 	 * console.log(`Skipped: ${skipped}`);
 	 */
 	skip(index?: number): boolean {
+		if (this.forwardMode) {
+			this.debug("[Player] Cannot skip while subscribed to another player");
+			return false;
+		}
 		this.debug(`[Player] skip called with index: ${index}`);
 
 		try {
@@ -1736,6 +1782,10 @@ export class Player extends EventEmitter {
 	 * console.log(`Previous: ${previous}`);
 	 */
 	async previous(): Promise<boolean> {
+		if (this.forwardMode) {
+			this.debug("[Player] Cannot previous while subscribed to another player");
+			return false;
+		}
 		this.debug(`[Player] previous called`);
 		const track = this.queue.previous();
 		if (!track) return false;
@@ -1874,6 +1924,10 @@ export class Player extends EventEmitter {
 	 * console.log(`Auto-play mode: ${autoPlayMode}`);
 	 */
 	autoPlay(mode?: boolean): boolean {
+		if (this.forwardMode) {
+			this.debug("[Player] Cannot autoPlay while subscribed to another player");
+			return false;
+		}
 		return this.queue.autoPlay(mode);
 	}
 
@@ -1915,10 +1969,8 @@ export class Player extends EventEmitter {
 
 		this.emit("volumeChange", oldVolume, volume);
 		for (const fp of this.forwardFollowers) {
-			if (!fp.forwardSyncVolume) continue;
-
 			try {
-				fp.setVolume(volume);
+				fp.volume = volume;
 			} catch {}
 		}
 		return true;
@@ -1964,6 +2016,10 @@ export class Player extends EventEmitter {
 	 */
 	async insert(query: string | Track | Track[], index: number, requestedBy?: string): Promise<boolean> {
 		try {
+			if (this.forwardMode) {
+				this.debug("[Player] Cannot insert while subscribed to another player");
+				return false;
+			}
 			this.debug(`[Player] insert called at index ${index} with type: ${typeof query}`);
 			let tracksToAdd: Track[] = [];
 			let isPlaylist = false;
@@ -2232,12 +2288,12 @@ export class Player extends EventEmitter {
 		}
 
 		this.emit("playerDestroy");
-		this.unsubscribeForward();
+		this.unsubscribeForward("Player destroy");
 
 		// release followers
 		for (const fp of [...this.forwardFollowers]) {
 			try {
-				fp.unsubscribeForward();
+				fp.unsubscribeForward("Leader destroy");
 			} catch {}
 		}
 
@@ -2409,9 +2465,8 @@ export class Player extends EventEmitter {
 					for (const fp of this.forwardFollowers) {
 						try {
 							fp.queue.clear();
-
+							fp.connection?.subscribe(this.audioPlayer);
 							fp.queue.setCurrentTrack(track);
-
 							fp.emit("trackStart", track);
 						} catch (e) {
 							this.debug(`[Player] Failed to sync follower ${fp.guildId}:`, e);
@@ -2672,24 +2727,38 @@ export class Player extends EventEmitter {
 	}
 
 	get isLive(): boolean {
+		if (this.forwardMode) return true; //forward Mode -> live from Leader
+
 		return this.currentTrack?.isLive === true;
 	}
 
 	public get isPlaying(): boolean {
+		if (this.forwardMode) {
+			return this.forwardLeader?.isPlaying ?? false;
+		}
 		return (
 			this.audioPlayer.state.status === AudioPlayerStatus.Playing || this.audioPlayer.state.status === AudioPlayerStatus.Buffering
 		);
 	}
 
 	public get isPaused(): boolean {
+		if (this.forwardMode) {
+			return this.forwardLeader?.isPaused ?? false;
+		}
 		return this.audioPlayer.state.status === AudioPlayerStatus.Paused;
 	}
 
 	public get isIdle(): boolean {
+		if (this.forwardMode) {
+			return this.forwardLeader?.isIdle ?? false;
+		}
 		return this.audioPlayer.state.status === AudioPlayerStatus.Idle;
 	}
 
 	public get isBuffering(): boolean {
+		if (this.forwardMode) {
+			return this.forwardLeader?.isBuffering ?? false;
+		}
 		return this.audioPlayer.state.status === AudioPlayerStatus.Buffering;
 	}
 	//#endregion

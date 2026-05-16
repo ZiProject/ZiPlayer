@@ -696,7 +696,6 @@ export class PlayerManager extends EventEmitter {
 			}
 
 			fp.subscribeTo(leader, {
-				syncVolume: options.syncVolume,
 				forwardMode: options.forwardMode,
 			});
 		}

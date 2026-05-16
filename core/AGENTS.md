@@ -199,8 +199,8 @@ interface PlayerOptions {
 | `shuffle()`                    | Shuffle queue                                              | `void`              |
 | `insert(query, index, userId)` | Insert at position                                         | `Promise<boolean>`  |
 | `save(track, options)`         | Save track to stream                                       | `Promise<Readable>` |
-| `subscribeTo(leader, options)` | Subscribe this player to another player's playback stream. | `Promise<Readable>` |
-| `unsubscribeForward()`         | Unsubscribe this player from its current playback leader.  | `Promise<Readable>` |
+| `subscribeTo(leader, options)` | Subscribe this player to another player's playback stream. | `boolean`           |
+| `unsubscribeForward()`         | Unsubscribe this player from its current playback leader.  | `boolean`           |
 
 #### Getters
 
