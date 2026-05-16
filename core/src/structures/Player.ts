@@ -34,6 +34,7 @@ import {
 	type ExtensionAfterPlayPayload,
 	type StreamSlot,
 	type TrackMiddleware,
+	ForwardHealthStatus,
 } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 
@@ -262,7 +263,7 @@ export class Player extends EventEmitter {
 			extractorTimeout: this.options.extractorTimeout,
 		});
 		this.streamManager = new StreamManager({
-			maxConcurrentStreams: 2,
+			maxConcurrentStreams: 3,
 			streamTimeout: 5 * 60 * 1000,
 			maxListenersPerStream: 15,
 			enableMetrics: true,
@@ -1535,13 +1536,13 @@ export class Player extends EventEmitter {
 				this.queue.setCurrentTrack(leader.currentTrack);
 			}
 
-			if (this.forwardMode) {
+			this.forwardMode = options?.forwardMode ?? true;
+
+			if (this.forwardMode && this.connection) {
 				this.connection.subscribe(leader.audioPlayer);
 			}
 
 			this.volume = leader.volume;
-
-			this.forwardMode = options?.forwardMode ?? true;
 
 			this.emit("forwardModeStart", leader);
 
@@ -1941,6 +1942,10 @@ export class Player extends EventEmitter {
 	 * console.log(`Volume set: ${volumeSet}`);
 	 */
 	setVolume(volume: number): boolean {
+		if (this.forwardMode) {
+			this.debug("[Player] Cannot setVolume while subscribed to another player");
+			return false;
+		}
 		this.debug(`[Player] setVolume called: ${volume}`);
 		if (volume < 0 || volume > 200) return false;
 
@@ -2288,6 +2293,7 @@ export class Player extends EventEmitter {
 		}
 
 		this.emit("playerDestroy");
+
 		this.unsubscribeForward("Player destroy");
 
 		// release followers
@@ -2449,6 +2455,9 @@ export class Player extends EventEmitter {
 				if (track) {
 					this.debug(`[Player] Track ended: ${track.title}`);
 					this.emit("trackEnd", track);
+					for (const fp of this.forwardFollowers) {
+						fp.emit("trackEnd", track);
+					}
 				}
 				void this.playNext();
 			} else if (
@@ -2639,6 +2648,65 @@ export class Player extends EventEmitter {
 			totalStreams: this.streamManager.getStreamCount(),
 		};
 	}
+
+	public getForwardHealthStatus(): ForwardHealthStatus {
+		const issues: string[] = [];
+		const details: any = {};
+
+		if (this.forwardMode && this.forwardLeader) {
+			// This player is a follower
+			details.leaderId = this.forwardLeader.guildId;
+			details.connectionState = this.connection?.state.status;
+			details.audioPlayerState = this.audioPlayer.state.status;
+
+			if (this.forwardLeader.destroyed) {
+				issues.push("Leader is destroyed");
+			}
+			if (!this.forwardLeader.connection) {
+				issues.push("Leader has no connection");
+			}
+			if (this.forwardLeader.destroyed || !this.forwardLeader.connection) {
+				issues.push("Leader is unavailable");
+			}
+
+			return {
+				guildId: this.guildId,
+				healthy: issues.length === 0,
+				role: "follower",
+				issues,
+				details,
+			};
+		} else if (this.forwardFollowers.size > 0) {
+			// This player is a leader
+			details.followerCount = this.forwardFollowers.size;
+			details.connectionState = this.connection?.state.status;
+
+			const deadFollowers: string[] = [];
+			for (const follower of this.forwardFollowers) {
+				if (follower.destroyed) deadFollowers.push(follower.guildId);
+			}
+			if (deadFollowers.length > 0) {
+				issues.push(`Has ${deadFollowers.length} dead followers: ${deadFollowers.join(", ")}`);
+			}
+
+			return {
+				guildId: this.guildId,
+				healthy: true, // Leader being healthy doesn't depend on followers
+				role: "leader",
+				issues,
+				details,
+			};
+		}
+
+		return {
+			guildId: this.guildId,
+			healthy: true,
+			role: "none",
+			issues: [],
+			details: {},
+		};
+	}
+
 	//#endregion
 	//#region Getters
 
@@ -2734,7 +2802,11 @@ export class Player extends EventEmitter {
 
 	public get isPlaying(): boolean {
 		if (this.forwardMode) {
-			return this.forwardLeader?.isPlaying ?? false;
+			if (!this.forwardLeader || this.forwardLeader.destroyed) {
+				this.unsubscribeForward("Leader destroyed");
+				return false;
+			}
+			return this.forwardLeader.isPlaying;
 		}
 		return (
 			this.audioPlayer.state.status === AudioPlayerStatus.Playing || this.audioPlayer.state.status === AudioPlayerStatus.Buffering

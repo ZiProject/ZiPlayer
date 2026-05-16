@@ -420,12 +420,28 @@ export interface PreloadState {
 	isBeingUsed: boolean;
 }
 
+export interface ForwardHealthStatus {
+	guildId: string;
+	healthy: boolean;
+	role: "leader" | "follower" | "none";
+	issues: string[];
+	details: {
+		leaderId?: string;
+		followerCount?: number;
+		connectionState?: string;
+		audioPlayerState?: string;
+	};
+}
+
 export interface PlayerStats {
 	totalPlayers: number;
+	leader: number;
+	follower: number;
 	activePlayers: number;
 	pausedPlayers: number;
 	connectedPlayers: number;
 	totalTracksInQueue: number;
+	forwardHealthStatus: ForwardHealthStatus[];
 }
 
 export interface StreamSlot {

@@ -409,6 +409,24 @@ export class PlayerManager extends EventEmitter {
 		player.on("playerDestroy", () => {
 			this.emit("playerDestroy", player);
 
+			// Cleanup: unsubscribe all followers when leader is destroyed
+			if (player.forwardFollowers.size > 0) {
+				this.debug(`Leader ${guildId} destroyed, cleaning up ${player.forwardFollowers.size} followers`);
+				for (const follower of [...player.forwardFollowers]) {
+					try {
+						follower.unsubscribeForward("Leader destroyed");
+					} catch (err) {
+						this.debug(`Failed to unsubscribe follower ${follower.guildId}:`, err);
+					}
+				}
+			}
+
+			// Cleanup: if this player is a follower, unsubscribe from leader
+			if (player.forwardMode && player.forwardLeader) {
+				this.debug(`Follower ${guildId} destroyed, unsubscribing from leader ${player.forwardLeader.guildId}`);
+				player.unsubscribeForward("Follower destroyed");
+			}
+
 			this.players.delete(guildId);
 
 			this.debug(`Player destroyed for guildId: ${guildId}`);
@@ -554,20 +572,31 @@ export class PlayerManager extends EventEmitter {
 		let pausedPlayers = 0;
 		let connectedPlayers = 0;
 		let totalTracksInQueue = 0;
+		let forwardHealthStatus = [];
+		let leader = 0;
+		let follower = 0;
 
 		for (const player of this.players.values()) {
 			if (player.isPlaying) activePlayers++;
 			if (player.isPaused) pausedPlayers++;
 			if (player.connection) connectedPlayers++;
 			totalTracksInQueue += player.queueSize;
+			const forwardStatus = player.getForwardHealthStatus();
+			if (forwardStatus.role === "leader") leader++;
+			if (forwardStatus.role === "follower") follower++;
+
+			forwardHealthStatus.push(forwardStatus);
 		}
 
 		return {
 			totalPlayers: this.players.size,
+			leader,
+			follower,
 			activePlayers,
 			pausedPlayers,
 			connectedPlayers,
 			totalTracksInQueue,
+			forwardHealthStatus,
 		};
 	}
 
@@ -678,13 +707,16 @@ export class PlayerManager extends EventEmitter {
 	 * // later
 	 * stopMirror();
 	 */
+
 	subscribeForwardMirror(options: PlaybackMirrorOptions): () => void {
 		const leader = this.get(options.leaderGuildId);
 
 		if (!leader) {
 			throw new Error(`subscribeForwardMirror: no player for leader guild ${options.leaderGuildId}`);
 		}
-
+		if (!leader.connection) {
+			throw new Error(`Leader player ${options.leaderGuildId} is not connected to a voice channel`);
+		}
 		const followers = [...new Set(options.followerGuildIds)].filter((id) => id !== options.leaderGuildId);
 
 		for (const gid of followers) {
@@ -692,6 +724,11 @@ export class PlayerManager extends EventEmitter {
 
 			if (!fp) {
 				this.debug(`Playback mirror: no player for follower guild ${gid}`);
+				continue;
+			}
+
+			if (!fp.connection) {
+				this.debug(`Playback mirror: follower ${gid} not connected to voice channel`);
 				continue;
 			}
 
