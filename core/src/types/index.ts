@@ -4,6 +4,12 @@ import type { PlayerManager } from "../structures/PlayerManager";
 import type { AudioFilter } from "./fillter";
 import type { SourcePluginLike } from "./plugin";
 import type { AudioResource } from "@discordjs/voice";
+
+export enum PlaybackMode {
+	NATIVE = "native",
+	REMOTE = "remote",
+	FORWARD = "forward",
+}
 /**
  * Represents a music track with metadata and streaming information.
  *
@@ -118,8 +124,20 @@ export interface SearchScore {
  */
 export interface StreamInfo {
 	stream: Readable;
-	type: "webm/opus" | "ogg/opus" | "arbitrary";
+	type: "webm/opus" | "ogg/opus" | "arbitrary" | string;
 	metadata?: Record<string, any>;
+
+	remote?: boolean;
+
+	handle?: {
+		play(): Promise<void>;
+		stop(): Promise<void>;
+		pause(): Promise<void>;
+		resume(): Promise<void>;
+		seek(position: number): Promise<void>;
+		setVolume(volume: number): Promise<void>;
+		destroy(): Promise<void>;
+	};
 }
 
 /** Passed to each {@link TrackMiddleware} run (before stream resolution). */

@@ -17,6 +17,7 @@ import { Readable } from "stream";
 import { LRUCache } from "lru-cache";
 import type { BaseExtension } from "../extensions";
 import {
+	PlaybackMode,
 	normalizeTrackMiddleware,
 	type Track,
 	type PlayerOptions,
@@ -105,7 +106,8 @@ export class Player extends EventEmitter {
 	public preloadManager: PreloadManager;
 	public filter!: FilterManager;
 
-	public forwardMode: boolean = false;
+	public playbackMode = PlaybackMode.NATIVE;
+
 	public forwardFollowers = new Set<Player>();
 	public forwardLeader: Player | null = null;
 
@@ -479,7 +481,7 @@ export class Player extends EventEmitter {
 	 * await player.play(null); // play from queue
 	 */
 	async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot play while subscribed to another player. Call unsubscribeForward() first.");
 			return false;
 		}
@@ -965,10 +967,21 @@ export class Player extends EventEmitter {
 			}
 			throw new Error("PLAYER_DESTROYED");
 		}
-		if (stream?.stream) {
+
+		if (stream?.remote) {
+			this.playbackMode = PlaybackMode.REMOTE;
+			this.preloadEnabled = false;
+			this.crossfadeEnabled = false;
+
 			this.debug(`[Stream] Extension provided stream for: ${track.title}`);
+
 			return stream;
 		}
+
+		this.playbackMode = PlaybackMode.NATIVE;
+
+		this.preloadEnabled = true;
+		this.crossfadeEnabled = true;
 
 		stream = await this.pluginManager.getStream(track);
 		if (this.destroyed) {
@@ -1061,61 +1074,6 @@ export class Player extends EventEmitter {
 	}
 
 	/**
-	 * Swap preload slot to current slot
-	 */
-	private async swapToCurrent(track: Track): Promise<boolean> {
-		if (!this.preloadManager.hasValidPreload(track)) {
-			return false;
-		}
-		const oldStreamId = this.currentSlot.streamId;
-
-		// Stop current playback
-		this.audioPlayer.stop(true);
-
-		// Clean up old current stream (but keep it for a moment)
-		if (oldStreamId && this.streamManager) {
-			// Delay cleanup to avoid destroying if still needed
-			setTimeout(() => {
-				if (this.currentSlot.streamId === oldStreamId) {
-					this.streamManager.unregisterStream(oldStreamId, true);
-				}
-			}, 5000);
-		}
-
-		// Set new current
-		this.promotePreloadToCurrent(track);
-		const currentResource = this.currentSlot.resource;
-		if (!currentResource) {
-			return false;
-		}
-		const targetVolume = this.getTrackTargetVolume(track);
-
-		// Apply volume
-		if (currentResource.volume) {
-			currentResource.volume.setVolume(this.crossfadeEnabled ? 0 : targetVolume);
-		}
-
-		// Play
-		await this.maybeAlignToBeatBoundary();
-		this.audioPlayer.play(currentResource);
-
-		try {
-			await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
-			await this.applyCrossfadeIn(currentResource, track);
-
-			// Start preloading next track
-			this.preloadNextTrack().catch((err) => {
-				this.debug(`[Player] Preload error:`, err);
-			});
-
-			return true;
-		} catch (err) {
-			this.debug(`[Player] Failed to play swapped track:`, err);
-			return false;
-		}
-	}
-
-	/**
 	 * Load fresh stream when no preload available
 	 */
 	private async loadFreshStream(track: Track): Promise<boolean> {
@@ -1125,6 +1083,10 @@ export class Player extends EventEmitter {
 
 		try {
 			const streamInfo = await this.getStream(track);
+
+			if (this.playbackMode === PlaybackMode.REMOTE && streamInfo?.remote) {
+				return await this.playRemote(track, streamInfo);
+			}
 
 			if (!streamInfo?.stream) {
 				throw new Error(`No stream available`);
@@ -1265,6 +1227,18 @@ export class Player extends EventEmitter {
 				continue;
 			}
 		}
+	}
+
+	private async playRemote(track: Track, stream: StreamInfo): Promise<boolean> {
+		if (!stream.handle) return false;
+
+		await stream.handle.play();
+
+		this.queue.setCurrentTrack(track);
+
+		this.emit("trackStart", track);
+
+		return true;
 	}
 
 	//#endregion
@@ -1459,7 +1433,6 @@ export class Player extends EventEmitter {
 	 * @param {Player} leader The leader player to subscribe to.
 	 * @param options Additional playback mirror options.
 	 * @param options.syncVolume When true, follower volume automatically follows the leader. Default: true.
-	 * @param options.forwardMode When true, the follower voice connection directly subscribes to the leader audioPlayer. Default: true.
 	 *
 	 * @returns {boolean} True if subscription succeeded.
 	 *
@@ -1469,7 +1442,6 @@ export class Player extends EventEmitter {
 	 * @example
 	 * follower.subscribeTo(leader, {
 	 *   syncVolume: true,
-	 *   forwardMode: true
 	 * });
 	 */
 	public subscribeTo(
@@ -1535,10 +1507,9 @@ export class Player extends EventEmitter {
 			if (leader.currentTrack) {
 				this.queue.setCurrentTrack(leader.currentTrack);
 			}
+			if (options?.forwardMode ?? true) this.playbackMode = PlaybackMode.FORWARD;
 
-			this.forwardMode = options?.forwardMode ?? true;
-
-			if (this.forwardMode && this.connection) {
+			if (this.playbackMode === PlaybackMode.FORWARD && this.connection) {
 				this.connection.subscribe(leader.audioPlayer);
 			}
 
@@ -1590,7 +1561,7 @@ export class Player extends EventEmitter {
 
 		this.forwardLeader = null;
 
-		this.forwardMode = false;
+		this.playbackMode = PlaybackMode.NATIVE;
 
 		try {
 			this.connection?.subscribe(this.audioPlayer);
@@ -1614,7 +1585,7 @@ export class Player extends EventEmitter {
 	 * console.log(`Paused: ${paused}`);
 	 */
 	pause(): boolean {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot pause while subscribed to another player");
 			return false;
 		}
@@ -1634,7 +1605,7 @@ export class Player extends EventEmitter {
 	 * console.log(`Resumed: ${resumed}`);
 	 */
 	resume(): boolean {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot resume while subscribed to another player");
 			return false;
 		}
@@ -1662,7 +1633,7 @@ export class Player extends EventEmitter {
 	 * console.log(`Stopped: ${stopped}`);
 	 */
 	stop(): boolean {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot stop while subscribed to another player");
 			return false;
 		}
@@ -1703,7 +1674,7 @@ export class Player extends EventEmitter {
 	 * await player.seek(90000);
 	 */
 	async seek(position: number): Promise<boolean> {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot seek while subscribed to another player");
 			return false;
 		}
@@ -1737,7 +1708,7 @@ export class Player extends EventEmitter {
 	 * console.log(`Skipped: ${skipped}`);
 	 */
 	skip(index?: number): boolean {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot skip while subscribed to another player");
 			return false;
 		}
@@ -1783,7 +1754,7 @@ export class Player extends EventEmitter {
 	 * console.log(`Previous: ${previous}`);
 	 */
 	async previous(): Promise<boolean> {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot previous while subscribed to another player");
 			return false;
 		}
@@ -1925,7 +1896,7 @@ export class Player extends EventEmitter {
 	 * console.log(`Auto-play mode: ${autoPlayMode}`);
 	 */
 	autoPlay(mode?: boolean): boolean {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			if (!mode) return this.forwardLeader?.autoPlay() ?? false;
 			this.debug("[Player] Cannot autoPlay while subscribed to another player");
 			return false;
@@ -1943,7 +1914,7 @@ export class Player extends EventEmitter {
 	 * console.log(`Volume set: ${volumeSet}`);
 	 */
 	setVolume(volume: number): boolean {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot setVolume while subscribed to another player");
 			return false;
 		}
@@ -2022,7 +1993,7 @@ export class Player extends EventEmitter {
 	 */
 	async insert(query: string | Track | Track[], index: number, requestedBy?: string): Promise<boolean> {
 		try {
-			if (this.forwardMode) {
+			if (this.playbackMode === PlaybackMode.FORWARD) {
 				this.debug("[Player] Cannot insert while subscribed to another player");
 				return false;
 			}
@@ -2654,7 +2625,7 @@ export class Player extends EventEmitter {
 		const issues: string[] = [];
 		const details: any = {};
 
-		if (this.forwardMode && this.forwardLeader) {
+		if (this.playbackMode === PlaybackMode.FORWARD && this.forwardLeader) {
 			// This player is a follower
 			details.leaderId = this.forwardLeader.guildId;
 			details.connectionState = this.connection?.state.status;
@@ -2796,13 +2767,13 @@ export class Player extends EventEmitter {
 	}
 
 	get isLive(): boolean {
-		if (this.forwardMode) return true; //forward Mode -> live from Leader
+		if (this.playbackMode === PlaybackMode.FORWARD) return true; //forward Mode -> live from Leader
 
 		return this.currentTrack?.isLive === true;
 	}
 
 	public get isPlaying(): boolean {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			if (!this.forwardLeader || this.forwardLeader.destroyed) {
 				this.unsubscribeForward("Leader destroyed");
 				return false;
@@ -2815,21 +2786,21 @@ export class Player extends EventEmitter {
 	}
 
 	public get isPaused(): boolean {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			return this.forwardLeader?.isPaused ?? false;
 		}
 		return this.audioPlayer.state.status === AudioPlayerStatus.Paused;
 	}
 
 	public get isIdle(): boolean {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			return this.forwardLeader?.isIdle ?? false;
 		}
 		return this.audioPlayer.state.status === AudioPlayerStatus.Idle;
 	}
 
 	public get isBuffering(): boolean {
-		if (this.forwardMode) {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
 			return this.forwardLeader?.isBuffering ?? false;
 		}
 		return this.audioPlayer.state.status === AudioPlayerStatus.Buffering;

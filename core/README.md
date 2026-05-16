@@ -470,9 +470,7 @@ Resulting in extremely low CPU and bandwidth usage.
 const stopMirror = manager.subscribeForwardMirror({
 	leaderGuildId: "123",
 	followerGuildIds: ["456", "789"],
-	mirrorUserId: client.user.id,
 	syncVolume: true,
-	forwardMode: true,
 });
 
 // later

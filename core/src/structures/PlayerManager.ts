@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import { Player } from "./Player";
 import {
+	PlaybackMode,
 	PlayerManagerOptions,
 	PlayerOptions,
 	type Track,
@@ -422,7 +423,7 @@ export class PlayerManager extends EventEmitter {
 			}
 
 			// Cleanup: if this player is a follower, unsubscribe from leader
-			if (player.forwardMode && player.forwardLeader) {
+			if (player.playbackMode === PlaybackMode.FORWARD && player.forwardLeader) {
 				this.debug(`Follower ${guildId} destroyed, unsubscribing from leader ${player.forwardLeader.guildId}`);
 				player.unsubscribeForward("Follower destroyed");
 			}
@@ -701,7 +702,6 @@ export class PlayerManager extends EventEmitter {
 	 *   followerGuildIds: ["456", "789"],
 	 *   mirrorUserId: client.user.id,
 	 *   syncVolume: true,
-	 *   forwardMode: true,
 	 * });
 	 *
 	 * // later
