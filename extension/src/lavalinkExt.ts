@@ -961,7 +961,6 @@ export class TrackResolver {
 		const node = nodeManager.selectNode();
 		if (!node) throw new Error("No Lavalink nodes available");
 
-		// Nếu track.url là URL thì sử dụng trực tiếp, không thêm search prefix
 		const identifier = track.url && isUrl(track.url) ? track.url : track.id || track.title;
 		if (!identifier) throw new Error("Cannot resolve track identifier for Lavalink");
 
@@ -969,7 +968,6 @@ export class TrackResolver {
 
 		const response = await nodeManager.loadTracks(node, identifier);
 
-		// Kiểm tra response type
 		if (response.loadType === "error") {
 			const errorData = response.data as { message?: string; severity?: string } | null;
 			throw new Error(errorData?.message ?? "Lavalink error");
@@ -979,7 +977,6 @@ export class TrackResolver {
 			throw new Error("Track not found on Lavalink");
 		}
 
-		// FIX: Handle both 'track' and 'search' loadTypes
 		let raw: LavalinkRawTrack | null = null;
 
 		if (response.loadType === "track") {
@@ -1039,7 +1036,6 @@ export class TrackResolver {
 		const node = nodeManager.selectNode();
 		if (!node) throw new Error("No Lavalink nodes connected");
 
-		// Nếu query là URL thì sử dụng trực tiếp, không thêm search prefix
 		const identifier = isUrl(query) ? query : `${searchPrefix}:${query}`;
 		this.debug(`Searching with identifier: ${identifier} (isUrl: ${isUrl(query)})`);
 
@@ -1067,14 +1063,12 @@ export class TrackResolver {
 				};
 			}
 			case "track": {
-				// FIX: For 'track' loadType, response.data is a single track object, not an array
 				const raw = response.data as LavalinkRawTrack;
 				if (!raw) throw new Error("No track data received");
 				return { tracks: [this.mapToTrack(raw, requestedBy)] };
 			}
 			case "search":
 			default: {
-				// For 'search' loadType, response.data is an array of tracks
 				const list = Array.isArray(response.data) ? (response.data as LavalinkRawTrack[]) : [];
 				const tracks = list.map((raw) => this.mapToTrack(raw, requestedBy));
 				return { tracks };
@@ -1129,7 +1123,6 @@ export class VoiceHandler {
 			return null;
 		}
 
-		// Fallback to original connect method if no sendGatewayPayload provided
 		throw new Error("sendGatewayPayload is required for voice connection");
 	}
 
@@ -1185,11 +1178,9 @@ export class VoiceHandler {
 export const isTrack = (value: any): value is Track => value && typeof value === "object" && typeof value.title === "string";
 
 export const isUrl = (value: string): boolean => {
-	// Kiểm tra URL cơ bản
 	if (!/^(https?:\/\/|wss?:\/\/)/i.test(value)) return false;
 
 	try {
-		// Kiểm tra các domain phổ biến cho music
 		const musicDomains = [
 			"youtube.com",
 			"youtu.be",
@@ -1207,7 +1198,6 @@ export const isUrl = (value: string): boolean => {
 		const url = new URL(value);
 		return musicDomains.some((domain) => url.hostname === domain || url.hostname.endsWith("." + domain));
 	} catch {
-		// Nếu không parse được URL thì không phải URL hợp lệ
 		return false;
 	}
 };
@@ -1228,7 +1218,7 @@ export const createDebugLogger = (debug: boolean, prefix: string) => {
 	};
 };
 
-//#religon Main
+//#region Main
 export class lavalinkExt extends BaseExtension {
 	name = "lavalinkExt";
 	version = "1.0.0";
@@ -1744,19 +1734,6 @@ export class lavalinkExt extends BaseExtension {
 			this.debug(`Assigned node ${node.identifier} to guild ${player.guildId}`);
 		}
 
-		// Only send voice update if we got a new node or if voice state is complete but not yet sent
-		const shouldSendVoiceUpdate =
-			needsNewNode &&
-			state.voiceState?.sessionId &&
-			state.voiceServer?.token &&
-			state.voiceServer?.endpoint &&
-			!state.voiceUpdateSent;
-
-		// if (shouldSendVoiceUpdate && node) {
-		// 	await this.voiceHandler.sendVoiceUpdate(node, player.guildId, state);
-		// 	state.voiceUpdateSent = true;
-		// }
-
 		return node;
 	}
 
@@ -1833,23 +1810,12 @@ export class lavalinkExt extends BaseExtension {
 			state.track = track;
 			state.playing = true;
 			state.paused = false;
-			// ensure voice before play
-			if (state.voiceState?.sessionId && state.voiceServer?.token && state.voiceServer?.endpoint) {
-				await this.voiceHandler.sendVoiceUpdate(node, player.guildId, state);
-				state.voiceUpdateSent = true;
-			}
 
-			// await this.nodeManager.updatePlayer(node, player.guildId, {
-			// 	track: {
-			// 		encoded: encoded,
-			// 	},
-			// 	volume: player.volume ?? state.volume ?? 100,
-			// });
 			const updatePayload: Record<string, any> = {};
 
 			if (state.voiceState?.sessionId && state.voiceServer?.token && state.voiceServer?.endpoint) {
 				const rawEndpoint = state.voiceServer.endpoint;
-				const endpoint = rawEndpoint; //?.replace(/:\d+$/, "");
+				const endpoint = rawEndpoint;
 
 				updatePayload.voice = {
 					token: state.voiceServer.token,
@@ -1882,21 +1848,17 @@ export class lavalinkExt extends BaseExtension {
 		if (!state?.node) return;
 
 		try {
-			// First try to stop the player gracefully
 			await this.nodeManager.updatePlayer(state.node, player.guildId, {
 				track: { encoded: null },
 				paused: false,
 			});
 
-			// Small delay to ensure the update is processed
 			await new Promise((resolve) => setTimeout(resolve, 100));
 
-			// Then destroy the player
 			await this.nodeManager.destroyPlayer(state.node, player.guildId);
 		} catch (error) {
 			this.debug(`Failed to destroy Lavalink player for ${player.guildId}`, error);
 		} finally {
-			// Always clean up local state
 			state.track = null;
 			state.playing = false;
 			state.paused = false;
