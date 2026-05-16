@@ -112,7 +112,6 @@ export class PlayerManager extends EventEmitter {
 	private cleanupTimeout: number = 60000; // 1 minute
 	private enableSearchCache: boolean = true;
 	private trackMiddlewareFromOptions: TrackMiddleware[] = [];
-	private playbackMirrorUnsubscribes = new Map<string, () => void>();
 
 	private debug(message?: any, ...optionalParams: any[]): void {
 		if (this.listenerCount("debug") > 0) {
@@ -390,6 +389,8 @@ export class PlayerManager extends EventEmitter {
 			ttsStart: "ttsStart",
 			ttsEnd: "ttsEnd",
 			streamError: "streamError",
+			forwardModeStart: "forwardModeStart",
+			forwardModeEnd: "forwardModeEnd",
 		} as const satisfies Record<string, keyof ManagerEvents>;
 
 		for (const [sourceEvent, targetEvent] of Object.entries(forwardEvents) as [
@@ -634,150 +635,81 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	/**
-	 * Mirror playback controls from a leader guild to follower guilds (each guild must already have a {@link Player} via
-	 * {@link create}). Followers receive the same track on `trackStart`, and pause/resume/stop/volume from the leader when
-	 * applicable.
+	 * Mirror playback from one leader guild to multiple follower guilds.
 	 *
-	 * @returns Unsubscribe function — also runs when the leader player is destroyed.
+	 * Followers directly subscribe to the leader player's audio pipeline,
+	 * allowing multiple guilds to hear the same audio stream with extremely
+	 * low CPU and bandwidth usage.
+	 *
+	 * Unlike traditional mirroring, followers do not create independent streams.
+	 * Instead, their voice connections subscribe directly to the leader player's
+	 * {@link audioPlayer}.
+	 *
+	 * ## Features
+	 * - Shared playback pipeline
+	 * - Followers may join at different times
+	 * - Real-time track synchronization
+	 * - Optional volume synchronization
+	 * - Automatic cleanup on destroy
+	 * - Low CPU / bandwidth usage
+	 *
+	 * ## Lifecycle
+	 * - Destroying the leader automatically unsubscribes all followers.
+	 * - Destroying a follower only removes that follower.
+	 * - Followers may manually unsubscribe using {@link Player.unsubscribePlayback}.
+	 *
+	 * ## Requirements
+	 * - All guilds must already have active players.
+	 * - All players must already be connected to voice channels.
+	 *
+	 * @param {PlaybackMirrorOptions} options Playback mirror configuration.
+	 *
+	 * @returns {() => void} Cleanup function that unsubscribes all followers.
+	 *
+	 * @example
+	 * const stopMirror = manager.subscribePlaybackMirror({
+	 *   leaderGuildId: "123",
+	 *   followerGuildIds: ["456", "789"],
+	 *   mirrorUserId: client.user.id,
+	 *   syncVolume: true,
+	 *   forwardMode: true,
+	 * });
+	 *
+	 * // later
+	 * stopMirror();
 	 */
 	subscribePlaybackMirror(options: PlaybackMirrorOptions): () => void {
 		const leader = this.get(options.leaderGuildId);
+
 		if (!leader) {
 			throw new Error(`subscribePlaybackMirror: no player for leader guild ${options.leaderGuildId}`);
 		}
 
 		const followers = [...new Set(options.followerGuildIds)].filter((id) => id !== options.leaderGuildId);
-		const mirrorUserId = options.mirrorUserId;
-		const syncVolume = options.syncVolume ?? true;
-		const forwardMode = options.forwardMode ?? true;
 
-		const existing = this.playbackMirrorUnsubscribes.get(options.leaderGuildId);
-		existing?.();
+		for (const gid of followers) {
+			const fp = this.get(gid);
 
-		const runFollowers = (fn: (p: Player) => void | Promise<void>) => {
+			if (!fp) {
+				this.debug(`Playback mirror: no player for follower guild ${gid}`);
+				continue;
+			}
+
+			fp.subscribeTo(leader, {
+				syncVolume: options.syncVolume,
+				forwardMode: options.forwardMode,
+			});
+		}
+
+		return () => {
 			for (const gid of followers) {
 				const fp = this.get(gid);
-				if (!fp) {
-					this.debug(`Playback mirror: no player for follower guild ${gid}`);
-					continue;
-				}
-				Promise.resolve(fn(fp)).catch((e) => this.debug(`Playback mirror follower error (${gid}):`, e));
-			}
-		};
-
-		const onTrackStart = async (track: Track) => {
-			if (!forwardMode) {
-				runFollowers(async (fp) => {
-					fp.stop();
-					await fp.play(track, mirrorUserId);
-				});
-				return;
-			}
-
-			runFollowers((fp) => {
-				if (!fp.connection || !leader.connection) {
-					this.debug(`Playback mirror forwardMode: missing connection for follower ${fp.guildId}`);
-					return;
-				}
 
 				try {
-					// sync state
-					fp.queue.clear();
-
-					// optional fake current track sync
-					if (track) {
-						fp.queue.setCurrentTrack(track);
-					}
-
-					// subscribe directly to leader player
-					fp.subscribeTo(leader);
-					fp.isPlaying = leader.isPlaying;
-					fp.isPaused = leader.isPaused;
-
-					fp.emit("trackStart", track);
-					this.debug(`Playback mirror forwardMode subscribed ${fp.guildId} -> ${leader.guildId}`);
-				} catch (e) {
-					this.debug(`Playback mirror forwardMode error (${fp.guildId}):`, e);
-				}
-			});
+					fp?.unsubscribePlayback();
+				} catch {}
+			}
 		};
-
-		const onPause = () => {
-			runFollowers((fp) => {
-				if (forwardMode) {
-					fp.isPaused = true;
-					fp.isPlaying = false;
-					return;
-				}
-
-				fp.pause();
-			});
-		};
-
-		const onResume = () => {
-			runFollowers((fp) => {
-				if (forwardMode) {
-					fp.isPaused = false;
-					fp.isPlaying = true;
-					return;
-				}
-
-				fp.resume();
-			});
-		};
-
-		const onStop = () => {
-			runFollowers((fp) => {
-				if (forwardMode) {
-					try {
-						fp.connection?.subscribe(fp.audioPlayer);
-
-						fp.isPlaying = false;
-						fp.isPaused = false;
-
-						fp.audioPlayer.stop(true);
-					} catch {}
-					return;
-				}
-
-				fp.stop();
-			});
-		};
-
-		const onVolume = (_oldVol: number, newVol: number) => {
-			if (!syncVolume) return;
-			runFollowers((fp) => {
-				fp.setVolume(newVol);
-			});
-		};
-
-		let closed = false;
-		const unsubscribe = () => {
-			if (closed) return;
-			closed = true;
-			leader.off("trackStart", onTrackStart);
-			leader.off("playerPause", onPause);
-			leader.off("playerResume", onResume);
-			leader.off("playerStop", onStop);
-			leader.off("volumeChange", onVolume);
-			leader.off("playerDestroy", onLeaderDestroy);
-			onStop();
-			this.playbackMirrorUnsubscribes.delete(options.leaderGuildId);
-		};
-
-		const onLeaderDestroy = () => {
-			unsubscribe();
-		};
-
-		leader.on("trackStart", onTrackStart);
-		leader.on("playerPause", onPause);
-		leader.on("playerResume", onResume);
-		leader.on("playerStop", onStop);
-		leader.on("volumeChange", onVolume);
-		leader.on("playerDestroy", onLeaderDestroy);
-		if (leader?.currentTrack) onTrackStart(leader.currentTrack);
-		this.playbackMirrorUnsubscribes.set(options.leaderGuildId, unsubscribe);
-		return unsubscribe;
 	}
 
 	/**
@@ -785,13 +717,6 @@ export class PlayerManager extends EventEmitter {
 	 */
 	destroy(): void {
 		this.debug(`Destroying all players`);
-
-		for (const unsub of this.playbackMirrorUnsubscribes.values()) {
-			try {
-				unsub();
-			} catch {}
-		}
-		this.playbackMirrorUnsubscribes.clear();
 
 		// Stop cleanup intervals
 		if (this.cleanupInterval) {

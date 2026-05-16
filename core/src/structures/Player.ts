@@ -91,25 +91,28 @@ export class Player extends EventEmitter {
 	public audioPlayer: DiscordAudioPlayer;
 	public queue: Queue;
 	public volume: number = 100;
-	public isPlaying: boolean = false;
-	public isPaused: boolean = false;
 	public options: PlayerOptions;
+	public userdata?: Record<string, any>;
+	public _lastActivity: number = Date.now();
+	public currentResource: AudioResource | null = null;
+
+	public manager: PlayerManager;
 	public pluginManager: PluginManager;
 	public extensionManager: ExtensionManager;
 	public streamManager: StreamManager;
 	public preloadManager: PreloadManager;
-	public forwardMode: Boolean = false;
+	public filter!: FilterManager;
 
-	public userdata?: Record<string, any>;
-	public _lastActivity: number = Date.now();
-	private manager: PlayerManager;
+	public forwardMode: Boolean = false;
+	public playbackFollowers = new Set<Player>();
+	public playbackLeader: Player | null = null;
+	private playbackSyncVolume: boolean = true;
+
 	private leaveTimeout: NodeJS.Timeout | null = null;
-	private currentResource: AudioResource | null = null;
 	private volumeInterval: NodeJS.Timeout | null = null;
 	private stuckTimer: NodeJS.Timeout | null = null;
 
 	private skipLoop = false;
-	private filter!: FilterManager;
 	private refreshLock = false;
 
 	private currentSlot: StreamSlot = {
@@ -1205,7 +1208,6 @@ export class Player extends EventEmitter {
 				}
 
 				this.debug(`[Player] No next track in queue`);
-				this.isPlaying = false;
 				this.emit("queueEnd");
 
 				// Clean up both slots when queue is empty
@@ -1423,52 +1425,156 @@ export class Player extends EventEmitter {
 	}
 
 	/**
-	 * Subscribe this player's voice connection
-	 * to another player's audio stream.
+	 * Subscribe this player to another player's playback stream.
 	 *
-	 * This is primarily used for:
-	 * - playback mirroring
-	 * - radio/broadcast systems
-	 * - multi-guild synchronized playback
-	 * - forwardMode shared streaming
+	 * This enables "forward mode", where the follower player directly subscribes
+	 * to the leader player's {@link audioPlayer} instead of creating its own stream.
 	 *
-	 * Instead of creating a separate audio stream,
-	 * this player will directly receive audio packets
-	 * from the target player's AudioPlayer instance.
+	 * Greatly reduces CPU, bandwidth, and extractor usage because only the leader
+	 * creates and decodes the audio resource.
 	 *
-	 * Benefits:
-	 * - drastically lower CPU usage
-	 * - only one ffmpeg/extractor stream
-	 * - lower bandwidth and memory usage
-	 * - perfect sync across guilds
+	 * ## Features
+	 * - Real-time shared playback
+	 * - Followers may join at any time
+	 * - Automatic track synchronization
+	 * - Optional volume synchronization
+	 * - Automatic cleanup on destroy
+	 * - Supports unlimited followers
 	 *
-	 * Important:
-	 * - both players must already have active voice connections
-	 * - this does NOT transfer queue ownership
-	 * - this does NOT clone playback state automatically
+	 * ## Lifecycle
+	 * - When the leader starts a track, followers automatically receive the same track metadata.
+	 * - When the leader pauses/resumes/stops, followers are synchronized.
+	 * - Destroying the leader automatically unsubscribes all followers.
+	 * - Destroying a follower only removes that follower.
 	 *
-	 * @param {Player} player - Source player to subscribe to
+	 * ## Notes
+	 * - Both players must already be connected to voice.
+	 * - A player cannot subscribe to itself.
+	 * - Existing playback subscriptions are automatically replaced.
 	 *
-	 * @returns {boolean}
-	 * Returns true if subscription succeeded,
-	 * otherwise false.
+	 * @param {Player} leader The leader player to subscribe to.
+	 * @param options Additional playback mirror options.
+	 * @param options.syncVolume When true, follower volume automatically follows the leader. Default: true.
+	 * @param options.forwardMode When true, the follower voice connection directly subscribes to the leader audioPlayer. Default: true.
+	 *
+	 * @returns {boolean} True if subscription succeeded.
 	 *
 	 * @example
 	 * follower.subscribeTo(leader);
 	 *
 	 * @example
-	 * if (!player.subscribeTo(leader)) {
-	 *   console.log("Failed to subscribe");
-	 * }
+	 * follower.subscribeTo(leader, {
+	 *   syncVolume: true,
+	 *   forwardMode: true
+	 * });
 	 */
-	public subscribeTo(player: Player): boolean {
-		if (!this.connection) return false;
+	public subscribeTo(
+		leader: Player,
+		options?: {
+			syncVolume?: boolean;
+			forwardMode?: boolean;
+		},
+	): boolean {
+		if (!leader) return false;
 
-		this.connection.subscribe(player.audioPlayer);
+		if (leader === this) {
+			this.debug(`[Player] Cannot subscribe to self`);
+			return false;
+		}
 
-		this.isPlaying = player.isPlaying;
-		this.isPaused = player.isPaused;
-		this.forwardMode = true;
+		if (!this.connection || !leader.connection) {
+			this.debug(`[Player] Missing connection for subscribeTo`);
+			return false;
+		}
+
+		// cleanup old leader
+		if (this.playbackLeader) {
+			this.unsubscribePlayback();
+		}
+
+		this.playbackLeader = leader;
+
+		this.forwardMode = options?.forwardMode ?? true;
+
+		this.playbackSyncVolume = options?.syncVolume ?? true;
+
+		leader.playbackFollowers.add(this);
+
+		try {
+			// clear local playback
+			this.stop();
+
+			this.queue.clear();
+
+			if (leader.currentTrack) {
+				this.queue.setCurrentTrack(leader.currentTrack);
+			}
+
+			if (this.forwardMode) {
+				this.connection.subscribe(leader.audioPlayer);
+			}
+
+			// sync state
+			if (this.playbackSyncVolume) {
+				this.setVolume(leader.volume);
+			}
+
+			this.emit("forwardModeStart", leader);
+
+			this.debug(`[Player] Forward mode subscribed ${this.guildId} -> ${leader.guildId}`);
+
+			return true;
+		} catch (e) {
+			this.debug(`[Player] subscribeTo error:`, e);
+
+			this.playbackLeader = null;
+
+			leader.playbackFollowers.delete(this);
+
+			return false;
+		}
+	}
+	
+	/**
+	 * Unsubscribe this player from its current playback leader.
+	 *
+	 * This disables forward mode and restores the player's own audioPlayer
+	 * subscription back to its voice connection.
+	 *
+	 * Automatically emitted when:
+	 * - The leader player is destroyed
+	 * - This player is destroyed
+	 * - A new leader subscription replaces the old one
+	 *
+	 * Emits:
+	 * - `forwardModeEnd`
+	 *
+	 * @returns {boolean} True if a playback subscription existed and was removed.
+	 *
+	 * @example
+	 * follower.unsubscribePlayback();
+	 */
+	public unsubscribePlayback(): boolean {
+		if (!this.playbackLeader) {
+			return false;
+		}
+
+		const leader = this.playbackLeader;
+
+		leader.playbackFollowers.delete(this);
+
+		this.playbackLeader = null;
+
+		this.forwardMode = false;
+
+		try {
+			this.connection?.subscribe(this.audioPlayer);
+		} catch {}
+
+		this.emit("forwardModeEnd", leader);
+
+		this.debug(`[Player] Forward mode unsubscribed ${this.guildId} <- ${leader.guildId}`);
+
 		return true;
 	}
 
@@ -1531,9 +1637,16 @@ export class Player extends EventEmitter {
 		this.destroyCurrentStream();
 		this.currentResource = null;
 
-		this.isPlaying = false;
-		this.isPaused = false;
 		this.emit("playerStop");
+		for (const fp of this.playbackFollowers) {
+			try {
+				fp.connection?.subscribe(fp.audioPlayer);
+
+				fp.audioPlayer.stop(true);
+
+				fp.emit("playerStop");
+			} catch {}
+		}
 		return result;
 	}
 
@@ -1801,6 +1914,13 @@ export class Player extends EventEmitter {
 		}
 
 		this.emit("volumeChange", oldVolume, volume);
+		for (const fp of this.playbackFollowers) {
+			if (!fp.playbackSyncVolume) continue;
+
+			try {
+				fp.setVolume(volume);
+			} catch {}
+		}
 		return true;
 	}
 
@@ -2104,8 +2224,6 @@ export class Player extends EventEmitter {
 		this.pluginManager.clear();
 		this.filter.destroy();
 		this.extensionManager.destroy();
-		this.isPlaying = false;
-		this.isPaused = false;
 
 		// Clear any remaining intervals
 		if (this.volumeInterval) {
@@ -2114,6 +2232,16 @@ export class Player extends EventEmitter {
 		}
 
 		this.emit("playerDestroy");
+		this.unsubscribePlayback();
+
+		// release followers
+		for (const fp of [...this.playbackFollowers]) {
+			try {
+				fp.unsubscribePlayback();
+			} catch {}
+		}
+
+		this.playbackFollowers.clear();
 		this.removeAllListeners();
 	}
 
@@ -2194,12 +2322,7 @@ export class Player extends EventEmitter {
 			}
 
 			// Restore playing state
-			if (wasPlaying && !wasPaused) {
-				this.isPlaying = true;
-				this.isPaused = false;
-			} else if (wasPaused) {
-				this.isPlaying = false;
-				this.isPaused = true;
+			if (wasPaused) {
 				this.audioPlayer.pause();
 			}
 
@@ -2278,28 +2401,40 @@ export class Player extends EventEmitter {
 			) {
 				// Track started
 				this.clearLeaveTimeout();
-				this.isPlaying = true;
-				this.isPaused = false;
 				const track = this.queue.currentTrack;
 				if (track) {
 					this.debug(`[Player] Track started: ${track.title}`);
 					this.emit("trackStart", track);
+
+					for (const fp of this.playbackFollowers) {
+						try {
+							fp.queue.clear();
+
+							fp.queue.setCurrentTrack(track);
+
+							fp.emit("trackStart", track);
+						} catch (e) {
+							this.debug(`[Player] Failed to sync follower ${fp.guildId}:`, e);
+						}
+					}
 				}
 			} else if (newState.status === AudioPlayerStatus.Paused && oldState.status !== AudioPlayerStatus.Paused) {
-				// Track paused
-				this.isPaused = true;
 				const track = this.queue.currentTrack;
 				if (track) {
 					this.debug(`[Player] Player paused on track: ${track.title}`);
 					this.emit("playerPause", track);
+					for (const fp of this.playbackFollowers) {
+						fp.emit("playerPause", track);
+					}
 				}
 			} else if (newState.status !== AudioPlayerStatus.Paused && oldState.status === AudioPlayerStatus.Paused) {
-				// Track resumed
-				this.isPaused = false;
 				const track = this.queue.currentTrack;
 				if (track) {
 					this.debug(`[Player] Player resumed on track: ${track.title}`);
 					this.emit("playerResume", track);
+					for (const fp of this.playbackFollowers) {
+						fp.emit("playerResume", track);
+					}
 				}
 			} else if (newState.status === AudioPlayerStatus.AutoPaused) {
 				this.debug(`[Player] AudioPlayerStatus.AutoPaused`);
@@ -2540,5 +2675,22 @@ export class Player extends EventEmitter {
 		return this.currentTrack?.isLive === true;
 	}
 
+	public get isPlaying(): boolean {
+		return (
+			this.audioPlayer.state.status === AudioPlayerStatus.Playing || this.audioPlayer.state.status === AudioPlayerStatus.Buffering
+		);
+	}
+
+	public get isPaused(): boolean {
+		return this.audioPlayer.state.status === AudioPlayerStatus.Paused;
+	}
+
+	public get isIdle(): boolean {
+		return this.audioPlayer.state.status === AudioPlayerStatus.Idle;
+	}
+
+	public get isBuffering(): boolean {
+		return this.audioPlayer.state.status === AudioPlayerStatus.Buffering;
+	}
 	//#endregion
 }

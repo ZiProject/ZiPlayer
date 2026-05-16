@@ -553,7 +553,10 @@ export interface ManagerEvents {
 	lyricsChange: [player: Player, track: Track, lyrics: any];
 	voiceCreate: [player: Player, evt: any];
 	stats: [stats: PlayerStats];
-	streamError: [error: Error, track: Track | null];
+	streamError: [player: Player, error: Error, track: Track | null];
+
+	forwardModeStart: [player: Player, leader: Player];
+	forwardModeEnd: [player: Player, leader: Player];
 }
 export interface PlayerEvents {
 	debug: [message: string, ...args: any[]];
@@ -587,6 +590,8 @@ export interface PlayerEvents {
 	streamError: [error: Error, track: Track | null];
 	/** Emitted when player stats are updated (if enabled) */
 	stats: [stats: PlayerStats];
+	forwardModeStart: [leader: Player];
+	forwardModeEnd: [leader: Player];
 }
 
 export * from "./fillter";

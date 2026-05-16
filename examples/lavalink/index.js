@@ -33,7 +33,7 @@ const lavalink = new lavalinkExt(null, {
 		},
 		// {
 		// 	identifier: "Fedot_Compot-main",
-		// 	password: "https://discord.gg/bXXCZzKAyp",
+		// 	password: "https://discord.gg/wbhBExpMNj",
 		// 	host: "lavalink.fedotcompot.net",
 		// 	port: 443,
 		// 	secure: true,

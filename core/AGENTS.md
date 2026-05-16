@@ -32,6 +32,12 @@ A comprehensive guide for AI assistants and developers working with ZiPlayer - a
 - FFmpeg for audio processing
 - Node.js EventEmitter for events
 
+## 📦 Installation
+
+```bash
+npm install ziplayer @ziplayer/plugin @ziplayer/extension @ziplayer/infinity @discordjs/voice discord.js opusscript
+```
+
 ---
 
 ### Component Responsibilities
@@ -53,7 +59,7 @@ A comprehensive guide for AI assistants and developers working with ZiPlayer - a
 ### 1. Player Lifecycle
 
 ```typescript
-// Create → Connect → Play → (Auto-save) → Destroy
+// Create → Connect → Play → Destroy
 const player = await manager.create(guildId, options);
 await player.connect(voiceChannel);
 await player.play(query, userId);
@@ -179,20 +185,22 @@ interface PlayerOptions {
 
 #### Core Methods
 
-| Method                         | Description             | Returns             |
-| ------------------------------ | ----------------------- | ------------------- |
-| `play(query, userId)`          | Play track/search/queue | `Promise<boolean>`  |
-| `pause()`                      | Pause current           | `boolean`           |
-| `resume()`                     | Resume playback         | `boolean`           |
-| `skip(index?)`                 | Skip to next/index      | `boolean`           |
-| `stop()`                       | Stop and clear queue    | `boolean`           |
-| `seek(position)`               | Seek to position (ms)   | `Promise<boolean>`  |
-| `previous()`                   | Play previous track     | `Promise<boolean>`  |
-| `setVolume(vol)`               | Set volume (0-200)      | `boolean`           |
-| `loop(mode)`                   | Set loop mode           | `LoopMode`          |
-| `shuffle()`                    | Shuffle queue           | `void`              |
-| `insert(query, index, userId)` | Insert at position      | `Promise<boolean>`  |
-| `save(track, options)`         | Save track to stream    | `Promise<Readable>` |
+| Method                         | Description                                                | Returns             |
+| ------------------------------ | ---------------------------------------------------------- | ------------------- |
+| `play(query, userId)`          | Play track/search/queue                                    | `Promise<boolean>`  |
+| `pause()`                      | Pause current                                              | `boolean`           |
+| `resume()`                     | Resume playback                                            | `boolean`           |
+| `skip(index?)`                 | Skip to next/index                                         | `boolean`           |
+| `stop()`                       | Stop and clear queue                                       | `boolean`           |
+| `seek(position)`               | Seek to position (ms)                                      | `Promise<boolean>`  |
+| `previous()`                   | Play previous track                                        | `Promise<boolean>`  |
+| `setVolume(vol)`               | Set volume (0-200)                                         | `boolean`           |
+| `loop(mode)`                   | Set loop mode                                              | `LoopMode`          |
+| `shuffle()`                    | Shuffle queue                                              | `void`              |
+| `insert(query, index, userId)` | Insert at position                                         | `Promise<boolean>`  |
+| `save(track, options)`         | Save track to stream                                       | `Promise<Readable>` |
+| `subscribeTo(leader, options)` | Subscribe this player to another player's playback stream. | `Promise<Readable>` |
+| `unsubscribePlayback()`        | Unsubscribe this player from its current playback leader.  | `Promise<Readable>` |
 
 #### Getters
 
@@ -272,7 +280,7 @@ const client = new Client({
 });
 
 const manager = new PlayerManager({
-	plugins: [new YouTubePlugin(), new SpotifyPlugin()],
+	plugins: [new YouTubePlugin({}), new SpotifyPlugin()],
 	autoCleanup: true,
 });
 
@@ -422,13 +430,27 @@ manager.on("playerError", (player, error, track) => {
 	console.error(`Error on ${track?.title}:`, error.message);
 });
 
-manager.on("playerSaved", (guildId) => {
-	console.log(`Saved state for guild ${guildId}`);
-});
-
 manager.on("stats", (stats) => {
 	console.log(`Active players: ${stats.activePlayers}`);
 });
+
+// Listen globally via manager:
+manager.on("trackStart", (player, track) => {});
+manager.on("trackEnd", (player, track) => {});
+manager.on("queueEnd", (player) => {});
+manager.on("playerError", (player, error, track) => {});
+manager.on("playerPause", (player, track) => {});
+manager.on("playerResume", (player, track) => {});
+manager.on("volumeChange", (player, oldVolume, newVolume) => {});
+manager.on("queueAdd", (player, track) => {});
+manager.on("queueAddList", (player, tracks) => {});
+manager.on("queueRemove", (player, track, index) => {});
+manager.on("playerDestroy", (player) => {});
+manager.on("ttsStart", (player, payload) => {});
+manager.on("ttsEnd", (player) => {});
+manager.on("stats", (PlayerStats) => {});
+manager.on("forwardModeStart", (player, leader) => {});
+manager.on("forwardModeEnd", (player, leader) => {});
 ```
 
 ---
@@ -581,6 +603,11 @@ import { InfinityPlugin } from "@ziplayer/infinity";
 
 // Extensions (external package)
 import { voiceExt, lyricsExt, lavalinkExt } from "@ziplayer/extension";
+
+//fallback for youtube plugin if YouTubePlugin getStream error tunnel
+import { YTexec } from "@ziplayer/ytexecplug"; //ytexecplug needs python, install python fist
+
+const ytbplg = new YouTubePlugin({ fistStream: new YTexec().getStream });
 ```
 
 ### Type Definitions
@@ -629,16 +656,54 @@ Advanced playback reads **`track.metadata`**:
 
 - **`bpm`**, **`genre`**, **`lufs`** — smart transition + loudness (see `Player`).
 
-## Multi-guild broadcast & mirror
+## Multi-guild broadcast
 
-| API                                                                                       | Behavior                                                                                                                                                                                      |
-| ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `broadcast(action, ...args)`                                                              | Sync fan-out of `player[action]` to **all** players.                                                                                                                                          |
-| `broadcastAsync(action, ...args)`                                                         | Same, but `Promise.allSettled` on return values (use for `play`).                                                                                                                             |
-| `broadcastGuilds(guildIds, action, ...args)`                                              | Subset of guilds.                                                                                                                                                                             |
-| `subscribePlaybackMirror({ leaderGuildId, followerGuildIds, mirrorUserId, syncVolume? })` | Leader `trackStart` → followers `stop()` + `play(track, mirrorUserId)`; mirrors pause/resume/stop/volume (volume optional). Unsubscribe returned; also cleans up when leader player destroys. |
+| API                                          | Behavior                                                          |
+| -------------------------------------------- | ----------------------------------------------------------------- |
+| `broadcast(action, ...args)`                 | Sync fan-out of `player[action]` to **all** players.              |
+| `broadcastAsync(action, ...args)`            | Same, but `Promise.allSettled` on return values (use for `play`). |
+| `broadcastGuilds(guildIds, action, ...args)` | Subset of guilds.                                                 |
 
 Followers must already exist (`create`). One mirror subscription per leader id replaces the previous.
+
+### Playback Mirror / Forward Mode
+
+Ziplayer supports built-in multi-guild playback mirroring using shared audio forwarding. A leader player streams audio normally,
+while followers directly subscribe to the leader's internal audioPlayer.
+
+This allows multiple guilds to hear the exact same playback while using only:
+
+- one stream
+- one decoder
+- one extractor pipeline
+
+Resulting in extremely low CPU and bandwidth usage.
+
+```ts
+const stopMirror = manager.subscribePlaybackMirror({
+	leaderGuildId: "123",
+	followerGuildIds: ["456", "789"],
+	mirrorUserId: client.user.id,
+	syncVolume: true,
+	forwardMode: true,
+});
+
+// later
+stopMirror();
+```
+
+**Direct Player Subscription:**
+
+Followers may also subscribe manually:
+
+````ts
+const leader = manager.get("123");
+const follower = manager.get("456");
+
+follower.subscribeTo(leader);
+//Unsubscribe:
+//follower.unsubscribePlayback();
+```
 
 ---
 
@@ -651,3 +716,4 @@ Followers must already exist (`create`). One mirror subscription per leader id r
 ---
 
 _This guide is maintained for AI assistants and developers. For questions or contributions, please open an issue on GitHub._
+````

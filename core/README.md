@@ -35,6 +35,8 @@ advanced music bots quickly.
   `metadata.lufs`, `metadata.genre` from an audio-analysis HTTP API instead of manual entry)
 - 📻 **Multi-guild broadcast** — Fan out the same Player API calls to every active guild with `manager.broadcast()` (shared
   controls / mirrored sessions across servers)
+- 🎛️ **Playback Mirror / Forward Mode** - "forward mode", where the follower player directly subscribes to the leader player's
+  instead of creating its own stream.
 
 ---
 
@@ -95,17 +97,10 @@ PlayerManager (global)
         ├── Queue (advanced operations)
         ├── PluginManager (with caching & fallback)
         ├── ExtensionManager (with priority & caching)
+		├── StreamManager (Store & Manage streams)
+        ├── PreloadManager (Preload next tracks)
         └── FilterManager (FFmpeg filters)
-```
 
-### Flow
-
-```
-create → connect → play → stream → events → destroy
-         ↓
-    auto-save (periodic)
-         ↓
-    restore on restart
 ```
 
 ---
@@ -344,6 +339,8 @@ manager.on("playerDestroy", (player) => {});
 manager.on("ttsStart", (player, payload) => {});
 manager.on("ttsEnd", (player) => {});
 manager.on("stats", (PlayerStats) => {});
+manager.on("forwardModeStart", (player, leader) => {});
+manager.on("forwardModeEnd", (player, leader) => {});
 ```
 
 ---
@@ -436,21 +433,6 @@ Use **`broadcastGuilds`** to target a subset of guild ids:
 manager.broadcastGuilds(["guildA", "guildB"], "pause");
 ```
 
-**Built-in playback mirror (`subscribePlaybackMirror`)** — designate a **leader** guild; **follower** guilds receive the same
-track on each leader `trackStart`, and pause / resume stop / volume (optional) when the leader does. Each guild must already have
-a player (`create` + `connect` to voice).
-
-```ts
-const stopMirror = manager.subscribePlaybackMirror({
-	leaderGuildId: "123",
-	followerGuildIds: ["456", "789"],
-	mirrorUserId: client.user.id,
-	syncVolume: true,
-	forwardMode: true,
-});
-// later: stopMirror();
-```
-
 **“Subscribe” pattern (manual):**
 
 1. Call `await manager.create(guildId, options)` (and `player.connect(voiceChannel)`) for **each** guild that should participate
@@ -471,6 +453,45 @@ for (const player of manager.getAll()) {
 }
 ```
 
+### Playback Mirror / Forward Mode
+
+Ziplayer supports built-in multi-guild playback mirroring using shared audio forwarding. A leader player streams audio normally,
+while followers directly subscribe to the leader's internal audioPlayer.
+
+This allows multiple guilds to hear the exact same playback while using only:
+
+- one stream
+- one decoder
+- one extractor pipeline
+
+Resulting in extremely low CPU and bandwidth usage.
+
+```ts
+const stopMirror = manager.subscribePlaybackMirror({
+	leaderGuildId: "123",
+	followerGuildIds: ["456", "789"],
+	mirrorUserId: client.user.id,
+	syncVolume: true,
+	forwardMode: true,
+});
+
+// later
+stopMirror();
+```
+
+**Direct Player Subscription:**
+
+Followers may also subscribe manually:
+
+````ts
+const leader = manager.get("123");
+const follower = manager.get("456");
+
+follower.subscribeTo(leader);
+//Unsubscribe:
+//follower.unsubscribePlayback();
+```
+
 ---
 
 ## ⚙️ Advanced Configuration
@@ -489,7 +510,7 @@ const manager = new PlayerManager({
 	trackMiddleware: [...],       // Global pre-stream track transforms (before per-player middleware)
 	persistence: {...}            // Persistence configuration
 });
-```
+````
 
 ### Player Options
 
