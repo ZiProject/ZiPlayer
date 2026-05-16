@@ -47,6 +47,9 @@ export interface SourceExtension {
 export interface ExtensionContext {
 	player: Player;
 	manager: PlayerManager;
+	playNext?: () => Promise<void>;
+	skip?: () => void;
+	emit?: (event: string, ...args: any[]) => void;
 }
 
 /**

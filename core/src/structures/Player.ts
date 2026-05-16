@@ -117,6 +117,7 @@ export class Player extends EventEmitter {
 
 	private skipLoop = false;
 	private refreshLock = false;
+	private remoteHandle: StreamInfo["handle"];
 
 	private currentSlot: StreamSlot = {
 		resource: null,
@@ -265,7 +266,7 @@ export class Player extends EventEmitter {
 			extractorTimeout: this.options.extractorTimeout,
 		});
 		this.streamManager = new StreamManager({
-			maxConcurrentStreams: 3,
+			maxConcurrentStreams: 2,
 			streamTimeout: 5 * 60 * 1000,
 			maxListenersPerStream: 15,
 			enableMetrics: true,
@@ -960,7 +961,9 @@ export class Player extends EventEmitter {
 			return { stream: existingStream, type: "arbitrary" };
 		}
 
+		// FIRST: Try to get stream from extensions
 		let stream = await this.extensionManager.provideStream(track);
+
 		if (this.destroyed) {
 			if (stream?.stream && typeof stream.stream.destroy === "function" && !stream.stream.destroyed) {
 				stream.stream.destroy();
@@ -968,39 +971,50 @@ export class Player extends EventEmitter {
 			throw new Error("PLAYER_DESTROYED");
 		}
 
-		if (stream?.remote) {
+		// Handle remote playback - THIS SHOULD BE FIRST PRIORITY
+		if (stream?.remote && stream.handle) {
+			this.debug(`[Stream] Remote handle provided by extension for: ${track.title}`);
 			this.playbackMode = PlaybackMode.REMOTE;
 			this.preloadEnabled = false;
 			this.crossfadeEnabled = false;
 
-			this.debug(`[Stream] Extension provided stream for: ${track.title}`);
+			// Clear any existing preload for remote mode
+			this.cancelPreload();
 
 			return stream;
 		}
 
-		this.playbackMode = PlaybackMode.NATIVE;
+		// If extension returned a regular stream
+		if (stream?.stream) {
+			this.debug(`[Stream] Extension provided stream for: ${track.title}`);
+			this.playbackMode = PlaybackMode.NATIVE;
+			return stream;
+		}
 
-		this.preloadEnabled = true;
-		this.crossfadeEnabled = true;
+		// SECOND: Try plugins only if extension didn't handle it
+		this.debug(`[Stream] Extension didn't provide stream, trying plugins for: ${track.title}`);
 
 		stream = await this.pluginManager.getStream(track);
+
 		if (this.destroyed) {
 			if (stream?.stream && typeof stream.stream.destroy === "function" && !stream.stream.destroyed) {
 				stream.stream.destroy();
 			}
 			throw new Error("PLAYER_DESTROYED");
 		}
+
 		if (stream?.stream) {
 			const existingAgain = this.streamManager.getStreamByTrack(trackId);
 			if (existingAgain && !existingAgain.destroyed) {
 				if (stream.stream.destroy) stream.stream.destroy();
 				return { stream: existingAgain, type: "arbitrary" };
 			}
-			// Register with StreamManager
 			this.debug(`[Stream] Plugin provided stream for: ${track.title}`);
+			this.playbackMode = PlaybackMode.NATIVE;
 			return stream;
 		}
 
+		// Check if any plugin claims to support this track but failed
 		if (!this.pluginManager.hasStreamCandidate(track)) {
 			throw new Error(`UNRECOVERABLE_NO_PLUGIN:${track.title}`);
 		}
@@ -1018,15 +1032,30 @@ export class Player extends EventEmitter {
 	 */
 	private async startTrack(track: Track): Promise<boolean> {
 		if (this.destroyed) return false;
+
+		// First, get stream info (this will handle remote detection)
+		let streamInfo: StreamInfo | null = null;
+
+		try {
+			streamInfo = await this.getStream(track);
+		} catch (error) {
+			this.debug(`[Player] Failed to get stream for track: ${track.title}`, error);
+			throw error;
+		}
+
+		// Handle remote playback
+		if (streamInfo?.remote && streamInfo.handle) {
+			return await this.playRemote(track, streamInfo);
+		}
+
+		// Handle native playback
 		try {
 			// Try to use preloaded resource
 			if (this.preloadManager.hasValidPreload(track)) {
 				this.debug(`[Player] Using preloaded stream for: ${track.title}`);
 
-				// Stop current playback
 				this.audioPlayer.stop(true);
 
-				// Clean up old current stream (but delay to be safe)
 				const oldStreamId = this.currentSlot.streamId;
 				if (oldStreamId && this.streamManager) {
 					setTimeout(() => {
@@ -1036,7 +1065,6 @@ export class Player extends EventEmitter {
 					}, 3000);
 				}
 
-				// Set current slot from preload
 				this.promotePreloadToCurrent(track);
 				const currentResource = this.currentSlot.resource;
 				if (!currentResource) {
@@ -1044,18 +1072,15 @@ export class Player extends EventEmitter {
 				}
 				const targetVolume = this.getTrackTargetVolume(track);
 
-				// Apply volume
 				if (currentResource.volume) {
 					currentResource.volume.setVolume(this.crossfadeEnabled ? 0 : targetVolume);
 				}
 
-				// Play
 				await this.maybeAlignToBeatBoundary();
 				this.audioPlayer.play(currentResource);
 				await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
 				await this.applyCrossfadeIn(currentResource, track);
 
-				// Start preloading next track (async, don't await)
 				this.preloadNextTrack().catch((err) => {
 					this.debug(`[Player] Preload error:`, err);
 				});
@@ -1063,7 +1088,6 @@ export class Player extends EventEmitter {
 				return true;
 			}
 
-			// No valid preload, load fresh
 			this.debug(`[Player] No preload available, loading fresh: ${track.title}`);
 			return await this.loadFreshStream(track);
 		} catch (error) {
@@ -1078,13 +1102,15 @@ export class Player extends EventEmitter {
 	 */
 	private async loadFreshStream(track: Track): Promise<boolean> {
 		if (this.destroyed) return false;
+
 		// Cancel preload to free resources
 		await this.safeCancelPreload();
 
 		try {
 			const streamInfo = await this.getStream(track);
 
-			if (this.playbackMode === PlaybackMode.REMOTE && streamInfo?.remote) {
+			// Handle remote playback
+			if (streamInfo?.remote && streamInfo.handle) {
 				return await this.playRemote(track, streamInfo);
 			}
 
@@ -1144,12 +1170,9 @@ export class Player extends EventEmitter {
 	/**
 	 * Play the next track in the queue, handling errors and edge cases gracefully
 	 */
-	private async playNext(): Promise<boolean> {
+	public async playNext(): Promise<boolean> {
 		if (this.destroyed) return false;
 		this.debug("[Player] playNext called");
-
-		// Don't cancel preload here unless absolutely necessary
-		// Let startTrack handle it
 
 		while (true) {
 			const track = this.queue.next(this.skipLoop);
@@ -1197,6 +1220,13 @@ export class Player extends EventEmitter {
 					this.antiStuckConsecutiveFailures = 0;
 					return true;
 				}
+
+				// For remote playback, if startTrack returns false, it's a failure
+				if (this.playbackMode === PlaybackMode.REMOTE) {
+					this.debug(`[Player] Remote track failed to start: ${track.title}`);
+					continue; // Skip to next track
+				}
+
 				const recovered = await this.attemptTrackRecovery(track, new Error("TRACK_START_RETURNED_FALSE"));
 				if (recovered) {
 					return true;
@@ -1210,6 +1240,13 @@ export class Player extends EventEmitter {
 			} catch (err) {
 				this.debug(`[Player] playNext error:`, err);
 				this.emit("playerError", err as Error, track);
+
+				// For remote playback, just skip to next track
+				if (this.playbackMode === PlaybackMode.REMOTE) {
+					this.debug(`[Player] Remote track error, skipping: ${track.title}`);
+					continue;
+				}
+
 				if (this.isUnrecoverableStreamError(err)) {
 					this.debug(`[Player] Skipping unrecoverable track (no plugin): ${track.title}`);
 					continue;
@@ -1232,13 +1269,27 @@ export class Player extends EventEmitter {
 	private async playRemote(track: Track, stream: StreamInfo): Promise<boolean> {
 		if (!stream.handle) return false;
 
-		await stream.handle.play();
+		try {
+			// Store the remote handle for later use
+			this.remoteHandle = stream.handle;
 
-		this.queue.setCurrentTrack(track);
+			// Set current track before playing
+			this.queue.setCurrentTrack(track);
 
-		this.emit("trackStart", track);
+			// Emit track start event before playing (so UI updates)
+			this.emit("trackStart", track);
 
-		return true;
+			// Start playback via remote handle
+			await stream.handle.play();
+
+			this.debug(`[Player] Remote playback started for: ${track.title}`);
+
+			return true;
+		} catch (error) {
+			this.debug(`[Player] Remote playback error:`, error);
+			this.emit("playerError", error as Error, track);
+			return false;
+		}
 	}
 
 	//#endregion
@@ -2225,6 +2276,11 @@ export class Player extends EventEmitter {
 		this.debug(`[Player] destroy called`);
 		if (this.destroyed) return;
 		this.destroyed = true;
+
+		if (this.remoteHandle?.destroy) {
+			this.remoteHandle.destroy().catch(() => {});
+			this.remoteHandle = undefined;
+		}
 
 		if (this.leaveTimeout) {
 			clearTimeout(this.leaveTimeout);

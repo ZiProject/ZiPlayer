@@ -61,8 +61,13 @@ export class ExtensionManager {
 		this.streamCache = new Map();
 		this.pendingSearches = new Map();
 		this.pendingStreams = new Map();
-		this.extensionContext = Object.freeze({ player, manager });
-
+		this.extensionContext = Object.freeze({
+			player,
+			manager,
+			playNext: () => (player as any).playNext?.(),
+			skip: () => (player as any).skip?.(),
+			emit: (event: string, ...args: any[]) => player.emit(event as any, ...args),
+		});
 		// Auto-cleanup caches periodically
 		setInterval(() => this.cleanupCaches(), 5 * 60 * 1000);
 	}
@@ -314,7 +319,10 @@ export class ExtensionManager {
 
 		// Check cache first
 		const cached = this.getCachedStream(track);
-		if (cached) return cached;
+		if (cached) {
+			this.debug(`[Cache] Stream hit for: ${track.title}`);
+			return cached;
+		}
 
 		// Deduplicate concurrent requests
 		const cacheKey = this.getCacheKey("stream", track.url || track.id || track.title);
@@ -333,16 +341,31 @@ export class ExtensionManager {
 				if (typeof hook !== "function") continue;
 
 				try {
+					this.debug(`Trying extension ${extension.name} for stream: ${track.title}`);
 					const result = await Promise.resolve(hook.call(extension, this.extensionContext, request));
-					if (result && (result as StreamInfo).stream) {
-						this.debug(`Extension ${extension.name} provided stream for: ${track.title}`);
-						this.setCachedStream(track, result as StreamInfo);
-						return result as StreamInfo;
+
+					if (result) {
+						const isRemote = (result as StreamInfo).remote;
+						const hasStream = !!(result as StreamInfo).stream;
+						const hasHandle = !!(result as StreamInfo).handle;
+
+						this.debug(
+							`Extension ${extension.name} returned stream for ${track.title}: remote=${isRemote}, hasStream=${hasStream}, hasHandle=${hasHandle}`,
+						);
+
+						if (hasStream || hasHandle) {
+							// Only cache if it's a reusable stream (not remote with handle)
+							if (!isRemote) {
+								this.setCachedStream(track, result as StreamInfo);
+							}
+							return result as StreamInfo;
+						}
 					}
 				} catch (err) {
 					this.debug(`Extension ${extension.name} provideStream error:`, err);
 				}
 			}
+			this.debug(`No extension provided stream for: ${track.title}`);
 			return null;
 		})();
 

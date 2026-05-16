@@ -39,7 +39,8 @@
  * });
  * ```
  */
-export { lavalinkExt } from "./lavalinkExt";
+
+export * from "./lavalinkExt";
 
 /**
  * Voice extension for real-time speech recognition.
@@ -78,85 +79,6 @@ export { voiceExt } from "./voiceExt";
  * ```
  */
 export { lyricsExt } from "./lyricsExt";
-
-/**
- * NodeManager for managing Lavalink node connections.
- *
- * Handles:
- * - Connection management to multiple Lavalink nodes
- * - Load balancing and node selection
- * - REST API operations
- * - WebSocket event handling
- *
- * @example
- * ```typescript
- * const nodeManager = new NodeManager({
- *   nodes: [{ host: "localhost", port: 2333, password: "youshallnotpass" }]
- * });
- * ```
- */
-export { NodeManager } from "./managers/NodeManager";
-
-/**
- * PlayerStateManager for managing player states and voice connections.
- *
- * Handles:
- * - Player state tracking and synchronization
- * - Voice connection state management
- * - Voice server and state update handling
- * - Player-to-node mapping
- *
- * @example
- * ```typescript
- * const stateManager = new PlayerStateManager(true);
- * stateManager.attachPlayer(player);
- * ```
- */
-export { PlayerStateManager } from "./managers/PlayerStateManager";
-
-/**
- * WebSocketHandler for managing WebSocket connections to Lavalink nodes.
- *
- * Handles:
- * - WebSocket connection management
- * - Event handling and routing
- * - Automatic reconnection
- * - Connection state tracking
- */
-export { WebSocketHandler } from "./handlers/WebSocketHandler";
-
-/**
- * VoiceHandler for managing voice connection operations.
- *
- * Handles:
- * - Voice connection establishment
- * - Voice server and state updates
- * - Gateway payload sending
- * - Connection state management
- */
-export { VoiceHandler } from "./handlers/VoiceHandler";
-
-/**
- * TrackResolver for resolving and encoding tracks for Lavalink.
- *
- * Handles:
- * - Track resolution from various sources
- * - Track encoding for Lavalink compatibility
- * - Search functionality
- * - Track metadata processing
- */
-export { TrackResolver } from "./resolvers/TrackResolver";
-
-/**
- * Utility functions and helpers for extensions.
- *
- * Provides:
- * - Debug logging utilities
- * - Track encoding/decoding helpers
- * - Common utility functions
- * - Type checking helpers
- */
-export * from "./utils/helpers";
 
 /**
  * Type definitions for Lavalink integration.
