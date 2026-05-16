@@ -200,7 +200,7 @@ interface PlayerOptions {
 | `insert(query, index, userId)` | Insert at position                                         | `Promise<boolean>`  |
 | `save(track, options)`         | Save track to stream                                       | `Promise<Readable>` |
 | `subscribeTo(leader, options)` | Subscribe this player to another player's playback stream. | `Promise<Readable>` |
-| `unsubscribePlayback()`        | Unsubscribe this player from its current playback leader.  | `Promise<Readable>` |
+| `unsubscribeForward()`         | Unsubscribe this player from its current playback leader.  | `Promise<Readable>` |
 
 #### Getters
 
@@ -702,7 +702,7 @@ const follower = manager.get("456");
 
 follower.subscribeTo(leader);
 //Unsubscribe:
-//follower.unsubscribePlayback();
+//follower.unsubscribeForward();
 ```
 
 ---

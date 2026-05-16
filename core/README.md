@@ -489,7 +489,7 @@ const follower = manager.get("456");
 
 follower.subscribeTo(leader);
 //Unsubscribe:
-//follower.unsubscribePlayback();
+//follower.unsubscribeForward();
 ```
 
 ---

@@ -656,7 +656,7 @@ export class PlayerManager extends EventEmitter {
 	 * ## Lifecycle
 	 * - Destroying the leader automatically unsubscribes all followers.
 	 * - Destroying a follower only removes that follower.
-	 * - Followers may manually unsubscribe using {@link Player.unsubscribePlayback}.
+	 * - Followers may manually unsubscribe using {@link Player.unsubscribeForward}.
 	 *
 	 * ## Requirements
 	 * - All guilds must already have active players.
@@ -706,7 +706,7 @@ export class PlayerManager extends EventEmitter {
 				const fp = this.get(gid);
 
 				try {
-					fp?.unsubscribePlayback();
+					fp?.unsubscribeForward();
 				} catch {}
 			}
 		};

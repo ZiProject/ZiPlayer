@@ -104,9 +104,9 @@ export class Player extends EventEmitter {
 	public filter!: FilterManager;
 
 	public forwardMode: Boolean = false;
-	public playbackFollowers = new Set<Player>();
-	public playbackLeader: Player | null = null;
-	private playbackSyncVolume: boolean = true;
+	public forwardFollowers = new Set<Player>();
+	public forwardLeader: Player | null = null;
+	private forwardSyncVolume: boolean = true;
 
 	private leaveTimeout: NodeJS.Timeout | null = null;
 	private volumeInterval: NodeJS.Timeout | null = null;
@@ -1488,17 +1488,17 @@ export class Player extends EventEmitter {
 		}
 
 		// cleanup old leader
-		if (this.playbackLeader) {
-			this.unsubscribePlayback();
+		if (this.forwardLeader) {
+			this.unsubscribeForward();
 		}
 
-		this.playbackLeader = leader;
+		this.forwardLeader = leader;
 
 		this.forwardMode = options?.forwardMode ?? true;
 
-		this.playbackSyncVolume = options?.syncVolume ?? true;
+		this.forwardSyncVolume = options?.syncVolume ?? true;
 
-		leader.playbackFollowers.add(this);
+		leader.forwardFollowers.add(this);
 
 		try {
 			// clear local playback
@@ -1515,7 +1515,7 @@ export class Player extends EventEmitter {
 			}
 
 			// sync state
-			if (this.playbackSyncVolume) {
+			if (this.forwardSyncVolume) {
 				this.setVolume(leader.volume);
 			}
 
@@ -1527,9 +1527,9 @@ export class Player extends EventEmitter {
 		} catch (e) {
 			this.debug(`[Player] subscribeTo error:`, e);
 
-			this.playbackLeader = null;
+			this.forwardLeader = null;
 
-			leader.playbackFollowers.delete(this);
+			leader.forwardFollowers.delete(this);
 
 			return false;
 		}
@@ -1552,18 +1552,18 @@ export class Player extends EventEmitter {
 	 * @returns {boolean} True if a playback subscription existed and was removed.
 	 *
 	 * @example
-	 * follower.unsubscribePlayback();
+	 * follower.unsubscribeForward();
 	 */
-	public unsubscribePlayback(): boolean {
-		if (!this.playbackLeader) {
+	public unsubscribeForward(): boolean {
+		if (!this.forwardLeader) {
 			return false;
 		}
 
-		const leader = this.playbackLeader;
+		const leader = this.forwardLeader;
 
-		leader.playbackFollowers.delete(this);
+		leader.forwardFollowers.delete(this);
 
-		this.playbackLeader = null;
+		this.forwardLeader = null;
 
 		this.forwardMode = false;
 
@@ -1638,7 +1638,7 @@ export class Player extends EventEmitter {
 		this.currentResource = null;
 
 		this.emit("playerStop");
-		for (const fp of this.playbackFollowers) {
+		for (const fp of this.forwardFollowers) {
 			try {
 				fp.connection?.subscribe(fp.audioPlayer);
 
@@ -1914,8 +1914,8 @@ export class Player extends EventEmitter {
 		}
 
 		this.emit("volumeChange", oldVolume, volume);
-		for (const fp of this.playbackFollowers) {
-			if (!fp.playbackSyncVolume) continue;
+		for (const fp of this.forwardFollowers) {
+			if (!fp.forwardSyncVolume) continue;
 
 			try {
 				fp.setVolume(volume);
@@ -2232,16 +2232,16 @@ export class Player extends EventEmitter {
 		}
 
 		this.emit("playerDestroy");
-		this.unsubscribePlayback();
+		this.unsubscribeForward();
 
 		// release followers
-		for (const fp of [...this.playbackFollowers]) {
+		for (const fp of [...this.forwardFollowers]) {
 			try {
-				fp.unsubscribePlayback();
+				fp.unsubscribeForward();
 			} catch {}
 		}
 
-		this.playbackFollowers.clear();
+		this.forwardFollowers.clear();
 		this.removeAllListeners();
 	}
 
@@ -2406,7 +2406,7 @@ export class Player extends EventEmitter {
 					this.debug(`[Player] Track started: ${track.title}`);
 					this.emit("trackStart", track);
 
-					for (const fp of this.playbackFollowers) {
+					for (const fp of this.forwardFollowers) {
 						try {
 							fp.queue.clear();
 
@@ -2423,7 +2423,7 @@ export class Player extends EventEmitter {
 				if (track) {
 					this.debug(`[Player] Player paused on track: ${track.title}`);
 					this.emit("playerPause", track);
-					for (const fp of this.playbackFollowers) {
+					for (const fp of this.forwardFollowers) {
 						fp.emit("playerPause", track);
 					}
 				}
@@ -2432,7 +2432,7 @@ export class Player extends EventEmitter {
 				if (track) {
 					this.debug(`[Player] Player resumed on track: ${track.title}`);
 					this.emit("playerResume", track);
-					for (const fp of this.playbackFollowers) {
+					for (const fp of this.forwardFollowers) {
 						fp.emit("playerResume", track);
 					}
 				}
