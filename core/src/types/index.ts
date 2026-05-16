@@ -135,7 +135,7 @@ export interface TrackMiddlewareContext {
  */
 export type TrackMiddleware = (track: Track, context: TrackMiddlewareContext) => void | Track | Promise<void | Track>;
 
-/** Options for {@link PlayerManager.subscribePlaybackMirror}. */
+/** Options for {@link PlayerManager.subscribeForwardMirror}. */
 export interface PlaybackMirrorOptions {
 	leaderGuildId: string;
 	followerGuildIds: string[];

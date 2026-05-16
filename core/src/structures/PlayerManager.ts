@@ -667,7 +667,7 @@ export class PlayerManager extends EventEmitter {
 	 * @returns {() => void} Cleanup function that unsubscribes all followers.
 	 *
 	 * @example
-	 * const stopMirror = manager.subscribePlaybackMirror({
+	 * const stopMirror = manager.subscribeForwardMirror({
 	 *   leaderGuildId: "123",
 	 *   followerGuildIds: ["456", "789"],
 	 *   mirrorUserId: client.user.id,
@@ -678,11 +678,11 @@ export class PlayerManager extends EventEmitter {
 	 * // later
 	 * stopMirror();
 	 */
-	subscribePlaybackMirror(options: PlaybackMirrorOptions): () => void {
+	subscribeForwardMirror(options: PlaybackMirrorOptions): () => void {
 		const leader = this.get(options.leaderGuildId);
 
 		if (!leader) {
-			throw new Error(`subscribePlaybackMirror: no player for leader guild ${options.leaderGuildId}`);
+			throw new Error(`subscribeForwardMirror: no player for leader guild ${options.leaderGuildId}`);
 		}
 
 		const followers = [...new Set(options.followerGuildIds)].filter((id) => id !== options.leaderGuildId);

@@ -467,7 +467,7 @@ This allows multiple guilds to hear the exact same playback while using only:
 Resulting in extremely low CPU and bandwidth usage.
 
 ```ts
-const stopMirror = manager.subscribePlaybackMirror({
+const stopMirror = manager.subscribeForwardMirror({
 	leaderGuildId: "123",
 	followerGuildIds: ["456", "789"],
 	mirrorUserId: client.user.id,

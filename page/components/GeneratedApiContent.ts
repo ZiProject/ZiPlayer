@@ -600,7 +600,7 @@ export const generatedApiContent = {
 	},
 	playbackmirroroptions: {
 		title: "PlaybackMirrorOptions",
-		description: "/** Options for {@link PlayerManager.subscribePlaybackMirror}. */",
+		description: "/** Options for {@link PlayerManager.subscribeForwardMirror}. */",
 		summary: "",
 		badges: ["interface", "core", "playbackmirroroptions"],
 		code: "// PlaybackMirrorOptions usage example",
