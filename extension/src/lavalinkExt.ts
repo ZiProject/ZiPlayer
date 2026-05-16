@@ -334,8 +334,6 @@ export class lavalinkExt extends BaseExtension {
 			state.track = track;
 			state.playing = true;
 			state.paused = false;
-			player.isPlaying = true;
-			player.isPaused = false;
 			player.emit("trackStart", track);
 			this.debug(`WebSocket track start for guild ${message.guildId}: ${track.title}`);
 		}
@@ -358,7 +356,6 @@ export class lavalinkExt extends BaseExtension {
 		if (message.reason === "finished" || message.reason === "loadFailed" || message.reason === "stopped") {
 			state.track = null;
 			state.playing = false;
-			player.isPlaying = false;
 
 			// Luôn chuyển sang track tiếp theo khi track kết thúc
 			this.debug(`Track ended (${message.reason}), starting next track for guild ${player.guildId}`);
@@ -374,7 +371,6 @@ export class lavalinkExt extends BaseExtension {
 		} else if (message.reason === "replaced" || message.reason === "cleanup") {
 			state.track = null;
 			state.playing = false;
-			player.isPlaying = false;
 		}
 	}
 
@@ -440,15 +436,13 @@ export class lavalinkExt extends BaseExtension {
 				state.playing = false;
 				state.paused = false;
 				state.track = null;
-				player.isPlaying = false;
-				player.isPaused = false;
+
 				return;
 			}
 
 			// Only update pause state if it differs (WebSocket doesn't always send pause updates)
 			if (state.playing && playerInfo.paused !== state.paused) {
 				state.paused = playerInfo.paused;
-				player.isPaused = playerInfo.paused;
 				if (state.track) {
 					if (playerInfo.paused) {
 						player.emit("playerPause", state.track);
@@ -802,8 +796,7 @@ export class lavalinkExt extends BaseExtension {
 			state.playing = false;
 			state.paused = false;
 			state.track = null;
-			player.isPlaying = false;
-			player.isPaused = false;
+
 			player.emit("queueEnd");
 			(player as any).scheduleLeave?.();
 			return false;
@@ -837,8 +830,7 @@ export class lavalinkExt extends BaseExtension {
 				state.track = track;
 				state.playing = true;
 				state.paused = false;
-				player.isPlaying = true;
-				player.isPaused = false;
+
 				await this.nodeManager.updatePlayer(node, player.guildId, {
 					track: {
 						encoded: encoded,
@@ -903,7 +895,6 @@ export class lavalinkExt extends BaseExtension {
 		}
 
 		state.paused = true;
-		player.isPaused = true;
 		const track = state.track ?? player.queue.currentTrack ?? undefined;
 		if (track) player.emit("playerPause", track);
 		this.nodeManager
@@ -923,7 +914,6 @@ export class lavalinkExt extends BaseExtension {
 		}
 
 		state.paused = false;
-		player.isPaused = false;
 		const track = state.track ?? player.queue.currentTrack ?? undefined;
 		if (track) player.emit("playerResume", track);
 		this.nodeManager
@@ -941,8 +931,6 @@ export class lavalinkExt extends BaseExtension {
 		state.track = null;
 		state.playing = false;
 		state.paused = false;
-		player.isPlaying = false;
-		player.isPaused = false;
 		player.emit("playerStop");
 
 		// Destroy player on Lavalink first, then update (if needed)
