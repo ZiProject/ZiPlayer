@@ -1926,6 +1926,7 @@ export class Player extends EventEmitter {
 	 */
 	autoPlay(mode?: boolean): boolean {
 		if (this.forwardMode) {
+			if (!mode) return this.forwardLeader?.autoPlay() ?? false;
 			this.debug("[Player] Cannot autoPlay while subscribed to another player");
 			return false;
 		}
