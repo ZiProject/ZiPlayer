@@ -33,7 +33,7 @@
  * const youtubePlugin = new YouTubePlugin();
  * const result = await youtubePlugin.search("Never Gonna Give You Up", "user123");
  */
-export * from "./YouTubePlugin";
+export * from "./YouTubePlugin.js";
 
 /**
  * SoundCloud plugin for handling SoundCloud tracks, playlists, and search.
@@ -49,7 +49,7 @@ export * from "./YouTubePlugin";
  * const soundcloudPlugin = new SoundCloudPlugin();
  * const result = await soundcloudPlugin.search("chill music", "user123");
  */
-export * from "./SoundCloudPlugin";
+export * from "./SoundCloudPlugin.js";
 
 /**
  * Spotify plugin for metadata extraction and display purposes.
@@ -67,7 +67,7 @@ export * from "./SoundCloudPlugin";
  * const spotifyPlugin = new SpotifyPlugin();
  * const result = await spotifyPlugin.search("spotify:track:4iV5W9uYEdYUVa79Axb7Rh", "user123");
  */
-export * from "./SpotifyPlugin";
+export * from "./SpotifyPlugin.js";
 
 /**
  * Text-to-Speech (TTS) plugin for converting text to audio.
@@ -83,7 +83,7 @@ export * from "./SpotifyPlugin";
  * const ttsPlugin = new TTSPlugin({ defaultLang: "en" });
  * const result = await ttsPlugin.search("tts:Hello world", "user123");
  */
-export * from "./TTSPlugin";
+export * from "./TTSPlugin.js";
 
 /**
  * Attachments plugin for handling Discord attachment URLs and audio files.
@@ -106,4 +106,4 @@ export * from "./TTSPlugin";
  *   "user123"
  * );
  */
-export * from "./AttachmentsPlugin";
+export * from "./AttachmentsPlugin.js";

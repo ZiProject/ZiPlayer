@@ -10,7 +10,7 @@ import { buildSabrFormat } from "googlevideo/utils";
 
 import { BG } from "bgutils-js";
 import { JSDOM } from "jsdom";
-import { webStreamToNodeStream } from "./stream-converter";
+import { webStreamToNodeStream } from "./stream-converter.js";
 
 export interface OutputStream {
 	stream: NodeJS.WritableStream;

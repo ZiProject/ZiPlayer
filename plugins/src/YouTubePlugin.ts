@@ -1,8 +1,8 @@
 import { BasePlugin, Track, SearchResult, StreamInfo, Player } from "ziplayer";
 
 import { Innertube, Log, UniversalCache } from "youtubei.js";
-import { createSabrStream, DEFAULT_SABR_OPTIONS } from "./utils/sabr-stream-factory";
-import { webStreamToNodeStream } from "./utils/stream-converter";
+import { createSabrStream, DEFAULT_SABR_OPTIONS } from "./utils/sabr-stream-factory.js";
+import { webStreamToNodeStream } from "./utils/stream-converter.js";
 
 export interface PluginOptions {
 	player?: Player;
