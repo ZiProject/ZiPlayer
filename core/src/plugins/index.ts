@@ -704,43 +704,123 @@ export class PluginManager {
 	}
 
 	private async getStreamInternal(track: Track, primary: BasePlugin): Promise<StreamInfo | null> {
+		// Reuse existing stream from StreamManager
 		if (this.streamManager) {
 			const existingStream = this.streamManager.getStreamByTrack(track.id || track.title);
+
 			if (existingStream) {
 				this.debug(`[Stream] Using existing stream from manager`);
-				return { stream: existingStream, type: "arbitrary" };
+
+				return {
+					stream: existingStream,
+					type: "arbitrary",
+				};
 			}
 		}
 
 		const timeoutMs = this.options.extractorTimeout ?? 50000;
 
+		// Cache
 		const cached = this.getCachedStream(track);
-		if (cached) return cached;
 
-		try {
-			this.debug(`[Stream] Trying ${primary.name} for track: ${track.title}`);
-			const controller = new AbortController();
-			const result = await withTimeout(
-				primary.getStream(track, controller.signal),
-				timeoutMs,
-				`Primary timeout: ${primary.name}`,
-			);
-
-			if (result?.stream) {
-				const isValid = await this.validateStreamMatchesTrack(result, track);
-				if (isValid) {
-					this.debug(`[Stream] Success via ${primary.name}`);
-					this.setCachedStream(track, result);
-					return result;
-				}
-				this.debug(`[Stream] Stream validation failed - wrong track returned`);
-			}
-			throw new Error("Primary plugin returned no stream or invalid stream");
-		} catch (error) {
-			this.debug(`[Stream] Primary failed: ${primary.name}`, error);
+		if (cached) {
+			this.debug(`[Stream] Using cached stream for: ${track.title}`);
+			return cached;
 		}
 
-		// Fallback logic...
+		/**
+		 * Try resolve stream from plugin
+		 * Flow:
+		 *   1. plugin.getStream()
+		 *   2. validate stream
+		 *   3. if failed -> plugin.getFallback()
+		 */
+		const tryPlugin = async (
+			plugin: BasePlugin,
+			isPrimary: boolean = false,
+		): Promise<{ result: StreamInfo | null; similarity: number }> => {
+			const controller = new AbortController();
+
+			let result: StreamInfo | null = null;
+
+			// =========================================================
+			// 1. TRY DIRECT STREAM
+			// =========================================================
+			if (plugin.getStream) {
+				try {
+					this.debug(`[Stream] ${plugin.name} trying direct stream`);
+
+					result = await withTimeout(plugin.getStream(track, controller.signal), timeoutMs, `${plugin.name} getStream timeout`);
+
+					if (result?.stream) {
+						const valid = await this.validateStreamMatchesTrack(result, track);
+
+						if (valid) {
+							this.debug(`[Stream] ${plugin.name} direct stream success`);
+
+							return {
+								result,
+								similarity: 1,
+							};
+						}
+
+						this.debug(`[Stream] ${plugin.name} returned invalid stream`);
+					} else {
+						this.debug(`[Stream] ${plugin.name} no direct stream returned`);
+					}
+				} catch (error) {
+					this.debug(`[Stream] ${plugin.name} getStream failed:`, error instanceof Error ? error.message : error);
+				}
+			}
+
+			// =========================================================
+			// 2. TRY FALLBACK SEARCH
+			// =========================================================
+			if (plugin.getFallback) {
+				try {
+					this.debug(`[Stream] ${plugin.name} trying fallback resolver`);
+
+					result = await withTimeout(plugin.getFallback(track, controller.signal), timeoutMs, `${plugin.name} fallback timeout`);
+
+					if (result?.stream) {
+						const similarity = this.calculateTrackSimilarity(track, {
+							title: result.metadata?.title || result.metadata?.originalTitle || track.title,
+						});
+
+						this.debug(`[Stream] ${plugin.name} fallback success (${similarity})`);
+
+						return {
+							result,
+							similarity,
+						};
+					}
+
+					this.debug(`[Stream] ${plugin.name} fallback returned no stream`);
+				} catch (error) {
+					this.debug(`[Stream] ${plugin.name} fallback failed:`, error instanceof Error ? error.message : error);
+				}
+			}
+
+			return {
+				result: null,
+				similarity: 0,
+			};
+		};
+
+		// =========================================================
+		// PRIMARY PLUGIN
+		// =========================================================
+		const primaryResult = await tryPlugin(primary, true);
+
+		if (primaryResult.result?.stream) {
+			this.setCachedStream(track, primaryResult.result);
+
+			return primaryResult.result;
+		}
+
+		// =========================================================
+		// FALLBACK PLUGINS
+		// =========================================================
 		const fallbackPlugins = this.getAll()
 			.filter((p) => p !== primary && p.name !== primary.name)
 			.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
@@ -752,61 +832,64 @@ export class PluginManager {
 
 		this.debug(`[Stream] Trying ${fallbackPlugins.length} fallback plugins`);
 
-		const validResults: Array<{ plugin: string; streamInfo: StreamInfo; score: number }> = [];
+		const validResults: Array<{
+			plugin: string;
+			streamInfo: StreamInfo;
+			score: number;
+		}> = [];
 
 		let attempt = 0;
+
 		for (const plugin of fallbackPlugins) {
 			attempt++;
+
 			if (attempt > (this.options.maxFallbackAttempts ?? 3)) {
-				this.debug(`[Stream] Max attempts reached`);
+				this.debug(`[Stream] Max fallback attempts reached`);
 				break;
 			}
 
-			try {
-				this.debug(`[Stream] Fallback ${attempt}: ${plugin.name}`);
-				const controller = new AbortController();
+			const { result, similarity } = await tryPlugin(plugin);
 
-				let result: StreamInfo | null = null;
-
-				if (plugin.getStream) {
-					result = await withTimeout(plugin.getStream(track, controller.signal), timeoutMs, `Timeout: ${plugin.name}`);
-				}
-
-				if (!result?.stream && plugin.getFallback) {
-					result = await withTimeout(plugin.getFallback(track, controller.signal), timeoutMs, `Fallback timeout: ${plugin.name}`);
-				}
-
-				if (result?.stream) {
-					const similarityScore = this.calculateTrackSimilarity(track, result);
-
-					if (similarityScore > 0.7) {
-						this.debug(`[Stream] Fallback success via ${plugin.name} (score: ${similarityScore})`);
-						this.setCachedStream(track, result);
-						return result;
-					} else {
-						validResults.push({
-							plugin: plugin.name,
-							streamInfo: result,
-							score: similarityScore,
-						});
-						this.debug(`[Stream] Fallback ${plugin.name} returned low similarity (${similarityScore})`);
-					}
-				}
-			} catch (error) {
-				this.debug(`[Stream] Fallback failed: ${plugin.name}`, error);
+			if (!result?.stream) {
+				continue;
 			}
+
+			// Perfect / good match
+			if (similarity >= 0.7) {
+				this.debug(`[Stream] Success via fallback ${plugin.name} (score: ${similarity})`);
+
+				this.setCachedStream(track, result);
+
+				return result;
+			}
+
+			// Keep low similarity result as backup
+			validResults.push({
+				plugin: plugin.name,
+				streamInfo: result,
+				score: similarity,
+			});
+
+			this.debug(`[Stream] ${plugin.name} low similarity match (${similarity})`);
 		}
 
+		// =========================================================
+		// BEST AVAILABLE MATCH
+		// =========================================================
 		if (validResults.length > 0) {
 			const bestMatch = validResults.sort((a, b) => b.score - a.score)[0];
-			this.debug(`[Stream] Using best available match from ${bestMatch.plugin} (score: ${bestMatch.score})`);
+
+			this.debug(`[Stream] Using best available match from ${bestMatch.plugin} (${bestMatch.score})`);
+
+			this.setCachedStream(track, bestMatch.streamInfo);
+
 			return bestMatch.streamInfo;
 		}
 
-		this.debug(`[Stream] All plugins failed for track: ${track.title}`);
+		this.debug(`[Stream] All plugins failed for: ${track.title}`);
+
 		return null;
 	}
-
 	async getStream(track: Track): Promise<StreamInfo | null> {
 		if (!track) {
 			this.debug(`[getStream] No track provided`);

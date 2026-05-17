@@ -12,6 +12,7 @@ export interface ManagedStream {
 	metadata: {
 		source: string;
 		isPreload: boolean;
+		isRemote: boolean;
 		priority: number;
 	};
 	listeners: {
@@ -128,6 +129,7 @@ export class StreamManager extends EventEmitter {
 				source: track.source || "unknown",
 				isPreload: metadata.isPreload || false,
 				priority: metadata.priority || 0,
+				isRemote: metadata.isRemote || false,
 				...metadata,
 			},
 			listeners,

@@ -10,7 +10,6 @@ import { buildSabrFormat } from "googlevideo/utils";
 
 import { BG } from "bgutils-js";
 import { JSDOM } from "jsdom";
-import { webStreamToNodeStream } from "./stream-converter.js";
 
 export interface OutputStream {
 	stream: NodeJS.WritableStream;
@@ -105,7 +104,7 @@ async function makePlayerRequest(innertube: Innertube, videoId: string, reloadPl
 
 	const extraArgs: any = {
 		playbackContext: {
-			adPlaybackContext: { pyv: true },
+			// adPlaybackContext: { pyv: true },
 			contentPlaybackContext: {
 				vis: 0,
 				splay: false,
@@ -178,7 +177,6 @@ export async function createSabrStream(
 		// 		return acc;
 		// 	}, []) ?? [];
 		const allFormats = player.streaming_data?.adaptive_formats.map((f: any) => buildSabrFormat(f)) || [];
-		console.log();
 
 		const sabrFormats = allFormats
 			.reduce(
@@ -239,7 +237,7 @@ export async function createSabrStream(
 		});
 
 		// Convert Web Stream to Node.js Readable stream with optimized buffer
-		const nodeStream = webStreamToNodeStream(audioStream, 32 * 1024); // 32KB buffer for YouTube streams
+		const nodeStream = Readable.fromWeb(audioStream as any); // 32KB buffer for YouTube streams
 
 		return {
 			title,
@@ -251,6 +249,7 @@ export async function createSabrStream(
 			},
 		};
 	} catch (error) {
+		console.log(error);
 		throw new Error(`SABR stream creation failed: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }

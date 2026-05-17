@@ -27,6 +27,7 @@ import type {
 } from "./types/lavalink";
 
 import WebSocket from "ws";
+import { channel } from "diagnostics_channel";
 
 export class WebSocketHandler {
 	private debug: (message: string, ...optional: any[]) => void;
@@ -382,11 +383,7 @@ export class PlayerStateManager {
 			guildId: resolvedGuildId,
 			rawEvent,
 		};
-		console.log({
-			sessionId: state.voiceState?.sessionId,
-			token: !!state.voiceServer?.token,
-			endpoint: state.voiceServer?.endpoint,
-		});
+
 		this.debug(`VOICE_SERVER_UPDATE for guild ${guildId}`);
 	}
 
@@ -812,7 +809,6 @@ export class NodeManager {
 			throw error;
 		});
 		this.debug(`loadTracks response for ${node.identifier} id=${identifier} loadType=${res.data?.loadType}`);
-		console.log(res.data);
 		return res.data;
 	}
 
@@ -841,7 +837,6 @@ export class NodeManager {
 	async updatePlayer(node: InternalNode, guildId: string, payload: Record<string, any>): Promise<void> {
 		try {
 			const payl = await node.rest.patch(`/v4/sessions/${node.sessionId}/players/${guildId}`, payload);
-			console.log(payl);
 		} catch (error: any) {
 			// Don't throw if the connection is already closed, player doesn't exist, or bad request
 			if (
@@ -1144,7 +1139,6 @@ export class VoiceHandler {
 		// Store previous voice state to check if update is needed
 		const prevVoiceState = { ...state.voiceState };
 		const prevVoiceServer = { ...state.voiceServer };
-		console.log(t);
 		if (t === "VOICE_SERVER_UPDATE") {
 			playerStateManager.handleVoiceServerUpdate(guildId, data);
 		} else if (t === "VOICE_STATE_UPDATE") {
@@ -1309,30 +1303,13 @@ export class lavalinkExt extends BaseExtension {
 	}
 
 	async onDestroy(context: ExtensionContext): Promise<void> {
-		this.debug(`Extension destroying for guild ${context.player.guildId}`);
-
-		// Stop update loop first
 		this.stopUpdateLoop();
 
-		// Clean up all players gracefully before closing connections
-		const allStates = this.playerStateManager.getAllStates();
-		const cleanupPromises = Array.from(allStates.entries()).map(async ([player, state]: [Player, any]) => {
-			if (state.node) {
-				try {
-					await this.destroyLavalinkPlayer(player);
-				} catch (error) {
-					this.debug(`Error cleaning up player for guild ${player.guildId}`, error);
-				}
-			}
-		});
+		for (const [player] of this.playerStateManager.getAllStates()) {
+			await this.destroyLavalinkPlayer(player).catch(() => {});
+		}
 
-		// Wait for all cleanup to complete
-		await Promise.allSettled(cleanupPromises);
-
-		// Detach from current player
 		this.detachFromPlayer(context.player);
-
-		// Close all connections last
 		this.nodeManager.closeAllConnections();
 	}
 
@@ -1422,7 +1399,6 @@ export class lavalinkExt extends BaseExtension {
 	private handleWebSocketTrackStart(node: any, message: any): void {
 		const player = this.playerStateManager.getPlayerByGuildId(message.guildId);
 		if (!player) return;
-
 		const state = this.playerStateManager.getState(player);
 		if (!state || state.node !== node) return;
 
@@ -1431,9 +1407,8 @@ export class lavalinkExt extends BaseExtension {
 			state.track = track;
 			state.playing = true;
 			state.paused = false;
-
-			player.emit("trackStart", track);
-			this.debug(`WebSocket track start for guild ${message.guildId}: ${track.title}`);
+			// playRemote() in Player already emitted trackStart — do NOT re-emit
+			this.debug(`[WS] TrackStart for ${player.guildId}: ${track.title}`);
 		}
 	}
 
@@ -1445,23 +1420,19 @@ export class lavalinkExt extends BaseExtension {
 		if (!state || state.node !== node) return;
 
 		const track = state.track;
-		if (track) {
-			player.emit("trackEnd", track);
-			this.debug(`WebSocket track end for guild ${message.guildId}: ${track.title}, reason=${message.reason}`);
-		}
+		if (track) player.emit("trackEnd", track);
 
-		// Handle track end based on reason
+		state.track = null;
+		state.playing = false;
+
 		if (message.reason === "finished" || message.reason === "loadFailed") {
-			state.track = null;
-			state.playing = false;
-
 			if (!state.skipNext) {
-				this.startNextOnLavalink(player).catch((error) => this.debug(`Failed to start next track for ${player.guildId}`, error));
+				// Let Player drive the queue — provideStream will be called again
+				void (player as any).playNext().catch((err: Error) => this.debug(`playNext error for ${player.guildId}: ${err.message}`));
 			}
 			state.skipNext = false;
 		} else if (message.reason === "stopped" || message.reason === "replaced" || message.reason === "cleanup") {
-			state.track = null;
-			state.playing = false;
+			state.paused = false;
 		}
 	}
 
@@ -1562,64 +1533,36 @@ export class lavalinkExt extends BaseExtension {
 	private attachToPlayer(player: Player): void {
 		if (!player) return;
 		this.player = this.player ?? player;
-
-		// Use PlayerStateManager
 		this.playerStateManager.attachPlayer(player);
 
 		if (!this.manager) {
-			const maybeManager = (player as any).pluginManager?.manager ?? (player as any)?.manager;
-			if (maybeManager) this.manager = maybeManager as PlayerManager;
+			this.manager = (player as any).manager as PlayerManager | undefined;
 		}
 
-		if (!this.originalMethods.has(player)) {
-			this.originalMethods.set(player, {
-				play: player.play.bind(player),
-				skip: player.skip.bind(player),
-				stop: player.stop.bind(player),
-				pause: player.pause.bind(player),
-				resume: player.resume.bind(player),
-				setVolume: player.setVolume.bind(player),
-				connect: player.connect.bind(player),
+		// Only wire the destroy hook once
+		if (!(player as any).__lavalinkExtDestroyHooked) {
+			(player as any).__lavalinkExtDestroyHooked = true;
+			player.once("playerDestroy", () => {
+				this.playerStateManager.detachPlayer(player);
 			});
-
-			(player as any).skip = () => this.skip(player);
-			(player as any).stop = () => this.stop(player);
-			(player as any).pause = () => this.pause(player);
-			(player as any).resume = () => this.resume(player);
-			(player as any).setVolume = (volume: number) => this.setVolume(player, volume);
-			(player as any).connect = async (channel: any) => this.connect(player, channel);
 		}
 
-		const onDestroy = () => {
-			this.destroyLavalinkPlayer(player).catch((error) =>
-				this.debug(`Failed to destroy Lavalink player for guild ${player.guildId}`, error),
-			);
-			this.detachFromPlayer(player);
-		};
-		player.once("playerDestroy", onDestroy);
+		if (this.options.sendGatewayPayload && !(player as any).__lavalinkConnectWrapped) {
+			(player as any).__lavalinkConnectWrapped = true;
+			(player as any).__originalConnect = player.connect.bind(player);
+			(player as any).connect = (channel: any) => this.connect(player, channel);
+		}
 	}
 
 	private detachFromPlayer(player: Player): void {
-		const original = this.originalMethods.get(player);
-		if (original) {
-			(player as any).skip = original.skip;
-			(player as any).stop = original.stop;
-			(player as any).pause = original.pause;
-			(player as any).resume = original.resume;
-			(player as any).setVolume = original.setVolume;
-			(player as any).connect = original.connect;
-			this.originalMethods.delete(player);
-		}
-
+		(player as any).__lavalinkExtDestroyHooked = false;
 		const state = this.playerStateManager.getState(player);
 		if (state) {
-			this.destroyLavalinkPlayer(player).catch((error) =>
-				this.debug(`Failed to destroy Lavalink player during detach for ${player.guildId}`, error),
-			);
+			void this.destroyLavalinkPlayer(player).catch(() => {});
 		}
-
-		// Use PlayerStateManager
 		this.playerStateManager.detachPlayer(player);
+		// Signal Player to leave REMOTE mode and restore preload
+		(player as any).exitRemoteMode?.();
 	}
 
 	async beforePlay(context: ExtensionContext, payload: ExtensionPlayRequest): Promise<ExtensionPlayResponse> {
@@ -1636,39 +1579,18 @@ export class lavalinkExt extends BaseExtension {
 				this.nodeManager,
 				this.options.searchPrefix,
 			);
-			if (tracks.length === 0) {
-				return {
-					handled: false,
-					success: false,
-					error: new Error("No tracks found"),
-				};
-			}
 
-			if (isPlaylist) {
-				player.queue.addMultiple(tracks);
-				player.emit("queueAddList", tracks);
-			} else {
-				player.queue.add(tracks[0]);
-				player.emit("queueAdd", tracks[0]);
-			}
+			if (tracks.length === 0) return { handled: false };
 
-			const state = this.playerStateManager.getState(player);
-			const shouldStart = !(state?.playing ?? false) && !(player.isPlaying ?? false);
-			const success = shouldStart ? await this.startNextOnLavalink(player) : true;
-
+			// Return the Lavalink-resolved tracks; Player will queue them and call
+			// playNext() → startTrack() → getStream() → provideStream() (our handle)
 			return {
-				handled: true,
-				success,
+				handled: false, // let Player's normal flow continue
+				tracks,
 				isPlaylist,
 			};
 		} catch (error) {
-			const err = error instanceof Error ? error : new Error(String(error));
-			this.debug(`beforePlay error: ${err.message}`);
-			return {
-				handled: false,
-				success: false,
-				error: err,
-			};
+			return { handled: false, success: false, error: error as Error };
 		}
 	}
 
@@ -1686,33 +1608,113 @@ export class lavalinkExt extends BaseExtension {
 		}
 	}
 
-	async provideStream(_context: ExtensionContext, payload: ExtensionStreamRequest): Promise<StreamInfo | null> {
+	async provideStream(context: ExtensionContext, payload: ExtensionStreamRequest): Promise<StreamInfo | null> {
+		const player = context.player;
+		const track = payload.track;
+
+		this.attachToPlayer(player);
+		await this.initializeNodes();
+
+		let node: InternalNode;
 		try {
-			const track = payload.track;
-			const state = this.playerStateManager.getState(_context.player);
+			node = await this.ensureNodeForPlayer(player);
+		} catch {
+			return null; // no Lavalink nodes — fall through to normal plugins
+		}
 
-			if (!state?.node || !state.playing || !state.track) {
-				return null;
-			}
-
-			const currentTrack = state.track;
-			if (getEncoded(currentTrack) !== getEncoded(track)) {
-				return null;
-			}
-
-			return {
-				stream: null as any,
-				type: "arbitrary",
-				metadata: {
-					lavalink: true,
-					node: state.node.identifier,
-					encoded: getEncoded(track),
-				},
-			};
-		} catch (error) {
-			this.debug(`provideStream error: ${(error as Error).message}`);
+		// Ensure track carries Lavalink encoded payload
+		try {
+			await this.trackResolver.ensureTrackEncoded(player, track, track.requestedBy ?? "Unknown", this.nodeManager);
+		} catch (err) {
+			this.debug(`provideStream: encode failed for ${track.title}: ${(err as Error).message}`);
 			return null;
 		}
+
+		const encoded = getEncoded(track);
+		if (!encoded) return null;
+
+		const state = this.playerStateManager.getState(player)!;
+		this.playerStateManager.setPlayerNode(player, node);
+
+		// Capture node ref in closure (node may be reassigned later)
+		const boundNode = node;
+
+		// ── Build the remote handle ────────────────────────────────────
+		const handle: NonNullable<StreamInfo["handle"]> = {
+			play: async () => {
+				// Send voice connection to Lavalink if not yet done
+				const s = this.playerStateManager.getState(player);
+				if (!s) return;
+
+				if (s.voiceState?.sessionId && s.voiceServer?.token && s.voiceServer?.endpoint) {
+					await this.nodeManager.updatePlayer(boundNode, player.guildId, {
+						voice: {
+							token: s.voiceServer.token,
+							endpoint: s.voiceServer.endpoint,
+							sessionId: s.voiceState.sessionId,
+							channelId: s.channelId ?? s.voiceState.channelId,
+						},
+					});
+					s.voiceUpdateSent = true;
+					await wait(300);
+				}
+
+				await this.nodeManager.updatePlayer(boundNode, player.guildId, {
+					track: { encoded },
+					paused: false,
+					volume: player.volume ?? 100,
+				});
+
+				s.playing = true;
+				s.paused = false;
+				s.track = track;
+			},
+
+			pause: async () => {
+				const s = this.playerStateManager.getState(player);
+				if (!s?.node) return;
+				s.paused = true;
+				await this.nodeManager.updatePlayer(s.node, player.guildId, { paused: true }).catch(() => {});
+			},
+
+			resume: async () => {
+				const s = this.playerStateManager.getState(player);
+				if (!s?.node) return;
+				s.paused = false;
+				await this.nodeManager.updatePlayer(s.node, player.guildId, { paused: false }).catch(() => {});
+			},
+
+			stop: async () => {
+				await this.nodeManager.updatePlayer(boundNode, player.guildId, {
+					track: { encoded: null },
+					paused: false,
+					volume: player.volume ?? 100,
+				});
+			},
+
+			seek: async (position: number) => {
+				const s = this.playerStateManager.getState(player);
+				if (!s?.node) return;
+				await this.nodeManager.updatePlayer(s.node, player.guildId, { position }).catch(() => {});
+			},
+
+			setVolume: async (volume: number) => {
+				const s = this.playerStateManager.getState(player);
+				if (!s?.node) return;
+				await this.nodeManager.updatePlayer(s.node, player.guildId, { volume }).catch(() => {});
+			},
+
+			destroy: async () => {
+				await this.destroyLavalinkPlayer(player).catch(() => {});
+			},
+		};
+
+		// Dummy readable — Player will detect remote:true and skip the audio pipeline
+		const { PassThrough } = require("stream");
+		const dummy = new PassThrough();
+		dummy.end(); // immediately drain so no memory leak
+
+		return { stream: dummy, type: "arbitrary", remote: true, handle };
 	}
 
 	private async ensureNodeForPlayer(player: Player): Promise<any> {
@@ -1738,109 +1740,31 @@ export class lavalinkExt extends BaseExtension {
 	}
 
 	private async connect(player: Player, channel: any): Promise<any> {
-		const original = this.originalMethods.get(player)?.connect;
-		const channelId: string | null = channel?.id ?? channel ?? null;
-		if (!channelId) throw new Error("Invalid channel provided to connect");
-		const guildId = player.guildId;
+		if (!this.options.sendGatewayPayload) {
+			// Standard path: use the original Player.connect() unchanged
+			// The raw event listener (already set up via bindClient) will pick up
+			// VOICE_STATE_UPDATE + VOICE_SERVER_UPDATE automatically.
+			return (player as any).__originalConnect(channel);
+		}
+
+		// Serverless / proxy path: send gateway payload manually
+		const channelId = channel?.id ?? channel;
+		if (!channelId) throw new Error("Invalid channel");
 		const state = this.playerStateManager.getState(player);
-		if (state) {
-			state.channelId = channelId;
-		}
+		if (state) state.channelId = channelId;
 
-		if (this.options.sendGatewayPayload) {
-			await this.voiceHandler.connect(player, channel, this.options.sendGatewayPayload);
-			await this.playerStateManager.waitForVoice(player, this.options.requestTimeoutMs);
-			return null;
-		}
+		await this.options.sendGatewayPayload(player.guildId, {
+			op: 4,
+			d: {
+				guild_id: player.guildId,
+				channel_id: channelId,
+				self_deaf: player.options.selfDeaf ?? true,
+				self_mute: player.options.selfMute ?? false,
+			},
+		});
 
-		if (!original) throw new Error("Player connect method missing");
-		const connection = await original(channel);
-		await this.playerStateManager
-			.waitForVoice(player, this.options.requestTimeoutMs)
-			.catch((error) => this.debug(`Voice wait failed: ${error.message}`));
-		return connection;
-	}
-
-	private async startNextOnLavalink(player: Player, ignoreLoop = false): Promise<boolean> {
-		const node = await this.ensureNodeForPlayer(player);
-		const state = this.playerStateManager.getState(player);
-		if (!state) throw new Error("Missing state for player");
-
-		const track = player.queue.next(ignoreLoop || state.skipNext);
-		state.skipNext = false;
-		if (!track) {
-			if (player.queue.autoPlay()) {
-				const nextAuto = player.queue.willNextTrack();
-				if (nextAuto) {
-					player.queue.addMultiple([nextAuto]);
-					return this.startNextOnLavalink(player, true);
-				}
-			}
-			state.playing = false;
-			state.paused = false;
-			state.track = null;
-
-			player.emit("queueEnd");
-			(player as any).scheduleLeave?.();
-			return false;
-		}
-
-		(player as any).clearLeaveTimeout?.();
-		await (player as any).generateWillNext?.();
-		try {
-			await this.playerStateManager.waitForVoice(player, this.options.requestTimeoutMs);
-		} catch (error) {
-			this.debug(`Voice readiness failed for ${player.guildId}`, error);
-		}
-
-		try {
-			await this.trackResolver.ensureTrackEncoded(player, track, track.requestedBy ?? "Unknown", this.nodeManager);
-			const encoded = getEncoded(track);
-			if (!encoded) throw new Error("Track has no Lavalink payload");
-			track.metadata = {
-				...(track.metadata ?? {}),
-				lavalink: {
-					...((track.metadata ?? {}).lavalink ?? {}),
-					encoded,
-					node: node.identifier,
-				},
-			};
-			this.playerStateManager.setPlayerNode(player, node);
-
-			state.track = track;
-			state.playing = true;
-			state.paused = false;
-
-			const updatePayload: Record<string, any> = {};
-
-			if (state.voiceState?.sessionId && state.voiceServer?.token && state.voiceServer?.endpoint) {
-				const rawEndpoint = state.voiceServer.endpoint;
-				const endpoint = rawEndpoint;
-
-				updatePayload.voice = {
-					token: state.voiceServer.token,
-					endpoint,
-					sessionId: state.voiceState.sessionId,
-					channelId: state.channelId ?? state.voiceState.channelId,
-				};
-				state.voiceUpdateSent = true;
-
-				await this.nodeManager.updatePlayer(node, player.guildId, updatePayload);
-				await new Promise((r) => setTimeout(r, 300));
-			}
-
-			await this.nodeManager.updatePlayer(node, player.guildId, {
-				track: { encoded: encoded },
-				paused: false,
-				volume: player.volume ?? state.volume ?? 100,
-			});
-			return true;
-		} catch (error) {
-			const err = error instanceof Error ? error : new Error(String(error));
-			this.debug(`Failed to start track on Lavalink: ${err.message}`);
-			player.emit("playerError", err, track);
-			return this.startNextOnLavalink(player, true);
-		}
+		await this.playerStateManager.waitForVoice(player, this.options.requestTimeoutMs);
+		return null;
 	}
 
 	private async destroyLavalinkPlayer(player: Player): Promise<void> {
@@ -1863,76 +1787,5 @@ export class lavalinkExt extends BaseExtension {
 			state.playing = false;
 			state.paused = false;
 		}
-	}
-
-	private pause(player: Player): boolean {
-		const state = this.playerStateManager.getState(player);
-		if (!state?.node || !state.playing || state.paused) return false;
-		state.paused = true;
-		const track = state.track ?? player.queue.currentTrack ?? undefined;
-		if (track) player.emit("playerPause", track);
-		this.nodeManager
-			.updatePlayer(state.node, player.guildId, { paused: true })
-			.catch((error) => this.debug(`Pause failed`, error));
-		return true;
-	}
-
-	private resume(player: Player): boolean {
-		const state = this.playerStateManager.getState(player);
-		if (!state?.node || !state.paused) return false;
-		state.paused = false;
-		const track = state.track ?? player.queue.currentTrack ?? undefined;
-		if (track) player.emit("playerResume", track);
-		this.nodeManager
-			.updatePlayer(state.node, player.guildId, { paused: false })
-			.catch((error) => this.debug(`Resume failed`, error));
-		return true;
-	}
-
-	private stop(player: Player): boolean {
-		const state = this.playerStateManager.getState(player);
-		if (!state?.node) return false;
-
-		// Clear local state first
-		player.queue.clear();
-		state.track = null;
-		state.playing = false;
-		state.paused = false;
-
-		player.emit("playerStop");
-
-		// Destroy player on Lavalink first, then update (if needed)
-		this.destroyLavalinkPlayer(player).catch((error) =>
-			this.debug(`Failed to destroy Lavalink player during stop for ${player.guildId}`, error),
-		);
-
-		return true;
-	}
-
-	private skip(player: Player): boolean {
-		const state = this.playerStateManager.getState(player);
-		if (!state?.node) return false;
-		state.skipNext = true;
-		this.nodeManager
-			.updatePlayer(state.node, player.guildId, { track: { encoded: null } })
-			.catch((error) => this.debug(`Skip failed`, error));
-		return true;
-	}
-
-	private setVolume(player: Player, volume: number): boolean {
-		if (volume < 0 || volume > 200) return false;
-		const state = this.playerStateManager.getState(player);
-		if (!state?.node) {
-			const original = this.originalMethods.get(player)?.setVolume;
-			return original ? original(volume) : false;
-		}
-		const old = player.volume ?? 100;
-		player.volume = volume;
-		state.volume = volume;
-		player.emit("volumeChange", old, volume);
-		this.nodeManager
-			.updatePlayer(state.node, player.guildId, { volume })
-			.catch((error) => this.debug(`Failed to set volume`, error));
-		return true;
 	}
 }

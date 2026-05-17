@@ -13,6 +13,8 @@
 		"dotenv": "^17.2.2"
 	},
 	"dependencies": {
-		"@ziplayer/plugin": "file:plugins"
+		"@ziplayer/plugin": "file:plugins",
+		"isomorphic-unfetch": "^4.0.2",
+		"spotify-url-info": "^3.3.0"
 	}
 }

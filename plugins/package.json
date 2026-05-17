@@ -1,6 +1,6 @@
 {
 	"name": "@ziplayer/plugin",
-	"version": "0.3.2",
+	"version": "0.3.3",
 	"description": "A modular Discord voice player with plugin system",
 	"keywords": [
 		"ZiPlayer",
@@ -38,6 +38,7 @@
 		"jsdom": "^28.1.0",
 		"mime-types": "^3.0.2",
 		"music-metadata": "^11.12.3",
+		"spotify-url-info": "^3.3.0",
 		"youtubei.js": "^17.0.1",
 		"ziplayer": "^0.3.0"
 	},

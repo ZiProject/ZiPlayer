@@ -96,6 +96,7 @@ export class Player extends EventEmitter {
 	public options: PlayerOptions;
 	public userdata?: Record<string, any>;
 	public _lastActivity: number = Date.now();
+	public _remotePaused = false;
 	public currentResource: AudioResource | null = null;
 	public destroyed: boolean = false;
 
@@ -955,9 +956,10 @@ export class Player extends EventEmitter {
 		await this.applyTrackMiddleware(track);
 		const trackId = track.id || track.url || track.title;
 		const existingStream = this.streamManager.getStreamByTrack(trackId);
-
+		this.playbackMode = PlaybackMode.NATIVE;
 		if (existingStream && !existingStream.destroyed) {
 			this.debug(`[Stream] Using existing stream from manager for: ${track.title}`);
+
 			return { stream: existingStream, type: "arbitrary" };
 		}
 
@@ -1122,6 +1124,7 @@ export class Player extends EventEmitter {
 			const streamId = this.streamManager.registerStream(streamInfo.stream, track, {
 				source: track.source || "stream",
 				isPreload: false,
+				isRemote: !!streamInfo?.remote,
 				priority: 10,
 			});
 
@@ -1641,9 +1644,15 @@ export class Player extends EventEmitter {
 			return false;
 		}
 		this.debug(`[Player] pause called`);
-		if (this.isPlaying && !this.isPaused) {
-			return this.audioPlayer.pause();
+		if (this.playbackMode === PlaybackMode.REMOTE) {
+			if (!this.remoteHandle) return false;
+			void this.remoteHandle.pause().catch((e) => this.debug("[Player] Remote pause:", e));
+			const track = this.queue.currentTrack;
+			if (track) this.emit("playerPause", track);
+			return true;
 		}
+		if (this.isPlaying && !this.isPaused) return this.audioPlayer.pause();
+
 		return false;
 	}
 
@@ -1661,6 +1670,14 @@ export class Player extends EventEmitter {
 			return false;
 		}
 		this.debug(`[Player] resume called`);
+		if (this.playbackMode === PlaybackMode.REMOTE) {
+			if (!this.remoteHandle) return false;
+			void this.remoteHandle.resume().catch((e) => this.debug("[Player] Remote resume:", e));
+			const track = this.queue.currentTrack;
+			if (track) this.emit("playerResume", track);
+			return true;
+		}
+
 		if (this.isPaused) {
 			const result = this.audioPlayer.unpause();
 			if (result) {
@@ -1689,7 +1706,13 @@ export class Player extends EventEmitter {
 			return false;
 		}
 		this.debug(`[Player] stop called`);
-
+		if (this.playbackMode === PlaybackMode.REMOTE) {
+			this.cancelPreload();
+			this.queue.clear();
+			void this.remoteHandle?.stop().catch((e) => this.debug("[Player] Remote stop:", e));
+			this.emit("playerStop");
+			return true;
+		}
 		// Cancel preload when stopping
 		this.cancelPreload();
 
@@ -1731,6 +1754,12 @@ export class Player extends EventEmitter {
 		}
 		this.debug(`[Player] seek called with position: ${position}ms`);
 
+		if (this.playbackMode === PlaybackMode.REMOTE) {
+			if (!this.remoteHandle) return false;
+			await this.remoteHandle.seek(position);
+			return true;
+		}
+
 		const track = this.queue.currentTrack;
 		if (!track) {
 			this.debug(`[Player] No current track to seek`);
@@ -1764,6 +1793,16 @@ export class Player extends EventEmitter {
 			return false;
 		}
 		this.debug(`[Player] skip called with index: ${index}`);
+
+		if (this.playbackMode === PlaybackMode.REMOTE) {
+			if (typeof index === "number" && index >= 0) {
+				for (let i = 0; i < index; i++) this.queue.remove(0);
+			}
+			// signal the remote backend to stop;
+			void this.remoteHandle?.stop().catch((e) => this.debug("[Player] Remote skip:", e));
+			this.playNext();
+			return true;
+		}
 
 		try {
 			if (typeof index === "number" && index >= 0) {
@@ -1974,6 +2013,13 @@ export class Player extends EventEmitter {
 
 		const oldVolume = this.volume;
 		this.volume = volume;
+
+		if (this.playbackMode === PlaybackMode.REMOTE) {
+			void this.remoteHandle?.setVolume(volume).catch((e) => this.debug("[Player] Remote volume:", e));
+			this.emit("volumeChange", oldVolume, volume);
+			return true;
+		}
+
 		const resourceVolume = this.currentResource?.volume;
 
 		if (resourceVolume) {
@@ -2624,6 +2670,27 @@ export class Player extends EventEmitter {
 		};
 	}
 
+	public exitRemoteMode(): void {
+		if (this.playbackMode !== PlaybackMode.REMOTE) return;
+		this.debug("[Player] Exiting REMOTE mode, restoring native playback");
+
+		void this.remoteHandle?.destroy().catch(() => {});
+		this.remoteHandle = undefined;
+		this.playbackMode = PlaybackMode.NATIVE;
+		this._remotePaused = false;
+
+		// Restore preload/crossfade from original options
+		const preloadOptions = this.options.preload ?? {};
+		const autoDisable = preloadOptions.autoDisableInLowPerformance ?? true;
+		this.preloadEnabled = (preloadOptions.enabled ?? true) && !(this.lowPerformanceMode && autoDisable);
+
+		const crossfadeOptions = this.options.crossfade ?? {};
+		const cfAutoDisable = crossfadeOptions.autoDisableInLowPerformance ?? true;
+		this.crossfadeEnabled =
+			typeof crossfadeOptions.enabled === "boolean" ? crossfadeOptions.enabled : (crossfadeOptions.autoEnable ?? true);
+		if (this.lowPerformanceMode && cfAutoDisable) this.crossfadeEnabled = false;
+	}
+
 	/**
 	 * Get serializable state (for manual persistence)
 	 */
@@ -2836,6 +2903,10 @@ export class Player extends EventEmitter {
 			}
 			return this.forwardLeader.isPlaying;
 		}
+		if (this.playbackMode === PlaybackMode.REMOTE) {
+			return !!this.queue.currentTrack; // driven by queue state, not audioPlayer
+		}
+
 		return (
 			this.audioPlayer.state.status === AudioPlayerStatus.Playing || this.audioPlayer.state.status === AudioPlayerStatus.Buffering
 		);
@@ -2844,6 +2915,10 @@ export class Player extends EventEmitter {
 	public get isPaused(): boolean {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
 			return this.forwardLeader?.isPaused ?? false;
+		}
+		if (this.playbackMode === PlaybackMode.REMOTE) {
+			// Extension tracks pause state via handle; Player exposes a flag
+			return this._remotePaused;
 		}
 		return this.audioPlayer.state.status === AudioPlayerStatus.Paused;
 	}
