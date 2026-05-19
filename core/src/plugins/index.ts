@@ -47,8 +47,99 @@ function normalize(str: string): string {
 		.trim();
 }
 
-const MUSIC_KEYWORDS = ["official", "mv", "audio", "lyrics", "remix", "cover", "ft", "feat", "prod", "music video"];
+function getContentQualityScore(track: Track): number {
+	const title = normalize(track.title);
+
+	let score = 0;
+
+	// ưu tiên nhạc official
+	for (const k of OFFICIAL_KEYWORDS) {
+		if (title.includes(k)) score += 80;
+	}
+
+	// nhạc thường
+	for (const k of MUSIC_KEYWORDS) {
+		if (title.includes(k)) score += 10;
+	}
+
+	// phạt content rác
+	for (const k of BAD_KEYWORDS) {
+		if (title.includes(k)) score -= 120;
+	}
+
+	// youtube verified / artist channel
+	const author = normalize(track?.author || track?.metadata?.author || "");
+
+	if (author.includes("vevo") || author.includes("official") || author.includes("topic")) {
+		score += 20;
+	}
+
+	// phạt video quá dài (podcast/review)
+	if (track.duration && track.duration > 15 * 60 * 1000) {
+		score -= 20;
+	}
+
+	return score;
+}
+function dedupeTracks(tracks: Track[]): Track[] {
+	const unique = new Map<string, Track>();
+
+	for (const track of tracks) {
+		const key = normalize(`${track.title} ${track?.author || track?.metadata?.author || ""}`);
+
+		const existing = unique.get(key);
+
+		if (!existing) {
+			unique.set(key, track);
+			continue;
+		}
+
+		const oldScore = getContentQualityScore(existing);
+		const newScore = getContentQualityScore(track);
+
+		if (newScore > oldScore) {
+			unique.set(key, track);
+		}
+	}
+
+	return [...unique.values()];
+}
+
+// const MUSIC_KEYWORDS = ["official", "mv", "audio", "lyrics", "remix", "cover", "ft", "feat", "prod", "music video"];
 const NON_MUSIC_KEYWORDS = ["reaction", "review", "podcast", "interview", "vlog", "live stream", "news", "tiktok"];
+
+const OFFICIAL_KEYWORDS = ["official", "official video", "official audio", "music video", "mv", "audio", "visualizer", "lyrics"];
+
+const MUSIC_KEYWORDS = [
+	"song",
+	"track",
+	"remix",
+	"cover",
+	"instrumental",
+	"karaoke",
+	"nightcore",
+	"sped up",
+	"slowed",
+	"feat",
+	"ft",
+];
+
+const BAD_KEYWORDS = [
+	"reaction",
+	"review",
+	"podcast",
+	"interview",
+	"vlog",
+	"livestream",
+	"live stream",
+	"news",
+	"analysis",
+	"commentary",
+	"tiktok",
+	"shorts",
+	"funny",
+	"meme",
+];
 
 function detectContentType(title: string): number {
 	const t = title.toLowerCase();
@@ -74,6 +165,99 @@ function scoreTrack(base: Track, candidate: Track): number {
 	score += tokenOverlap(titleA, titleB) * 30;
 	score += detectContentType(candidate.title);
 	return score;
+}
+
+type ExtractedMediaId = {
+	platform: "youtube" | "spotify" | "soundcloud" | "unknown";
+	id: string;
+	url: string;
+};
+
+export function extractMediaId(input: string): ExtractedMediaId | null {
+	try {
+		const url = new URL(input);
+
+		const host = url.hostname.replace(/^www\./, "").toLowerCase();
+
+		// =====================================================
+		// YOUTUBE
+		// =====================================================
+		if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com") {
+			const videoId = url.searchParams.get("v");
+
+			if (videoId) {
+				return {
+					platform: "youtube",
+					id: videoId,
+					url: `https://www.youtube.com/watch?v=${videoId}`,
+				};
+			}
+		}
+
+		if (host === "youtu.be") {
+			const id = url.pathname.slice(1);
+
+			if (id) {
+				return {
+					platform: "youtube",
+					id,
+					url: `https://www.youtube.com/watch?v=${id}`,
+				};
+			}
+		}
+
+		// =====================================================
+		// SPOTIFY
+		// =====================================================
+		if (host === "open.spotify.com") {
+			const parts = url.pathname.split("/").filter(Boolean);
+
+			// track/playlist/album/episode/show
+			if (parts.length >= 2) {
+				const [, id] = parts;
+
+				return {
+					platform: "spotify",
+					id,
+					url: `https://open.spotify.com/${parts[0]}/${id}`,
+				};
+			}
+		}
+
+		// spotify uri
+		if (input.startsWith("spotify:")) {
+			const parts = input.split(":");
+
+			if (parts.length >= 3) {
+				return {
+					platform: "spotify",
+					id: parts[2],
+					url: `https://open.spotify.com/${parts[1]}/${parts[2]}`,
+				};
+			}
+		}
+
+		// =====================================================
+		// SOUNDCLOUD
+		// =====================================================
+		if (host === "soundcloud.com") {
+			const path = url.pathname.split("/").filter(Boolean);
+
+			if (path.length >= 2) {
+				const id = `${path[0]}/${path[1]}`;
+
+				return {
+					platform: "soundcloud",
+					id,
+					url: `https://soundcloud.com/${id}`,
+				};
+			}
+		}
+
+		return null;
+	} catch {
+		return null;
+	}
 }
 
 interface SearchCacheEntry {
@@ -219,11 +403,21 @@ export class PluginManager {
 				exactMatch: true,
 			};
 		}
+		const queryMedia = extractMediaId(query);
+		const trackMedia = extractMediaId(track.url || "");
 
+		if (queryMedia && trackMedia && queryMedia.platform === trackMedia.platform && queryMedia.id === trackMedia.id) {
+			return {
+				score: 100,
+				reason: `${queryMedia.platform} exact ID match`,
+				matchedBy: "url",
+				exactMatch: true,
+			};
+		}
 		// 2. Evaluate title match exactly - 100%
 		if (normalizedTitle === normalizedQuery) {
 			return {
-				score: 100,
+				score: 90 + getContentQualityScore(track),
 				reason: "Title matches exactly",
 				matchedBy: "title",
 				exactMatch: true,
@@ -232,11 +426,9 @@ export class PluginManager {
 
 		// 3. Evaluate title contains query or vice versa - 70-90%
 		if (normalizedTitle.includes(normalizedQuery) && normalizedQuery.length > 5) {
-			const ratio = normalizedQuery.length / normalizedTitle.length;
-			const score = 70 + Math.min(20, Math.floor(ratio * 20));
 			return {
-				score,
-				reason: `Title contains the query "${query}" (${Math.floor(ratio * 100)}% coverage)`,
+				score: 75 + getContentQualityScore(track),
+				reason: `Title contains query`,
 				matchedBy: "title",
 				exactMatch: false,
 			};
@@ -257,10 +449,12 @@ export class PluginManager {
 		const simScore = similarity(normalizedTitle, normalizedQuery);
 		const tokenScore = tokenOverlap(normalizedTitle, normalizedQuery);
 		const contentTypeBonus = detectContentType(track.title);
-
+		const qualityScore = getContentQualityScore(track);
 		// Tính điểm tổng hợp: similarity 60%, token overlap 30%, content type 10%
-		let finalScore = simScore * 60 + tokenScore * 30 + (contentTypeBonus / 10) * 10;
-		finalScore = Math.min(70, Math.max(0, Math.floor(finalScore)));
+
+		let finalScore = simScore * 35 + tokenScore * 25 + qualityScore * 1.5;
+
+		finalScore = Math.max(0, Math.min(100, Math.floor(finalScore)));
 
 		if (finalScore >= 20) {
 			let reason = `Similarity ${Math.floor(simScore * 100)}%`;
@@ -284,83 +478,6 @@ export class PluginManager {
 			matchedBy: "none",
 			exactMatch: false,
 		};
-	}
-
-	/**
-	 * Evaluate and rank all search results from a plugin
-	 * @param tracks List of tracks to evaluate
-	 * @param query Original query
-	 * @param isPlaylistResult Whether this is a playlist result (skip per-track evaluation)
-	 * @returns List of tracks with scores, sorted by score
-	 */
-	private evaluateAndRankResults(
-		tracks: Track[],
-		query: string,
-		isPlaylistResult: boolean = false,
-	): { track: Track; score: SearchScore }[] {
-		// 🔥 Nếu là playlist result, giữ nguyên tất cả tracks với điểm 100%
-		if (isPlaylistResult && tracks.length > 0) {
-			this.debug(`[Evaluation] Playlist detected - keeping all ${tracks.length} tracks`);
-
-			return tracks.map((track) => ({
-				track,
-				score: {
-					score: 100,
-					reason: "Part of playlist",
-					matchedBy: "playlist",
-					exactMatch: false,
-				},
-			}));
-		}
-
-		const evaluated = tracks.map((track) => ({
-			track,
-			score: this.evaluateTrackMatch(track, query),
-		}));
-
-		// Sort by score in descending order (cao xuống thấp)
-		evaluated.sort((a, b) => b.score.score - a.score.score);
-
-		// Log evaluation results
-		for (const item of evaluated.slice(0, 5)) {
-			this.debug(`[Evaluation] "${item.track.title}" -> ${item.score.score}% (${item.score.reason})`);
-		}
-
-		return evaluated;
-	}
-	/**
-	 * Select the best result from multiple plugins
-	 * @param allResults Results from various plugins
-	 * @param query Original query
-	 * @returns The best result
-	 */
-	private selectBestResult(allResults: Map<string, SearchResult>, query: string): SearchResult | null {
-		let bestResult: SearchResult | null = null;
-		let bestScore = -1;
-
-		for (const [source, result] of allResults) {
-			if (!result.tracks || result.tracks.length === 0) continue;
-
-			// Evaluate the first (best) track of this result
-			const bestTrackScore = this.evaluateTrackMatch(result.tracks[0], query);
-
-			if (bestTrackScore.score > bestScore) {
-				bestScore = bestTrackScore.score;
-				bestResult = {
-					...result,
-					source,
-					score: bestTrackScore,
-				};
-			}
-
-			this.debug(`[Selection] Plugin ${source} -> best match: ${bestTrackScore.score}%`);
-		}
-
-		if (bestResult && bestResult.score) {
-			this.debug(`[Selection] Selected result from ${bestResult.source} with score ${bestResult.score.score}%`);
-		}
-
-		return bestResult;
 	}
 
 	/**
@@ -407,202 +524,69 @@ export class PluginManager {
 
 	private async searchInternal(query: string, requestedBy: string): Promise<SearchResult | null> {
 		const timeoutMs = this.options.extractorTimeout ?? 15000;
-		const minScore = this.options.searchMinScore ?? 30;
 
-		// Get all plugins that support search
-		const allSearchPlugins = this.getAll()
-			.filter((p) => typeof p.search === "function")
-			.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+		const plugins = this.getAll().filter((p) => typeof p.search === "function");
 
-		if (allSearchPlugins.length === 0) {
-			this.debug(`[Search] No plugins support search`);
+		if (!plugins.length) return null;
+
+		const settled = await Promise.allSettled(
+			plugins.map(async (plugin) => {
+				try {
+					const result = await withTimeout(plugin.search(query, requestedBy), timeoutMs, `Search timeout for ${plugin.name}`);
+
+					if (!result?.tracks?.length) {
+						return [];
+					}
+
+					return result.tracks.map((track) => ({
+						...track,
+						source: plugin.name,
+					}));
+				} catch (e) {
+					this.debug(`[Search] ${plugin.name} failed`, e);
+
+					return [];
+				}
+			}),
+		);
+
+		const allTracks: Track[] = [];
+
+		for (const result of settled) {
+			if (result.status === "fulfilled") {
+				allTracks.push(...result.value);
+			}
+		}
+
+		if (!allTracks.length) {
 			return null;
 		}
 
-		const priorityGroups = new Map<number, BasePlugin[]>();
-		for (const plugin of allSearchPlugins) {
-			const priority = plugin.priority ?? 0;
-			if (!priorityGroups.has(priority)) {
-				priorityGroups.set(priority, []);
-			}
-			priorityGroups.get(priority)!.push(plugin);
-		}
+		// dedupe
+		const deduped = dedupeTracks(allTracks);
 
-		const sortedPriorities = Array.from(priorityGroups.keys()).sort((a, b) => b - a);
+		// score + sort
+		const ranked = deduped
+			.map((track) => ({
+				track,
+				score: this.evaluateTrackMatch(track, query),
+			}))
+			.sort((a, b) => b.score.score - a.score.score);
 
-		this.debug(
-			`[Search] Priority groups: ${sortedPriorities.map((p) => `${p} (${priorityGroups.get(p)!.length} plugins)`).join(", ")}`,
-		);
+		const tracks = ranked.map((x) => x.track);
 
-		const allResults = new Map<string, SearchResult>();
-		const errors: Array<{ plugin: string; error: Error }> = [];
+		const finalResult: SearchResult = {
+			query,
+			tracks,
+			source: "multi-search",
+			score: ranked[0]?.score,
+		};
 
-		let foundHighQualityResult = false;
-		let bestResultOverall: SearchResult | null = null;
-		let bestScoreOverall = -1;
+		this.setCachedSearch(query, requestedBy, finalResult);
 
-		// 🔥 PROCESS EACH PRIORITY GROUP
-		for (const priority of sortedPriorities) {
-			const groupPlugins = priorityGroups.get(priority)!;
-			this.debug(`[Search] Processing priority group ${priority} with ${groupPlugins.length} plugins`);
-
-			const groupResults = new Map<string, SearchResult>();
-
-			// Process all plugins in current priority group
-			for (const plugin of groupPlugins) {
-				// Skip if we already found a high-quality result (>=90%) from previous group
-				if (foundHighQualityResult) {
-					this.debug(`[Search] Skipping plugin ${plugin.name} (priority ${priority}) - already have high-quality result`);
-					break;
-				}
-
-				try {
-					this.debug(`[Search] Trying plugin: ${plugin.name} (priority: ${priority})`);
-
-					const startTime = Date.now();
-					const result = await withTimeout(plugin.search(query, requestedBy), timeoutMs, `Search timeout for ${plugin.name}`);
-
-					const duration = Date.now() - startTime;
-
-					if (result && Array.isArray(result.tracks) && result.tracks.length > 0) {
-						// 🔥 KIỂM TRA XEM CÓ PLAYLIST HAY KHÔNG
-						const hasPlaylist = !!result.playlist;
-						const isPlaylistResult = hasPlaylist && result.tracks.length > 1;
-
-						// Evaluate and rank results from this plugin
-						const evaluatedTracks = this.evaluateAndRankResults(result.tracks, query, isPlaylistResult);
-
-						const bestScore = evaluatedTracks[0]?.score.score || 0;
-
-						// Filter tracks below minimum score (chỉ áp dụng cho non-playlist)
-						let validTracks: Track[];
-
-						if (isPlaylistResult) {
-							// 🔥 PLAYLIST: Giữ nguyên tất cả tracks, không lọc theo score
-							validTracks = evaluatedTracks.map((item) => item.track);
-							this.debug(`[Search] Plugin ${plugin.name} returned playlist with ${validTracks.length} tracks (keeping all)`);
-						} else {
-							// Single track search: filter by min score
-							validTracks = evaluatedTracks.filter((item) => item.score.score >= minScore).map((item) => item.track);
-							this.debug(
-								`[Search] Plugin ${plugin.name} returned ${validTracks.length}/${result.tracks.length} valid tracks in ${duration}ms (best: ${bestScore}%)`,
-							);
-						}
-
-						if (validTracks.length > 0) {
-							const pluginResult: SearchResult = {
-								tracks: validTracks,
-								playlist: result.playlist,
-								query,
-								score: evaluatedTracks[0].score,
-								source: plugin.name,
-							};
-
-							groupResults.set(plugin.name, pluginResult);
-							allResults.set(plugin.name, pluginResult);
-
-							// 🔥 Nếu là playlist hoặc kết quả chất lượng cao, dừng search
-							if (isPlaylistResult || bestScore >= 90) {
-								foundHighQualityResult = true;
-								bestResultOverall = pluginResult;
-								bestScoreOverall = bestScore;
-								this.debug(`[Search] ${isPlaylistResult ? "Playlist" : "High-quality result"} found, stopping search`);
-								break;
-							}
-
-							// Track best result overall
-							if (bestScore > bestScoreOverall) {
-								bestScoreOverall = bestScore;
-								bestResultOverall = pluginResult;
-							}
-						} else {
-							this.debug(
-								`[Search] Plugin ${plugin.name} returned ${result.tracks.length} tracks but none passed min score ${minScore}`,
-							);
-						}
-					} else {
-						this.debug(`[Search] Plugin ${plugin.name} returned no tracks in ${duration}ms`);
-					}
-				} catch (error) {
-					const err = error instanceof Error ? error : new Error(String(error));
-					this.debug(`[Search] Plugin ${plugin.name} failed:`, err.message);
-					errors.push({ plugin: plugin.name, error: err });
-				}
-			}
-
-			// 🔥 AFTER PROCESSING CURRENT GROUP, DECIDE WHETHER TO CONTINUE
-			if (foundHighQualityResult) {
-				this.debug(`[Search] Found high-quality result (>=90%) in priority group ${priority}, stopping search`);
-				break;
-			}
-
-			// If current group has at least one valid result, check if we should continue to lower priority groups
-			if (groupResults.size > 0) {
-				// Get best score from this group
-				const bestGroupScore = Math.max(...Array.from(groupResults.values()).map((r) => r.score?.score || 0));
-
-				// If best score in this group is >= 70%, don't try lower priority groups
-				if (bestGroupScore >= 70) {
-					this.debug(`[Search] Priority group ${priority} has results with score ${bestGroupScore}% (>=70%), stopping search`);
-					break;
-				}
-
-				// If best score is between 50-70%, continue to lower groups but log it
-				if (bestGroupScore >= 50) {
-					this.debug(
-						`[Search] Priority group ${priority} has results with score ${bestGroupScore}% (50-70%), will try lower priority groups for better results`,
-					);
-				} else {
-					this.debug(
-						`[Search] Priority group ${priority} has low quality results (${bestGroupScore}% <50%), trying lower priority groups`,
-					);
-				}
-			} else {
-				this.debug(`[Search] Priority group ${priority} produced no valid results, trying lower priority group`);
-			}
-		}
-
-		// 🔥 SELECT BEST RESULT
-		if (bestResultOverall) {
-			// Cache the result
-			this.setCachedSearch(query, requestedBy, bestResultOverall);
-
-			// Log summary
-			const allTracksCount = Array.from(allResults.values()).reduce((sum, r) => sum + r.tracks.length, 0);
-			this.debug(
-				`[Search] Complete - Best from ${bestResultOverall.source}: ${bestResultOverall.tracks.length} tracks (${bestResultOverall.score?.score || 0}%), Total candidates: ${allTracksCount}`,
-			);
-
-			return bestResultOverall;
-		}
-
-		// 🔥 FALLBACK: If we have any results that didn't meet min score, return the best one
-		if (allResults.size === 0 && errors.length > 0) {
-			// Try to get best result from allResults even if below min score
-			let fallbackResult: SearchResult | null = null;
-			let fallbackScore = -1;
-
-			for (const [source, result] of allResults) {
-				const score = result.score?.score || 0;
-				if (score > fallbackScore) {
-					fallbackScore = score;
-					fallbackResult = result;
-				}
-			}
-
-			if (fallbackResult) {
-				this.debug(`[Search] Using fallback result with score ${fallbackScore}% (below minimum ${minScore}%)`);
-				return fallbackResult;
-			}
-
-			this.debug(`[Search] All ${allSearchPlugins.length} plugins failed for query: ${query}`);
-			const lastError = errors[errors.length - 1]?.error;
-			if (lastError) throw lastError;
-		}
-
-		return null;
+		this.debug(`[Search] Aggregated ${tracks.length} tracks from ${plugins.length} plugins`);
+		return finalResult;
 	}
-
 	/**
 	 * Get plugin priority groups info for debugging
 	 */

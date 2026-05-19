@@ -67,6 +67,7 @@ export interface Track {
 	source: string;
 	metadata?: Record<string, any>;
 	isLive?: boolean;
+	author?: string;
 }
 
 /**
