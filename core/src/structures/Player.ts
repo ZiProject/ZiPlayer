@@ -2475,7 +2475,6 @@ export class Player extends EventEmitter {
 				}
 			}
 
-
 			let streaminfo: StreamInfo | null = null;
 
 			if (reuseStream) {

@@ -335,7 +335,7 @@ export class StreamManager extends EventEmitter {
 		managed.lastAccessed = Date.now();
 		return managed.stream;
 	}
-	
+
 	/**
 	 * Update stream metadata
 	 */
