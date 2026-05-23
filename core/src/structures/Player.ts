@@ -118,6 +118,7 @@ export class Player extends EventEmitter {
 
 	private skipLoop = false;
 	private refreshLock = false;
+	private seekInProgress = false;
 	private remoteHandle: StreamInfo["handle"];
 
 	private currentSlot: StreamSlot = {
@@ -882,46 +883,31 @@ export class Player extends EventEmitter {
 	 */
 	private async createResource(streamInfo: StreamInfo, track: Track, position: number = 0): Promise<AudioResource> {
 		const filterString = this.filter.getFilterString();
+		this.debug(`[Player] Creating AudioResource — filters: ${filterString || "none"}, seek: ${position}ms`);
 
-		this.debug(`[Player] Creating AudioResource with filters: ${filterString || "none"}, seek: ${position}ms`);
+		// -1 = sentinel "no seek requested"
+		const seekArg = position > 0 ? position : -1;
 
-		try {
-			let stream: Readable = streamInfo.stream;
-			// Apply filters and seek if needed
-			if (filterString || position > 0) {
-				stream = await this.filter.applyFiltersAndSeek(streamInfo.stream, position);
-				streamInfo.type = StreamType.Arbitrary;
-			}
+		if (filterString || position > 0) {
+			// throws on failure — do NOT fall back to the already-piped stream
+			const processedStream = await this.filter.applyFiltersAndSeek(streamInfo.stream, seekArg);
+			streamInfo.type = StreamType.Arbitrary as any;
 
-			// Create AudioResource with better error handling
-			const resource = createAudioResource(stream, {
+			return createAudioResource(processedStream, {
 				metadata: track,
-				inputType:
-					streamInfo.type === "webm/opus" ? StreamType.WebmOpus
-					: streamInfo.type === "ogg/opus" ? StreamType.OggOpus
-					: StreamType.Arbitrary,
+				inputType: StreamType.Arbitrary,
 				inlineVolume: true,
 			});
-
-			return resource;
-		} catch (error) {
-			this.debug(`[Player] Error creating AudioResource with filters+seek:`, error);
-			// Fallback to basic AudioResource
-			try {
-				const resource = createAudioResource(streamInfo.stream, {
-					metadata: track,
-					inputType:
-						streamInfo.type === "webm/opus" ? StreamType.WebmOpus
-						: streamInfo.type === "ogg/opus" ? StreamType.OggOpus
-						: StreamType.Arbitrary,
-					inlineVolume: true,
-				});
-				return resource;
-			} catch (fallbackError) {
-				this.debug(`[Player] Fallback AudioResource creation failed:`, fallbackError);
-				throw fallbackError;
-			}
 		}
+
+		return createAudioResource(streamInfo.stream, {
+			metadata: track,
+			inputType:
+				streamInfo.type === "webm/opus" ? StreamType.WebmOpus
+				: streamInfo.type === "ogg/opus" ? StreamType.OggOpus
+				: StreamType.Arbitrary,
+			inlineVolume: true,
+		});
 	}
 
 	private mergeTrackPreserveRef(target: Track, source: Track): void {
@@ -1778,8 +1764,11 @@ export class Player extends EventEmitter {
 			return false;
 		}
 
-		await this.refreshPlayerResource(true, position);
-
+		const ok = await this.refreshPlayerResource(true, position);
+		if (!ok) {
+			this.debug(`[Player] Seek failed at position: ${position}ms`);
+			return false;
+		}
 		return true;
 	}
 
@@ -1962,10 +1951,10 @@ export class Player extends EventEmitter {
 	 * console.log(`Loop mode: ${loopMode}`);
 	 */
 	loop(mode?: LoopMode | number): LoopMode {
-		this.debug(`[Player] loop called with mode: ${mode}`);
-
 		if (typeof mode === "number") {
 			// Number mode: convert to text mode
+			this.debug(`[Player] loop called with mode: ${mode}`);
+
 			switch (mode) {
 				case 0:
 					return this.queue.loop("off");
@@ -2417,63 +2406,128 @@ export class Player extends EventEmitter {
 		if (!applyToCurrent || !this.queue.currentTrack || !(this.isPlaying || this.isPaused)) {
 			return false;
 		}
-		if (this.refreshLock) return false;
+		if (this.refreshLock) {
+			this.debug(`[Player] refreshPlayerResource skipped — lock held`);
+			return false;
+		}
+
+		// Lock before anything so stateChange idle sees it when stop() fires.
 		this.refreshLock = true;
+
+		// Clear any existing stuckTimer from the previous playback cycle so it
+		// cannot fire while we are mid-refresh.
+		if (this.stuckTimer) {
+			clearTimeout(this.stuckTimer);
+			this.stuckTimer = null;
+		}
+
 		try {
 			const track = this.queue.currentTrack;
 			this.debug(`[Player] Refreshing player resource for track: ${track.title}`);
 
-			// Get current position for seeking
-			const currentPosition = position > 0 ? position : this.currentResource?.playbackDuration || 0;
+			const currentPosition = position >= 0 ? position : (this.currentResource?.playbackDuration ?? 0);
+			const wasPaused = this.isPaused;
+			const playbackDuration = this.currentResource?.playbackDuration ?? 0;
 
-			const streaminfo = await this.getStream(track);
+			// Reuse is only viable for forward seeks (stream is sequential).
+			const isForwardSeek = position < 0 || position >= playbackDuration;
+			const currentStreamId = this.currentSlot.streamId;
+
+			// Try to grab the live source stream for reuse.
+			// getRawStream accepts "paused" streams (discordjs/voice pauses source streams on NoSubscriberBehavior); getStream would reject them.
+			let reuseStream: Readable | null = null;
+			if (isForwardSeek && currentStreamId) {
+				reuseStream = this.streamManager.getRawStream(currentStreamId);
+				if (reuseStream) {
+					this.debug(`[Player] Will reuse source stream for seek (pos: ${currentPosition}ms)`);
+				}
+			}
+
+			// ── CRITICAL: unpipe BEFORE stop ──────────────────────────────────────
+			// stop() kills discordjs/voice internal FFmpeg → EPIPE on source stream.
+			// unpipe() first disconnects our stream cleanly before that happens.
+			if (reuseStream) {
+				reuseStream.unpipe();
+			}
+
+			// Remove StreamManager listeners.
+			// forceDestroy=false when reusing so the Readable object stays alive.
+			if (currentStreamId) {
+				this.streamManager.unregisterStream(currentStreamId, !reuseStream);
+				this.currentSlot.streamId = null;
+			}
+
+			// Stop the AudioPlayer.
+			// stateChange (playing→idle) fires; refreshLock=true guards it (v4 fix).
+			this.audioPlayer.stop(true);
+			this.currentResource = null;
+			this.currentSlot.resource = null;
+			this.currentSlot.isValid = false;
+
+			// One event-loop tick: lets deferred stream events settle.
+			await new Promise<void>((resolve) => setImmediate(resolve));
+
+			// Verify the reuse stream survived stop().
+			if (reuseStream) {
+				if (reuseStream.destroyed || (reuseStream as any).readable === false) {
+					this.debug(`[Player] Source stream did not survive stop — falling back to fresh stream`);
+					reuseStream = null;
+				}
+			}
+
+
+			let streaminfo: StreamInfo | null = null;
+
+			if (reuseStream) {
+				streaminfo = { stream: reuseStream, type: "arbitrary" };
+			} else {
+				// Clear caches so we don't get the dead Readable back.
+				this.pluginManager.clearStreamCache();
+				this.extensionManager.clearCache("stream");
+				this.debug(`[Player] Fetching fresh stream${!isForwardSeek ? " (backward seek)" : " (reuse failed)"}`);
+				streaminfo = await this.getStream(track);
+			}
+
 			if (!streaminfo?.stream) {
-				this.debug(`[Player] No stream to refresh`);
+				this.debug(`[Player] No stream available for refresh`);
 				return false;
 			}
 
-			// Create AudioResource with filters and seek to current position
+			// Build AudioResource (input-side FFmpeg seek via FilterManager).
 			const resource = await this.createResource(streaminfo, track, currentPosition);
 
-			// Stop current playback and destroy old resource/stream
-			const wasPlaying = this.isPlaying;
-			const wasPaused = this.isPaused;
-
-			this.audioPlayer.stop();
-
-			// Properly destroy the old resource and stream
-			try {
-				if (this.currentResource) {
-					const oldStream = (this.currentResource as any)._readableState?.stream || (this.currentResource as any).stream;
-					if (oldStream && typeof oldStream.destroy === "function") {
-						oldStream.destroy();
-					}
-				}
-			} catch (error) {
-				this.debug(`[Player] Error destroying old stream in refreshPlayerResource:`, error);
-			} finally {
-				this.refreshLock = false;
-			}
-
+			// Register the source stream.
+			const newStreamId = this.streamManager.registerStream(streaminfo.stream, track, {
+				source: track.source || "stream",
+				isPreload: false,
+				priority: 10,
+			});
+			this.currentSlot.resource = resource;
+			this.currentSlot.track = track;
+			this.currentSlot.streamId = newStreamId;
+			this.currentSlot.isValid = true;
 			this.currentResource = resource;
 
-			// Subscribe to new resource
+			// ── Set seek flag BEFORE play so the Buffering handler sees it ────────
+			if (position >= 0) {
+				this.seekInProgress = true;
+			}
+
 			if (this.connection) {
 				this.connection.subscribe(this.audioPlayer);
 				this.audioPlayer.play(resource);
 			}
+			if (wasPaused) this.audioPlayer.pause();
 
-			// Restore playing state
-			if (wasPaused) {
-				this.audioPlayer.pause();
-			}
-
-			this.debug(`[Player] Successfully applied filter to current track at position ${currentPosition}ms`);
+			this.debug(`[Player] Resource refreshed at position ${currentPosition}ms`);
 			return true;
 		} catch (error) {
-			this.debug(`[Player] Error applying filter to current track:`, error);
-			// Filter was still added to active filters, so return true
-			return true;
+			this.debug(`[Player] refreshPlayerResource error:`, error);
+			this.seekInProgress = false; // ensure flag is cleared on failure
+			this.emit("playerError", error as Error, this.queue.currentTrack ?? undefined);
+			return false;
+		} finally {
+			this.refreshLock = false; // always released
 		}
 	}
 
@@ -2529,7 +2583,13 @@ export class Player extends EventEmitter {
 		this.audioPlayer.on("stateChange", (oldState, newState) => {
 			if (this.destroyed) return;
 			this.debug(`[Player] AudioPlayer stateChange from ${oldState.status} to ${newState.status}`);
+
+			// ── Idle: track ended naturally ───────────────────────────────────────
 			if (newState.status === AudioPlayerStatus.Idle && oldState.status !== AudioPlayerStatus.Idle) {
+				if (this.refreshLock) {
+					this.debug(`[Player] AudioPlayer went idle during resource refresh — skipping trackEnd/playNext`);
+					return;
+				}
 				// Track ended
 				const track = this.queue.currentTrack;
 				if (track) {
@@ -2540,12 +2600,19 @@ export class Player extends EventEmitter {
 					}
 				}
 				void this.playNext();
+				// ── Playing: started or resumed ───────────────────────────────────────
 			} else if (
 				newState.status === AudioPlayerStatus.Playing &&
 				(oldState.status === AudioPlayerStatus.Idle || oldState.status === AudioPlayerStatus.Buffering)
 			) {
 				// Track started
 				this.clearLeaveTimeout();
+
+				if (this.seekInProgress) {
+					this.debug(`[Player] Seek complete — audio output started`);
+					this.seekInProgress = false;
+				}
+
 				const track = this.queue.currentTrack;
 				if (track) {
 					this.debug(`[Player] Track started: ${track.title}`);
@@ -2562,6 +2629,7 @@ export class Player extends EventEmitter {
 						}
 					}
 				}
+				// ── Paused ────────────────────────────────────────────────────────────
 			} else if (newState.status === AudioPlayerStatus.Paused && oldState.status !== AudioPlayerStatus.Paused) {
 				const track = this.queue.currentTrack;
 				if (track) {
@@ -2571,6 +2639,7 @@ export class Player extends EventEmitter {
 						fp.emit("playerPause", track);
 					}
 				}
+				// ── Resumed from pause ────────────────────────────────────────────────
 			} else if (newState.status !== AudioPlayerStatus.Paused && oldState.status === AudioPlayerStatus.Paused) {
 				const track = this.queue.currentTrack;
 				if (track) {
@@ -2582,8 +2651,15 @@ export class Player extends EventEmitter {
 				}
 			} else if (newState.status === AudioPlayerStatus.AutoPaused) {
 				this.debug(`[Player] AudioPlayerStatus.AutoPaused`);
+				// ── Buffering: start stuck detector ───────────────────────────────────
 			} else if (newState.status === AudioPlayerStatus.Buffering) {
 				this.debug(`[Player] AudioPlayerStatus.Buffering`);
+
+				if (this.seekInProgress) {
+					this.debug(`[Player] Buffering during seek — stuckTimer suppressed`);
+					return;
+				}
+
 				this.lastDuration = this.currentResource?.playbackDuration || 0;
 				this.stuckTimer = setTimeout(() => {
 					if (this.currentResource?.playbackDuration === this.lastDuration) {

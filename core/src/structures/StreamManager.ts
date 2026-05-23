@@ -321,6 +321,22 @@ export class StreamManager extends EventEmitter {
 	}
 
 	/**
+	 * Like getStream() but accepts "paused" streams too.
+	 * Used by refreshPlayerResource to reuse a source stream during seek.
+	 * discordjs/voice pauses source streams on NoSubscriberBehavior which would
+	 * make getStream() return null and force an unnecessary network fetch.
+	 */
+	getRawStream(streamId: string): Readable | null {
+		const managed = this.streams.get(streamId);
+		if (!managed) return null;
+		// Only reject truly terminal states.
+		if (managed.status === "destroyed" || managed.status === "ended" || managed.status === "error") return null;
+		if (managed.stream.destroyed) return null;
+		managed.lastAccessed = Date.now();
+		return managed.stream;
+	}
+	
+	/**
 	 * Update stream metadata
 	 */
 	updateMetadata(streamId: string, metadata: Partial<ManagedStream["metadata"]>): boolean {
