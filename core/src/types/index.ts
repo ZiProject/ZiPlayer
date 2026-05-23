@@ -200,6 +200,7 @@ export interface PlayerOptions {
 	quality?: "high" | "low";
 	selfDeaf?: boolean;
 	selfMute?: boolean;
+	group?: string;
 	/**
 	 * Timeout in milliseconds for plugin operations (search, streaming, etc.)
 	 * to prevent long-running tasks from blocking the player.

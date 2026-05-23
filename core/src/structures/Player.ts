@@ -1410,15 +1410,21 @@ export class Player extends EventEmitter {
 	 * @example
 	 * await player.connect(voiceChannel);
 	 */
-	async connect(channel: VoiceChannel): Promise<VoiceConnection> {
+	async connect(
+		channel: VoiceChannel,
+		options: { group: string; selfDeaf: boolean; selfMute: boolean },
+	): Promise<VoiceConnection> {
 		try {
 			this.debug(`[Player] Connecting to voice channel: ${channel.id}`);
+
 			const connection = joinVoiceChannel({
+				...options,
 				channelId: channel.id,
 				guildId: channel.guildId,
 				adapterCreator: channel.guild.voiceAdapterCreator as any,
-				selfDeaf: this.options.selfDeaf ?? true,
-				selfMute: this.options.selfMute ?? false,
+				selfDeaf: options?.selfDeaf ?? this.options?.selfDeaf ?? true,
+				selfMute: options?.selfMute ?? this.options?.selfMute ?? false,
+				group: options?.group ?? this.options?.group ?? "Ziplayer",
 			});
 
 			await entersState(connection, VoiceConnectionStatus.Ready, 50_000);
