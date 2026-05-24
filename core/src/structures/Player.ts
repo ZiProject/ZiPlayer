@@ -172,6 +172,7 @@ export class Player extends EventEmitter {
 	private readonly SEARCH_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 	private ttsPlayer: DiscordAudioPlayer | null = null;
 	private lastDuration: number = 0;
+	private seekOffset: number = 0;
 
 	constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
 		super();
@@ -277,7 +278,12 @@ export class Player extends EventEmitter {
 		this.preloadManager = new PreloadManager({
 			streamManager: this.streamManager,
 			debug: this.debug.bind(this),
-			getNextTrack: () => this.queue.nextTrack,
+			getNextTrack: () => {
+				if (this.queue.loop() === "track") {
+					return this.queue.currentTrack;
+				}
+				return this.queue.nextTrack;
+			},
 			getStream: (track) => this.getStream(track),
 			isDestroyed: () => this.destroyed,
 			isEnabled: () => this.preloadEnabled,
@@ -1042,8 +1048,6 @@ export class Player extends EventEmitter {
 			if (this.preloadManager.hasValidPreload(track)) {
 				this.debug(`[Player] Using preloaded stream for: ${track.title}`);
 
-				this.audioPlayer.stop(true);
-
 				const oldStreamId = this.currentSlot.streamId;
 				if (oldStreamId && this.streamManager) {
 					setTimeout(() => {
@@ -1058,6 +1062,7 @@ export class Player extends EventEmitter {
 				if (!currentResource) {
 					return false;
 				}
+				this.seekOffset = 0;
 				const targetVolume = this.getTrackTargetVolume(track);
 
 				if (currentResource.volume) {
@@ -1065,8 +1070,14 @@ export class Player extends EventEmitter {
 				}
 
 				await this.maybeAlignToBeatBoundary();
-				this.audioPlayer.play(currentResource);
-				await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
+				this.refreshLock = true;
+				try {
+					this.audioPlayer.stop(true);
+					this.audioPlayer.play(currentResource);
+					await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
+				} finally {
+					this.refreshLock = false;
+				}
 				await this.applyCrossfadeIn(currentResource, track);
 
 				this.preloadNextTrack().catch((err) => {
@@ -1128,6 +1139,7 @@ export class Player extends EventEmitter {
 			this.currentSlot.streamId = streamId;
 			this.currentSlot.isValid = true;
 			this.currentResource = resource;
+			this.seekOffset = 0; // new track — reset seek baseline
 
 			// Apply volume
 			const targetVolume = this.getTrackTargetVolume(track);
@@ -1135,11 +1147,16 @@ export class Player extends EventEmitter {
 				resource.volume.setVolume(this.crossfadeEnabled ? 0 : targetVolume);
 			}
 
-			// Play
+			// Play — lock refresh so Idle event doesn't spawn duplicate playNext
 			await this.maybeAlignToBeatBoundary();
-			this.audioPlayer.stop(true);
-			this.audioPlayer.play(resource);
-			await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
+			this.refreshLock = true;
+			try {
+				this.audioPlayer.stop(true);
+				this.audioPlayer.play(resource);
+				await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
+			} finally {
+				this.refreshLock = false;
+			}
 			await this.applyCrossfadeIn(resource, track);
 
 			// Preload next (async)
@@ -1225,6 +1242,9 @@ export class Player extends EventEmitter {
 					if (this.antiStuckRetryDelayMs > 0) {
 						await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
 					}
+				} else {
+					this.antiStuckConsecutiveFailures = 0;
+					this.skipLoop = true;
 				}
 			} catch (err) {
 				this.debug(`[Player] playNext error:`, err);
@@ -1249,6 +1269,9 @@ export class Player extends EventEmitter {
 					if (this.antiStuckRetryDelayMs > 0) {
 						await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
 					}
+				} else {
+					this.antiStuckConsecutiveFailures = 0;
+					this.skipLoop = true;
 				}
 				continue;
 			}
@@ -2181,9 +2204,9 @@ export class Player extends EventEmitter {
 		}
 
 		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
-		if (!total) return this.formatTimeCompact(resource.playbackDuration);
+		if (!total) return this.formatTimeCompact(resource.playbackDuration + this.seekOffset);
 
-		const current = resource.playbackDuration;
+		const current = resource.playbackDuration + this.seekOffset;
 		const ratio = Math.min(Math.max(current / total, 0), 1);
 		const progress = Math.round(ratio * size);
 
@@ -2293,7 +2316,7 @@ export class Player extends EventEmitter {
 		}
 
 		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
-		const current = resource.playbackDuration;
+		const current = resource.playbackDuration + this.seekOffset;
 
 		return {
 			current: current,
@@ -2426,6 +2449,7 @@ export class Player extends EventEmitter {
 			this.debug(`[Player] Refreshing player resource for track: ${track.title}`);
 
 			const currentPosition = position >= 0 ? position : (this.currentResource?.playbackDuration ?? 0);
+			this.seekOffset = currentPosition;
 			const wasPaused = this.isPaused;
 			const playbackDuration = this.currentResource?.playbackDuration ?? 0;
 

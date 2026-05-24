@@ -644,6 +644,12 @@ export class PluginManager {
 		const cached = this.streamCache.get(key);
 
 		if (cached && Date.now() < cached.expiresAt) {
+			const s = cached.streamInfo?.stream;
+			if (!s || s.destroyed || (s as any).readable === false) {
+				this.debug(`[StreamCache] Dead stream detected, evicting: ${track.title}`);
+				this.streamCache.delete(key);
+				return null;
+			}
 			this.debug(`[StreamCache] Hit for track: ${track.title}`);
 			return cached.streamInfo;
 		}
@@ -730,7 +736,7 @@ export class PluginManager {
 			// =========================================================
 			// 1. TRY DIRECT STREAM
 			// =========================================================
-			if (plugin.getStream) {
+			if (plugin?.getStream && plugin.validate?.(track.url ?? "")) {
 				try {
 					this.debug(`[Stream] ${plugin.name} trying direct stream`);
 

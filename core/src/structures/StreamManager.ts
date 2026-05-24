@@ -1,4 +1,3 @@
-// src/managers/StreamManager.ts
 import { Readable } from "stream";
 import { EventEmitter } from "events";
 import type { Track } from "../types";
@@ -76,6 +75,11 @@ export class StreamManager extends EventEmitter {
 	registerStream(stream: Readable, track: Track, metadata: Partial<ManagedStream["metadata"]> = {}): string {
 		for (const existing of this.streams.values()) {
 			if (existing.stream === stream) {
+				if (stream.destroyed || (stream as any).readable === false) {
+					this.debug(`Stream object is dead, removing stale entry: ${existing.id}`);
+					this.streams.delete(existing.id);
+					break;
+				}
 				existing.lastAccessed = Date.now();
 				existing.track = track;
 				existing.metadata = {

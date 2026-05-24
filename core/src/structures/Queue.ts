@@ -231,6 +231,11 @@ export class Queue {
 			this.current = this.tracks.shift() || null;
 		}
 
+		// Skip bypassed track loop but no other track exists → restore current from history
+		if (!this.current && this._loop === "track" && ignoreLoop && this.history.length > 0) {
+			this.current = this.history.pop() || null;
+		}
+
 		return this.current;
 	}
 
