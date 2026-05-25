@@ -383,104 +383,6 @@ export class PluginManager {
 	}
 
 	/**
-	 * Evaluate how well a track matches the search query
-	 * @param track Evaluated track
-	 * @param query Query default
-	 * @returns SearchScore object with score and reason
-	 */
-	public evaluateTrackMatch(track: Track, query: string): SearchScore {
-		const normalizedQuery = normalize(query);
-		const normalizedTitle = normalize(track.title);
-		const queryLower = query.toLowerCase();
-		const urlLower = track.url?.toLowerCase() || "";
-
-		// 1. Evaluate URL match - 100%
-		if (urlLower === queryLower || (queryLower.includes(urlLower) && urlLower.length > 10)) {
-			return {
-				score: 100,
-				reason: "URL matches exactly",
-				matchedBy: "url",
-				exactMatch: true,
-			};
-		}
-		const queryMedia = extractMediaId(query);
-		const trackMedia = extractMediaId(track.url || "");
-
-		if (queryMedia && trackMedia && queryMedia.platform === trackMedia.platform && queryMedia.id === trackMedia.id) {
-			return {
-				score: 100,
-				reason: `${queryMedia.platform} exact ID match`,
-				matchedBy: "url",
-				exactMatch: true,
-			};
-		}
-		// 2. Evaluate title match exactly - 100%
-		if (normalizedTitle === normalizedQuery) {
-			return {
-				score: 90 + getContentQualityScore(track),
-				reason: "Title matches exactly",
-				matchedBy: "title",
-				exactMatch: true,
-			};
-		}
-
-		// 3. Evaluate title contains query or vice versa - 70-90%
-		if (normalizedTitle.includes(normalizedQuery) && normalizedQuery.length > 5) {
-			return {
-				score: 75 + getContentQualityScore(track),
-				reason: `Title contains query`,
-				matchedBy: "title",
-				exactMatch: false,
-			};
-		}
-
-		if (normalizedQuery.includes(normalizedTitle) && normalizedTitle.length > 5) {
-			const ratio = normalizedTitle.length / normalizedQuery.length;
-			const score = 70 + Math.min(20, Math.floor(ratio * 20));
-			return {
-				score,
-				reason: `Query contains the title "${query}" (${Math.floor(ratio * 100)}% overlap)`,
-				matchedBy: "title",
-				exactMatch: false,
-			};
-		}
-
-		// 4. Evaluate similarity algorithm - 0-70%
-		const simScore = similarity(normalizedTitle, normalizedQuery);
-		const tokenScore = tokenOverlap(normalizedTitle, normalizedQuery);
-		const contentTypeBonus = detectContentType(track.title);
-		const qualityScore = getContentQualityScore(track);
-		// Tính điểm tổng hợp: similarity 60%, token overlap 30%, content type 10%
-
-		let finalScore = simScore * 35 + tokenScore * 25 + qualityScore * 1.5;
-
-		finalScore = Math.max(0, Math.min(100, Math.floor(finalScore)));
-
-		if (finalScore >= 20) {
-			let reason = `Similarity ${Math.floor(simScore * 100)}%`;
-
-			if (contentTypeBonus > 0) {
-				reason += `, recognized as music content`;
-			}
-
-			return {
-				score: finalScore,
-				reason,
-				matchedBy: "partial",
-				exactMatch: false,
-			};
-		}
-
-		// 5. Không match
-		return {
-			score: 0,
-			reason: "No matching results found",
-			matchedBy: "none",
-			exactMatch: false,
-		};
-	}
-
-	/**
 	 * Search with deduplication and evaluation of results
 	 * @param query Search query
 	 * @param requestedBy User who requested the search
@@ -562,24 +464,41 @@ export class PluginManager {
 			return null;
 		}
 
-		// dedupe
 		const deduped = dedupeTracks(allTracks);
 
-		// score + sort
-		const ranked = deduped
-			.map((track) => ({
-				track,
-				score: this.evaluateTrackMatch(track, query),
-			}))
-			.sort((a, b) => b.score.score - a.score.score);
+		const queryMedia = extractMediaId(query);
 
-		const tracks = ranked.map((x) => x.track);
+		const prioritized: Track[] = [];
+		const normal: Track[] = [];
+
+		for (const track of deduped) {
+			let shouldPrioritize = false;
+
+			// exact url
+			if (track.url?.toLowerCase() === query.toLowerCase()) {
+				shouldPrioritize = true;
+			}
+
+			// exact media id
+			const media = extractMediaId(track.url || "");
+
+			if (!shouldPrioritize && queryMedia && media && queryMedia.platform === media.platform && queryMedia.id === media.id) {
+				shouldPrioritize = true;
+			}
+
+			if (shouldPrioritize) {
+				prioritized.push(track);
+			} else {
+				normal.push(track);
+			}
+		}
+
+		const tracks = [...prioritized, ...normal];
 
 		const finalResult: SearchResult = {
 			query,
 			tracks,
 			source: "multi-search",
-			score: ranked[0]?.score,
 		};
 
 		this.setCachedSearch(query, requestedBy, finalResult);
