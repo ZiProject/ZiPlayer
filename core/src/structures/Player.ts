@@ -269,7 +269,7 @@ export class Player extends EventEmitter {
 			extractorTimeout: this.options.extractorTimeout,
 		});
 		this.streamManager = new StreamManager({
-			maxConcurrentStreams: 2,
+			maxConcurrentStreams: 4,
 			streamTimeout: 5 * 60 * 1000,
 			maxListenersPerStream: 15,
 			enableMetrics: true,
@@ -887,26 +887,32 @@ export class Player extends EventEmitter {
 	 * @param {number} position - Position in milliseconds to seek to (0 = no seek)
 	 * @returns {Promise<AudioResource>} The AudioResource with filters and seek applied
 	 */
-	private async createResource(streamInfo: StreamInfo, track: Track, position: number = 0): Promise<AudioResource> {
+	private async createResource(
+		streamInfo: StreamInfo,
+		track: Track,
+		position: number = 0,
+	): Promise<{ resource: AudioResource; processedStream: import("stream").Readable | null }> {
 		const filterString = this.filter.getFilterString();
 		this.debug(`[Player] Creating AudioResource — filters: ${filterString || "none"}, seek: ${position}ms`);
 
-		// -1 = sentinel "no seek requested"
+		this.filter.setSourceStreamType(streamInfo.type);
+
 		const seekArg = position > 0 ? position : -1;
 
 		if (filterString || position > 0) {
-			// throws on failure — do NOT fall back to the already-piped stream
 			const processedStream = await this.filter.applyFiltersAndSeek(streamInfo.stream, seekArg);
-			streamInfo.type = StreamType.Arbitrary as any;
 
-			return createAudioResource(processedStream, {
+			// rawStream. Always use Arbitrary so discordjs/voice doesn't re-encode.
+			const resource = createAudioResource(processedStream, {
 				metadata: track,
 				inputType: StreamType.Arbitrary,
 				inlineVolume: true,
 			});
+
+			return { resource, processedStream };
 		}
 
-		return createAudioResource(streamInfo.stream, {
+		const resource = createAudioResource(streamInfo.stream, {
 			metadata: track,
 			inputType:
 				streamInfo.type === "webm/opus" ? StreamType.WebmOpus
@@ -914,6 +920,8 @@ export class Player extends EventEmitter {
 				: StreamType.Arbitrary,
 			inlineVolume: true,
 		});
+
+		return { resource, processedStream: null };
 	}
 
 	private mergeTrackPreserveRef(target: Track, source: Track): void {
@@ -1027,9 +1035,16 @@ export class Player extends EventEmitter {
 	private async startTrack(track: Track): Promise<boolean> {
 		if (this.destroyed) return false;
 
-		// First, get stream info (this will handle remote detection)
-		let streamInfo: StreamInfo | null = null;
+		// Check preload BEFORE calling getStream so we never fetch a
+		// stream we're about to throw away. The original code called getStream()
+		// unconditionally at the top, then used the preload if available — leaking
+		// the just-fetched stream and running middleware twice.
+		if (this.preloadManager.hasValidPreload(track)) {
+			return await this.startFromPreload(track);
+		}
 
+		// Only fetch a stream when there is no usable preload.
+		let streamInfo: StreamInfo | null = null;
 		try {
 			streamInfo = await this.getStream(track);
 		} catch (error) {
@@ -1037,78 +1052,70 @@ export class Player extends EventEmitter {
 			throw error;
 		}
 
-		// Handle remote playback
+		// Remote playback
 		if (streamInfo?.remote && streamInfo.handle) {
 			return await this.playRemote(track, streamInfo);
 		}
 
-		// Handle native playback
-		try {
-			// Try to use preloaded resource
-			if (this.preloadManager.hasValidPreload(track)) {
-				this.debug(`[Player] Using preloaded stream for: ${track.title}`);
+		// Native playback — pass the already-fetched streamInfo to avoid a second fetch
+		return await this.loadFreshStream(track, streamInfo);
+	}
+	private async startFromPreload(track: Track): Promise<boolean> {
+		if (this.destroyed) return false;
 
-				const oldStreamId = this.currentSlot.streamId;
-				if (oldStreamId && this.streamManager) {
-					setTimeout(() => {
-						if (this.currentSlot.streamId === oldStreamId) {
-							this.streamManager.unregisterStream(oldStreamId, true);
-						}
-					}, 3000);
-				}
+		this.debug(`[Player] Using preloaded stream for: ${track.title}`);
 
-				this.promotePreloadToCurrent(track);
-				const currentResource = this.currentSlot.resource;
-				if (!currentResource) {
-					return false;
-				}
-				this.seekOffset = 0;
-				const targetVolume = this.getTrackTargetVolume(track);
+		const oldStreamId = this.currentSlot.streamId;
 
-				if (currentResource.volume) {
-					currentResource.volume.setVolume(this.crossfadeEnabled ? 0 : targetVolume);
-				}
+		this.promotePreloadToCurrent(track);
 
-				await this.maybeAlignToBeatBoundary();
-				this.refreshLock = true;
-				try {
-					this.audioPlayer.stop(true);
-					this.audioPlayer.play(currentResource);
-					await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
-				} finally {
-					this.refreshLock = false;
-				}
-				await this.applyCrossfadeIn(currentResource, track);
-
-				this.preloadNextTrack().catch((err) => {
-					this.debug(`[Player] Preload error:`, err);
-				});
-
-				return true;
-			}
-
-			this.debug(`[Player] No preload available, loading fresh: ${track.title}`);
-			return await this.loadFreshStream(track);
-		} catch (error) {
-			this.debug(`[Player] startTrack error:`, error);
-			this.emit("playerError", error as Error, track);
-			return false;
+		if (oldStreamId && oldStreamId !== this.currentSlot.streamId) {
+			this.streamManager.unregisterStream(oldStreamId, true);
+			this.debug(`[Player] Released old stream ${oldStreamId} after preload promotion`);
 		}
+
+		const currentResource = this.currentSlot.resource;
+		if (!currentResource) return false;
+
+		this.seekOffset = 0;
+		const targetVolume = this.getTrackTargetVolume(track);
+
+		if (currentResource.volume) {
+			currentResource.volume.setVolume(this.crossfadeEnabled ? 0 : targetVolume);
+		}
+
+		await this.maybeAlignToBeatBoundary();
+		this.refreshLock = true;
+		try {
+			this.audioPlayer.stop(true);
+			this.audioPlayer.play(currentResource);
+			await entersState(this.audioPlayer, AudioPlayerStatus.Playing, 10_000);
+		} finally {
+			this.refreshLock = false;
+		}
+
+		await this.applyCrossfadeIn(currentResource, track);
+
+		this.preloadNextTrack().catch((err: any) => {
+			this.debug(`[Player] Preload error:`, err);
+		});
+
+		return true;
 	}
 
 	/**
 	 * Load fresh stream when no preload available
 	 */
-	private async loadFreshStream(track: Track): Promise<boolean> {
+	private async loadFreshStream(track: Track, preloadedStreamInfo?: StreamInfo | null): Promise<boolean> {
 		if (this.destroyed) return false;
 
-		// Cancel preload to free resources
 		await this.safeCancelPreload();
 
 		try {
-			const streamInfo = await this.getStream(track);
+			// use caller-supplied streamInfo when available so we don't
+			// call getStream() a second time and run middleware twice.
+			const streamInfo = preloadedStreamInfo ?? (await this.getStream(track));
 
-			// Handle remote playback
 			if (streamInfo?.remote && streamInfo.handle) {
 				return await this.playRemote(track, streamInfo);
 			}
@@ -1117,37 +1124,50 @@ export class Player extends EventEmitter {
 				throw new Error(`No stream available`);
 			}
 
-			// Register with StreamManager
-			const streamId = this.streamManager.registerStream(streamInfo.stream, track, {
+			// Register the RAW source stream — this is what we can reuse on seek
+			const rawStreamId = this.streamManager.registerStream(streamInfo.stream, track, {
 				source: track.source || "stream",
 				isPreload: false,
 				isRemote: !!streamInfo?.remote,
 				priority: 10,
 			});
 
-			// Create resource
-			const resource = await this.createResource(streamInfo, track, 0);
+			// createResource now returns both the AudioResource
+			// AND the processedStream (ffmpeg stdout) when filters/seek are involved.
+			const { resource, processedStream } = await this.createResource(streamInfo, track, 0);
 
-			// Clean up old current
-			if (this.currentSlot.streamId && this.currentSlot.streamId !== streamId) {
+			// when a processedStream exists, register it too so its
+			// lifecycle is tracked. Store its id separately in currentSlot so
+			// destroyCurrentStream() and refreshPlayerResource() clean the right object.
+			let playStreamId = rawStreamId;
+			if (processedStream && processedStream !== streamInfo.stream) {
+				playStreamId = this.streamManager.registerStream(processedStream, track, {
+					source: track.source || "stream-processed",
+					isPreload: false,
+					priority: 10,
+				});
+				this.debug(`[Player] Registered processedStream ${playStreamId} (rawStream: ${rawStreamId})`);
+			}
+			if (this.currentSlot.streamId && this.currentSlot.streamId !== rawStreamId) {
 				this.streamManager.unregisterStream(this.currentSlot.streamId, true);
 			}
+			if ((this.currentSlot as any).processedStreamId && (this.currentSlot as any).processedStreamId !== playStreamId) {
+				this.streamManager.unregisterStream((this.currentSlot as any).processedStreamId, true);
+			}
 
-			// Set current slot
 			this.currentSlot.resource = resource;
 			this.currentSlot.track = track;
-			this.currentSlot.streamId = streamId;
+			this.currentSlot.streamId = rawStreamId;
+			(this.currentSlot as any).processedStreamId = processedStream ? playStreamId : null;
 			this.currentSlot.isValid = true;
 			this.currentResource = resource;
-			this.seekOffset = 0; // new track — reset seek baseline
+			this.seekOffset = 0;
 
-			// Apply volume
 			const targetVolume = this.getTrackTargetVolume(track);
 			if (resource.volume) {
 				resource.volume.setVolume(this.crossfadeEnabled ? 0 : targetVolume);
 			}
 
-			// Play — lock refresh so Idle event doesn't spawn duplicate playNext
 			await this.maybeAlignToBeatBoundary();
 			this.refreshLock = true;
 			try {
@@ -1157,11 +1177,11 @@ export class Player extends EventEmitter {
 			} finally {
 				this.refreshLock = false;
 			}
+
 			await this.applyCrossfadeIn(resource, track);
 
-			// Preload next (async)
 			if (!this.destroyed) {
-				this.preloadNextTrack().catch((err) => {
+				this.preloadNextTrack().catch((err: any) => {
 					this.debug(`[Player] Preload error:`, err);
 				});
 			}
@@ -1347,7 +1367,7 @@ export class Player extends EventEmitter {
 				throw new Error(`No stream available for track: ${track.title}`);
 			}
 			ttsStream = streamInfo.stream;
-			const resource = await this.createResource(streamInfo as StreamInfo, track);
+			const { resource, processedStream } = await this.createResource(streamInfo as StreamInfo, track);
 			if (!resource) {
 				throw new Error(`No resource available for track: ${track.title}`);
 			}
@@ -2434,11 +2454,8 @@ export class Player extends EventEmitter {
 			return false;
 		}
 
-		// Lock before anything so stateChange idle sees it when stop() fires.
 		this.refreshLock = true;
 
-		// Clear any existing stuckTimer from the previous playback cycle so it
-		// cannot fire while we are mid-refresh.
 		if (this.stuckTimer) {
 			clearTimeout(this.stuckTimer);
 			this.stuckTimer = null;
@@ -2453,13 +2470,11 @@ export class Player extends EventEmitter {
 			const wasPaused = this.isPaused;
 			const playbackDuration = this.currentResource?.playbackDuration ?? 0;
 
-			// Reuse is only viable for forward seeks (stream is sequential).
 			const isForwardSeek = position < 0 || position >= playbackDuration;
 			const currentStreamId = this.currentSlot.streamId;
 
-			// Try to grab the live source stream for reuse.
-			// getRawStream accepts "paused" streams (discordjs/voice pauses source streams on NoSubscriberBehavior); getStream would reject them.
-			let reuseStream: Readable | null = null;
+			// Try to grab the raw source stream for reuse (forward seeks only)
+			let reuseStream: import("stream").Readable | null = null;
 			if (isForwardSeek && currentStreamId) {
 				reuseStream = this.streamManager.getRawStream(currentStreamId);
 				if (reuseStream) {
@@ -2467,31 +2482,29 @@ export class Player extends EventEmitter {
 				}
 			}
 
-			// ── CRITICAL: unpipe BEFORE stop ──────────────────────────────────────
-			// stop() kills discordjs/voice internal FFmpeg → EPIPE on source stream.
-			// unpipe() first disconnects our stream cleanly before that happens.
 			if (reuseStream) {
 				reuseStream.unpipe();
 			}
 
-			// Remove StreamManager listeners.
-			// forceDestroy=false when reusing so the Readable object stays alive.
+			// Clean up processedStream first (it's what AudioResource reads)
+			const processedStreamId = (this.currentSlot as any).processedStreamId;
+			if (processedStreamId && processedStreamId !== currentStreamId) {
+				this.streamManager.unregisterStream(processedStreamId, true);
+				(this.currentSlot as any).processedStreamId = null;
+			}
+
 			if (currentStreamId) {
 				this.streamManager.unregisterStream(currentStreamId, !reuseStream);
 				this.currentSlot.streamId = null;
 			}
 
-			// Stop the AudioPlayer.
-			// stateChange (playing→idle) fires; refreshLock=true guards it (v4 fix).
 			this.audioPlayer.stop(true);
 			this.currentResource = null;
 			this.currentSlot.resource = null;
 			this.currentSlot.isValid = false;
 
-			// One event-loop tick: lets deferred stream events settle.
 			await new Promise<void>((resolve) => setImmediate(resolve));
 
-			// Verify the reuse stream survived stop().
 			if (reuseStream) {
 				if (reuseStream.destroyed || (reuseStream as any).readable === false) {
 					this.debug(`[Player] Source stream did not survive stop — falling back to fresh stream`);
@@ -2504,7 +2517,6 @@ export class Player extends EventEmitter {
 			if (reuseStream) {
 				streaminfo = { stream: reuseStream, type: "arbitrary" };
 			} else {
-				// Clear caches so we don't get the dead Readable back.
 				this.pluginManager.clearStreamCache();
 				this.extensionManager.clearCache("stream");
 				this.debug(`[Player] Fetching fresh stream${!isForwardSeek ? " (backward seek)" : " (reuse failed)"}`);
@@ -2516,22 +2528,33 @@ export class Player extends EventEmitter {
 				return false;
 			}
 
-			// Build AudioResource (input-side FFmpeg seek via FilterManager).
-			const resource = await this.createResource(streaminfo, track, currentPosition);
+			const createPosition = reuseStream ? -1 : currentPosition;
 
-			// Register the source stream.
+			const { resource, processedStream } = await this.createResource(streaminfo, track, createPosition);
+
+			// Register raw source stream
 			const newStreamId = this.streamManager.registerStream(streaminfo.stream, track, {
 				source: track.source || "stream",
 				isPreload: false,
 				priority: 10,
 			});
+
+			let newProcessedStreamId: string | null = null;
+			if (processedStream && processedStream !== streaminfo.stream) {
+				newProcessedStreamId = this.streamManager.registerStream(processedStream, track, {
+					source: track.source || "stream-processed",
+					isPreload: false,
+					priority: 10,
+				});
+			}
+
 			this.currentSlot.resource = resource;
 			this.currentSlot.track = track;
 			this.currentSlot.streamId = newStreamId;
+			(this.currentSlot as any).processedStreamId = newProcessedStreamId;
 			this.currentSlot.isValid = true;
 			this.currentResource = resource;
 
-			// ── Set seek flag BEFORE play so the Buffering handler sees it ────────
 			if (position >= 0) {
 				this.seekInProgress = true;
 			}
@@ -2546,11 +2569,11 @@ export class Player extends EventEmitter {
 			return true;
 		} catch (error) {
 			this.debug(`[Player] refreshPlayerResource error:`, error);
-			this.seekInProgress = false; // ensure flag is cleared on failure
+			this.seekInProgress = false;
 			this.emit("playerError", error as Error, this.queue.currentTrack ?? undefined);
 			return false;
 		} finally {
-			this.refreshLock = false; // always released
+			this.refreshLock = false;
 		}
 	}
 

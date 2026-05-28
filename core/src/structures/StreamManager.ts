@@ -8,6 +8,7 @@ export interface ManagedStream {
 	track: Track;
 	createdAt: number;
 	lastAccessed: number;
+	playStream?: Readable;
 	metadata: {
 		source: string;
 		isPreload: boolean;
@@ -40,6 +41,7 @@ export class StreamManager extends EventEmitter {
 	private suppressPrematureCloseErrors = new Set<string>();
 	private options: Required<StreamManagerOptions>;
 	private cleanupTimer: NodeJS.Timeout | null = null;
+
 	private metrics = {
 		totalStreamsCreated: 0,
 		totalStreamsDestroyed: 0,

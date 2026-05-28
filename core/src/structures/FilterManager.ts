@@ -9,18 +9,22 @@ import ffmpegPath from "ffmpeg-static";
 
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 
+export type FilterManagerStreamType = "webm/opus" | "ogg/opus" | "arbitrary" | "mp3";
+
 export class FilterManager {
 	private activeFilters: AudioFilter[] = [];
 	private debug: DebugFn;
 	private player: Player;
 	private ffmpeg: FFmpeg | null = null;
 	private currentInputStream: Readable | null = null;
-	public StreamType: "webm/opus" | "ogg/opus" | "mp3" | "arbitrary" = "mp3";
+	public StreamType: FilterManagerStreamType = "arbitrary";
 	private ffmpegProcess: ChildProcess | null = null;
+	private ffmpegAbortController: AbortController | null = null;
+	private ffmpegGeneration = 0;
+	private pendingFFmpegProcess: ChildProcess | null = null;
 
 	constructor(player: Player, manager: PlayerManager) {
 		this.player = player as Player;
-
 		this.debug = (message?: any, ...optionalParams: any[]) => {
 			if (manager.debugEnabled) {
 				manager.emit("debug", `[FilterManager] ${message}`, ...optionalParams);
@@ -28,44 +32,51 @@ export class FilterManager {
 		};
 	}
 
-	/**
-	 * Destroy the filter manager
-	 *
-	 * @returns {void}
-	 * @example
-	 * player.filter.destroy();
-	 */
+	public setSourceStreamType(type: string): void {
+		if (type === "webm/opus" || type === "ogg/opus" || type === "mp3") {
+			this.StreamType = type as FilterManagerStreamType;
+		} else {
+			this.StreamType = "arbitrary";
+		}
+		this.debug(`[FilterManager] Source stream type set to: ${this.StreamType}`);
+	}
+
 	destroy(): void {
 		this.activeFilters = [];
+		this.teardownFFmpeg();
+		this.currentInputStream = null;
+	}
+
+	private teardownFFmpeg(): void {
+		// Abort any pending spawn first
+		if (this.ffmpegAbortController) {
+			this.ffmpegAbortController.abort();
+			this.ffmpegAbortController = null;
+		}
 
 		if (this.ffmpeg) {
 			try {
 				this.ffmpeg.destroy();
-			} catch {}
+			} catch {
+				/* ignore */
+			}
 			this.ffmpeg = null;
 		}
+
 		if (this.ffmpegProcess) {
 			try {
+				// Detach stdin so source stream doesn't get EPIPE when we kill
+				if (this.ffmpegProcess.stdin && !this.ffmpegProcess.stdin.destroyed) {
+					this.ffmpegProcess.stdin.destroy();
+				}
 				this.ffmpegProcess.kill("SIGKILL");
-			} catch {}
+			} catch {
+				/* ignore */
+			}
 			this.ffmpegProcess = null;
 		}
-		if (this.currentInputStream && typeof (this.currentInputStream as any).destroy === "function") {
-			try {
-				(this.currentInputStream as any).destroy();
-			} catch {}
-		}
-		this.currentInputStream = null;
 	}
 
-	/**
-	 * Get the combined FFmpeg filter string for all active filters
-	 *
-	 * @returns {string} Combined FFmpeg filter string
-	 * @example
-	 * const filterString = player.getFilterString();
-	 * console.log(`Filter string: ${filterString}`);
-	 */
 	public getFilterString(): string {
 		if (this.activeFilters.length === 0) return "";
 		return this.activeFilters.map((f) => f.ffmpegFilter).join(",");
@@ -155,7 +166,7 @@ export class FilterManager {
 			audioFilter = filter;
 		}
 
-		if (this.activeFilters.some((f) => f.name === audioFilter.name)) {
+		if (this.activeFilters.some((f) => f.name === audioFilter!.name)) {
 			this.debug(`[FilterManager] Filter already applied: ${audioFilter.name}`);
 			return false;
 		}
@@ -185,14 +196,7 @@ export class FilterManager {
 		}
 		return allApplied;
 	}
-	/**
-	 * Remove an audio filter from the player
-	 *
-	 * @param {string} filterName - Name of the filter to remove
-	 * @returns {boolean} True if filter was removed successfully
-	 * @example
-	 * player.removeFilter("bassboost");
-	 */
+
 	public async removeFilter(filterName: string): Promise<boolean> {
 		const index = this.activeFilters.findIndex((f) => f.name === filterName);
 		if (index === -1) {
@@ -226,60 +230,41 @@ export class FilterManager {
 	 * @returns {Promise<Readable>} The stream with filters and seek applied
 	 */
 	public async applyFiltersAndSeek(stream: Readable, position: number = -1): Promise<Readable> {
-		const filterString = this.getFilterString();
-		this.debug(`Applying filters and seek — filters: ${filterString || "none"}, seek: ${position}ms`);
+		const generation = ++this.ffmpegGeneration;
 
-		// Tear down any previous FFmpeg instances.
-		try {
-			if (this.ffmpeg) {
-				this.ffmpeg.destroy();
-				this.ffmpeg = null;
-			}
-			if (this.ffmpegProcess) {
-				this.ffmpegProcess.kill("SIGKILL");
-				this.ffmpegProcess = null;
-			}
-			if (
-				this.currentInputStream &&
-				typeof (this.currentInputStream as any).destroy === "function" &&
-				!(this.currentInputStream as any).destroyed
-			) {
-				try {
-					(this.currentInputStream as any).destroy();
-				} catch {}
-			}
-			this.currentInputStream = null;
-		} catch {}
+		const filterString = this.getFilterString();
+
+		this.debug(
+			`Applying filters and seek — filters: ${filterString || "none"}, seek: ${position}ms, srcType: ${this.StreamType}`,
+		);
+
+		// có request mới chen vào
+		if (generation !== this.ffmpegGeneration) {
+			throw new Error("FFmpeg generation outdated");
+		}
 
 		this.currentInputStream = stream;
 
-		// ── INPUT-SIDE SEEKING ─────────────────────────────────────────────────────
-		// When a seek position is requested, place -ss BEFORE -i so FFmpeg seeks
-		// in the compressed domain (keyframe-level) rather than decoding every
-		// frame up to the target. This is dramatically faster for large positions.
-		//
-		// Output-side (slow): ffmpeg -i pipe:0 -ss 109 ...
-		//   → reads and decodes all 109 s before outputting anything
-		//
-		// Input-side (fast):  ffmpeg -ss 109 -i pipe:0 ...
-		//   → seeks to nearest keyframe < 109 s, outputs from there
-		//
-		// prism.FFmpeg always places user args after -i, so we spawn directly.
+		const abortController = new AbortController();
+		this.ffmpegAbortController = abortController;
+
 		if (position >= 0 && ffmpegPath) {
-			return this.spawnFFmpegInputSeek(stream, position, filterString);
+			return this.spawnFFmpegInputSeek(stream, position, filterString, abortController.signal, generation);
 		}
 
-		// ── FILTER-ONLY (no seek) — use prism.FFmpeg as before ────────────────────
 		const args = ["-analyzeduration", "0", "-loglevel", "0"];
+
 		if (filterString) {
 			args.push("-af", filterString);
 		}
+
 		args.push(
 			"-f",
 			this.StreamType === "webm/opus" ? "webm/opus"
 			: this.StreamType === "ogg/opus" ? "ogg/opus"
 			: "mp3",
 		);
+
 		args.push("-ar", "48000", "-ac", "2");
 
 		try {
@@ -287,52 +272,66 @@ export class FilterManager {
 		} catch (spawnError) {
 			this.debug(`FFmpeg spawn error:`, spawnError);
 			this.currentInputStream = null;
+			this.ffmpegAbortController = null;
 			throw spawnError;
+		}
+
+		// nếu bị supersede ngay sau khi spawn
+		if (generation !== this.ffmpegGeneration) {
+			try {
+				this.ffmpeg.destroy();
+			} catch {}
+
+			throw new Error("FFmpeg process superseded");
 		}
 
 		this.ffmpeg.on("close", () => {
 			this.debug(`FFmpeg processing completed`);
+
 			try {
-				if (this.ffmpeg) {
-					this.ffmpeg.destroy();
-					this.ffmpeg = null;
-				}
+				this.ffmpeg?.destroy();
 			} catch {}
+
+			if (this.ffmpeg === this.ffmpeg) {
+				this.ffmpeg = null;
+			}
+
+			if (this.ffmpegAbortController === abortController) {
+				this.ffmpegAbortController = null;
+			}
 		});
+
 		this.ffmpeg.on("error", (err: Error) => {
 			this.debug(`FFmpeg error:`, err);
+
 			try {
-				if (this.ffmpeg) {
-					this.ffmpeg.destroy();
-					this.ffmpeg = null;
-				}
-				if (this.currentInputStream && !(this.currentInputStream as any).destroyed) {
-					try {
-						(this.currentInputStream as any).destroy();
-					} catch {}
-				}
+				this.ffmpeg?.destroy();
 			} catch {}
+
+			if (this.ffmpeg === this.ffmpeg) {
+				this.ffmpeg = null;
+			}
+
+			if (this.ffmpegAbortController === abortController) {
+				this.ffmpegAbortController = null;
+			}
+
 			this.currentInputStream = null;
 		});
 
 		return this.ffmpeg;
 	}
 
-	private spawnFFmpegInputSeek(stream: Readable, position: number, filterString: string): Readable {
+	private spawnFFmpegInputSeek(
+		stream: Readable,
+		position: number,
+		filterString: string,
+		signal: AbortSignal,
+		generation: number,
+	): Readable {
 		const seekSeconds = (position / 1000).toFixed(3);
 
-		const args: string[] = [
-			// INPUT-SIDE SEEK: placed before -i
-			"-ss",
-			seekSeconds,
-			"-i",
-			"pipe:0",
-			// Output options
-			"-analyzeduration",
-			"0",
-			"-loglevel",
-			"0",
-		];
+		const args: string[] = ["-i", "pipe:0", "-ss", seekSeconds, "-analyzeduration", "0", "-loglevel", "0"];
 
 		if (filterString) {
 			args.push("-af", filterString);
@@ -348,7 +347,45 @@ export class FilterManager {
 		const proc = spawn(ffmpegPath!, args, {
 			stdio: ["pipe", "pipe", "ignore"],
 		});
-		this.ffmpegProcess = proc;
+
+		const oldProcess = this.ffmpegProcess;
+
+		this.pendingFFmpegProcess = proc;
+
+		if (generation !== this.ffmpegGeneration) {
+			try {
+				proc.kill("SIGKILL");
+			} catch {}
+
+			throw new Error("FFmpeg process superseded");
+		}
+
+		const onAbort = () => {
+			signal.removeEventListener("abort", onAbort);
+
+			try {
+				stream.unpipe(proc.stdin!);
+			} catch {}
+
+			try {
+				if (proc.stdin && !proc.stdin.destroyed) {
+					proc.stdin.destroy();
+				}
+			} catch {}
+
+			try {
+				proc.kill("SIGKILL");
+			} catch {}
+
+			this.debug(`[FilterManager] FFmpeg process aborted (seek pos: ${position}ms)`);
+		};
+
+		if (signal.aborted) {
+			// Already aborted before we even spawned
+			onAbort();
+		} else {
+			signal.addEventListener("abort", onAbort);
+		}
 
 		// Pipe source → ffmpeg stdin
 		stream.pipe(proc.stdin!);
@@ -358,6 +395,7 @@ export class FilterManager {
 			if ((err as any).code !== "EPIPE") {
 				this.debug(`FFmpeg stdin error: ${err.message}`);
 			}
+			// EPIPE is expected when proc is killed — silence it
 		});
 
 		proc.stdout!.on("error", (err: Error) => {
@@ -365,15 +403,36 @@ export class FilterManager {
 		});
 
 		proc.on("close", (code) => {
+			signal.removeEventListener("abort", onAbort);
 			this.debug(`FFmpeg process exited (code: ${code})`);
-			this.ffmpegProcess = null;
+			if (this.ffmpegProcess === proc) {
+				this.ffmpegProcess = null;
+			}
 		});
 
 		proc.on("error", (err: Error) => {
+			signal.removeEventListener("abort", onAbort);
 			this.debug(`FFmpeg process error: ${err.message}`);
-			this.ffmpegProcess = null;
-			throw err;
+			if (this.ffmpegProcess === proc) {
+				this.ffmpegProcess = null;
+			}
 		});
+
+		this.ffmpegProcess = proc;
+		this.pendingFFmpegProcess = null;
+
+		// kill old AFTER new ready
+		if (oldProcess && oldProcess !== proc) {
+			try {
+				if (oldProcess.stdin && !oldProcess.stdin.destroyed) {
+					oldProcess.stdin.destroy();
+				}
+			} catch {}
+
+			try {
+				oldProcess.kill("SIGKILL");
+			} catch {}
+		}
 
 		return proc.stdout as Readable;
 	}

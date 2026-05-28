@@ -39,10 +39,18 @@ export class PreloadManager {
 		this.isEnabled = deps.isEnabled;
 	}
 
+	private trackMatches(a: Track | null, b: Track | null): boolean {
+		if (!a || !b) return false;
+		if (a === b) return true;
+		if (a.id !== undefined && b.id !== undefined) return a.id === b.id;
+		// At least one id is missing — require url to match too
+		return a.url === b.url && a.url !== undefined;
+	}
+
 	public hasValidPreload(track: Track): boolean {
 		return !!(
 			this.preloadSlot.isValid &&
-			this.preloadSlot.track?.id === track.id &&
+			this.trackMatches(this.preloadSlot.track, track) &&
 			this.preloadSlot.resource &&
 			this.preloadSlot.resource.playStream?.readable !== false
 		);
@@ -52,6 +60,17 @@ export class PreloadManager {
 		const promotedResource = this.preloadSlot.resource;
 		const promotedStreamId = this.preloadSlot.streamId;
 		if (!promotedResource) return null;
+
+		// upgrade stream priority BEFORE clearing the preload slot so
+		// that if registerStream for the next preload triggers eviction in the same
+		// tick, the promoted stream is already marked high-priority.
+		if (promotedStreamId) {
+			this.streamManager.updateMetadata(promotedStreamId, {
+				isPreload: false,
+				priority: 10,
+			});
+			this.debugLog(`[Preload] Promoted stream ${promotedStreamId} metadata updated to current (priority:10, isPreload:false)`);
+		}
 
 		currentSlot.resource = promotedResource;
 		currentSlot.track = track;
@@ -90,12 +109,12 @@ export class PreloadManager {
 			return;
 		}
 
-		if (this.preloadSlot.isValid && this.preloadSlot.track?.id === nextTrack.id && this.preloadSlot.resource) {
+		if (this.preloadSlot.isValid && this.trackMatches(this.preloadSlot.track, nextTrack) && this.preloadSlot.resource) {
 			this.debugLog(`[Preload] Already have valid preload for: ${nextTrack.title}`);
 			return;
 		}
 
-		if (this.preloadSlot.isLoading && this.preloadSlot.track?.id === nextTrack.id) {
+		if (this.preloadSlot.isLoading && this.trackMatches(this.preloadSlot.track, nextTrack)) {
 			this.debugLog(`[Preload] Currently loading same track, waiting...`);
 			if (this.preloadSlot.loadPromise) {
 				await this.preloadSlot.loadPromise;
@@ -103,7 +122,7 @@ export class PreloadManager {
 			return;
 		}
 
-		if (this.preloadSlot.isValid && this.preloadSlot.track?.id !== nextTrack.id) {
+		if (this.preloadSlot.isValid && !this.trackMatches(this.preloadSlot.track, nextTrack)) {
 			this.debugLog(`[Preload] Cancelling old preload for different track: ${this.preloadSlot.track?.title}`);
 			await this.safeCancelPreload();
 		}
@@ -207,7 +226,7 @@ export class PreloadManager {
 			throw new Error("PRELOAD_CANCELLED");
 		}
 
-		if (this.getNextTrack()?.id !== track.id) {
+		if (!this.trackMatches(this.getNextTrack(), track)) {
 			this.debugLog(`[Preload] Track changed, cancelling`);
 			throw new Error("PRELOAD_CANCELLED");
 		}
@@ -216,7 +235,7 @@ export class PreloadManager {
 		if (abortController.signal.aborted) {
 			throw new Error("PRELOAD_CANCELLED");
 		}
-		if (this.getNextTrack()?.id !== track.id) {
+		if (!this.trackMatches(this.getNextTrack(), track)) {
 			this.debugLog(`[Preload] Track changed after stream fetch`);
 			throw new Error("PRELOAD_CANCELLED");
 		}
