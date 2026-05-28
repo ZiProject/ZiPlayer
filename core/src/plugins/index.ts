@@ -437,32 +437,57 @@ export class PluginManager {
 					const result = await withTimeout(plugin.search(query, requestedBy), timeoutMs, `Search timeout for ${plugin.name}`);
 
 					if (!result?.tracks?.length) {
-						return [];
+						return null;
 					}
 
-					return result.tracks.map((track) => ({
-						...track,
-						source: plugin.name,
-					}));
+					// giữ nguyên playlist
+					if (result.playlist) {
+						return {
+							...result,
+							tracks: result.tracks.map((track) => ({
+								...track,
+								source: plugin.name,
+							})),
+						};
+					}
+
+					return {
+						...result,
+						tracks: result.tracks.map((track) => ({
+							...track,
+							source: plugin.name,
+						})),
+					};
 				} catch (e) {
 					this.debug(`[Search] ${plugin.name} failed`, e);
-
-					return [];
+					return null;
 				}
 			}),
 		);
 
-		const allTracks: Track[] = [];
+		const results: SearchResult[] = [];
 
 		for (const result of settled) {
-			if (result.status === "fulfilled") {
-				allTracks.push(...result.value);
+			if (result.status === "fulfilled" && result.value) {
+				results.push(result.value);
 			}
 		}
 
-		if (!allTracks.length) {
+		if (!results.length) {
 			return null;
 		}
+
+		const playlistResult = results.find((r) => r.playlist);
+
+		if (playlistResult) {
+			this.setCachedSearch(query, requestedBy, playlistResult);
+
+			this.debug(`[Search] Returning playlist: ${playlistResult.playlist?.name} (${playlistResult.tracks.length} tracks)`);
+
+			return playlistResult;
+		}
+
+		const allTracks = results.flatMap((r) => r.tracks);
 
 		const deduped = dedupeTracks(allTracks);
 
