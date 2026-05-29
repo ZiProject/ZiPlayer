@@ -173,6 +173,7 @@ export class Player extends EventEmitter {
 	private ttsPlayer: DiscordAudioPlayer | null = null;
 	private lastDuration: number = 0;
 	private seekOffset: number = 0;
+	private recoveryInProgress = false;
 
 	constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
 		super();
@@ -269,7 +270,7 @@ export class Player extends EventEmitter {
 			extractorTimeout: this.options.extractorTimeout,
 		});
 		this.streamManager = new StreamManager({
-			maxConcurrentStreams: 4,
+			maxConcurrentStreams: this.options?.maxStreamStore ?? 4,
 			streamTimeout: 5 * 60 * 1000,
 			maxListenersPerStream: 15,
 			enableMetrics: true,
@@ -787,6 +788,7 @@ export class Player extends EventEmitter {
 
 	private async attemptTrackRecovery(track: Track, reason: unknown): Promise<boolean> {
 		if (!this.antiStuckEnabled) return false;
+		this.recoveryInProgress = true;
 		this.debug(`[AntiStuck] Recovery started for: ${track.title}`, reason);
 
 		const originalQuality = this.options.quality;
@@ -808,6 +810,7 @@ export class Player extends EventEmitter {
 					if (startedFromPreload) {
 						this.antiStuckConsecutiveFailures = 0;
 						this.options.quality = originalQuality;
+						this.recoveryInProgress = false;
 						return true;
 					}
 				}
@@ -816,6 +819,7 @@ export class Player extends EventEmitter {
 				if (started) {
 					this.antiStuckConsecutiveFailures = 0;
 					this.options.quality = originalQuality;
+					this.recoveryInProgress = false;
 					return true;
 				}
 			} catch (error) {
@@ -827,9 +831,10 @@ export class Player extends EventEmitter {
 		this.antiStuckConsecutiveFailures++;
 		if (this.antiStuckConsecutiveFailures >= this.antiStuckControlledSkipThreshold) {
 			this.debug(`[AntiStuck] Controlled skip threshold reached for ${track.title}`);
+			this.recoveryInProgress = false;
 			return false;
 		}
-
+		this.recoveryInProgress = false;
 		// Avoid hard skip storm by leaving track for next natural retry window.
 		this.debug(`[AntiStuck] Keeping track for controlled retry window: ${track.title}`);
 		return false;
@@ -1740,6 +1745,7 @@ export class Player extends EventEmitter {
 			this.debug("[Player] Cannot stop while subscribed to another player");
 			return false;
 		}
+		this.recoveryInProgress = false;
 		this.debug(`[Player] stop called`);
 		if (this.playbackMode === PlaybackMode.REMOTE) {
 			this.cancelPreload();
@@ -1831,7 +1837,7 @@ export class Player extends EventEmitter {
 			return false;
 		}
 		this.debug(`[Player] skip called with index: ${index}`);
-
+		this.recoveryInProgress = false;
 		if (this.playbackMode === PlaybackMode.REMOTE) {
 			if (typeof index === "number" && index >= 0) {
 				for (let i = 0; i < index; i++) this.queue.remove(0);
@@ -2636,6 +2642,10 @@ export class Player extends EventEmitter {
 					this.debug(`[Player] AudioPlayer went idle during resource refresh — skipping trackEnd/playNext`);
 					return;
 				}
+				if (this.recoveryInProgress) {
+					this.debug(`[Player] AudioPlayer went idle during recovery — skipping playNext`);
+					return;
+				}
 				// Track ended
 				const track = this.queue.currentTrack;
 				if (track) {
@@ -2731,6 +2741,7 @@ export class Player extends EventEmitter {
 		});
 		this.audioPlayer.on("error", (error) => {
 			if (this.destroyed) return;
+			if (this.recoveryInProgress) return;
 			this.debug(`[Player] AudioPlayer error:`, error);
 			this.emit("playerError", error, this.queue.currentTrack || undefined);
 			const track = this.queue.currentTrack;

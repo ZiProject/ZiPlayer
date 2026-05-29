@@ -357,6 +357,8 @@ export interface PlayerOptions {
 	 * Merged after {@link PlayerManagerOptions.trackMiddleware} from the manager.
 	 */
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
+	
+	maxStreamStore?: number;
 }
 
 export interface PlayerManagerOptions {
