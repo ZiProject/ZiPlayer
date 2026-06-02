@@ -2280,20 +2280,20 @@ export class Player extends EventEmitter {
 	 */
 	formatTime(ms: number): string {
 		// Ensure ms is an integer and convert to seconds
-		const totalSeconds = (Math.floor(ms / 1000) | 0);
-		const hours = (Math.floor(totalSeconds / 3600) | 0);
-		const minutes = (Math.floor((totalSeconds % 3600) / 60) | 0);
+		const totalSeconds = Math.floor(ms / 1000) | 0;
+		const hours = Math.floor(totalSeconds / 3600) | 0;
+		const minutes = Math.floor((totalSeconds % 3600) / 60) | 0;
 		const seconds = (totalSeconds % 60) | 0;
-		
+
 		const parts: string[] = [];
-		
+
 		if (hours > 0) {
 			parts.push(String(hours)); // Giờ không padStart (ví dụ: 1:05:00)
 			parts.push(String(minutes).padStart(2, "0"));
 		} else {
 			parts.push(String(minutes)); // Phút không padStart nếu là số đầu tiên (ví dụ: 0:30 thay vì 00:30)
 		}
-		
+
 		parts.push(String(seconds).padStart(2, "0"));
 		return parts.join(":");
 	}
@@ -2305,9 +2305,9 @@ export class Player extends EventEmitter {
 	 */
 	formatTimeCompact(ms: number): string {
 		// Ensure ms is an integer and convert to seconds
-		const totalSeconds = (Math.floor(ms / 1000) | 0);
-		const hours = (Math.floor(totalSeconds / 3600) | 0);
-		const minutes = (Math.floor((totalSeconds % 3600) / 60) | 0);
+		const totalSeconds = Math.floor(ms / 1000) | 0;
+		const hours = Math.floor(totalSeconds / 3600) | 0;
+		const minutes = Math.floor((totalSeconds % 3600) / 60) | 0;
 		const seconds = (totalSeconds % 60) | 0;
 
 		if (hours > 0) {
@@ -2483,9 +2483,7 @@ export class Player extends EventEmitter {
 			this.debug(`[Player] Refreshing player resource for track: ${track.title}`);
 
 			// Ensure all time values are integers (milliseconds)
-			const currentPosition = (position >= 0 
-				? position 
-				: (this.currentResource?.playbackDuration ?? 0) + this.seekOffset) | 0;
+			const currentPosition = (position >= 0 ? position : (this.currentResource?.playbackDuration ?? 0) + this.seekOffset) | 0;
 
 			this.seekOffset = currentPosition | 0;
 			const wasPaused = this.isPaused;

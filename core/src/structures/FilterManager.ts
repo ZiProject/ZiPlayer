@@ -250,13 +250,20 @@ export class FilterManager {
 
 		// Trường hợp chỉ apply filter mà không seek (position < 0)
 		const args = [
-			"-analyzeduration", "0",
-			"-loglevel", "0",
-			"-i", "pipe:0",
-			"-acodec", "libopus", // Chuyển sang opus ngay để nhẹ pipe
-			"-f", "opus",         // Format chuẩn cho Discord
-			"-ar", "48000",
-			"-ac", "2"
+			"-analyzeduration",
+			"0",
+			"-loglevel",
+			"0",
+			"-i",
+			"pipe:0",
+			"-acodec",
+			"libopus", // Chuyển sang opus ngay để nhẹ pipe
+			"-f",
+			"opus", // Format chuẩn cho Discord
+			"-ar",
+			"48000",
+			"-ac",
+			"2",
 		];
 
 		if (filterString) {
@@ -285,12 +292,7 @@ export class FilterManager {
 
 		// Chuyển sang dùng s16le (Raw PCM) để Discord.js dễ xử lý nhất khi có filter
 		// NOTE: -ss MUST come BEFORE -i for proper seeking and timing
-		const args: string[] = [
-			"-ss", seekSeconds,
-			"-i", "pipe:0",
-			"-analyzeduration", "0",
-			"-loglevel", "0",
-		];
+		const args: string[] = ["-ss", seekSeconds, "-i", "pipe:0", "-analyzeduration", "0", "-loglevel", "0"];
 
 		if (filterString) {
 			args.push("-af", filterString);
@@ -302,7 +304,6 @@ export class FilterManager {
 		const proc = spawn(ffmpegPath!, args, {
 			stdio: ["pipe", "pipe", "ignore"],
 		});
-
 
 		const oldProcess = this.ffmpegProcess;
 
