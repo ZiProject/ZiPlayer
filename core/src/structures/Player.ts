@@ -910,7 +910,7 @@ export class Player extends EventEmitter {
 			// rawStream. Always use Arbitrary so discordjs/voice doesn't re-encode.
 			const resource = createAudioResource(processedStream, {
 				metadata: track,
-				inputType: StreamType.Arbitrary,
+				inputType: position > 0 ? StreamType.Raw : StreamType.Arbitrary,
 				inlineVolume: true,
 			});
 
@@ -1082,6 +1082,7 @@ export class Player extends EventEmitter {
 		const currentResource = this.currentSlot.resource;
 		if (!currentResource) return false;
 
+		// Ensure seekOffset is always an integer (milliseconds)
 		this.seekOffset = 0;
 		const targetVolume = this.getTrackTargetVolume(track);
 
@@ -2278,27 +2279,36 @@ export class Player extends EventEmitter {
 	 * @returns Formatted time string with leading zeros
 	 */
 	formatTime(ms: number): string {
-		const totalSeconds = Math.floor(ms / 1000);
-		const hours = Math.floor(totalSeconds / 3600);
-		const minutes = Math.floor((totalSeconds % 3600) / 60);
-		const seconds = totalSeconds % 60;
+		// Ensure ms is an integer and convert to seconds
+		const totalSeconds = (Math.floor(ms / 1000) | 0);
+		const hours = (Math.floor(totalSeconds / 3600) | 0);
+		const minutes = (Math.floor((totalSeconds % 3600) / 60) | 0);
+		const seconds = (totalSeconds % 60) | 0;
+		
 		const parts: string[] = [];
-		if (hours > 0) parts.push(String(hours).padStart(2, "0"));
-		parts.push(String(minutes).padStart(2, "0"));
+		
+		if (hours > 0) {
+			parts.push(String(hours)); // Giờ không padStart (ví dụ: 1:05:00)
+			parts.push(String(minutes).padStart(2, "0"));
+		} else {
+			parts.push(String(minutes)); // Phút không padStart nếu là số đầu tiên (ví dụ: 0:30 thay vì 00:30)
+		}
+		
 		parts.push(String(seconds).padStart(2, "0"));
 		return parts.join(":");
 	}
 
 	/**
 	 * Format time without leading zeros for hours (1:22:12 or 3:45)
-	 * @param ms - Time in milliseconds
+	 * @param ms - Time in milliseconds (must be integer)
 	 * @returns Compact formatted time string
 	 */
 	formatTimeCompact(ms: number): string {
-		const totalSeconds = Math.floor(ms / 1000);
-		const hours = Math.floor(totalSeconds / 3600);
-		const minutes = Math.floor((totalSeconds % 3600) / 60);
-		const seconds = totalSeconds % 60;
+		// Ensure ms is an integer and convert to seconds
+		const totalSeconds = (Math.floor(ms / 1000) | 0);
+		const hours = (Math.floor(totalSeconds / 3600) | 0);
+		const minutes = (Math.floor((totalSeconds % 3600) / 60) | 0);
+		const seconds = (totalSeconds % 60) | 0;
 
 		if (hours > 0) {
 			return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
@@ -2341,8 +2351,9 @@ export class Player extends EventEmitter {
 			};
 		}
 
-		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
-		const current = resource.playbackDuration + this.seekOffset;
+		// Ensure all time values are integers (milliseconds)
+		const total = Math.floor(track.duration > 1000 ? track.duration : track.duration * 1000) | 0;
+		const current = Math.floor(resource.playbackDuration + this.seekOffset) | 0;
 
 		return {
 			current: current,
@@ -2471,20 +2482,24 @@ export class Player extends EventEmitter {
 			const track = this.queue.currentTrack;
 			this.debug(`[Player] Refreshing player resource for track: ${track.title}`);
 
-			const currentPosition = position >= 0 ? position : (this.currentResource?.playbackDuration ?? 0);
-			this.seekOffset = currentPosition;
+			// Ensure all time values are integers (milliseconds)
+			const currentPosition = (position >= 0 
+				? position 
+				: (this.currentResource?.playbackDuration ?? 0) + this.seekOffset) | 0;
+
+			this.seekOffset = currentPosition | 0;
 			const wasPaused = this.isPaused;
-			const playbackDuration = this.currentResource?.playbackDuration ?? 0;
+			const playbackDuration = (this.currentResource?.playbackDuration ?? 0) | 0;
 
 			const isForwardSeek = position < 0 || position >= playbackDuration;
 			const currentStreamId = this.currentSlot.streamId;
 
-			// Try to grab the raw source stream for reuse (forward seeks only)
+			// Try to grab the raw source stream for reuse (only when not seeking, i.e. just applying filters)
 			let reuseStream: import("stream").Readable | null = null;
-			if (isForwardSeek && currentStreamId) {
+			if (position < 0 && isForwardSeek && currentStreamId) {
 				reuseStream = this.streamManager.getRawStream(currentStreamId);
 				if (reuseStream) {
-					this.debug(`[Player] Will reuse source stream for seek (pos: ${currentPosition}ms)`);
+					this.debug(`[Player] Will reuse source stream for filter application`);
 				}
 			}
 

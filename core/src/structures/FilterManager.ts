@@ -231,95 +231,46 @@ export class FilterManager {
 	 */
 	public async applyFiltersAndSeek(stream: Readable, position: number = -1): Promise<Readable> {
 		const generation = ++this.ffmpegGeneration;
-
 		const filterString = this.getFilterString();
 
-		this.debug(
-			`Applying filters and seek — filters: ${filterString || "none"}, seek: ${position}ms, srcType: ${this.StreamType}`,
-		);
+		this.debug(`Applying filters and seek — filters: ${filterString || "none"}, seek: ${position}ms`);
 
-		// có request mới chen vào
 		if (generation !== this.ffmpegGeneration) {
 			throw new Error("FFmpeg generation outdated");
 		}
 
 		this.currentInputStream = stream;
-
 		const abortController = new AbortController();
 		this.ffmpegAbortController = abortController;
 
+		// Nếu có vị trí seek, ưu tiên dùng spawnFFmpegInputSeek
 		if (position >= 0 && ffmpegPath) {
 			return this.spawnFFmpegInputSeek(stream, position, filterString, abortController.signal, generation);
 		}
 
-		const args = ["-analyzeduration", "0", "-loglevel", "0"];
+		// Trường hợp chỉ apply filter mà không seek (position < 0)
+		const args = [
+			"-analyzeduration", "0",
+			"-loglevel", "0",
+			"-i", "pipe:0",
+			"-acodec", "libopus", // Chuyển sang opus ngay để nhẹ pipe
+			"-f", "opus",         // Format chuẩn cho Discord
+			"-ar", "48000",
+			"-ac", "2"
+		];
 
 		if (filterString) {
-			args.push("-af", filterString);
+			args.splice(4, 0, "-af", filterString);
 		}
-
-		args.push(
-			"-f",
-			this.StreamType === "webm/opus" ? "webm/opus"
-			: this.StreamType === "ogg/opus" ? "ogg/opus"
-			: "mp3",
-		);
-
-		args.push("-ar", "48000", "-ac", "2");
 
 		try {
+			// Sử dụng prism.FFmpeg cho trường hợp không seek
 			this.ffmpeg = stream.pipe(new prism.FFmpeg({ args }));
+			return this.ffmpeg;
 		} catch (spawnError) {
 			this.debug(`FFmpeg spawn error:`, spawnError);
-			this.currentInputStream = null;
-			this.ffmpegAbortController = null;
 			throw spawnError;
 		}
-
-		// nếu bị supersede ngay sau khi spawn
-		if (generation !== this.ffmpegGeneration) {
-			try {
-				this.ffmpeg.destroy();
-			} catch {}
-
-			throw new Error("FFmpeg process superseded");
-		}
-
-		this.ffmpeg.on("close", () => {
-			this.debug(`FFmpeg processing completed`);
-
-			try {
-				this.ffmpeg?.destroy();
-			} catch {}
-
-			if (this.ffmpeg === this.ffmpeg) {
-				this.ffmpeg = null;
-			}
-
-			if (this.ffmpegAbortController === abortController) {
-				this.ffmpegAbortController = null;
-			}
-		});
-
-		this.ffmpeg.on("error", (err: Error) => {
-			this.debug(`FFmpeg error:`, err);
-
-			try {
-				this.ffmpeg?.destroy();
-			} catch {}
-
-			if (this.ffmpeg === this.ffmpeg) {
-				this.ffmpeg = null;
-			}
-
-			if (this.ffmpegAbortController === abortController) {
-				this.ffmpegAbortController = null;
-			}
-
-			this.currentInputStream = null;
-		});
-
-		return this.ffmpeg;
 	}
 
 	private spawnFFmpegInputSeek(
@@ -329,24 +280,29 @@ export class FilterManager {
 		signal: AbortSignal,
 		generation: number,
 	): Readable {
-		const seekSeconds = (position / 1000).toFixed(3);
+		// Convert milliseconds to seconds for FFmpeg (position is integer ms, convert to string for CLI)
+		const seekSeconds = String((position / 1000).toFixed(3));
 
-		const args: string[] = ["-i", "pipe:0", "-ss", seekSeconds, "-analyzeduration", "0", "-loglevel", "0"];
+		// Chuyển sang dùng s16le (Raw PCM) để Discord.js dễ xử lý nhất khi có filter
+		// NOTE: -ss MUST come BEFORE -i for proper seeking and timing
+		const args: string[] = [
+			"-ss", seekSeconds,
+			"-i", "pipe:0",
+			"-analyzeduration", "0",
+			"-loglevel", "0",
+		];
 
 		if (filterString) {
 			args.push("-af", filterString);
 		}
 
-		const outFormat =
-			this.StreamType === "webm/opus" ? "webm"
-			: this.StreamType === "ogg/opus" ? "ogg"
-			: "mp3";
-
-		args.push("-f", outFormat, "-ar", "48000", "-ac", "2", "pipe:1");
+		// Xuất ra dạng s16le là dạng "an toàn" nhất cho mọi loại filter
+		args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
 
 		const proc = spawn(ffmpegPath!, args, {
 			stdio: ["pipe", "pipe", "ignore"],
 		});
+
 
 		const oldProcess = this.ffmpegProcess;
 
