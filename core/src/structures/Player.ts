@@ -909,7 +909,10 @@ export class Player extends EventEmitter {
 
 			const resource = createAudioResource(processedStream.stream, {
 				metadata: track,
-				inputType: position > 0 ? StreamType.Raw : StreamType.Arbitrary,
+				inputType:
+					processedStream.wasRecreated && !filterString ? StreamType.Arbitrary
+					: position > 0 ? StreamType.Raw
+					: StreamType.Arbitrary,
 				inlineVolume: true,
 			});
 

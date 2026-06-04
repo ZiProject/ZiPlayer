@@ -1,26 +1,81 @@
+// stream-converter.ts
 import { Readable } from "stream";
 
-export async function webStreamToNodeStream(webStream: ReadableStream, highWaterMark: number = 64 * 1024): Promise<Readable> {
+export async function webStreamToNodeStream(
+	webStream: ReadableStream,
+	highWaterMark: number = 64 * 1024,
+	seekBytes: number = 0,
+): Promise<Readable> {
 	const reader = webStream.getReader();
-	const chunks: Uint8Array[] = [];
+	let bytesSkipped = 0;
+	let streamEnded = false;
 
-	try {
-		while (true) {
-			const { done, value } = await reader.read();
+	const nodeStream = new Readable({
+		highWaterMark,
+		async read() {
+			if (streamEnded) {
+				this.push(null);
+				return;
+			}
 
-			if (done) break;
-			if (value) chunks.push(value);
-		}
+			try {
+				while (true) {
+					const { done, value } = await reader.read();
 
-		// Gộp tất cả chunks
-		const buffer = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+					if (done) {
+						streamEnded = true;
+						this.push(null);
+						break;
+					}
 
-		// Trả về Node.js Readable stream
-		return Readable.from(buffer, {
-			highWaterMark,
-		});
-	} catch (err) {
+					if (!value) continue;
+
+					// Handle seek
+					if (seekBytes > 0 && bytesSkipped < seekBytes) {
+						const remaining = seekBytes - bytesSkipped;
+						if (value.length <= remaining) {
+							bytesSkipped += value.length;
+							continue;
+						} else {
+							const partial = value.subarray(remaining);
+							bytesSkipped = seekBytes;
+							const buffer = Buffer.from(partial);
+							if (!this.push(buffer)) {
+								// Backpressure
+								break;
+							}
+							return;
+						}
+					}
+
+					const buffer = Buffer.from(value);
+					if (!this.push(buffer)) {
+						// Backpressure
+						break;
+					}
+					return;
+				}
+			} catch (err) {
+				console.error("Stream read error:", err);
+				streamEnded = true;
+				this.destroy(err as Error);
+			}
+		},
+	});
+
+	// Cleanup handlers
+	nodeStream.on("close", () => {
 		reader.releaseLock();
-		throw err;
-	}
+	});
+
+	nodeStream.on("error", () => {
+		reader.releaseLock();
+	});
+
+	return nodeStream;
+}
+
+export function calculateSeekBytes(positionMs: number, bitrateKbps: number = 128): number {
+	const bytesPerSecond = (bitrateKbps * 1000) / 8;
+	return Math.floor((positionMs / 1000) * bytesPerSecond);
 }

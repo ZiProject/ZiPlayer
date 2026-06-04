@@ -243,9 +243,7 @@ export class SoundCloudPlugin extends BasePlugin {
 				type: "arbitrary",
 				metadata: track.metadata,
 				recreate: async (position) => {
-					return await this.client.downloadTrack(track.url, {
-						seek: position,
-					});
+					return await this.client.downloadTrack(track.url, { seek: position });
 				},
 			};
 		} catch (error: any) {

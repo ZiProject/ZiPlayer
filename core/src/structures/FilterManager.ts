@@ -229,18 +229,23 @@ export class FilterManager {
 	 * @param {number} position - The position to seek to in milliseconds (default: 0)
 	 * @returns {Promise<Readable>} The stream with filters and seek applied
 	 */
-	public async applyFiltersAndSeek(streamInfo: StreamInfo, position: number = -1): Promise<StreamInfo> {
+	public async applyFiltersAndSeek(
+		streamInfo: StreamInfo,
+		position: number = -1,
+	): Promise<StreamInfo & { wasRecreated?: boolean }> {
 		const generation = ++this.ffmpegGeneration;
 		const filterString = this.getFilterString();
 
 		let sourceStream = streamInfo.stream;
+		let wasRecreated = false;
 
 		if (position >= 0 && streamInfo.recreate) {
 			sourceStream = await streamInfo.recreate(position);
+			wasRecreated = true;
 
 			position = -1;
 			streamInfo.type = "arbitrary";
-			if (!filterString) return { ...streamInfo, stream: sourceStream };
+			if (!filterString) return { ...streamInfo, stream: sourceStream, wasRecreated };
 		}
 
 		this.debug(`Applying filters and seek — filters: ${filterString || "none"}, seek: ${position}ms`);
