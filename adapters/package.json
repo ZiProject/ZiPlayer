@@ -1,0 +1,51 @@
+{
+	"name": "@ziplayer/adapters",
+	"version": "1.0.0",
+	"description": "Third-party plugin adapter bridge for ZiPlayer – wrap discord-player, DisTube, youtube-dl-exec, and more.",
+	"keywords": [
+		"ziplayer",
+		"discord",
+		"music",
+		"adapter",
+		"discord-player",
+		"distube",
+		"youtube-dl"
+	],
+	"homepage": "https://player.ziji.best",
+	"bugs": {
+		"url": "https://github.com/ZiProject/ZiPlayer/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ZiProject/ZiPlayer.git"
+	},
+	"license": "MIT",
+	"author": "Ziji",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"exports": {
+		".": {
+			"import": "./dist/index.js",
+			"require": "./dist/index.js",
+			"types": "./dist/index.d.ts"
+		}
+	},
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"prepare": "npm run build"
+	},
+	"peerDependencies": {
+		"ziplayer": ">=0.3.0"
+	},
+	"peerDependenciesMeta": {
+		"ziplayer": {
+			"optional": false
+		}
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"typescript": "^5.0.0",
+		"ziplayer": "^0.3.9"
+	}
+}

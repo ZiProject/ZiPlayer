@@ -124,8 +124,9 @@ export interface SearchScore {
  * };
  */
 export interface StreamInfo {
-	stream: Readable;
-	type: "webm/opus" | "ogg/opus" | "arbitrary" | string;
+	stream?: Readable;
+	url?: string;
+	type: "webm/opus" | "ogg/opus" | "arbitrary" | "url" | string;
 	metadata?: Record<string, any>;
 	position?: number;
 	recreate?: (position: number) => Promise<Readable>;

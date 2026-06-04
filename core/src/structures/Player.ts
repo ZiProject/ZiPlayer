@@ -907,7 +907,7 @@ export class Player extends EventEmitter {
 		if (filterString || position > 0) {
 			const processedStream = await this.filter.applyFiltersAndSeek(streamInfo, seekArg);
 
-			const resource = createAudioResource(processedStream.stream, {
+			const resource = createAudioResource(processedStream.stream || processedStream.url!, {
 				metadata: track,
 				inputType:
 					processedStream.wasRecreated && !filterString ? StreamType.Arbitrary
@@ -916,10 +916,10 @@ export class Player extends EventEmitter {
 				inlineVolume: true,
 			});
 
-			return { resource, processedStream: processedStream.stream };
+			return { resource, processedStream: processedStream.stream! };
 		}
 
-		const resource = createAudioResource(streamInfo.stream, {
+		const resource = createAudioResource(streamInfo.stream || streamInfo.url!, {
 			metadata: track,
 			inputType:
 				streamInfo.type === "webm/opus" ? StreamType.WebmOpus
@@ -1980,7 +1980,7 @@ export class Player extends EventEmitter {
 			}
 
 			// Return the stream directly - caller can pipe it to fs.createWriteStream()
-			return finalStream.stream;
+			return finalStream.stream!;
 		} catch (error) {
 			this.debug(`[Player] save error:`, error);
 			this.emit("playerError", error as Error, track);

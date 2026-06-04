@@ -1,7 +1,8 @@
 {
 	"compilerOptions": {
 		"target": "ES2022",
-		"module": "commonjs",
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
 		"lib": ["ES2022", "DOM"],
 		"outDir": "./dist",
 		"rootDir": "./src",
@@ -12,12 +13,15 @@
 		"declaration": true,
 		"declarationMap": true,
 		"sourceMap": true,
-		"moduleResolution": "node",
 		"allowSyntheticDefaultImports": true,
 		"experimentalDecorators": true,
 		"emitDecoratorMetadata": true,
-		"resolveJsonModule": true
+		"resolveJsonModule": true,
+		"paths": {
+			"googlevideo/sabr-stream": ["./node_modules/googlevideo/dist/src/exports/sabr-stream"],
+			"googlevideo/utils": ["./node_modules/googlevideo/dist/src/exports/utils"]
+		}
 	},
-	"include": ["src/*", "src/types/*"],
+	"include": ["src/*"],
 	"exclude": ["node_modules", "dist", "examples"]
 }

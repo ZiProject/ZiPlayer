@@ -2,41 +2,7 @@ import { BasePlugin } from "ziplayer";
 import { Track, SearchResult, StreamInfo } from "ziplayer";
 import { Readable } from "stream";
 import youtubedl from "youtube-dl-exec";
-
-/**
- * Converts a Web ReadableStream to a Node.js Readable stream
- */
-export function webStreamToNodeStream(webStream: ReadableStream): Readable {
-	const nodeStream = new Readable({
-		read() {
-			// This will be handled by the Web Stream reader
-		},
-	});
-
-	// Create a reader from the Web Stream
-	const reader = webStream.getReader();
-
-	// Read chunks and push to Node.js stream
-	const pump = async () => {
-		try {
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) {
-					nodeStream.push(null); // End the stream
-					break;
-				}
-				nodeStream.push(Buffer.from(value));
-			}
-		} catch (error) {
-			nodeStream.destroy(error as Error);
-		}
-	};
-
-	// Start pumping data
-	pump();
-
-	return nodeStream;
-}
+import { url } from "inspector/promises";
 
 function extractVideoId(input: string): string | null {
 	try {
@@ -107,15 +73,10 @@ export class YTexec extends BasePlugin {
 			if (!youtubeUrl) {
 				throw new Error("Failed to get YouTube stream URL");
 			}
-			const response = await fetch(youtubeUrl);
-			if (!response.ok || !response.body) {
-				throw new Error("Failed to fetch YouTube stream");
-			}
-			const stream = webStreamToNodeStream(response.body as ReadableStream) as unknown as Readable;
 
 			return {
-				stream,
-				type: "arbitrary",
+				url: youtubeUrl,
+				type: "url",
 				metadata: track.metadata,
 			};
 		} catch (error) {

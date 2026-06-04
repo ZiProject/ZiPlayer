@@ -16,7 +16,7 @@ export class FilterManager {
 	private debug: DebugFn;
 	private player: Player;
 	private ffmpeg: FFmpeg | null = null;
-	private currentInputStream: Readable | null = null;
+	private currentInputStream: Readable | null | undefined | string = null;
 	public StreamType: FilterManagerStreamType = "arbitrary";
 	private ffmpegProcess: ChildProcess | null = null;
 	private ffmpegAbortController: AbortController | null = null;
@@ -236,7 +236,7 @@ export class FilterManager {
 		const generation = ++this.ffmpegGeneration;
 		const filterString = this.getFilterString();
 
-		let sourceStream = streamInfo.stream;
+		let sourceStream: Readable | string = streamInfo.stream || streamInfo.url!;
 		let wasRecreated = false;
 
 		if (position >= 0 && streamInfo.recreate) {
@@ -264,7 +264,13 @@ export class FilterManager {
 			return { ...streamInfo, stream };
 		}
 
-		// Trường hợp chỉ apply filter mà không seek (position < 0)
+		if (typeof sourceStream === "string") {
+			return {
+				...streamInfo,
+				stream: await this.createFFmpegFromUrl(sourceStream, filterString),
+			};
+		}
+
 		const args = [
 			"-analyzeduration",
 			"0",
@@ -287,7 +293,6 @@ export class FilterManager {
 		}
 
 		try {
-			// Sử dụng prism.FFmpeg cho trường hợp không seek
 			this.ffmpeg = sourceStream.pipe(new prism.FFmpeg({ args }));
 			return { ...streamInfo, stream: this.ffmpeg };
 		} catch (spawnError) {
@@ -297,7 +302,7 @@ export class FilterManager {
 	}
 
 	private spawnFFmpegInputSeek(
-		stream: Readable,
+		stream: Readable | string,
 		position: number,
 		filterString: string,
 		signal: AbortSignal,
@@ -308,7 +313,11 @@ export class FilterManager {
 
 		// Chuyển sang dùng s16le (Raw PCM) để Discord.js dễ xử lý nhất khi có filter
 		// NOTE: -ss MUST come BEFORE -i for proper seeking and timing
-		const args: string[] = ["-ss", seekSeconds, "-i", "pipe:0", "-analyzeduration", "0", "-loglevel", "0"];
+		//if url is provided, we can let ffmpeg handle it directly without piping, which is more efficient and less error-prone
+		const args: string[] =
+			typeof stream === "string" ?
+				["-ss", seekSeconds, "-i", stream, "-analyzeduration", "0", "-loglevel", "0"]
+			:	["-ss", seekSeconds, "-i", "pipe:0", "-analyzeduration", "0", "-loglevel", "0"];
 
 		if (filterString) {
 			args.push("-af", filterString);
@@ -337,7 +346,11 @@ export class FilterManager {
 			signal.removeEventListener("abort", onAbort);
 
 			try {
-				stream.unpipe(proc.stdin!);
+				if (typeof stream === "string") {
+					// If stream is a URL, no need to unpipe
+				} else {
+					stream.unpipe(proc.stdin!);
+				}
 			} catch {}
 
 			try {
@@ -361,7 +374,11 @@ export class FilterManager {
 		}
 
 		// Pipe source → ffmpeg stdin
-		stream.pipe(proc.stdin!);
+		if (typeof stream === "string") {
+			// If stream is a URL, no need to pipe
+		} else {
+			stream.pipe(proc.stdin!);
+		}
 
 		// Suppress EPIPE on stdin when the process exits early
 		proc.stdin!.on("error", (err: Error) => {
@@ -408,5 +425,60 @@ export class FilterManager {
 		}
 
 		return proc.stdout as Readable;
+	}
+	private createFFmpegFromUrl(url: string, filterString: string): Readable {
+		const args = ["-analyzeduration", "0", "-loglevel", "0", "-i", url];
+
+		if (filterString) {
+			args.push("-af", filterString);
+		}
+
+		args.push("-acodec", "libopus", "-f", "opus", "-ar", "48000", "-ac", "2", "pipe:1");
+
+		const proc = spawn(ffmpegPath!, args, {
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+
+		const oldProcess = this.ffmpegProcess;
+		this.ffmpegProcess = proc;
+
+		proc.on("close", (code) => {
+			this.debug(`FFmpeg URL process exited (code: ${code})`);
+
+			if (this.ffmpegProcess === proc) {
+				this.ffmpegProcess = null;
+			}
+		});
+
+		proc.on("error", (err) => {
+			this.debug(`FFmpeg URL process error: ${err.message}`);
+
+			if (this.ffmpegProcess === proc) {
+				this.ffmpegProcess = null;
+			}
+		});
+
+		// kill process cũ sau khi process mới đã sẵn sàng
+		if (oldProcess && oldProcess !== proc) {
+			try {
+				oldProcess.kill("SIGKILL");
+			} catch {}
+		}
+
+		const output = proc.stdout as Readable;
+
+		output.once("close", () => {
+			try {
+				proc.kill("SIGKILL");
+			} catch {}
+		});
+
+		output.once("end", () => {
+			try {
+				proc.kill("SIGKILL");
+			} catch {}
+		});
+
+		return output;
 	}
 }
