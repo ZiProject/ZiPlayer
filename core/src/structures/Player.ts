@@ -905,16 +905,15 @@ export class Player extends EventEmitter {
 		const seekArg = position > 0 ? position : -1;
 
 		if (filterString || position > 0) {
-			const processedStream = await this.filter.applyFiltersAndSeek(streamInfo.stream, seekArg);
+			const processedStream = await this.filter.applyFiltersAndSeek(streamInfo, seekArg);
 
-			// rawStream. Always use Arbitrary so discordjs/voice doesn't re-encode.
-			const resource = createAudioResource(processedStream, {
+			const resource = createAudioResource(processedStream.stream, {
 				metadata: track,
 				inputType: position > 0 ? StreamType.Raw : StreamType.Arbitrary,
 				inlineVolume: true,
 			});
 
-			return { resource, processedStream };
+			return { resource, processedStream: processedStream.stream };
 		}
 
 		const resource = createAudioResource(streamInfo.stream, {
@@ -1960,7 +1959,7 @@ export class Player extends EventEmitter {
 			}
 
 			// Apply filters if any are active
-			let finalStream = streamInfo.stream;
+			let finalStream = streamInfo;
 
 			if (saveOptions.filter || saveOptions.seek) {
 				try {
@@ -1971,14 +1970,14 @@ export class Player extends EventEmitter {
 				}
 
 				this.debug(`[Player] Applying filters to save stream: ${this.filter.getFilterString() || "none"}`);
-				finalStream = await this.filter.applyFiltersAndSeek(streamInfo.stream, saveOptions.seek || 0).catch((err) => {
+				finalStream = await this.filter.applyFiltersAndSeek(streamInfo, saveOptions.seek || 0).catch((err) => {
 					this.debug(`[Player] Error applying filters to save stream:`, err);
-					return streamInfo!.stream; // Fallback to original stream
+					return streamInfo; // Fallback to original stream
 				});
 			}
 
 			// Return the stream directly - caller can pipe it to fs.createWriteStream()
-			return finalStream;
+			return finalStream.stream;
 		} catch (error) {
 			this.debug(`[Player] save error:`, error);
 			this.emit("playerError", error as Error, track);

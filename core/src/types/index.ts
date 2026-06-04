@@ -127,9 +127,9 @@ export interface StreamInfo {
 	stream: Readable;
 	type: "webm/opus" | "ogg/opus" | "arbitrary" | string;
 	metadata?: Record<string, any>;
-
+	position?: number;
+	recreate?: (position: number) => Promise<Readable>;
 	remote?: boolean;
-
 	handle?: {
 		play(): Promise<void>;
 		stop(): Promise<void>;

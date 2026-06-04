@@ -242,6 +242,11 @@ export class SoundCloudPlugin extends BasePlugin {
 				stream,
 				type: "arbitrary",
 				metadata: track.metadata,
+				recreate: async (position) => {
+					return await this.client.downloadTrack(track.url, {
+						seek: position,
+					});
+				},
 			};
 		} catch (error: any) {
 			throw new Error(`Failed to get SoundCloud stream: ${error.message}`);

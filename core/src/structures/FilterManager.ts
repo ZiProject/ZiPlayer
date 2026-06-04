@@ -1,4 +1,4 @@
-import type { AudioFilter } from "../types";
+import type { AudioFilter, StreamInfo } from "../types";
 import { PREDEFINED_FILTERS } from "../types";
 import type { Player } from "./Player";
 import type { PlayerManager } from "./PlayerManager";
@@ -229,9 +229,19 @@ export class FilterManager {
 	 * @param {number} position - The position to seek to in milliseconds (default: 0)
 	 * @returns {Promise<Readable>} The stream with filters and seek applied
 	 */
-	public async applyFiltersAndSeek(stream: Readable, position: number = -1): Promise<Readable> {
+	public async applyFiltersAndSeek(streamInfo: StreamInfo, position: number = -1): Promise<StreamInfo> {
 		const generation = ++this.ffmpegGeneration;
 		const filterString = this.getFilterString();
+
+		let sourceStream = streamInfo.stream;
+
+		if (position >= 0 && streamInfo.recreate) {
+			sourceStream = await streamInfo.recreate(position);
+
+			position = -1;
+			streamInfo.type = "arbitrary";
+			if (!filterString) return { ...streamInfo, stream: sourceStream };
+		}
 
 		this.debug(`Applying filters and seek — filters: ${filterString || "none"}, seek: ${position}ms`);
 
@@ -239,13 +249,14 @@ export class FilterManager {
 			throw new Error("FFmpeg generation outdated");
 		}
 
-		this.currentInputStream = stream;
+		this.currentInputStream = sourceStream;
 		const abortController = new AbortController();
 		this.ffmpegAbortController = abortController;
 
 		// Nếu có vị trí seek, ưu tiên dùng spawnFFmpegInputSeek
 		if (position >= 0 && ffmpegPath) {
-			return this.spawnFFmpegInputSeek(stream, position, filterString, abortController.signal, generation);
+			const stream = await this.spawnFFmpegInputSeek(sourceStream, position, filterString, abortController.signal, generation);
+			return { ...streamInfo, stream };
 		}
 
 		// Trường hợp chỉ apply filter mà không seek (position < 0)
@@ -272,8 +283,8 @@ export class FilterManager {
 
 		try {
 			// Sử dụng prism.FFmpeg cho trường hợp không seek
-			this.ffmpeg = stream.pipe(new prism.FFmpeg({ args }));
-			return this.ffmpeg;
+			this.ffmpeg = sourceStream.pipe(new prism.FFmpeg({ args }));
+			return { ...streamInfo, stream: this.ffmpeg };
 		} catch (spawnError) {
 			this.debug(`FFmpeg spawn error:`, spawnError);
 			throw spawnError;
