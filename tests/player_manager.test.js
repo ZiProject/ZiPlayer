@@ -26,8 +26,9 @@ function makeTrack(id = "t1", title = "Track 1") {
 	return { id, title, url: `https://example.com/${id}`, duration: 1, requestedBy: "tester", source: "test" };
 }
 
-test("PlayerManager create/get/has/delete basics and plugin propagation", async () => {
+test("PlayerManager create/get/has/delete basics and plugin propagation", async (t) => {
 	const mgr = new PlayerManager({ plugins: [new DummyPlugin()] });
+	t.after(() => mgr.destroy());
 
 	assert.equal(mgr.size, 0);
 	const player = await mgr.create("guild-1", {});
@@ -51,13 +52,16 @@ test("PlayerManager create/get/has/delete basics and plugin propagation", async 
 
 	// Delete removes and destroys
 	const deleted = mgr.delete("guild-1");
-	// Implementation deletes on playerDestroy handler first, so method returns false on second delete
-	assert.equal(deleted, false);
+	assert.equal(deleted, true);
 	assert.equal(mgr.size, 0);
+
+	const deletedAgain = mgr.delete("guild-1");
+	assert.equal(deletedAgain, false);
 });
 
-test("PlayerManager.search uses internal player with plugins but not players map", async () => {
+test("PlayerManager.search uses internal player with plugins but not players map", async (t) => {
 	const mgr = new PlayerManager({ plugins: [new DummyPlugin()] });
+	t.after(() => mgr.destroy());
 
 	assert.equal(mgr.size, 0);
 	assert.equal(mgr.has("__ziplayer_search__"), false);
@@ -76,7 +80,7 @@ test("PlayerManager.search uses internal player with plugins but not players map
 	assert.equal(mgr.size, 0);
 });
 
-test("PlayerManager extension activation by name and ctor", async () => {
+test("PlayerManager extension activation by name and ctor", async (t) => {
 	let activated = 0;
 	class DummyExt {
 		static name = "dext";
@@ -90,6 +94,7 @@ test("PlayerManager extension activation by name and ctor", async () => {
 	}
 
 	const mgr = new PlayerManager({ extensions: [DummyExt] });
+	t.after(() => mgr.destroy());
 	const player = await mgr.create("g2", { extensions: ["dext"] });
 	assert.ok(player);
 	assert.equal(activated, 1);
@@ -98,6 +103,7 @@ test("PlayerManager extension activation by name and ctor", async () => {
 	activated = 0;
 	const inst = new DummyExt();
 	const mgr2 = new PlayerManager({ extensions: [inst] });
+	t.after(() => mgr2.destroy());
 	await mgr2.create("g3", { extensions: ["dext"] });
 	assert.equal(activated, 1);
 });

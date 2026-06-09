@@ -16,7 +16,7 @@ function makeTrack(id = "t1", title = "Track 1", author) {
 	};
 }
 
-test("lyricsExt attaches lyrics on trackStart and emits event", async () => {
+test("lyricsExt attaches lyrics on trackStart and emits event", async (t) => {
 	const ext = new lyricsExt(null, { autoFetchOnTrackStart: true });
 	// Stub fetch to avoid network
 	ext.fetch = async (track) => ({
@@ -33,6 +33,8 @@ test("lyricsExt attaches lyrics on trackStart and emits event", async () => {
 	});
 
 	const mgr = new PlayerManager({ extensions: [ext] });
+	t.after(() => mgr.destroy());
+
 	const player = await mgr.create("guild-lyrics-1", { extensions: ["lyricsExt"] });
 
 	let payload = null;
