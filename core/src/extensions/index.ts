@@ -51,6 +51,7 @@ export class ExtensionManager {
 	// Pending requests for deduplication
 	private pendingSearches: Map<string, Promise<SearchResult | null>>;
 	private pendingStreams: Map<string, Promise<StreamInfo | null>>;
+	private cacheCleanupInterval: NodeJS.Timeout | null = null;
 
 	constructor(player: Player, manager: PlayerManager) {
 		this.player = player;
@@ -69,7 +70,10 @@ export class ExtensionManager {
 			emit: (event: string, ...args: any[]) => player.emit(event as any, ...args),
 		});
 		// Auto-cleanup caches periodically
-		setInterval(() => this.cleanupCaches(), 5 * 60 * 1000);
+		this.cacheCleanupInterval = setInterval(() => this.cleanupCaches(), 5 * 60 * 1000);
+		if (this.cacheCleanupInterval.unref) {
+			this.cacheCleanupInterval.unref();
+		}
 	}
 
 	debug(message?: any, ...optionalParams: any[]): void {
@@ -121,6 +125,10 @@ export class ExtensionManager {
 
 	destroy(): void {
 		this.debug(`Destroying all extensions`);
+		if (this.cacheCleanupInterval) {
+			clearInterval(this.cacheCleanupInterval);
+			this.cacheCleanupInterval = null;
+		}
 		for (const extension of this.extensions.values()) {
 			this.unregister(extension);
 		}

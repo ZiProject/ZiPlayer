@@ -56,6 +56,26 @@ test("PlayerManager create/get/has/delete basics and plugin propagation", async 
 	assert.equal(mgr.size, 0);
 });
 
+test("PlayerManager.search uses internal player with plugins but not players map", async () => {
+	const mgr = new PlayerManager({ plugins: [new DummyPlugin()] });
+
+	assert.equal(mgr.size, 0);
+	assert.equal(mgr.has("__ziplayer_search__"), false);
+
+	const result = await mgr.search("dummy:test-query", "user-1");
+	assert.equal(result.tracks.length, 1);
+	assert.equal(result.tracks[0].title, "dummy:test-query");
+
+	assert.equal(mgr.size, 0);
+	assert.equal(mgr.has("__ziplayer_search__"), false);
+	assert.equal(mgr.get("__ziplayer_search__"), undefined);
+
+	// Second search reuses the same internal player
+	const result2 = await mgr.search("dummy:another", "user-2");
+	assert.equal(result2.tracks.length, 1);
+	assert.equal(mgr.size, 0);
+});
+
 test("PlayerManager extension activation by name and ctor", async () => {
 	let activated = 0;
 	class DummyExt {

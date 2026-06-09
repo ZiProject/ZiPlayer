@@ -15,9 +15,10 @@ import {
 } from "../types";
 import type { BaseExtension } from "../extensions";
 import { withTimeout } from "../utils/timeout";
-import { PluginManager } from "../plugins";
 
 const GLOBAL_MANAGER_KEY: symbol = Symbol.for("ziplayer.PlayerManager.instance");
+/** Guild id for the internal search-only player (never stored in {@link PlayerManager.players}). */
+const SEARCH_PLAYER_GUILD_ID = "__ziplayer_search__";
 
 export const getGlobalManager = (): PlayerManager | null => {
 	try {
@@ -105,7 +106,8 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	private plugins: SourcePlugin[];
-	private pluginManager: PluginManager;
+	/** Reused player for {@link search}; not registered in {@link players}. */
+	private searchPlayer: Player | null = null;
 	private extensions: any[];
 	private B_debug: boolean = false;
 	private extractorTimeout: number = 10000;
@@ -126,9 +128,6 @@ export class PlayerManager extends EventEmitter {
 	constructor(options: PlayerManagerOptions = {}) {
 		super();
 		this.plugins = [];
-		this.pluginManager = new PluginManager(null as any, this, {
-			extractorTimeout: this.extractorTimeout,
-		});
 		this.searchCache = new Map();
 
 		// Initialize plugins
@@ -145,7 +144,6 @@ export class PlayerManager extends EventEmitter {
 
 				if (instance) {
 					this.plugins.push(instance);
-					this.pluginManager.register(instance);
 				}
 				this.debug(`Registered plugin: ${p.name || "unnamed"}`);
 			} catch (e) {
@@ -249,6 +247,25 @@ export class PlayerManager extends EventEmitter {
 		this.debug(`Auto-cleanup started with interval: ${this.cleanupTimeout}ms`);
 	}
 
+	/**
+	 * Lazy internal player used only for {@link search}.
+	 * Not added to {@link players} and does not forward manager events.
+	 */
+	private getSearchPlayer(): Player {
+		if (this.searchPlayer && !this.searchPlayer.destroyed) {
+			return this.searchPlayer;
+		}
+
+		const player = new Player(SEARCH_PLAYER_GUILD_ID, { extractorTimeout: this.extractorTimeout }, this);
+		for (const plugin of this.plugins) {
+			player.addPlugin(plugin);
+		}
+
+		this.searchPlayer = player;
+		this.debug(`Created internal search player (not stored in players map)`);
+		return player;
+	}
+
 	private startStatsCollection(): void {
 		if (this.statsInterval) {
 			clearInterval(this.statsInterval);
@@ -290,6 +307,10 @@ export class PlayerManager extends EventEmitter {
 	 */
 	async create(guildOrId: string | { id: string }, options?: PlayerOptions): Promise<Player> {
 		const guildId = this.resolveGuildId(guildOrId);
+
+		if (guildId === SEARCH_PLAYER_GUILD_ID) {
+			throw new Error(`Guild id "${SEARCH_PLAYER_GUILD_ID}" is reserved for internal search.`);
+		}
 
 		if (this.players.has(guildId)) {
 			this.debug(`Player already exists for guildId: ${guildId}, returning existing`);
@@ -770,6 +791,11 @@ export class PlayerManager extends EventEmitter {
 			player.destroy();
 		}
 
+		if (this.searchPlayer && !this.searchPlayer.destroyed) {
+			this.searchPlayer.destroy();
+		}
+		this.searchPlayer = null;
+
 		this.players.clear();
 		this.searchCache.clear();
 		this.removeAllListeners();
@@ -777,13 +803,11 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	/**
-	 * Search using PluginManager without creating a Player.
+	 * Search via an internal Player instance (all registered plugins) without
+	 * storing it in {@link players}.
 	 *
-	 * Uses the same search pipeline as Player.search():
-	 * - cache
-	 * - plugin deduplication
-	 * - plugin scoring/evaluation
-	 * - fallback handling
+	 * Uses the same search pipeline as {@link Player.search}:
+	 * extension hooks, plugin deduplication, scoring, and fallback handling.
 	 *
 	 * @param {string} query
 	 * @param {string} requestedBy
@@ -792,20 +816,15 @@ export class PlayerManager extends EventEmitter {
 	async search(query: string, requestedBy: string): Promise<SearchResult> {
 		this.debug(`Search called with query: ${query}, requestedBy: ${requestedBy}`);
 
-		// Cache
 		const cached = this.getCachedSearch(query);
 		if (cached) {
 			return cached;
 		}
 
 		try {
-			const result = await this.pluginManager.search(query, requestedBy);
+			const result = await this.getSearchPlayer().search(query, requestedBy);
 
-			if (!result || !Array.isArray(result.tracks) || result.tracks.length === 0) {
-				throw new Error(`No results found for: ${query}`);
-			}
-
-			this.debug(`Plugin search returned ${result.tracks.length} tracks (score: ${result.score?.score ?? "unknown"}%)`);
+			this.debug(`Search returned ${result.tracks.length} tracks (score: ${result.score?.score ?? "unknown"}%)`);
 
 			if (result.score) {
 				this.debug(`Search evaluation - ${result.score.reason}`);
@@ -836,9 +855,12 @@ export class PlayerManager extends EventEmitter {
 	 */
 	registerPlugin(plugin: SourcePlugin): void {
 		this.plugins.push(plugin);
-		this.pluginManager.register(plugin);
 
 		this.debug(`Registered plugin: ${plugin.name}`);
+
+		if (this.searchPlayer && !this.searchPlayer.destroyed) {
+			this.searchPlayer.addPlugin(plugin);
+		}
 
 		for (const player of this.players.values()) {
 			player.addPlugin(plugin);
@@ -856,7 +878,10 @@ export class PlayerManager extends EventEmitter {
 		if (index === -1) return false;
 
 		this.plugins.splice(index, 1);
-		this.pluginManager.unregister(name);
+
+		if (this.searchPlayer && !this.searchPlayer.destroyed) {
+			this.searchPlayer.removePlugin(name);
+		}
 
 		this.debug(`Unregistered plugin: ${name}`);
 
