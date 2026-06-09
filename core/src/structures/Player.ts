@@ -125,6 +125,7 @@ export class Player extends EventEmitter {
 		resource: null,
 		track: null,
 		streamId: null,
+		processedStreamId: null,
 		abortController: null,
 		isValid: false,
 		isLoading: false,
@@ -331,7 +332,11 @@ export class Player extends EventEmitter {
 		const stream = (this.currentResource as any)?.metadata?.stream ?? (this.currentResource as any)?.stream;
 
 		if (stream && typeof stream.destroy === "function") {
-			stream.destroy().catch((e: any) => this.debug("Stream destroy error:", e));
+			try {
+				stream.destroy();
+			} catch (e: any) {
+				this.debug("Stream destroy error:", e);
+			}
 		}
 
 		this.currentResource = null;
@@ -1128,17 +1133,20 @@ export class Player extends EventEmitter {
 				return await this.playRemote(track, streamInfo);
 			}
 
-			if (!streamInfo?.stream) {
+			if (!streamInfo?.stream && !streamInfo?.url) {
 				throw new Error(`No stream available`);
 			}
 
 			// Register the RAW source stream — this is what we can reuse on seek
-			const rawStreamId = this.streamManager.registerStream(streamInfo.stream, track, {
-				source: track.source || "stream",
-				isPreload: false,
-				isRemote: !!streamInfo?.remote,
-				priority: 10,
-			});
+			const rawStreamId =
+				streamInfo.stream ?
+					this.streamManager.registerStream(streamInfo.stream, track, {
+						source: track.source || "stream",
+						isPreload: false,
+						isRemote: !!streamInfo?.remote,
+						priority: 10,
+					})
+				:	null;
 
 			// createResource now returns both the AudioResource
 			// AND the processedStream (ffmpeg stdout) when filters/seek are involved.
@@ -1159,14 +1167,14 @@ export class Player extends EventEmitter {
 			if (this.currentSlot.streamId && this.currentSlot.streamId !== rawStreamId) {
 				this.streamManager.unregisterStream(this.currentSlot.streamId, true);
 			}
-			if ((this.currentSlot as any).processedStreamId && (this.currentSlot as any).processedStreamId !== playStreamId) {
-				this.streamManager.unregisterStream((this.currentSlot as any).processedStreamId, true);
+			if (this.currentSlot.processedStreamId && this.currentSlot.processedStreamId !== playStreamId) {
+				this.streamManager.unregisterStream(this.currentSlot.processedStreamId, true);
 			}
 
 			this.currentSlot.resource = resource;
 			this.currentSlot.track = track;
 			this.currentSlot.streamId = rawStreamId;
-			(this.currentSlot as any).processedStreamId = processedStream ? playStreamId : null;
+			this.currentSlot.processedStreamId = processedStream ? playStreamId : null;
 			this.currentSlot.isValid = true;
 			this.currentResource = resource;
 			this.seekOffset = 0;
@@ -2508,10 +2516,10 @@ export class Player extends EventEmitter {
 			}
 
 			// Clean up processedStream first (it's what AudioResource reads)
-			const processedStreamId = (this.currentSlot as any).processedStreamId;
+			const processedStreamId = this.currentSlot.processedStreamId;
 			if (processedStreamId && processedStreamId !== currentStreamId) {
 				this.streamManager.unregisterStream(processedStreamId, true);
-				(this.currentSlot as any).processedStreamId = null;
+				this.currentSlot.processedStreamId = null;
 			}
 
 			if (currentStreamId) {
@@ -2544,7 +2552,7 @@ export class Player extends EventEmitter {
 				streaminfo = await this.getStream(track);
 			}
 
-			if (!streaminfo?.stream) {
+			if (!streaminfo?.stream && !streaminfo?.url) {
 				this.debug(`[Player] No stream available for refresh`);
 				return false;
 			}
@@ -2554,11 +2562,14 @@ export class Player extends EventEmitter {
 			const { resource, processedStream } = await this.createResource(streaminfo, track, createPosition);
 
 			// Register raw source stream
-			const newStreamId = this.streamManager.registerStream(streaminfo.stream, track, {
-				source: track.source || "stream",
-				isPreload: false,
-				priority: 10,
-			});
+			const newStreamId =
+				streaminfo.stream ?
+					this.streamManager.registerStream(streaminfo.stream, track, {
+						source: track.source || "stream",
+						isPreload: false,
+						priority: 10,
+					})
+				:	null;
 
 			let newProcessedStreamId: string | null = null;
 			if (processedStream && processedStream !== streaminfo.stream) {
@@ -2572,7 +2583,7 @@ export class Player extends EventEmitter {
 			this.currentSlot.resource = resource;
 			this.currentSlot.track = track;
 			this.currentSlot.streamId = newStreamId;
-			(this.currentSlot as any).processedStreamId = newProcessedStreamId;
+			this.currentSlot.processedStreamId = newProcessedStreamId;
 			this.currentSlot.isValid = true;
 			this.currentResource = resource;
 

@@ -244,8 +244,7 @@ export class FilterManager {
 			wasRecreated = true;
 
 			position = -1;
-			streamInfo.type = "arbitrary";
-			if (!filterString) return { ...streamInfo, stream: sourceStream, wasRecreated };
+			if (!filterString) return { ...streamInfo, type: "arbitrary", stream: sourceStream, wasRecreated };
 		}
 
 		this.debug(`Applying filters and seek — filters: ${filterString || "none"}, seek: ${position}ms`);

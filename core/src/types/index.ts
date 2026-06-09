@@ -420,6 +420,7 @@ export interface SaveOptions {
 	/** Seek position in milliseconds to start saving from */
 	seek?: number;
 }
+
 export interface PlayerSession {
 	guildId: string;
 	queue: Track[];
@@ -471,6 +472,7 @@ export interface StreamSlot {
 	resource: AudioResource | null;
 	track: Track | null;
 	streamId: string | null;
+	processedStreamId: string | null;
 	abortController: AbortController | null;
 	isValid: boolean;
 	isLoading: boolean;

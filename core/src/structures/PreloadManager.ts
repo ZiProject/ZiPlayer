@@ -24,6 +24,7 @@ export class PreloadManager {
 		resource: null,
 		track: null,
 		streamId: null,
+		processedStreamId: null,
 		abortController: null,
 		isValid: false,
 		isLoading: false,
@@ -239,17 +240,20 @@ export class PreloadManager {
 			this.debugLog(`[Preload] Track changed after stream fetch`);
 			throw new Error("PRELOAD_CANCELLED");
 		}
-		if (!streamInfo?.stream) {
+		if (!streamInfo?.stream && !streamInfo?.url) {
 			throw new Error(`No stream available`);
 		}
 
-		const streamId = this.streamManager.registerStream(streamInfo.stream, track, {
-			source: track.source || "preload",
-			isPreload: true,
-			priority: 5,
-		});
+		const streamId =
+			streamInfo.stream ?
+				this.streamManager.registerStream(streamInfo.stream, track, {
+					source: track.source || "preload",
+					isPreload: true,
+					priority: 5,
+				})
+			:	null;
 
-		const resource = createAudioResource(streamInfo.stream, {
+		const resource = createAudioResource(streamInfo.stream || streamInfo.url!, {
 			inlineVolume: true,
 			metadata: { ...track, preloaded: true },
 		});
