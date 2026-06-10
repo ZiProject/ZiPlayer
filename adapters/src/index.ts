@@ -256,7 +256,9 @@ function isDPExtractorCtor(p: unknown): p is new (...args: any[]) => DiscordPlay
 function isDistubePluginClass(p: unknown): p is new (...args: any[]) => DistubePlugin {
 	if (!isConstructor(p)) return false;
 	const proto = (p as any).prototype;
-	return typeof proto.resolve === "function" || typeof proto.getStreamURL === "function" || typeof proto.searchSong === "function";
+	return (
+		typeof proto.resolve === "function" || typeof proto.getStreamURL === "function" || typeof proto.searchSong === "function"
+	);
 }
 
 /** discord-player DefaultExtractors — array of extractor constructors */
@@ -265,14 +267,18 @@ function isDPExtractorCtorArray(p: unknown): p is Array<new (...args: any[]) => 
 }
 
 /** discord-player ExtractorExecutionContext-style container */
-function isDPExtractorContainer(p: unknown): p is { extractors: Map<unknown, DiscordPlayerExtractor> | DiscordPlayerExtractor[] } {
+function isDPExtractorContainer(
+	p: unknown,
+): p is { extractors: Map<unknown, DiscordPlayerExtractor> | DiscordPlayerExtractor[] } {
 	if (typeof p !== "object" || p === null || Array.isArray(p)) return false;
 	const extractors = (p as any).extractors;
 	if (extractors instanceof Map) return extractors.size > 0;
 	return Array.isArray(extractors) && extractors.length > 0;
 }
 
-function extractorsFromContainer(p: { extractors: Map<unknown, DiscordPlayerExtractor> | DiscordPlayerExtractor[] }): DiscordPlayerExtractor[] {
+function extractorsFromContainer(p: {
+	extractors: Map<unknown, DiscordPlayerExtractor> | DiscordPlayerExtractor[];
+}): DiscordPlayerExtractor[] {
 	const { extractors } = p;
 	if (extractors instanceof Map) return [...extractors.values()];
 	return extractors;
@@ -373,7 +379,25 @@ function urlToReadable(url: string): Readable {
 }
 
 function spawnFfmpegInput(input: string): Readable {
-	const args = ["-hide_banner", "-loglevel", "error", "-reconnect", "1", "-reconnect_streamed", "1", "-i", input, "-vn", "-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1"];
+	const args = [
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-reconnect",
+		"1",
+		"-reconnect_streamed",
+		"1",
+		"-i",
+		input,
+		"-vn",
+		"-f",
+		"s16le",
+		"-ar",
+		"48000",
+		"-ac",
+		"2",
+		"pipe:1",
+	];
 	const proc: ChildProcess = spawn(resolveFfmpegBinary(), args, { stdio: ["ignore", "pipe", "pipe"] });
 	const stdout = proc.stdout;
 	if (!stdout) {
@@ -664,14 +688,12 @@ export class DiscordPlayerContainerAdapter extends BasePlugin {
 
 	constructor(source: Array<new (...args: any[]) => DiscordPlayerExtractor> | DiscordPlayerExtractor[]) {
 		super();
-		this.adapters = source
-			.filter(Boolean)
-			.map((item) => {
-				if (typeof item === "function") {
-					return new DiscordPlayerExtractorAdapter(instantiatePlugin(item as new (...args: any[]) => DiscordPlayerExtractor));
-				}
-				return new DiscordPlayerExtractorAdapter(item);
-			});
+		this.adapters = source.filter(Boolean).map((item) => {
+			if (typeof item === "function") {
+				return new DiscordPlayerExtractorAdapter(instantiatePlugin(item as new (...args: any[]) => DiscordPlayerExtractor));
+			}
+			return new DiscordPlayerExtractorAdapter(item);
+		});
 	}
 
 	canHandle(query: string): boolean {
