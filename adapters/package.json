@@ -36,11 +36,19 @@
 		"prepare": "npm run build"
 	},
 	"peerDependencies": {
-		"ziplayer": ">=0.3.0"
+		"ziplayer": ">=0.3.0",
+		"discord-player": ">=7.0.0",
+		"ffmpeg-static": ">=5.0.0"
 	},
 	"peerDependenciesMeta": {
 		"ziplayer": {
 			"optional": false
+		},
+		"discord-player": {
+			"optional": true
+		},
+		"ffmpeg-static": {
+			"optional": true
 		}
 	},
 	"devDependencies": {

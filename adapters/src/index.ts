@@ -6,26 +6,30 @@
  *
  * @example
  * import { provide } from "@ziplayer/adapters";
+ * import { YouTubePlugin } from "@ziplayer/plugin";
  * import { DefaultExtractors, SoundCloudExtractor } from "@discord-player/extractor";
- * import SoundCloudPlugin from "@distube/soundcloud";
+ * import { SoundCloudPlugin } from "@distube/soundcloud";
  *
  * const manager = new PlayerManager({
  *   plugins: [
- *     provide(DefaultExtractors),           // array of constructors
- *     provide(new SoundCloudExtractor()),   // single instance
- *     provide(new SoundCloudPlugin()),      // DisTube plugin
+ *     provide(YouTubePlugin),                 // ZiPlayer plugin class
+ *     provide(DefaultExtractors),           // discord-player bundle
+ *     provide(SoundCloudExtractor),         // discord-player extractor class
+ *     provide(new SoundCloudPlugin()),      // DisTube instance
  *   ],
  * });
  */
 
 import { BasePlugin, Track, SearchResult, StreamInfo } from "ziplayer";
 import { Readable } from "stream";
+import { spawn, type ChildProcess } from "child_process";
 import * as http from "http";
 import * as https from "https";
+import type { IncomingMessage } from "http";
 const DEBUG = process.env.ZIPLAYER_ADAPTER_DEBUG === "true";
 
 function debug(...args: any[]) {
-	if (DEBUG || true) {
+	if (DEBUG) {
 		console.debug("[ZiAdapter]", ...args);
 	}
 }
@@ -78,7 +82,7 @@ interface DPQueryType {
 	[key: string]: string;
 }
 
-/** DisTube plugin shape */
+/** DisTube plugin shape (ExtractorPlugin, PlayableExtractorPlugin, InfoExtractorPlugin, …) */
 export interface DistubePlugin {
 	name?: string;
 	type?: string;
@@ -92,6 +96,8 @@ export interface DistubePlugin {
 		url?: string;
 		thumbnail?: string;
 	}>;
+	/** DisTube text-search hook (ExtractorPlugin.searchSong) */
+	searchSong?(query: string, opts?: unknown): Promise<unknown | null>;
 	getStreamURL?(song: unknown): Promise<string>;
 }
 
@@ -114,7 +120,7 @@ export type ThirdPartyPlugin =
 	| DistubePlugin
 	| GenericExtractor
 	| BasePlugin
-	| (new (...args: any[]) => DiscordPlayerExtractor) // constructor
+	| (new (...args: any[]) => unknown) // plugin / extractor constructor
 	| ThirdPartyPlugin[];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -214,31 +220,75 @@ function mapToSearchType(resolvedType: string, extractor: DiscordPlayerExtractor
 // Detection helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function isZiPlayerPlugin(p: unknown): p is BasePlugin {
+function isConstructor(fn: unknown): fn is new (...args: any[]) => any {
+	return typeof fn === "function" && !!fn.prototype && (fn as any).prototype.constructor === fn;
+}
+
+function hasZiPlayerPluginShape(o: unknown): o is BasePlugin {
 	return (
-		typeof p === "object" &&
-		p !== null &&
-		typeof (p as any).canHandle === "function" &&
-		typeof (p as any).search === "function" &&
-		typeof (p as any).getStream === "function"
+		typeof o === "object" &&
+		o !== null &&
+		typeof (o as any).canHandle === "function" &&
+		typeof (o as any).search === "function" &&
+		typeof (o as any).getStream === "function"
 	);
 }
 
-/** Array of extractor constructors (DefaultExtractors pattern) */
+function isZiPlayerPlugin(p: unknown): p is BasePlugin {
+	return hasZiPlayerPluginShape(p);
+}
+
+function isZiPlayerPluginClass(p: unknown): p is new (...args: any[]) => BasePlugin {
+	if (!isConstructor(p)) return false;
+	return hasZiPlayerPluginShape((p as any).prototype);
+}
+
+function isDPExtractorCtor(p: unknown): p is new (...args: any[]) => DiscordPlayerExtractor {
+	if (!isConstructor(p)) return false;
+	const proto = (p as any).prototype;
+	return (
+		typeof proto.handle === "function" ||
+		typeof proto.activate === "function" ||
+		(typeof proto.stream === "function" && typeof proto.validate === "function")
+	);
+}
+
+function isDistubePluginClass(p: unknown): p is new (...args: any[]) => DistubePlugin {
+	if (!isConstructor(p)) return false;
+	const proto = (p as any).prototype;
+	return typeof proto.resolve === "function" || typeof proto.getStreamURL === "function" || typeof proto.searchSong === "function";
+}
+
+/** discord-player DefaultExtractors — array of extractor constructors */
 function isDPExtractorCtorArray(p: unknown): p is Array<new (...args: any[]) => DiscordPlayerExtractor> {
-	return Array.isArray(p) && p.length > 0 && typeof p[0] === "function";
+	return Array.isArray(p) && p.length > 0 && p.every((item) => isDPExtractorCtor(item));
+}
+
+/** discord-player ExtractorExecutionContext-style container */
+function isDPExtractorContainer(p: unknown): p is { extractors: Map<unknown, DiscordPlayerExtractor> | DiscordPlayerExtractor[] } {
+	if (typeof p !== "object" || p === null || Array.isArray(p)) return false;
+	const extractors = (p as any).extractors;
+	if (extractors instanceof Map) return extractors.size > 0;
+	return Array.isArray(extractors) && extractors.length > 0;
+}
+
+function extractorsFromContainer(p: { extractors: Map<unknown, DiscordPlayerExtractor> | DiscordPlayerExtractor[] }): DiscordPlayerExtractor[] {
+	const { extractors } = p;
+	if (extractors instanceof Map) return [...extractors.values()];
+	return extractors;
 }
 
 function isDPExtractor(p: unknown): p is DiscordPlayerExtractor {
 	if (typeof p !== "object" || p === null) return false;
 	const o = p as any;
-	return typeof o.activate === "function" || typeof o.validate === "function" || typeof o.handle === "function";
+	// validate alone is shared with DisTube — require discord-player-specific hooks
+	return typeof o.handle === "function" || typeof o.activate === "function" || typeof o.stream === "function";
 }
 
 function isDistubePlugin(p: unknown): p is DistubePlugin {
 	if (typeof p !== "object" || p === null) return false;
 	const o = p as any;
-	return typeof o.resolve === "function" || typeof o.getStreamURL === "function";
+	return typeof o.resolve === "function" || typeof o.getStreamURL === "function" || typeof o.searchSong === "function";
 }
 
 function isGenericExtractor(p: unknown): p is GenericExtractor {
@@ -247,26 +297,161 @@ function isGenericExtractor(p: unknown): p is GenericExtractor {
 	return typeof o.getInfo === "function" || typeof o.download === "function";
 }
 
+function isPlainPluginArray(p: unknown): p is ThirdPartyPlugin[] {
+	return Array.isArray(p) && p.length > 0;
+}
+
+function instantiatePlugin<T>(Ctor: new (...args: any[]) => T, args: any[] = []): T {
+	return new Ctor(...args);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Utilities
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Convert a URL string → Node.js Readable stream */
+const DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+
+function isNodeReadable(raw: unknown): raw is Readable {
+	return typeof raw === "object" && raw !== null && typeof (raw as Readable).pipe === "function";
+}
+
+function isHlsManifestUrl(url: string): boolean {
+	const u = url.toLowerCase();
+	return u.includes(".m3u8") || u.includes(".m3u") || u.includes("playlist.m3u");
+}
+
+function resolveFfmpegBinary(): string {
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
+		const staticPath = require("ffmpeg-static") as string | null;
+		if (staticPath) return staticPath;
+	} catch {
+		/* optional */
+	}
+	return "ffmpeg";
+}
+
+function fetchHttpResponse(url: string, redirectsLeft = 5): Promise<IncomingMessage> {
+	return new Promise((resolve, reject) => {
+		const client = url.startsWith("https") ? https : http;
+		const req = client.get(url, { headers: { "User-Agent": DEFAULT_UA } }, (res) => {
+			const code = res.statusCode ?? 0;
+			if ([301, 302, 307, 308].includes(code) && res.headers.location) {
+				if (redirectsLeft <= 0) {
+					res.resume();
+					reject(new Error(`Too many redirects for ${url}`));
+					return;
+				}
+				const next = new URL(res.headers.location, url).toString();
+				res.resume();
+				fetchHttpResponse(next, redirectsLeft - 1).then(resolve, reject);
+				return;
+			}
+			resolve(res);
+		});
+		req.on("error", reject);
+	});
+}
+
+/** Convert a direct media URL → Node.js Readable stream (follows redirects). */
 function urlToReadable(url: string): Readable {
-	const proto = url.startsWith("https") ? https : http;
 	const readable = new Readable({ read() {} });
-	proto
-		.get(url, (res) => {
+	fetchHttpResponse(url)
+		.then((res) => {
+			const code = res.statusCode ?? 0;
+			if (code >= 400) {
+				readable.destroy(new Error(`HTTP ${code} for ${url}`));
+				res.resume();
+				return;
+			}
 			res.on("data", (chunk: Buffer) => readable.push(chunk));
 			res.on("end", () => readable.push(null));
 			res.on("error", (e) => readable.destroy(e));
 		})
-		.on("error", (e) => readable.destroy(e));
+		.catch((e) => readable.destroy(e));
 	return readable;
 }
 
-function toReadable(raw: Readable | string): Readable {
-	return typeof raw === "string" ? urlToReadable(raw) : raw;
+function spawnFfmpegInput(input: string): Readable {
+	const args = ["-hide_banner", "-loglevel", "error", "-reconnect", "1", "-reconnect_streamed", "1", "-i", input, "-vn", "-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1"];
+	const proc: ChildProcess = spawn(resolveFfmpegBinary(), args, { stdio: ["ignore", "pipe", "pipe"] });
+	const stdout = proc.stdout;
+	if (!stdout) {
+		throw new Error("ffmpeg stdout unavailable — install ffmpeg or ffmpeg-static for HLS sources");
+	}
+	proc.stderr?.on("data", (chunk: Buffer) => debug("ffmpeg", chunk.toString().trim()));
+	proc.on("error", (err) => stdout.destroy(err));
+	stdout.on("close", () => {
+		if (!proc.killed && proc.exitCode && proc.exitCode !== 0) {
+			stdout.destroy(new Error(`ffmpeg exited with code ${proc.exitCode}`));
+		}
+	});
+	return stdout;
+}
+
+/**
+ * discord-player extractors often return an HLS manifest URL (e.g. SoundCloud).
+ * Fetching that URL directly yields playlist text, not audio — resolve it properly.
+ */
+async function resolveStreamPayload(ext: DiscordPlayerExtractor | null, dpTrack: unknown, raw: unknown): Promise<Readable> {
+	if (isNodeReadable(raw)) return raw;
+
+	if (raw && typeof raw === "object" && typeof (raw as any).pipe === "function") {
+		return raw as Readable;
+	}
+
+	if (typeof raw !== "string") {
+		throw new Error("Unsupported stream payload from extractor");
+	}
+
+	if (!isHlsManifestUrl(raw)) {
+		return urlToReadable(raw);
+	}
+
+	const track = dpTrack as { url?: string; permalink_url?: string } | undefined;
+	const trackUrl = track?.url ?? track?.permalink_url;
+	const util = (ext as any)?.internal?.util;
+
+	if (util && trackUrl) {
+		for (const method of ["streamTrack", "downloadTrackStream", "downloadTrack"] as const) {
+			if (typeof util[method] !== "function") continue;
+			try {
+				const stream = await util[method](trackUrl);
+				if (isNodeReadable(stream)) {
+					debug("resolved HLS via extractor internal", method);
+					return stream;
+				}
+			} catch (err) {
+				debug(`extractor internal ${method} failed`, err);
+			}
+		}
+	}
+
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
+		const dp = require("discord-player") as { createFFmpegStream?: (src: string, opts?: { type?: string }) => Promise<Readable> };
+		if (typeof dp.createFFmpegStream === "function") {
+			const stream = await dp.createFFmpegStream(raw, { type: "hls" });
+			if (isNodeReadable(stream)) {
+				debug("resolved HLS via discord-player createFFmpegStream");
+				return stream;
+			}
+		}
+	} catch (err) {
+		debug("createFFmpegStream failed", err);
+	}
+
+	debug("resolved HLS via ffmpeg spawn");
+	return spawnFfmpegInput(raw);
+}
+
+async function toReadable(raw: unknown, ext?: DiscordPlayerExtractor | null, dpTrack?: unknown): Promise<Readable> {
+	if (ext || dpTrack) {
+		return resolveStreamPayload(ext ?? null, dpTrack, raw);
+	}
+	if (isNodeReadable(raw)) return raw;
+	if (typeof raw === "string") return urlToReadable(raw);
+	throw new Error("Unsupported stream payload");
 }
 
 /**
@@ -301,14 +486,22 @@ function dpTrackToZiTrack(raw: any, requestedBy: string, sourceName: string): Tr
 }
 
 function buildGenericTrack(raw: any, requestedBy: string, sourceName: string): Track {
+	let durationMs = 0;
+	if (typeof raw?.durationMS === "number") {
+		durationMs = raw.durationMS;
+	} else if (typeof raw?.duration === "number") {
+		durationMs = raw.duration > 10_000 ? raw.duration : raw.duration * 1000;
+	}
+
 	return {
 		id: String(raw?.id ?? raw?.url ?? Date.now()),
 		title: String(raw?.title ?? raw?.name ?? "Unknown"),
 		url: String(raw?.url ?? raw?.webpage_url ?? ""),
-		duration: Number(raw?.duration ?? 0) * 1000,
-		thumbnail: raw?.thumbnail ?? raw?.artwork_url ?? undefined,
+		duration: durationMs,
+		thumbnail: raw?.thumbnail ?? raw?.artwork_url ?? raw?.thumbnailURL ?? undefined,
 		requestedBy,
 		source: sourceName,
+		author: raw?.uploader ?? raw?.author ?? undefined,
 		metadata: { original: raw },
 	};
 }
@@ -334,6 +527,12 @@ export class DiscordPlayerExtractorAdapter extends BasePlugin {
 	) {
 		super();
 		this._name = nameOverride ?? ext.identifier ?? "discord-player-ext";
+	}
+
+	ownsDpTrack(dpTrack: unknown): boolean {
+		if (!dpTrack || typeof dpTrack !== "object") return false;
+		const extractor = (dpTrack as any).extractor;
+		return extractor === this.ext || extractor?.identifier === this._name;
 	}
 
 	/** Call activate() once before the first search/stream. */
@@ -448,7 +647,7 @@ export class DiscordPlayerExtractorAdapter extends BasePlugin {
 
 		if (!raw) throw new Error(`${this._name}: stream() returned null for "${track.title}"`);
 
-		return { stream: toReadable(raw), type: "arbitrary" };
+		return { stream: await toReadable(raw, this.ext, dpTrack), type: "arbitrary" };
 	}
 }
 
@@ -463,9 +662,16 @@ export class DiscordPlayerContainerAdapter extends BasePlugin {
 
 	private readonly adapters: DiscordPlayerExtractorAdapter[];
 
-	constructor(ctors: Array<new (...args: any[]) => DiscordPlayerExtractor>) {
+	constructor(source: Array<new (...args: any[]) => DiscordPlayerExtractor> | DiscordPlayerExtractor[]) {
 		super();
-		this.adapters = ctors.filter(Boolean).map((Ctor) => new DiscordPlayerExtractorAdapter(new Ctor()));
+		this.adapters = source
+			.filter(Boolean)
+			.map((item) => {
+				if (typeof item === "function") {
+					return new DiscordPlayerExtractorAdapter(instantiatePlugin(item as new (...args: any[]) => DiscordPlayerExtractor));
+				}
+				return new DiscordPlayerExtractorAdapter(item);
+			});
 	}
 
 	canHandle(query: string): boolean {
@@ -488,16 +694,28 @@ export class DiscordPlayerContainerAdapter extends BasePlugin {
 		return { tracks: [] };
 	}
 
+	private resolveAdapterForTrack(track: Track): DiscordPlayerExtractorAdapter[] {
+		const dpTrack = track.metadata?._dpTrack;
+		const byDp = this.adapters.filter((a) => a.ownsDpTrack(dpTrack));
+		if (byDp.length > 0) return byDp;
+
+		if (track.source && track.source !== this.name) {
+			const bySource = this.adapters.filter((a) => a.name === track.source);
+			if (bySource.length > 0) return bySource;
+		}
+
+		return this.adapters;
+	}
+
 	async getStream(track: Track): Promise<StreamInfo> {
-		// Try the adapter whose name matches track.source first
-		const bySource = this.adapters.filter((a) => a.name === track.source);
-		const candidates = bySource.length > 0 ? bySource : this.adapters;
+		const candidates = this.resolveAdapterForTrack(track);
 
 		for (const adapter of candidates) {
 			try {
+				debug("[Container] streaming via", adapter.name);
 				return await adapter.getStream(track);
-			} catch {
-				/* try next */
+			} catch (err) {
+				debug("[Container] stream failed for", adapter.name, err);
 			}
 		}
 		throw new Error(`discord-player-container: no adapter could stream "${track.title}"`);
@@ -523,20 +741,37 @@ export class DistubePluginAdapter extends BasePlugin {
 	}
 
 	canHandle(query: string): boolean {
-		if (typeof this.plugin.validate !== "function") return false;
-		try {
-			const r = this.plugin.validate(query);
-			if (r instanceof Promise) return true;
-			return Boolean(r);
-		} catch {
-			return false;
+		const isUrl = query.startsWith("http://") || query.startsWith("https://");
+		if (isUrl && typeof this.plugin.validate === "function") {
+			try {
+				const r = this.plugin.validate(query);
+				if (r instanceof Promise) return true;
+				return Boolean(r);
+			} catch {
+				return false;
+			}
 		}
+		return typeof this.plugin.searchSong === "function" || typeof this.plugin.resolve === "function";
 	}
 
 	async search(query: string, requestedBy: string): Promise<SearchResult> {
+		const isUrl = query.startsWith("http://") || query.startsWith("https://");
+
+		if (!isUrl && typeof this.plugin.searchSong === "function") {
+			const song = await this.plugin.searchSong(query).catch(() => null);
+			if (song) {
+				return { tracks: [buildGenericTrack(song, requestedBy, this._name)] };
+			}
+		}
+
 		if (typeof this.plugin.resolve !== "function") return { tracks: [] };
 
-		const resolved = await this.plugin.resolve(query).catch(() => null);
+		if (isUrl && typeof this.plugin.validate === "function") {
+			const valid = await Promise.resolve(this.plugin.validate(query)).catch(() => false);
+			if (!valid) return { tracks: [] };
+		}
+
+		const resolved = await this.plugin.resolve(query, {}).catch(() => null);
 		if (!resolved) return { tracks: [] };
 
 		if (resolved.songs && resolved.songs.length > 0) {
@@ -559,7 +794,7 @@ export class DistubePluginAdapter extends BasePlugin {
 			throw new Error(`${this._name}: no getStreamURL() method`);
 		}
 		const url = await this.plugin.getStreamURL(track.metadata?.original ?? track);
-		return { stream: toReadable(url), type: "arbitrary" };
+		return { stream: await toReadable(url), type: "arbitrary" };
 	}
 }
 
@@ -615,12 +850,12 @@ export class GenericExtractorAdapter extends BasePlugin {
 				(f: any) => f.acodec && f.acodec !== "none" && (!f.vcodec || f.vcodec === "none"),
 			);
 			const best = audioOnly.at(-1) ?? (original.formats as any[]).at(-1);
-			if (best?.url) return { stream: toReadable(best.url), type: "arbitrary" };
+			if (best?.url) return { stream: await toReadable(best.url), type: "arbitrary" };
 		}
 
 		if (typeof this.ext.download === "function") {
 			const raw = await this.ext.download(track.url);
-			return { stream: toReadable(raw as Readable | string), type: "arbitrary" };
+			return { stream: await toReadable(raw), type: "arbitrary" };
 		}
 
 		throw new Error(`${this._name}: cannot stream "${track.title}"`);
@@ -704,54 +939,77 @@ export interface ProvideOptions {
  *   ],
  * });
  */
-export function provide(plugin: ThirdPartyPlugin, options?: ProvideOptions): BasePlugin {
+function wrapThirdPartyPlugin(plugin: ThirdPartyPlugin, options?: ProvideOptions): BasePlugin {
 	let adapted: BasePlugin;
 	debug("provide()", "plugin:", (plugin as any)?.constructor?.name ?? typeof plugin, "options:", options);
 
-	// ── Array of constructors (discord-player DefaultExtractors pattern) ───────
+	// ── discord-player DefaultExtractors (array of constructors) ───────────────
 	if (isDPExtractorCtorArray(plugin)) {
-		debug("Detected DiscordPlayerContainerAdapter");
+		debug("Detected DiscordPlayerContainerAdapter (constructors)");
 		adapted = new DiscordPlayerContainerAdapter(plugin);
 	}
-	// ── Generic mixed array ────────────────────────────────────────────────────
-	else if (Array.isArray(plugin)) {
+	// ── Mixed / instance array ─────────────────────────────────────────────────
+	else if (isPlainPluginArray(plugin)) {
 		debug("Detected MultiAdapter", "count:", plugin.length);
-		const wrapped = (plugin as ThirdPartyPlugin[]).map((p) => provide(p, options));
-		adapted = new MultiAdapter(wrapped);
+		const wrapped = plugin.map((p) => wrapThirdPartyPlugin(p, options));
+		adapted = wrapped.length === 1 ? wrapped[0] : new MultiAdapter(wrapped);
 	}
-	// ── Already a ZiPlayer plugin ──────────────────────────────────────────────
+	// ── Plugin / extractor constructor (class) ─────────────────────────────────
+	else if (isZiPlayerPluginClass(plugin)) {
+		debug("Detected ZiPlayer Plugin class", (plugin as any).name);
+		adapted = wrapThirdPartyPlugin(instantiatePlugin(plugin), options);
+	} else if (isDistubePluginClass(plugin)) {
+		debug("Detected DisTube Plugin class", (plugin as any).name);
+		adapted = new DistubePluginAdapter(instantiatePlugin(plugin));
+	} else if (isDPExtractorCtor(plugin)) {
+		debug("Detected discord-player extractor class", (plugin as any).name);
+		adapted = new DiscordPlayerExtractorAdapter(instantiatePlugin(plugin), options?.name);
+	} else if (isConstructor(plugin)) {
+		debug("Detected generic constructor, instantiating", (plugin as any).name);
+		adapted = wrapThirdPartyPlugin(instantiatePlugin(plugin) as ThirdPartyPlugin, options);
+	}
+	// ── discord-player extractor container (.extractors Map) ───────────────────
+	else if (isDPExtractorContainer(plugin)) {
+		debug("Detected DiscordPlayerContainerAdapter (container)");
+		adapted = new DiscordPlayerContainerAdapter(extractorsFromContainer(plugin));
+	}
+	// ── Already a ZiPlayer plugin instance ─────────────────────────────────────
 	else if (isZiPlayerPlugin(plugin)) {
 		debug("Detected ZiPlayer Plugin", (plugin as any).name);
 		adapted = plugin as BasePlugin;
 	}
-	// ── discord-player extractor instance ─────────────────────────────────────
+	// ── DisTube plugin instance (before discord-player — both may have validate) ─
+	else if (isDistubePlugin(plugin)) {
+		debug("Detected DisTube Plugin", (plugin as any).name);
+		adapted = new DistubePluginAdapter(plugin as DistubePlugin);
+	}
+	// ── discord-player extractor instance ──────────────────────────────────────
 	else if (isDPExtractor(plugin)) {
 		debug("Detected DiscordPlayerExtractor", (plugin as any).identifier);
 		adapted = new DiscordPlayerExtractorAdapter(plugin as DiscordPlayerExtractor, options?.name);
 	}
-	// ── DisTube plugin ─────────────────────────────────────────────────────────
-	else if (isDistubePlugin(plugin)) {
-		debug("Detected Distube Plugin", (plugin as any).name);
-		adapted = new DistubePluginAdapter(plugin as DistubePlugin);
-	}
-	// ── Generic extractor ──────────────────────────────────────────────────────
+	// ── Generic extractor object ─────────────────────────────────────────────────
 	else if (isGenericExtractor(plugin)) {
 		debug("Detected Generic Extractor", (plugin as any).name);
 		adapted = new GenericExtractorAdapter(plugin as GenericExtractor, options?.name);
 	} else {
 		throw new Error(
 			`provide(): unrecognised plugin type "${(plugin as any)?.constructor?.name ?? typeof plugin}". ` +
-				`Accepted: ZiPlayer BasePlugin, discord-player extractor instance or DefaultExtractors array, ` +
-				`DisTube plugin (resolve+getStreamURL), generic extractor (getInfo/download), or an array.`,
+				`Accepted: ZiPlayer BasePlugin (instance or class), discord-player extractor/container/DefaultExtractors, ` +
+				`DisTube plugin (resolve/searchSong/getStreamURL), generic extractor (getInfo/download), or an array.`,
 		);
 	}
 
 	if (options?.priority !== undefined) adapted.priority = options.priority;
-	if (options?.name !== undefined && !isZiPlayerPlugin(plugin)) {
+	if (options?.name !== undefined && !isZiPlayerPlugin(plugin) && !isZiPlayerPluginClass(plugin)) {
 		(adapted as any)._name = options.name;
 	}
 
 	return adapted;
+}
+
+export function provide(plugin: ThirdPartyPlugin, options?: ProvideOptions): BasePlugin {
+	return wrapThirdPartyPlugin(plugin, options);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
