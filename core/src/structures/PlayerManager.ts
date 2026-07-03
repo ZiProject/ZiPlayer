@@ -91,6 +91,7 @@ interface ManagerCacheEntry<T> {
 export class PlayerManager extends EventEmitter {
 	private static instance: PlayerManager | null = null;
 	private players: Map<string, Player> = new Map();
+	private pendingPlayers: Map<string, Promise<Player>> = new Map();
 	private searchCache: Map<string, ManagerCacheEntry<SearchResult>>;
 	private readonly SEARCH_CACHE_TTL = 60 * 1000; // 1 minute
 	private readonly MAX_CACHE_SIZE = 100;
@@ -317,80 +318,95 @@ export class PlayerManager extends EventEmitter {
 			return this.players.get(guildId)!;
 		}
 
-		this.debug(`Creating player for guildId: ${guildId}`);
-		const player = new Player(guildId, options, this);
-
-		// Add all registered plugins
-		this.plugins.forEach((plugin) => player.addPlugin(plugin));
-
-		// Activate extensions
-		let extsToActivate: any[] = [];
-		const optExts = (options as any)?.extensions as any[] | string[] | undefined;
-
-		if (Array.isArray(optExts)) {
-			if (optExts.length === 0) {
-				extsToActivate = [];
-			} else if (typeof optExts[0] === "string") {
-				const wanted = new Set(optExts as string[]);
-				extsToActivate = this.extensions.filter((ext) => {
-					const name = typeof ext === "function" ? ext.name : ext?.name;
-					return !!name && wanted.has(name);
-				});
-			} else {
-				extsToActivate = optExts;
-			}
-		} else {
-			// Use all extensions by default
-			extsToActivate = this.extensions;
+		// Check if a player is already being created for this guild
+		if (this.pendingPlayers.has(guildId)) {
+			this.debug(`Player creation already in progress for guildId: ${guildId}, awaiting...`);
+			return this.pendingPlayers.get(guildId)!;
 		}
 
-		for (const ext of extsToActivate) {
-			let instance = ext;
-			if (typeof ext === "function") {
-				try {
-					instance = new ext(player);
-				} catch (e) {
-					this.debug(`Extension constructor error for ${ext.name}:`, e);
-					continue;
+		const creationPromise = (async () => {
+			try {
+				this.debug(`Creating player for guildId: ${guildId}`);
+				const player = new Player(guildId, options, this);
+
+				// Add all registered plugins
+				this.plugins.forEach((plugin) => player.addPlugin(plugin));
+
+				// Activate extensions
+				let extsToActivate: any[] = [];
+				const optExts = (options as any)?.extensions as any[] | string[] | undefined;
+
+				if (Array.isArray(optExts)) {
+					if (optExts.length === 0) {
+						extsToActivate = [];
+					} else if (typeof optExts[0] === "string") {
+						const wanted = new Set(optExts as string[]);
+						extsToActivate = this.extensions.filter((ext) => {
+							const name = typeof ext === "function" ? ext.name : ext?.name;
+							return !!name && wanted.has(name);
+						});
+					} else {
+						extsToActivate = optExts;
+					}
+				} else {
+					// Use all extensions by default
+					extsToActivate = this.extensions;
 				}
-			}
 
-			if (instance && typeof instance === "object") {
-				const extInstance = instance as BaseExtension;
-				if ("player" in extInstance && !extInstance.player) extInstance.player = player;
-				player.attachExtension(extInstance);
-
-				if (typeof extInstance.active === "function") {
-					let activated: boolean | void = true;
-					try {
-						activated = await withTimeout(
-							Promise.resolve(extInstance.active({ manager: this, player })),
-							player.options.extractorTimeout ?? 15000,
-							`Extension ${extInstance?.name} activation timed out`,
-						);
-						this.debug(`Extension ${extInstance?.name} active check returned: ${activated}`);
-					} catch (e) {
-						activated = false;
-						this.debug(`Extension activation error for ${extInstance?.name}:`, e);
+				for (const ext of extsToActivate) {
+					let instance = ext;
+					if (typeof ext === "function") {
+						try {
+							instance = new ext(player);
+						} catch (e) {
+							this.debug(`Extension constructor error for ${ext.name}:`, e);
+							continue;
+						}
 					}
 
-					if (activated === false) {
-						player.detachExtension(extInstance);
-						continue;
+					if (instance && typeof instance === "object") {
+						const extInstance = instance as BaseExtension;
+						if ("player" in extInstance && !extInstance.player) extInstance.player = player;
+						player.attachExtension(extInstance);
+
+						if (typeof extInstance.active === "function") {
+							let activated: boolean | void = true;
+							try {
+								activated = await withTimeout(
+									Promise.resolve(extInstance.active({ manager: this, player })),
+									player.options.extractorTimeout ?? 15000,
+									`Extension ${extInstance?.name} activation timed out`,
+								);
+								this.debug(`Extension ${extInstance?.name} active check returned: ${activated}`);
+							} catch (e) {
+								activated = false;
+								this.debug(`Extension activation error for ${extInstance?.name}:`, e);
+							}
+
+							if (activated === false) {
+								player.detachExtension(extInstance);
+								continue;
+							}
+						}
 					}
 				}
+
+				// Forward all player events to manager
+				this.setupEventForwarding(player, guildId);
+
+				// Mark last activity
+				(player as any)._lastActivity = Date.now();
+
+				this.players.set(guildId, player);
+				this.debug(`Player created for guildId: ${guildId}`);
+				return player;
+			} finally {
+				this.pendingPlayers.delete(guildId);
 			}
-		}
+		})();
 
-		// Forward all player events to manager
-		this.setupEventForwarding(player, guildId);
-
-		// Mark last activity
-		(player as any)._lastActivity = Date.now();
-
-		this.players.set(guildId, player);
-		this.debug(`Player created for guildId: ${guildId}`);
-		return player;
+		this.pendingPlayers.set(guildId, creationPromise);
+		return creationPromise;
 	}
 
 	private setupEventForwarding(player: Player, guildId: string): void {

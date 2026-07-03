@@ -258,7 +258,12 @@ export class FilterManager {
 		this.ffmpegAbortController = abortController;
 
 		// Nếu có vị trí seek, ưu tiên dùng spawnFFmpegInputSeek
-		if (position >= 0 && ffmpegPath) {
+		if (position >= 0) {
+			if (!ffmpegPath) {
+				this.debug("[FilterManager] ffmpeg-static path not found, seeking may fail");
+				// Fallback or throw based on preference, here we try to proceed or throw
+				throw new Error("FFmpeg binary not found. Seeking is unavailable.");
+			}
 			const stream = await this.spawnFFmpegInputSeek(sourceStream, position, filterString, abortController.signal, generation);
 			return { ...streamInfo, stream };
 		}
@@ -369,7 +374,7 @@ export class FilterManager {
 			// Already aborted before we even spawned
 			onAbort();
 		} else {
-			signal.addEventListener("abort", onAbort);
+			signal.addEventListener("abort", onAbort, { once: true });
 		}
 
 		// Pipe source → ffmpeg stdin

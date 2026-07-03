@@ -469,13 +469,22 @@ export class Player extends EventEmitter {
 	private async generateWillNext(): Promise<void> {
 		const lastTrack = this.queue.previousTracks[this.queue.previousTracks.length - 1] ?? this.queue.currentTrack;
 		if (!lastTrack) return;
-		const related = await this.pluginManager.getRelatedTracks(lastTrack);
+		let related = await this.pluginManager.getRelatedTracks(lastTrack);
 		if (!related || related.length === 0) return;
-		const randomchoice = Math.floor(Math.random() * related.length);
+
+		// Lọc bỏ các bài đã có trong hàng đợi sắp tới
+		const upcomingUrls = new Set(this.queue.getTracks().map((t) => t.url));
+		related = related.filter((t) => !upcomingUrls.has(t.url));
+
+		if (related.length === 0) return;
+
+		// Ưu tiên chọn trong top 5 để đảm bảo chất lượng cao nhất
+		const poolSize = Math.min(5, related.length);
+		const randomchoice = Math.floor(Math.random() * poolSize);
 		const nextTrack = this.queue.nextTrack ? this.queue.nextTrack : related[randomchoice];
 		this.queue.willNextTrack(nextTrack);
 		this.queue.relatedTracks(related);
-		this.debug(`[Player] Will next track if autoplay: ${nextTrack?.title}]`);
+		this.debug(`[Player] Will next track if autoplay: ${nextTrack?.title}`);
 		this.emit("willPlay", nextTrack, related);
 	}
 	//#endregion
@@ -1457,7 +1466,7 @@ export class Player extends EventEmitter {
 	 */
 	async connect(
 		channel: VoiceChannel,
-		options: { group: string; selfDeaf: boolean; selfMute: boolean },
+		options: { group: string; selfDeaf: boolean; selfMute: boolean } = {} as any,
 	): Promise<VoiceConnection> {
 		try {
 			this.debug(`[Player] Connecting to voice channel: ${channel.id}`);
@@ -2550,6 +2559,16 @@ export class Player extends EventEmitter {
 				this.extensionManager.clearCache("stream");
 				this.debug(`[Player] Fetching fresh stream${!isForwardSeek ? " (backward seek)" : " (reuse failed)"}`);
 				streaminfo = await this.getStream(track);
+			
+			if (this.destroyed) {
+				this.debug(`[Player] refreshPlayerResource: Player destroyed during stream fetch`);
+				return false;
+			}
+			
+			if (!applyToCurrent || !this.queue.currentTrack || !(this.isPlaying || this.isPaused)) {
+				this.debug(`[Player] refreshPlayerResource: Player state changed during stream fetch, aborting`);
+				return false;
+			}
 			}
 
 			if (!streaminfo?.stream && !streaminfo?.url) {

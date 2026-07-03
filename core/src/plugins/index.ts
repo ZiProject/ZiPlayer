@@ -47,40 +47,106 @@ function normalize(str: string): string {
 		.trim();
 }
 
+const OFFICIAL_KEYWORDS = [
+	"official video",
+	"official audio",
+	"official music video",
+	"music video",
+	"mv",
+	"visualizer",
+	"lyric video",
+	"full song",
+	"full track",
+];
+
+const MUSIC_KEYWORDS = [
+	"official",
+	"audio",
+	"lyrics",
+	"song",
+	"track",
+	"remix",
+	"cover",
+	"instrumental",
+	"karaoke",
+	"nightcore",
+	"sped up",
+	"slowed",
+	"feat",
+	"ft",
+	"prod",
+	"extended",
+	"original mix",
+];
+
+const BAD_KEYWORDS = [
+	"reaction",
+	"review",
+	"podcast",
+	"interview",
+	"vlog",
+	"livestream",
+	"live stream",
+	"news",
+	"analysis",
+	"commentary",
+	"tiktok",
+	"shorts",
+	"funny",
+	"meme",
+	"tutorial",
+	"how to",
+	"unboxing",
+	"gameplay",
+	"walkthrough",
+	"highlights",
+	"compilation",
+	"teaser",
+	"trailer",
+	"parody",
+	"blog",
+	"talk show",
+];
+
 function getContentQualityScore(track: Track): number {
 	const title = normalize(track.title);
-
 	let score = 0;
 
-	// ưu tiên nhạc official
+	// Ưu tiên cực cao cho official content
 	for (const k of OFFICIAL_KEYWORDS) {
-		if (title.includes(k)) score += 80;
+		if (title.includes(k)) score += 100;
 	}
 
-	// nhạc thường
+	// Nhạc thường
 	for (const k of MUSIC_KEYWORDS) {
-		if (title.includes(k)) score += 10;
+		if (title.includes(k)) score += 20;
 	}
 
-	// phạt content rác
+	// Phạt nặng content không phải nhạc
 	for (const k of BAD_KEYWORDS) {
-		if (title.includes(k)) score -= 120;
+		if (title.includes(k)) score -= 200;
 	}
 
-	// youtube verified / artist channel
+	// Kênh chính thức
 	const author = normalize(track?.author || track?.metadata?.author || "");
-
-	if (author.includes("vevo") || author.includes("official") || author.includes("topic")) {
-		score += 20;
+	if (
+		author.includes("vevo") ||
+		author.includes("official") ||
+		author.includes("topic") ||
+		author.includes("records") ||
+		author.includes("music")
+	) {
+		score += 30;
 	}
 
-	// phạt video quá dài (podcast/review)
-	if (track.duration && track.duration > 15 * 60 * 1000) {
-		score -= 20;
-	}
+	// Phạt video quá dài hoặc quá ngắn (nhạc thường 2-7p)
+	const duration = track.duration || 0;
+	if (duration > 12 * 60 * 1000) score -= 150; // Quá dài (podcast/mix)
+	if (duration < 60 * 1000 && !title.includes("interlude")) score -= 100; // Quá ngắn (shorts/intro)
 
 	return score;
 }
+
 function dedupeTracks(tracks: Track[]): Track[] {
 	const unique = new Map<string, Track>();
 
@@ -105,50 +171,6 @@ function dedupeTracks(tracks: Track[]): Track[] {
 	return [...unique.values()];
 }
 
-// const MUSIC_KEYWORDS = ["official", "mv", "audio", "lyrics", "remix", "cover", "ft", "feat", "prod", "music video"];
-const NON_MUSIC_KEYWORDS = ["reaction", "review", "podcast", "interview", "vlog", "live stream", "news", "tiktok"];
-
-const OFFICIAL_KEYWORDS = ["official", "official video", "official audio", "music video", "mv", "audio", "visualizer", "lyrics"];
-
-const MUSIC_KEYWORDS = [
-	"song",
-	"track",
-	"remix",
-	"cover",
-	"instrumental",
-	"karaoke",
-	"nightcore",
-	"sped up",
-	"slowed",
-	"feat",
-	"ft",
-];
-
-const BAD_KEYWORDS = [
-	"reaction",
-	"review",
-	"podcast",
-	"interview",
-	"vlog",
-	"livestream",
-	"live stream",
-	"news",
-	"analysis",
-	"commentary",
-	"tiktok",
-	"shorts",
-	"funny",
-	"meme",
-];
-
-function detectContentType(title: string): number {
-	const t = title.toLowerCase();
-	let score = 0;
-	for (const k of MUSIC_KEYWORDS) if (t.includes(k)) score += 2;
-	for (const k of NON_MUSIC_KEYWORDS) if (t.includes(k)) score -= 3;
-	return score;
-}
-
 function tokenOverlap(a: string, b: string): number {
 	const setA = new Set(a.split(" "));
 	const setB = new Set(b.split(" "));
@@ -160,10 +182,23 @@ function tokenOverlap(a: string, b: string): number {
 function scoreTrack(base: Track, candidate: Track): number {
 	const titleA = normalize(base.title);
 	const titleB = normalize(candidate.title);
+
 	let score = 0;
-	score += similarity(titleA, titleB) * 50;
-	score += tokenOverlap(titleA, titleB) * 30;
-	score += detectContentType(candidate.title);
+	// 1. Độ tương đồng tiêu đề (max ~100)
+	score += similarity(titleA, titleB) * 60;
+	score += tokenOverlap(titleA, titleB) * 40;
+
+	// 2. Chất lượng nội dung (có thể âm rất nặng)
+	const qualityScore = getContentQualityScore(candidate);
+	score += qualityScore;
+
+	// 3. Cùng nghệ sĩ (nếu biết)
+	const authorA = normalize(base.author || base.metadata?.author || "");
+	const authorB = normalize(candidate.author || candidate.metadata?.author || "");
+	if (authorA && authorB && (authorA.includes(authorB) || authorB.includes(authorA))) {
+		score += 40;
+	}
+
 	return score;
 }
 
@@ -867,6 +902,12 @@ export class PluginManager {
 
 		const history = this.player?.queue?.previousTracks || [];
 		const historyUrls = new Set(history.map((t) => t.url));
+		const recentAuthors = new Set(
+			history
+				.slice(-5)
+				.map((t) => normalize(t.author || t.metadata?.author || ""))
+				.filter(Boolean),
+		);
 		const currentTrackUrl = track.url;
 
 		const results: Track[] = [];
@@ -900,13 +941,24 @@ export class PluginManager {
 
 		const unique = new Map<string, Track>();
 		for (const t of results) {
+			const author = normalize(t.author || t.metadata?.author || "");
+			// Tránh lặp lại bài hát trong lịch sử HOẶC lặp lại nghệ sĩ vừa phát (nếu có nhiều lựa chọn khác)
+			const isRecentlyPlayedAuthor = author && recentAuthors.has(author);
+
 			if (!unique.has(t.url) && t.url !== currentTrackUrl && !historyUrls.has(t.url)) {
+				// Nếu là nghệ sĩ vừa phát, gắn flag để giảm điểm hoặc xử lý sau
+				(t as any)._isRecentAuthor = isRecentlyPlayedAuthor;
 				unique.set(t.url, t);
 			}
 		}
 
 		const ranked = Array.from(unique.values())
-			.map((t) => ({ track: t, score: scoreTrack(track, t) }))
+			.map((t) => {
+				let score = scoreTrack(track, t);
+				// Phạt điểm nếu cùng nghệ sĩ vừa phát
+				if ((t as any)._isRecentAuthor) score -= 50;
+				return { track: t, score };
+			})
 			.filter((item) => item.score >= minSimilarityScore)
 			.sort((a, b) => b.score - a.score)
 			.slice(0, limit)

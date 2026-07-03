@@ -281,7 +281,7 @@ export class PreloadManager {
 				signal.removeEventListener("abort", handler);
 				reject(new Error("PRELOAD_CANCELLED"));
 			};
-			signal.addEventListener("abort", handler);
+			signal.addEventListener("abort", handler, { once: true });
 		});
 
 		const existingStream = this.streamManager.getStreamByTrack(track.id || track.title);

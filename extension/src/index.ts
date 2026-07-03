@@ -90,3 +90,19 @@ export { lyricsExt } from "./lyricsExt";
  * - Extension option types
  */
 export * from "./types/lavalink";
+
+/**
+ * AI Autoplay extension for intelligent music recommendations.
+ *
+ * Provides AI-powered autoplay functionality including:
+ * - Music taste analysis using Gemini 2.5 Flash
+ * - Intelligent next track suggestions based on listening history
+ * - Seamless integration with player queue
+ * - Real-time debugging information
+ *
+ * @example
+ * ```typescript
+ * const aiAutoplayExt = new AiAutoplayExtension("your-api-key");
+ * ```
+ */
+export * from "./AiAutoplayExtension";
