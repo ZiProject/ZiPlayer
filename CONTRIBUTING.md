@@ -201,9 +201,7 @@ export class MyPlugin extends BasePlugin {
 	async search(query: string, requestedBy: string): Promise<SearchResult> {
 		// Implement search logic
 		return {
-			tracks: [
-				/* ... */
-			],
+			tracks: [/* ... */],
 		};
 	}
 

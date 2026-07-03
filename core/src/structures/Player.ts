@@ -2559,16 +2559,16 @@ export class Player extends EventEmitter {
 				this.extensionManager.clearCache("stream");
 				this.debug(`[Player] Fetching fresh stream${!isForwardSeek ? " (backward seek)" : " (reuse failed)"}`);
 				streaminfo = await this.getStream(track);
-			
-			if (this.destroyed) {
-				this.debug(`[Player] refreshPlayerResource: Player destroyed during stream fetch`);
-				return false;
-			}
-			
-			if (!applyToCurrent || !this.queue.currentTrack || !(this.isPlaying || this.isPaused)) {
-				this.debug(`[Player] refreshPlayerResource: Player state changed during stream fetch, aborting`);
-				return false;
-			}
+
+				if (this.destroyed) {
+					this.debug(`[Player] refreshPlayerResource: Player destroyed during stream fetch`);
+					return false;
+				}
+
+				if (!applyToCurrent || !this.queue.currentTrack || !(this.isPlaying || this.isPaused)) {
+					this.debug(`[Player] refreshPlayerResource: Player state changed during stream fetch, aborting`);
+					return false;
+				}
 			}
 
 			if (!streaminfo?.stream && !streaminfo?.url) {
