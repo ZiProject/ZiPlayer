@@ -1,15 +1,24 @@
-import { createWriteStream } from "fs";
-import { join } from "path";
-import { tmpdir } from "os";
-import { Readable } from "stream";
-import { Constants, YTNodes, Platform } from "youtubei.js";
-import type Innertube from "youtubei.js";
+import { createWriteStream } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { Readable } from "node:stream";
 
-import { SabrStream } from "googlevideo/sabr-stream";
-import { buildSabrFormat } from "googlevideo/utils";
+import { BotGuardClient, getChallenge } from "bgutils-js/botguard";
 
-import { BG } from "bgutils-js";
+import type { WebPoSignalOutput } from "bgutils-js/shared-types";
+
+import { buildURL, getHeaders, USER_AGENT } from "bgutils-js/utils";
+
+import { WebPoMinter } from "bgutils-js/webpo";
+
 import { JSDOM } from "jsdom";
+
+import { Constants, Innertube, Platform, UniversalCache, type Types } from "youtubei.js";
+
+import { SabrStream, type SabrPlaybackOptions } from "googlevideo/sabr-stream";
+import { buildSabrFormat, EnabledTrackTypes } from "googlevideo/utils";
+import type { SabrFormat } from "googlevideo/shared-types";
+import type { ReloadPlaybackContext } from "googlevideo/protos";
 
 export interface OutputStream {
 	stream: NodeJS.WritableStream;
@@ -26,241 +35,362 @@ export interface SabrAudioResult {
 	};
 }
 
-export interface SabrPlaybackOptions {
-	preferWebM?: boolean;
-	preferOpus?: boolean;
-	videoQuality?: string;
-	audioQuality?: string;
-	enabledTrackTypes?: any;
-}
 /**
- * Generates a web PoToken for YouTube authentication
- * This is required for accessing restricted video content
+ * youtubei.js needs a JS interpreter for player signature/n parameter
+ * deciphering. googlevideo/SABR relies on the same player implementation.
  */
-async function generateWebPoToken(contentBinding: string): Promise<{
-	visitorData: string;
-	placeholderPoToken: string;
-	poToken: string;
-}> {
-	try {
-		const requestKey = "O43z0dpjhgX20SCx4KAo";
+Platform.shim.eval = async (data: Types.BuildScriptResult) => new Function(data.output)();
 
-		if (!contentBinding) throw new Error("Could not get visitor data");
+/**
+ * Generate a BotGuard Proof of Origin token.
+ *
+ * The token is bound to the video/content identifier. YouTube can reject
+ * SABR requests without it, especially for newer Web clients.
+ */
+async function generatePoToken(contentBinding: string): Promise<string> {
+	const requestKey = "O43z0dpjhgX20SCx4KAo";
 
-		const dom = new JSDOM();
+	const dom = new JSDOM('<!DOCTYPE html><html lang="en"><head><title></title></head><body></body></html>', {
+		url: "https://www.youtube.com/",
+		referrer: "https://www.youtube.com/",
+		userAgent: USER_AGENT,
+	});
 
-		Object.assign(globalThis, {
-			window: dom.window,
-			document: dom.window.document,
+	Object.assign(globalThis, {
+		window: dom.window,
+		document: dom.window.document,
+		location: dom.window.location,
+		origin: dom.window.origin,
+	});
+
+	if (!Reflect.has(globalThis, "navigator")) {
+		Object.defineProperty(globalThis, "navigator", {
+			value: dom.window.navigator,
 		});
-
-		const bgConfig = {
-			fetch: (input: any, init: any) => fetch(input, init),
-			globalObj: globalThis,
-			identifier: contentBinding,
-			requestKey,
-		};
-
-		const bgChallenge = await BG.Challenge.create(bgConfig);
-
-		if (!bgChallenge) throw new Error("Could not get challenge");
-
-		const interpreterJavascript = bgChallenge.interpreterJavascript.privateDoNotAccessOrElseSafeScriptWrappedValue;
-
-		if (interpreterJavascript) {
-			new Function(interpreterJavascript)();
-		} else throw new Error("Could not load VM");
-
-		const poTokenResult = await BG.PoToken.generate({
-			program: bgChallenge.program,
-			globalName: bgChallenge.globalName,
-			bgConfig,
-		});
-
-		const placeholderPoToken = BG.PoToken.generatePlaceholder(contentBinding);
-
-		return {
-			visitorData: contentBinding,
-			placeholderPoToken,
-			poToken: poTokenResult.poToken,
-		};
-	} catch (error) {
-		console.warn("PoToken generation failed, continuing without it:", error);
-		return {
-			visitorData: contentBinding,
-			placeholderPoToken: "",
-			poToken: "",
-		};
 	}
+
+	/*
+	 * 1. Get BotGuard challenge
+	 */
+	const challenge = await getChallenge({
+		fetchFunction: fetch,
+		requestKey,
+	});
+
+	/*
+	 * 2. Load BotGuard interpreter
+	 */
+	const interpreterJavascript = challenge.interpreterJavascript?.privateDoNotAccessOrElseSafeScriptWrappedValue;
+
+	if (!interpreterJavascript) {
+		throw new Error("BotGuard interpreter javascript is not available");
+	}
+
+	// eslint-disable-next-line no-new-func
+	new Function(interpreterJavascript)();
+
+	/*
+	 * 3. Create BotGuard client
+	 */
+	const botGuardClient = await BotGuardClient.create({
+		program: challenge.program,
+		globalName: challenge.globalName,
+		globalObject: globalThis,
+	});
+
+	/*
+	 * 4. Generate WebPO signal
+	 */
+	const webPoSignalOutput: WebPoSignalOutput = [];
+
+	const botguardResponse = await botGuardClient.snapshot({
+		webPoSignalOutput,
+	});
+
+	/*
+	 * 5. Exchange BotGuard response for Integrity Token
+	 */
+	const response = await fetch(buildURL("GenerateIT", true), {
+		method: "POST",
+		headers: getHeaders(),
+		body: JSON.stringify([requestKey, botguardResponse]),
+	});
+
+	if (!response.ok) {
+		throw new Error(`GenerateIT failed: HTTP ${response.status}`);
+	}
+
+	const [integrityToken, estimatedTtlSecs, mintRefreshThreshold, websafeFallbackToken] = (await response.json()) as [
+		string,
+		number,
+		number,
+		string,
+	];
+
+	if (!integrityToken) {
+		throw new Error("GenerateIT returned an empty integrity token");
+	}
+
+	/*
+	 * 6. Create WebPO minter
+	 */
+	const webPoMinter = await WebPoMinter.create(
+		{
+			integrityToken,
+			estimatedTtlSecs,
+			mintRefreshThreshold,
+			websafeFallbackToken,
+		},
+		webPoSignalOutput,
+	);
+
+	/*
+	 * 7. Mint token bound to the video ID
+	 */
+	return webPoMinter.mintAsWebsafeString(contentBinding);
 }
 
 /**
- * Makes a proper player request to YouTube API
+ * Creates the InnerTube client used by the SABR downloader.
+ *
+ * A caller may supply its own client so cookies/session state can be reused.
  */
-async function makePlayerRequest(innertube: Innertube, videoId: string, reloadPlaybackContext?: any): Promise<any> {
-	const watchEndpoint = new YTNodes.NavigationEndpoint({
+export async function createSabrInnertube(): Promise<Innertube> {
+	return Innertube.create({
+		cache: new UniversalCache(true),
+	});
+}
+
+/**
+ * Make a player request suitable for SABR.
+ *
+ * Keeping this as a NavigationEndpoint call lets youtubei.js construct the
+ * proper InnerTube request and also allows reloadPlaybackContext to be passed
+ * back when SabrStream asks for a player response refresh.
+ */
+async function makePlayerRequest(
+	innertube: Innertube,
+	videoId: string,
+	reloadPlaybackContext?: ReloadPlaybackContext,
+): Promise<any> {
+	const endpoint = new (await import("youtubei.js")).YTNodes.NavigationEndpoint({
 		watchEndpoint: { videoId },
 	});
 
-	const extraArgs: any = {
+	return endpoint.call(innertube.actions, {
 		playbackContext: {
-			// adPlaybackContext: { pyv: true },
 			contentPlaybackContext: {
 				vis: 0,
 				splay: false,
 				lactMilliseconds: "-1",
 				signatureTimestamp: innertube.session.player?.signature_timestamp,
 			},
+			...(reloadPlaybackContext ? { reloadPlaybackContext } : {}),
 		},
 		contentCheckOk: true,
 		racyCheckOk: true,
-	};
-
-	if (reloadPlaybackContext) {
-		extraArgs.playbackContext.reloadPlaybackContext = reloadPlaybackContext;
-	}
-
-	return watchEndpoint.call(innertube.actions, {
-		...extraArgs,
 		parse: true,
 	});
 }
 
+function getClientInfo(innertube: Innertube) {
+	const clientName =
+		Constants.CLIENT_NAME_IDS[innertube.session.context.client.clientName as keyof typeof Constants.CLIENT_NAME_IDS];
+
+	if (clientName === undefined) {
+		throw new Error(`Unknown InnerTube client: ${innertube.session.context.client.clientName}`);
+	}
+
+	return {
+		clientName: parseInt(String(clientName), 10),
+		clientVersion: innertube.session.context.client.clientVersion,
+	};
+}
+
 /**
- * YouTube VM shim
- * This allows the SABR stream to execute YouTube's custom JavaScript for deciphering signatures and generating tokens
- */
-Platform.shim.eval = async (data, env) => {
-	const properties = [];
-
-	if (env.n) properties.push(`n: exportedVars.nFunction("${env.n}")`);
-	if (env.sig) properties.push(`sig: exportedVars.sigFunction("${env.sig}")`);
-
-	const code = `${data.output}\nreturn { ${properties.join(", ")} }`;
-	return new Function(code)();
-};
-
-/**
- * Creates a SABR audio stream for YouTube video download
- * This provides better quality and more reliable streaming than standard methods
+ * Create a SABR audio stream.
+ *
+ * This preserves the original factory API:
+ *   createSabrStream(videoId, innertube, options)
+ *
+ * The SABR session itself can still receive both tracks internally, but this
+ * factory exposes only the audio stream to the caller.
  */
 export async function createSabrStream(
 	videoId: string,
 	innertube: Innertube,
-	options?: SabrPlaybackOptions,
+	options?: Partial<SabrPlaybackOptions>,
 ): Promise<SabrAudioResult> {
 	try {
-		// Generate PoToken for authentication
-		const webPo = await generateWebPoToken(videoId);
-
-		// Make initial player request
-		const player = await makePlayerRequest(innertube, videoId);
-
-		const title = player.video_details?.title || "unknown";
-
-		const serverAbrStreamingUrl = await innertube.session.player?.decipher(player.streaming_data?.server_abr_streaming_url);
-
-		const ustreamerConfig =
-			player.player_config?.media_common_config.media_ustreamer_request_config?.video_playback_ustreamer_config;
-
-		if (!serverAbrStreamingUrl || !ustreamerConfig) {
-			throw new Error("Missing SABR streaming config");
+		if (!videoId) {
+			throw new Error("videoId is required");
 		}
 
-		// const sabrFormats = player.streaming_data?.adaptive_formats.map((f: any) => buildSabrFormat(f)) || [];
+		console.info(`[SABR] Generating PoToken for ${videoId}...`);
+		const poToken = await generatePoToken(videoId);
 
-		// const sabrFormats =
-		// 	player.streaming_data?.adaptive_formats?.reduce((acc: any[], f: any) => {
-		// 		if (!!f?.audio_quality) {
-		// 			acc.push(buildSabrFormat(f));
-		// 		}
-		// 		return acc;
-		// 	}, []) ?? [];
-		const allFormats = player.streaming_data?.adaptive_formats.map((f: any) => buildSabrFormat(f)) || [];
+		console.info(`[SABR] Loading player response...`);
+		const player = await makePlayerRequest(innertube, videoId);
 
-		const sabrFormats = allFormats
-			.reduce(
-				(acc: any[], f: any) => {
-					// Kiểm tra nếu là Audio (có audioQuality)
-					if (f.audioQuality) {
-						if (!acc[0] || f.bitrate > acc[0].bitrate) {
-							acc[0] = f;
-						}
-					}
-					// Ngược lại là Video (thường có width/height hoặc không có audioQuality)
-					else if (f.width) {
-						if (!acc[1] || f.bitrate < acc[1].bitrate) {
-							acc[1] = f;
-						}
-					}
-					return acc;
-				},
-				[null, null],
-			) // [0] là best audio, [1] là worst video
-			.filter(Boolean);
+		const playability = player.playability_status;
+
+		if (playability?.status && playability.status !== "OK") {
+			throw new Error(`Video is not playable: ${playability.status} ` + `(${playability.reason ?? "no reason given"})`);
+		}
+
+		const title = player.video_details?.title ?? player.basic_info?.title ?? videoId;
+
+		const streamingUrl = player.streaming_data?.server_abr_streaming_url;
+
+		if (!streamingUrl) {
+			throw new Error("This video has no SABR streaming URL. " + "YouTube may have returned a legacy/non-SABR response.");
+		}
+
+		const serverAbrStreamingUrl = await innertube.session.player?.decipher(streamingUrl);
+
+		if (!serverAbrStreamingUrl) {
+			throw new Error("Could not decipher SABR streaming URL");
+		}
+
+		const ustreamerConfig =
+			player.player_config?.media_common_config?.media_ustreamer_request_config?.video_playback_ustreamer_config;
+
+		if (!ustreamerConfig) {
+			throw new Error("Could not find video_playback_ustreamer_config");
+		}
+
+		const adaptiveFormats = player.streaming_data?.adaptive_formats ?? [];
+
+		if (!adaptiveFormats.length) {
+			throw new Error("Player response contains no adaptive formats");
+		}
+
+		/*
+		 * IMPORTANT:
+		 *
+		 * Do not reduce formats to "best audio + worst video".
+		 * SabrStream needs the complete format set so that its own selection
+		 * logic can choose a valid track and keep format metadata consistent.
+		 */
+		const formats: SabrFormat[] = adaptiveFormats.map((format: any) => buildSabrFormat(format));
 
 		const sabr = new SabrStream({
-			formats: sabrFormats,
+			formats,
 			serverAbrStreamingUrl,
 			videoPlaybackUstreamerConfig: ustreamerConfig,
-			poToken: webPo.poToken,
-			clientInfo: {
-				clientName: parseInt(
-					Constants.CLIENT_NAME_IDS[innertube.session.context.client.clientName as keyof typeof Constants.CLIENT_NAME_IDS],
-				),
-				clientVersion: innertube.session.context.client.clientVersion,
-			},
+			poToken,
+			clientInfo: getClientInfo(innertube),
 		});
 
-		// Handle player response reload events
-		sabr.on("reloadPlayerResponse", async (ctx: any) => {
+		/*
+		 * SABR can request a fresh player response when the original response
+		 * expires or the server changes playback state.
+		 */
+		sabr.on("reloadPlayerResponse", async (reloadPlaybackContext: ReloadPlaybackContext) => {
 			try {
-				const pr = await makePlayerRequest(innertube, videoId, ctx);
+				console.info(`[SABR] Reloading player response...`);
 
-				const url = await innertube.session.player?.decipher(pr.streaming_data?.server_abr_streaming_url);
+				const reloaded = await makePlayerRequest(innertube, videoId, reloadPlaybackContext);
 
-				const config = pr.player_config?.media_common_config.media_ustreamer_request_config?.video_playback_ustreamer_config;
+				const newUrl =
+					reloaded.streaming_data?.server_abr_streaming_url ?
+						await innertube.session.player?.decipher(reloaded.streaming_data.server_abr_streaming_url)
+					:	undefined;
 
-				if (url && config) {
-					sabr.setStreamingURL(url);
-					sabr.setUstreamerConfig(config);
+				const newConfig =
+					reloaded.player_config?.media_common_config?.media_ustreamer_request_config?.video_playback_ustreamer_config;
+
+				if (newUrl) {
+					sabr.setStreamingURL(newUrl);
+				}
+
+				if (newConfig) {
+					sabr.setUstreamerConfig(newConfig);
+				}
+
+				if (!newUrl && !newConfig) {
+					console.warn("[SABR] Reload response did not contain updated SABR config");
 				}
 			} catch (error) {
-				console.error("Failed to reload player response:", error);
+				console.error("[SABR] Failed to reload player response:", error);
 			}
 		});
 
-		// Start the stream with audio preference
-		const mergedOptions = { ...DEFAULT_SABR_OPTIONS, ...options };
-		const { audioStream, selectedFormats } = await sabr.start({
-			audioQuality: mergedOptions?.audioQuality || "medium",
-		});
+		const playbackOptions: SabrPlaybackOptions = {
+			...options,
 
-		// Convert Web Stream to Node.js Readable stream with optimized buffer
-		const nodeStream = Readable.fromWeb(audioStream as any); // 32KB buffer for YouTube streams
+			// We only expose audio from this factory.
+			enabledTrackTypes: options?.enabledTrackTypes ?? EnabledTrackTypes.VIDEO_AND_AUDIO,
+
+			// Audio preference defaults.
+			audioQuality: options?.audioQuality ?? "medium",
+
+			// Prefer Opus/WebM when the selected client provides it.
+			preferWebM: options?.preferWebM ?? true,
+
+			preferOpus: options?.preferOpus ?? true,
+		};
+
+		console.info(`[SABR] Starting audio stream: ${title}`);
+
+		const result = await sabr.start(playbackOptions);
+
+		if (!result.audioStream) {
+			throw new Error("SABR did not return an audio stream");
+		}
+
+		const audioFormat = result.selectedFormats?.audioFormat;
+
+		if (!audioFormat) {
+			throw new Error("SABR did not select an audio format");
+		}
+
+		const reader = result.audioStream.getReader();
+
+		const nodeStream = Readable.from(
+			(async function* () {
+				try {
+					while (true) {
+						const { done, value } = await reader.read();
+
+						if (done) break;
+
+						yield Buffer.from(value);
+					}
+				} finally {
+					reader.releaseLock();
+				}
+			})(),
+		);
 
 		return {
 			title,
 			stream: nodeStream,
 			format: {
-				mimeType: selectedFormats.audioFormat.mimeType || "audio/webm",
-				itag: selectedFormats.audioFormat.itag || 0,
-				contentLength: selectedFormats.audioFormat.contentLength || 0,
+				mimeType: audioFormat.mimeType ?? "audio/webm",
+				itag: Number(audioFormat.itag ?? 0),
+				contentLength: Number(audioFormat.contentLength ?? 0),
 			},
 		};
 	} catch (error) {
-		console.log(error);
-		throw new Error(`SABR stream creation failed: ${error instanceof Error ? error.message : String(error)}`);
+		console.error("[SABR]", error);
+
+		throw new Error(`SABR stream creation failed: ${error instanceof Error ? error.message : String(error)}`, {
+			cause: error,
+		});
 	}
 }
 
 /**
- * Creates an output stream for writing downloaded content
+ * Creates an output stream for writing downloaded content.
  */
 export function createOutputStream(videoTitle: string, mimeType: string): OutputStream {
-	const sanitizedTitle = videoTitle.replace(/[<>:"/\\|?*]/g, "_").substring(0, 100);
+	const sanitizedTitle = sanitizeFileName(videoTitle) || "audio";
+
 	const extension = getExtensionFromMimeType(mimeType);
+
 	const fileName = `${sanitizedTitle}.${extension}`;
+
 	const filePath = join(tmpdir(), fileName);
 
 	const stream = createWriteStream(filePath);
@@ -272,43 +402,41 @@ export function createOutputStream(videoTitle: string, mimeType: string): Output
 }
 
 /**
- * Sanitizes a filename by removing invalid characters
+ * Sanitizes a filename for Windows/Linux/macOS.
  */
 export function sanitizeFileName(name: string): string {
-	return name.replace(/[^\w\d]+/g, "_").slice(0, 128);
+	return name
+		.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+		.replace(/\s+/g, "_")
+		.slice(0, 128);
 }
 
-/**
- * Converts bytes to megabytes
- */
 export function bytesToMB(bytes: number): string {
 	return (bytes / 1024 / 1024).toFixed(2);
 }
 
-/**
- * Gets file extension from MIME type
- */
 function getExtensionFromMimeType(mimeType: string): string {
-	const mimeMap: { [key: string]: string } = {
+	const mime = mimeType.split(";")[0].trim().toLowerCase();
+
+	const mimeMap: Record<string, string> = {
 		"audio/mp4": "m4a",
 		"audio/webm": "webm",
 		"audio/ogg": "ogg",
+		"audio/wav": "wav",
 		"video/mp4": "mp4",
 		"video/webm": "webm",
 		"video/ogg": "ogv",
 	};
 
-	return mimeMap[mimeType] || "bin";
+	return mimeMap[mime] ?? "bin";
 }
 
 /**
- * Default sabr playback options - optimized for memory usage
- * Using MEDIUM quality and WebM/Opus reduces bandwidth by ~30-40%
+ * Default audio-oriented SABR configuration.
  */
 export const DEFAULT_SABR_OPTIONS: SabrPlaybackOptions = {
-	preferWebM: true, // WebM with Opus is more memory-efficient
-	preferOpus: true, // Opus codec = smaller bitrate vs AAC
-	videoQuality: "360p", // Lower resolution = less processing
-	audioQuality: "medium", // Medium quality balances quality vs bandwidth (~96-128kbps vs 256kbps)
-	enabledTrackTypes: "VIDEO_AND_AUDIO",
+	preferWebM: true,
+	preferOpus: true,
+	audioQuality: "medium",
+	enabledTrackTypes: EnabledTrackTypes.VIDEO_AND_AUDIO,
 };

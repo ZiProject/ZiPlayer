@@ -91,14 +91,14 @@ export class YouTubePlugin extends BasePlugin {
 			(await Innertube.create({
 				cache: new UniversalCache(true),
 
-				client_type: this.options.clientType || "ANDROID_VR",
+				client_type: this.options.clientType || "WEB",
 				// retrieve_player: false,
 			} as any));
 
 		// Use a separate web client for search to avoid mobile parser issues
 		this.sabrClient = await Innertube.create({
 			cache: new UniversalCache(true),
-			client_type: "WEB",
+			client_type: "YTMUSIC",
 		} as any);
 		this.searchClient =
 			this.options.searchClient ??
