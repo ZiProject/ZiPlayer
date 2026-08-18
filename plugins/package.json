@@ -29,7 +29,7 @@
 		"prepare": "npm run build"
 	},
 	"dependencies": {
-		"@zibot/scdl": "^0.1.4",
+		"@zibot/scdl": "^0.1.5",
 		"@ziplayer/tts": "^1.0.0",
 		"axios": "^1.19.0",
 		"bgutils-js": "^4.0.3",

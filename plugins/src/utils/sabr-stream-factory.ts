@@ -171,26 +171,9 @@ export async function createSabrInnertube(): Promise<Innertube> {
 async function makePlayerRequest(
 	innertube: Innertube,
 	videoId: string,
-	reloadPlaybackContext?: ReloadPlaybackContext,
+	_reloadPlaybackContext?: ReloadPlaybackContext,
 ): Promise<any> {
-	const endpoint = new (await import("youtubei.js")).YTNodes.NavigationEndpoint({
-		watchEndpoint: { videoId },
-	});
-
-	return endpoint.call(innertube.actions, {
-		playbackContext: {
-			contentPlaybackContext: {
-				vis: 0,
-				splay: false,
-				lactMilliseconds: "-1",
-				signatureTimestamp: innertube.session.player?.signature_timestamp,
-			},
-			...(reloadPlaybackContext ? { reloadPlaybackContext } : {}),
-		},
-		contentCheckOk: true,
-		racyCheckOk: true,
-		parse: true,
-	});
+	return innertube.getBasicInfo(videoId, { client: "YTMUSIC" });
 }
 
 function getClientInfo(innertube: Innertube) {
@@ -230,20 +213,35 @@ export async function createSabrStream(
 		const poToken = await generatePoToken(videoId);
 
 		console.info(`[SABR] Loading player response...`);
-		const player = await makePlayerRequest(innertube, videoId);
+		const videoInfo = await makePlayerRequest(innertube, videoId);
 
-		const playability = player.playability_status;
+		const playability = videoInfo.playability_status;
 
 		if (playability?.status && playability.status !== "OK") {
 			throw new Error(`Video is not playable: ${playability.status} ` + `(${playability.reason ?? "no reason given"})`);
 		}
 
-		const title = player.video_details?.title ?? player.basic_info?.title ?? videoId;
+		const title = videoInfo.video_details?.title ?? videoInfo.basic_info?.title ?? videoId;
 
-		const streamingUrl = player.streaming_data?.server_abr_streaming_url;
+		const format = videoInfo.chooseFormat({
+			quality: "best",
+			type: "audio",
+		});
+
+		if (!format) {
+			throw new Error("Could not choose an audio format");
+		}
+
+		const audioStreamingURL = `${await format.decipher(innertube.session.player)}&pot=${poToken}`;
+
+		if (!audioStreamingURL) {
+			throw new Error("Could not decipher audio streaming URL");
+		}
+
+		const streamingUrl = videoInfo.streaming_data?.server_abr_streaming_url;
 
 		if (!streamingUrl) {
-			throw new Error("This video has no SABR streaming URL. " + "YouTube may have returned a legacy/non-SABR response.");
+			throw new Error("This video has no SABR streaming URL. YouTube may have returned a legacy/non-SABR response.");
 		}
 
 		const serverAbrStreamingUrl = await innertube.session.player?.decipher(streamingUrl);
@@ -253,25 +251,18 @@ export async function createSabrStream(
 		}
 
 		const ustreamerConfig =
-			player.player_config?.media_common_config?.media_ustreamer_request_config?.video_playback_ustreamer_config;
+			videoInfo.player_config?.media_common_config?.media_ustreamer_request_config?.video_playback_ustreamer_config;
 
 		if (!ustreamerConfig) {
 			throw new Error("Could not find video_playback_ustreamer_config");
 		}
 
-		const adaptiveFormats = player.streaming_data?.adaptive_formats ?? [];
+		const adaptiveFormats = videoInfo.streaming_data?.adaptive_formats ?? [];
 
 		if (!adaptiveFormats.length) {
 			throw new Error("Player response contains no adaptive formats");
 		}
 
-		/*
-		 * IMPORTANT:
-		 *
-		 * Do not reduce formats to "best audio + worst video".
-		 * SabrStream needs the complete format set so that its own selection
-		 * logic can choose a valid track and keep format metadata consistent.
-		 */
 		const formats: SabrFormat[] = adaptiveFormats.map((format: any) => buildSabrFormat(format));
 
 		const sabr = new SabrStream({
@@ -290,7 +281,13 @@ export async function createSabrStream(
 			try {
 				console.info(`[SABR] Reloading player response...`);
 
-				const reloaded = await makePlayerRequest(innertube, videoId, reloadPlaybackContext);
+				// Refresh the player response AND the content-bound WebPO token.
+				// Reusing the original token after a protection/session reload can
+				// cause SABR media requests to stop part-way through playback.
+				const [reloaded, refreshedPoToken] = await Promise.all([
+					makePlayerRequest(innertube, videoId, reloadPlaybackContext),
+					generatePoToken(videoId),
+				]);
 
 				const newUrl =
 					reloaded.streaming_data?.server_abr_streaming_url ?
@@ -300,6 +297,14 @@ export async function createSabrStream(
 				const newConfig =
 					reloaded.player_config?.media_common_config?.media_ustreamer_request_config?.video_playback_ustreamer_config;
 
+				const newFormats: SabrFormat[] = (reloaded.streaming_data?.adaptive_formats ?? []).map((format: any) =>
+					buildSabrFormat(format),
+				);
+
+				// SabrStream exposes setters for all state that may change during
+				// a player-response reload.
+				sabr.setPoToken(refreshedPoToken);
+
 				if (newUrl) {
 					sabr.setStreamingURL(newUrl);
 				}
@@ -308,7 +313,11 @@ export async function createSabrStream(
 					sabr.setUstreamerConfig(newConfig);
 				}
 
-				if (!newUrl && !newConfig) {
+				if (newFormats.length) {
+					sabr.setServerAbrFormats(newFormats);
+				}
+
+				if (!newUrl && !newConfig && !newFormats.length) {
 					console.warn("[SABR] Reload response did not contain updated SABR config");
 				}
 			} catch (error) {
