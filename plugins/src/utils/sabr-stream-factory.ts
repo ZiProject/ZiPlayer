@@ -192,13 +192,55 @@ function getClientInfo(innertube: Innertube) {
 }
 
 /**
+ * Best-effort cancellation of a Web ReadableStream.
+ *
+ * Used to drop the SABR video track (which this factory never exposes to
+ * callers) so the server stops pushing video segments and nothing lingers
+ * un-drained in memory.
+ */
+async function safeCancelStream(stream: ReadableStream<Uint8Array> | undefined, reason?: unknown): Promise<void> {
+	if (!stream) return;
+
+	try {
+		await stream.cancel(reason);
+	} catch {
+		// Already closed/cancelled/errored - nothing to do.
+	}
+}
+
+/**
+ * Best-effort teardown of a SabrStream instance.
+ *
+ * `SabrStream#abort()` is the only thing that actually stops the internal
+ * request loop, releases the video/audio controllers, and clears the
+ * session's internal maps (initialized formats, partial segment queue, SABR
+ * contexts, etc). Destroying only the Node.js Readable we hand back to the
+ * caller does NOT reach any of this - it only cancels the audio reader.
+ * Without calling this, every `createSabrStream()` call leaves a live
+ * SabrStream (plus its still-registered `reloadPlayerResponse` listener)
+ * behind after the track ends, which is why memory keeps climbing across
+ * track changes instead of settling back down.
+ */
+function safeAbortSabr(sabr: SabrStream): void {
+	try {
+		sabr.abort();
+	} catch {
+		// Already aborted/finished - nothing to do.
+	}
+}
+
+/**
  * Create a SABR audio stream.
  *
  * This preserves the original factory API:
  *   createSabrStream(videoId, innertube, options)
  *
- * The SABR session itself can still receive both tracks internally, but this
- * factory exposes only the audio stream to the caller.
+ * Only the audio track is ever exposed to the caller. The video track is
+ * cancelled immediately (or simply never requested, if the caller doesn't
+ * override `enabledTrackTypes`) so no video segments are buffered for
+ * nothing, and the underlying `SabrStream` session is always aborted once
+ * the returned Node.js stream ends, errors, or is destroyed - so no SABR
+ * session is left running in the background after a track finishes.
  */
 export async function createSabrStream(
 	videoId: string,
@@ -215,6 +257,12 @@ export async function createSabrStream(
 
 		throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 	};
+
+	// Tracks the SabrStream instance for this call so it can be torn down
+	// from the outer catch block if anything fails before/while consuming
+	// the returned streams.
+	let sabr: SabrStream | undefined;
+	let reloadHandler: ((reloadPlaybackContext: ReloadPlaybackContext) => void) | undefined;
 
 	try {
 		if (!videoId) {
@@ -281,7 +329,7 @@ export async function createSabrStream(
 
 		const formats: SabrFormat[] = adaptiveFormats.map((format: any) => buildSabrFormat(format));
 
-		const sabr = new SabrStream({
+		sabr = new SabrStream({
 			formats,
 			serverAbrStreamingUrl,
 			videoPlaybackUstreamerConfig: ustreamerConfig,
@@ -293,7 +341,7 @@ export async function createSabrStream(
 		 * SABR can request a fresh player response when the original response
 		 * expires or the server changes playback state.
 		 */
-		sabr.on("reloadPlayerResponse", async (reloadPlaybackContext: ReloadPlaybackContext) => {
+		reloadHandler = async (reloadPlaybackContext: ReloadPlaybackContext) => {
 			try {
 				throwIfAborted();
 
@@ -323,18 +371,18 @@ export async function createSabrStream(
 
 				// SabrStream exposes setters for all state that may change during
 				// a player-response reload.
-				sabr.setPoToken(refreshedPoToken);
+				sabr?.setPoToken(refreshedPoToken);
 
 				if (newUrl) {
-					sabr.setStreamingURL(newUrl);
+					sabr?.setStreamingURL(newUrl);
 				}
 
 				if (newConfig) {
-					sabr.setUstreamerConfig(newConfig);
+					sabr?.setUstreamerConfig(newConfig);
 				}
 
 				if (newFormats.length) {
-					sabr.setServerAbrFormats(newFormats);
+					sabr?.setServerAbrFormats(newFormats);
 				}
 
 				if (!newUrl && !newConfig && !newFormats.length) {
@@ -346,13 +394,18 @@ export async function createSabrStream(
 				}
 				console.error("[SABR] Failed to reload player response:", error);
 			}
-		});
+		};
+
+		sabr.on("reloadPlayerResponse", reloadHandler);
 
 		const playbackOptions: SabrPlaybackOptions = {
 			...options,
 
-			// We only expose audio from this factory.
-			enabledTrackTypes: options?.enabledTrackTypes ?? EnabledTrackTypes.VIDEO_AND_AUDIO,
+			// We only ever expose audio from this factory. Defaulting to
+			// AUDIO_ONLY (instead of VIDEO_AND_AUDIO) means the server never
+			// pushes video segments in the first place, instead of us having to
+			// discard them after the fact.
+			enabledTrackTypes: options?.enabledTrackTypes ?? EnabledTrackTypes.AUDIO_ONLY,
 
 			// Audio preference defaults.
 			audioQuality: options?.audioQuality ?? "medium",
@@ -369,6 +422,11 @@ export async function createSabrStream(
 
 		throwIfAborted();
 
+		// If a caller-supplied `enabledTrackTypes` still requested video, we
+		// still never expose it - cancel it right away instead of leaving it
+		// un-drained for the lifetime of the session.
+		void safeCancelStream(result.videoStream, "Video track is not used by this factory");
+
 		if (!result.audioStream) {
 			throw new Error("SABR did not return an audio stream");
 		}
@@ -383,6 +441,11 @@ export async function createSabrStream(
 
 		let aborted = false;
 		let abortHandler: (() => void) | undefined;
+
+		// Local, non-null reference to the SabrStream instance so the
+		// generator/cleanup closures below don't have to keep re-checking for
+		// undefined (TypeScript also can't narrow `sabr` across closures).
+		const sabrSession = sabr;
 
 		const nodeStream = Readable.from(
 			(async function* () {
@@ -411,6 +474,18 @@ export async function createSabrStream(
 						reader.releaseLock();
 					} catch {
 						// Ignore.
+					}
+
+					// Whether we finished normally, errored, or were aborted, the
+					// SabrStream session behind this Readable must always be torn
+					// down here. This is what actually stops the internal request
+					// loop and releases its resources - without it, the session
+					// keeps running (and its `reloadPlayerResponse` listener stays
+					// registered) long after playback has moved on.
+					safeAbortSabr(sabrSession);
+
+					if (reloadHandler) {
+						sabrSession.off("reloadPlayerResponse", reloadHandler);
 					}
 				}
 			})(),
@@ -446,6 +521,16 @@ export async function createSabrStream(
 			},
 		};
 	} catch (error) {
+		// We failed before handing a stream back to the caller (or before the
+		// Readable's own finally block could take over cleanup duty) - make
+		// sure the SabrStream session and its listener don't leak here either.
+		if (sabr) {
+			if (reloadHandler) {
+				sabr.off("reloadPlayerResponse", reloadHandler);
+			}
+			safeAbortSabr(sabr);
+		}
+
 		console.error("[SABR]", error);
 
 		throw new Error(`SABR stream creation failed: ${error instanceof Error ? error.message : String(error)}`, {
@@ -511,5 +596,5 @@ export const DEFAULT_SABR_OPTIONS: SabrPlaybackOptions = {
 	preferWebM: true,
 	preferOpus: true,
 	audioQuality: "medium",
-	enabledTrackTypes: EnabledTrackTypes.VIDEO_AND_AUDIO,
+	enabledTrackTypes: EnabledTrackTypes.AUDIO_ONLY,
 };
