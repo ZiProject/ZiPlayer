@@ -120,10 +120,7 @@ export async function webStreamToNodeStream(
 			.catch(() => {})
 			.finally(() => {
 				if (!nodeStream.destroyed) {
-					nodeStream.destroy(
-						signal?.reason ??
-							new DOMException("The operation was aborted", "AbortError"),
-					);
+					nodeStream.destroy(signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));
 				}
 			});
 	};

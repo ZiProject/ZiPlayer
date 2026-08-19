@@ -207,19 +207,13 @@ export async function createSabrStream(
 	signal?: AbortSignal,
 ): Promise<SabrAudioResult> {
 	if (signal?.aborted) {
-		throw (
-			signal.reason ??
-			new DOMException("The operation was aborted", "AbortError")
-		);
+		throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 	}
 
 	const throwIfAborted = () => {
 		if (!signal?.aborted) return;
 
-		throw (
-			signal.reason ??
-			new DOMException("The operation was aborted", "AbortError")
-		);
+		throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 	};
 
 	try {
@@ -427,10 +421,7 @@ export async function createSabrStream(
 
 			aborted = true;
 
-			void reader.cancel(
-				signal?.reason ??
-					new DOMException("The operation was aborted", "AbortError"),
-			);
+			void reader.cancel(signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));
 		};
 
 		signal?.addEventListener("abort", abortHandler, { once: true });
