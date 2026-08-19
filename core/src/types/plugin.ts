@@ -15,10 +15,11 @@ export interface SourcePlugin {
 	priority?: number; // Higher = run first, default is 0. Lower priority plugins are tried first in getStream fallback.
 	canHandle(query: string): boolean;
 	search(query: string, requestedBy: string): Promise<SearchResult>;
-	getStream(track: Track): Promise<StreamInfo>;
+	getStream(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
 	getRelatedTracks?(track: Track, opts?: { limit?: number; offset?: number }): Promise<Track[]>;
 	validate?(url: string): boolean;
 	extractPlaylist?(url: string, requestedBy: string): Promise<Track[]>;
+	getFallback?(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
 }
 
 /**

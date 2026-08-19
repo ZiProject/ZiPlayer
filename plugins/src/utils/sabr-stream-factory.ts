@@ -47,7 +47,7 @@ Platform.shim.eval = async (data: Types.BuildScriptResult) => new Function(data.
  * The token is bound to the video/content identifier. YouTube can reject
  * SABR requests without it, especially for newer Web clients.
  */
-async function generatePoToken(contentBinding: string): Promise<string> {
+async function generatePoToken(contentBinding: string, signal?: AbortSignal): Promise<string> {
 	const requestKey = "O43z0dpjhgX20SCx4KAo";
 
 	const dom = new JSDOM('<!DOCTYPE html><html lang="en"><head><title></title></head><body></body></html>', {
@@ -114,6 +114,7 @@ async function generatePoToken(contentBinding: string): Promise<string> {
 		method: "POST",
 		headers: getHeaders(),
 		body: JSON.stringify([requestKey, botguardResponse]),
+		signal,
 	});
 
 	if (!response.ok) {
@@ -203,17 +204,38 @@ export async function createSabrStream(
 	videoId: string,
 	innertube: Innertube,
 	options?: Partial<SabrPlaybackOptions>,
+	signal?: AbortSignal,
 ): Promise<SabrAudioResult> {
+	if (signal?.aborted) {
+		throw (
+			signal.reason ??
+			new DOMException("The operation was aborted", "AbortError")
+		);
+	}
+
+	const throwIfAborted = () => {
+		if (!signal?.aborted) return;
+
+		throw (
+			signal.reason ??
+			new DOMException("The operation was aborted", "AbortError")
+		);
+	};
+
 	try {
 		if (!videoId) {
 			throw new Error("videoId is required");
 		}
 
 		console.info(`[SABR] Generating PoToken for ${videoId}...`);
-		const poToken = await generatePoToken(videoId);
+		const poToken = await generatePoToken(videoId, signal);
+
+		throwIfAborted();
 
 		console.info(`[SABR] Loading player response...`);
 		const videoInfo = await makePlayerRequest(innertube, videoId);
+
+		throwIfAborted();
 
 		const playability = videoInfo.playability_status;
 
@@ -279,6 +301,8 @@ export async function createSabrStream(
 		 */
 		sabr.on("reloadPlayerResponse", async (reloadPlaybackContext: ReloadPlaybackContext) => {
 			try {
+				throwIfAborted();
+
 				console.info(`[SABR] Reloading player response...`);
 
 				// Refresh the player response AND the content-bound WebPO token.
@@ -286,8 +310,10 @@ export async function createSabrStream(
 				// cause SABR media requests to stop part-way through playback.
 				const [reloaded, refreshedPoToken] = await Promise.all([
 					makePlayerRequest(innertube, videoId, reloadPlaybackContext),
-					generatePoToken(videoId),
+					generatePoToken(videoId, signal),
 				]);
+
+				throwIfAborted();
 
 				const newUrl =
 					reloaded.streaming_data?.server_abr_streaming_url ?
@@ -321,6 +347,9 @@ export async function createSabrStream(
 					console.warn("[SABR] Reload response did not contain updated SABR config");
 				}
 			} catch (error) {
+				if (signal?.aborted) {
+					return;
+				}
 				console.error("[SABR] Failed to reload player response:", error);
 			}
 		});
@@ -344,6 +373,8 @@ export async function createSabrStream(
 
 		const result = await sabr.start(playbackOptions);
 
+		throwIfAborted();
+
 		if (!result.audioStream) {
 			throw new Error("SABR did not return an audio stream");
 		}
@@ -356,21 +387,63 @@ export async function createSabrStream(
 
 		const reader = result.audioStream.getReader();
 
+		let aborted = false;
+		let abortHandler: (() => void) | undefined;
+
 		const nodeStream = Readable.from(
 			(async function* () {
 				try {
 					while (true) {
+						throwIfAborted();
+
 						const { done, value } = await reader.read();
 
 						if (done) break;
 
+						if (signal?.aborted) {
+							throwIfAborted();
+						}
+
 						yield Buffer.from(value);
 					}
 				} finally {
-					reader.releaseLock();
+					try {
+						await reader.cancel();
+					} catch {
+						// Already closed/cancelled.
+					}
+
+					try {
+						reader.releaseLock();
+					} catch {
+						// Ignore.
+					}
 				}
 			})(),
 		);
+
+		abortHandler = () => {
+			if (aborted) return;
+
+			aborted = true;
+
+			void reader.cancel(
+				signal?.reason ??
+					new DOMException("The operation was aborted", "AbortError"),
+			);
+		};
+
+		signal?.addEventListener("abort", abortHandler, { once: true });
+
+		const cleanup = () => {
+			if (abortHandler && signal) {
+				signal.removeEventListener("abort", abortHandler);
+				abortHandler = undefined;
+			}
+		};
+
+		nodeStream.once("close", cleanup);
+		nodeStream.once("error", cleanup);
 
 		return {
 			title,
