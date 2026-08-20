@@ -1,6 +1,6 @@
 {
 	"name": "ziplayer",
-	"version": "0.3.13",
+	"version": "0.3.14",
 	"description": "A modular Discord voice player with plugin system",
 	"keywords": [
 		"ZiPlayer",
@@ -26,12 +26,12 @@
 		"prepare": "npm run build"
 	},
 	"dependencies": {
-		"@discordjs/voice": "^0.19.0",
-		"@snazzah/davey": "^0.1.6",
-		"discord-api-types": "^0.38.37",
-		"ffmpeg-static": "^5.2.0",
-		"libsodium-wrappers": "^0.7.15",
-		"lru-cache": "^11.3.6",
+		"@discordjs/voice": "^0.19.2",
+		"@snazzah/davey": "^0.1.12",
+		"discord-api-types": "^0.38.53",
+		"ffmpeg-static": "^5.3.0",
+		"libsodium-wrappers": "^0.8.4",
+		"lru-cache": "^11.5.2",
 		"opusscript": "^0.1.1",
 		"prism-media": "^1.3.5"
 	},

@@ -1,4 +1,5 @@
 import { EventEmitter } from "events";
+import { LRUCache } from "lru-cache";
 import { Player } from "./Player";
 import {
 	PlaybackMode,
@@ -93,6 +94,20 @@ export class PlayerManager extends EventEmitter {
 	private players: Map<string, Player> = new Map();
 	private pendingPlayers: Map<string, Promise<Player>> = new Map();
 	private searchCache: Map<string, ManagerCacheEntry<SearchResult>>;
+
+	/**
+	 * Shared LRU cache available to all registered plugins.
+	 *
+	 * Plugins should namespace their keys to avoid collisions, e.g.
+	 * `youtube:video:${videoId}`.
+	 *
+	 * The cache only owns entries and evicts the least recently used ones
+	 * when the maximum size is reached. Plugins remain responsible for
+	 * choosing their key format and value types.
+	 */
+	public readonly cache = new LRUCache<string, object>({
+		max: 500,
+	});
 	private readonly SEARCH_CACHE_TTL = 60 * 1000; // 1 minute
 	private readonly MAX_CACHE_SIZE = 100;
 	private cleanupInterval: NodeJS.Timeout | null = null;
@@ -325,6 +340,7 @@ export class PlayerManager extends EventEmitter {
 		}
 
 		const creationPromise = (async () => {
+			await Promise.resolve();
 			try {
 				this.debug(`Creating player for guildId: ${guildId}`);
 				const player = new Player(guildId, options, this);
@@ -814,6 +830,7 @@ export class PlayerManager extends EventEmitter {
 
 		this.players.clear();
 		this.searchCache.clear();
+		this.cache.clear();
 		this.removeAllListeners();
 		this.debug(`PlayerManager destroyed`);
 	}
