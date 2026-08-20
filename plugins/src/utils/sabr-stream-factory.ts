@@ -422,11 +422,6 @@ export async function createSabrStream(
 
 		throwIfAborted();
 
-		// If a caller-supplied `enabledTrackTypes` still requested video, we
-		// still never expose it - cancel it right away instead of leaving it
-		// un-drained for the lifetime of the session.
-		void safeCancelStream(result.videoStream, "Video track is not used by this factory");
-
 		if (!result.audioStream) {
 			throw new Error("SABR did not return an audio stream");
 		}
@@ -483,6 +478,7 @@ export async function createSabrStream(
 					// keeps running (and its `reloadPlayerResponse` listener stays
 					// registered) long after playback has moved on.
 					safeAbortSabr(sabrSession);
+					void safeCancelStream(result.videoStream, "Video track is not used by this factory");
 
 					if (reloadHandler) {
 						sabrSession.off("reloadPlayerResponse", reloadHandler);
