@@ -2,7 +2,6 @@ import type { AudioFilter, StreamInfo } from "../types";
 import { PREDEFINED_FILTERS } from "../types";
 import type { Player } from "./Player";
 import type { PlayerManager } from "./PlayerManager";
-import prism, { FFmpeg } from "prism-media";
 import type { Readable } from "stream";
 import { spawn, type ChildProcess } from "child_process";
 import ffmpegPath from "ffmpeg-static";
@@ -11,20 +10,27 @@ type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 
 export type FilterManagerStreamType = "webm/opus" | "ogg/opus" | "arbitrary" | "mp3";
 
+/**
+ * Owns the FFmpeg process used for player filters and seek operations.
+ *
+ * Important: a Node/Web Readable is not seekable. For a stream input, `-ss`
+ * must therefore be used after `-i` so FFmpeg decodes and discards samples
+ * until the requested position. The Player is responsible for providing a
+ * fresh source stream when an actual seek is requested.
+ */
 export class FilterManager {
 	private activeFilters: AudioFilter[] = [];
 	private debug: DebugFn;
 	private player: Player;
-	private ffmpeg: FFmpeg | null = null;
-	private currentInputStream: Readable | null | undefined | string = null;
+	private ffmpegOutput: Readable | null = null;
+	private currentInputStream: Readable | string | null = null;
 	public StreamType: FilterManagerStreamType = "arbitrary";
 	private ffmpegProcess: ChildProcess | null = null;
 	private ffmpegAbortController: AbortController | null = null;
 	private ffmpegGeneration = 0;
-	private pendingFFmpegProcess: ChildProcess | null = null;
 
 	constructor(player: Player, manager: PlayerManager) {
-		this.player = player as Player;
+		this.player = player;
 		this.debug = (message?: any, ...optionalParams: any[]) => {
 			if (manager.debugEnabled) {
 				manager.emit("debug", `[FilterManager] ${message}`, ...optionalParams);
@@ -34,455 +40,248 @@ export class FilterManager {
 
 	public setSourceStreamType(type: string): void {
 		if (type === "webm/opus" || type === "ogg/opus" || type === "mp3") {
-			this.StreamType = type as FilterManagerStreamType;
+			this.StreamType = type;
 		} else {
 			this.StreamType = "arbitrary";
 		}
-		this.debug(`[FilterManager] Source stream type set to: ${this.StreamType}`);
+		this.debug(`Source stream type set to: ${this.StreamType}`);
 	}
 
-	destroy(): void {
+	public destroy(): void {
 		this.activeFilters = [];
 		this.teardownFFmpeg();
 		this.currentInputStream = null;
 	}
 
 	private teardownFFmpeg(): void {
-		// Abort any pending spawn first
-		if (this.ffmpegAbortController) {
-			this.ffmpegAbortController.abort();
-			this.ffmpegAbortController = null;
+		this.ffmpegAbortController?.abort();
+		this.ffmpegAbortController = null;
+
+		const output = this.ffmpegOutput;
+		this.ffmpegOutput = null;
+		if (output && !output.destroyed) {
+			try {
+				output.destroy();
+			} catch {}
 		}
 
-		if (this.ffmpeg) {
+		const process = this.ffmpegProcess;
+		this.ffmpegProcess = null;
+		if (process) {
 			try {
-				this.ffmpeg.destroy();
-			} catch {
-				/* ignore */
-			}
-			this.ffmpeg = null;
-		}
-
-		if (this.ffmpegProcess) {
+				if (process.stdin && !process.stdin.destroyed) process.stdin.destroy();
+			} catch {}
 			try {
-				// Detach stdin so source stream doesn't get EPIPE when we kill
-				if (this.ffmpegProcess.stdin && !this.ffmpegProcess.stdin.destroyed) {
-					this.ffmpegProcess.stdin.destroy();
-				}
-				this.ffmpegProcess.kill("SIGKILL");
-			} catch {
-				/* ignore */
-			}
-			this.ffmpegProcess = null;
+				if (process.exitCode === null && process.signalCode === null) process.kill("SIGKILL");
+			} catch {}
 		}
 	}
 
 	public getFilterString(): string {
-		if (this.activeFilters.length === 0) return "";
-		return this.activeFilters.map((f) => f.ffmpegFilter).join(",");
+		return this.activeFilters.map((filter) => filter.ffmpegFilter).join(",");
 	}
 
-	/**
-	 * Get all currently applied filters
-	 *
-	 * @returns {AudioFilter[]} Array of active filters
-	 * @example
-	 * const filters = player.getActiveFilters();
-	 * console.log(`Active filters: ${filters.map(f => f.name).join(', ')}`);
-	 */
 	public getActiveFilters(): AudioFilter[] {
 		return [...this.activeFilters];
 	}
 
-	/**
-	 * Check if a specific filter is currently applied
-	 *
-	 * @param {string} filterName - Name of the filter to check
-	 * @returns {boolean} True if filter is applied
-	 * @example
-	 * const hasBassBoost = player.hasFilter("bassboost");
-	 * console.log(`Has bass boost: ${hasBassBoost}`);
-	 */
 	public hasFilter(filterName: string): boolean {
-		return this.activeFilters.some((f) => f.name === filterName);
+		return this.activeFilters.some((filter) => filter.name === filterName);
 	}
 
-	/**
-	 * Get available predefined filters
-	 *
-	 * @returns {AudioFilter[]} Array of all predefined filters
-	 * @example
-	 * const availableFilters = player.getAvailableFilters();
-	 * console.log(`Available filters: ${availableFilters.length}`);
-	 */
 	public getAvailableFilters(): AudioFilter[] {
 		return Object.values(PREDEFINED_FILTERS);
 	}
 
-	/**
-	 * Get filters by category
-	 *
-	 * @param {string} category - Category to filter by
-	 * @returns {AudioFilter[]} Array of filters in the category
-	 * @example
-	 * const eqFilters = player.getFiltersByCategory("eq");
-	 * console.log(`EQ filters: ${eqFilters.map(f => f.name).join(', ')}`);
-	 */
 	public getFiltersByCategory(category: string): AudioFilter[] {
-		return Object.values(PREDEFINED_FILTERS).filter((f) => f.category === category);
+		return Object.values(PREDEFINED_FILTERS).filter((filter) => filter.category === category);
 	}
 
-	/**
-	 * Apply an audio filter to the player
-	 *
-	 * @param {string | AudioFilter} filter - Filter name or AudioFilter object
-	 * @returns {Promise<boolean>} True if filter was applied successfully
-	 * @example
-	 * // Apply predefined filter to current track
-	 * await player.applyFilter("bassboost");
-	 *
-	 * // Apply custom filter to current track
-	 * await player.applyFilter({
-	 *   name: "custom",
-	 *   ffmpegFilter: "volume=1.5,treble=g=5",
-	 *   description: "Tăng âm lượng và âm cao"
-	 * });
-	 *
-	 * // Apply filter without affecting current track
-	 * await player.applyFilter("bassboost", false);
-	 */
+	private resolveFilter(filter: string | AudioFilter): AudioFilter | undefined {
+		if (typeof filter !== "string") return filter;
+		return PREDEFINED_FILTERS[filter];
+	}
+
 	public async applyFilter(filter?: string | AudioFilter): Promise<boolean> {
 		if (!filter) return false;
 
-		let audioFilter: AudioFilter | undefined;
-		if (typeof filter === "string") {
-			const predefined = PREDEFINED_FILTERS[filter];
-			if (!predefined) {
-				this.debug(`[FilterManager] Predefined filter not found: ${filter}`);
-				return false;
-			}
-			audioFilter = predefined;
-		} else {
-			audioFilter = filter;
+		const audioFilter = this.resolveFilter(filter);
+		if (!audioFilter) {
+			this.debug(`Predefined filter not found: ${String(filter)}`);
+			return false;
 		}
 
-		if (this.activeFilters.some((f) => f.name === audioFilter!.name)) {
-			this.debug(`[FilterManager] Filter already applied: ${audioFilter.name}`);
+		if (this.activeFilters.some((current) => current.name === audioFilter.name)) {
 			return false;
 		}
 
 		this.activeFilters.push(audioFilter);
-		this.debug(`[FilterManager] Applied filter: ${audioFilter.name} - ${audioFilter.description}`);
-		return await this.player.refreshPlayerResource();
+		this.debug(`Applied filter: ${audioFilter.name} - ${audioFilter.description}`);
+		return this.player.refreshPlayerResource();
 	}
 
-	/**
-	 * Apply multiple filters at once
-	 *
-	 * @param {(string | AudioFilter)[]} filters - Array of filter names or AudioFilter objects
-	 * @returns {Promise<boolean>} True if all filters were applied successfully
-	 * @example
-	 * // Apply multiple filters to current track
-	 * await player.applyFilters(["bassboost", "trebleboost"]);
-	 *
-	 * // Apply filters without affecting current track
-	 * await player.applyFilters(["bassboost", "trebleboost"], false);
-	 */
 	public async applyFilters(filters: (string | AudioFilter)[]): Promise<boolean> {
+		let changed = false;
 		let allApplied = true;
-		for (const f of filters) {
-			const ok = await this.applyFilter(f);
-			if (!ok) allApplied = false;
+
+		for (const filter of filters) {
+			const audioFilter = this.resolveFilter(filter);
+			if (!audioFilter) {
+				allApplied = false;
+				continue;
+			}
+			if (this.activeFilters.some((current) => current.name === audioFilter.name)) continue;
+			this.activeFilters.push(audioFilter);
+			changed = true;
 		}
-		return allApplied;
+
+		if (!changed) return allApplied;
+		return allApplied && (await this.player.refreshPlayerResource());
 	}
 
 	public async removeFilter(filterName: string): Promise<boolean> {
-		const index = this.activeFilters.findIndex((f) => f.name === filterName);
-		if (index === -1) {
-			this.debug(`[FilterManager] Filter not found: ${filterName}`);
-			return false;
-		}
-		const removed = this.activeFilters.splice(index, 1)[0];
-		this.debug(`[FilterManager] Removed filter: ${removed.name}`);
-		return await this.player.refreshPlayerResource();
+		const index = this.activeFilters.findIndex((filter) => filter.name === filterName);
+		if (index === -1) return false;
+
+		this.activeFilters.splice(index, 1);
+		this.debug(`Removed filter: ${filterName}`);
+		return this.player.refreshPlayerResource();
 	}
 
-	/**
-	 * Clear all audio filters from the player
-	 *
-	 * @returns {boolean} True if filters were cleared successfully
-	 * @example
-	 * player.clearFilters();
-	 */
 	public async clearAll(): Promise<boolean> {
 		const count = this.activeFilters.length;
 		this.activeFilters = [];
-		this.debug(`[FilterManager] Cleared ${count} filters`);
-		return await this.player.refreshPlayerResource();
+		this.debug(`Cleared ${count} filters`);
+		return this.player.refreshPlayerResource();
 	}
 
-	/**
-	 * Apply filters and seek to a stream
-	 *
-	 * @param {Readable} stream - The stream to apply filters and seek to
-	 * @param {number} position - The position to seek to in milliseconds (default: 0)
-	 * @returns {Promise<Readable>} The stream with filters and seek applied
-	 */
 	public async applyFiltersAndSeek(
 		streamInfo: StreamInfo,
 		position: number = -1,
 	): Promise<StreamInfo & { wasRecreated?: boolean }> {
 		const generation = ++this.ffmpegGeneration;
-		const filterString = this.getFilterString();
+		this.teardownFFmpeg();
 
-		let sourceStream: Readable | string = streamInfo.stream || streamInfo.url!;
+		let sourceStream: Readable | string | undefined = streamInfo.stream || streamInfo.url;
+		if (!sourceStream) throw new Error("No source stream or URL available");
+
+		// `recreate()` is allowed to provide a fresh source for a seek. It does
+		// not need to implement time seeking itself; FFmpeg performs the skip
+		// below for non-seekable streams.
 		let wasRecreated = false;
-
 		if (position >= 0 && streamInfo.recreate) {
 			sourceStream = await streamInfo.recreate(position);
 			wasRecreated = true;
-
-			position = -1;
-			if (!filterString) return { ...streamInfo, type: "arbitrary", stream: sourceStream, wasRecreated };
+			if (!sourceStream) throw new Error("Stream recreation returned no stream");
 		}
-
-		this.debug(`Applying filters and seek — filters: ${filterString || "none"}, seek: ${position}ms`);
 
 		if (generation !== this.ffmpegGeneration) {
 			throw new Error("FFmpeg generation outdated");
 		}
 
 		this.currentInputStream = sourceStream;
-		const abortController = new AbortController();
-		this.ffmpegAbortController = abortController;
+		const filterString = this.getFilterString();
 
-		// Nếu có vị trí seek, ưu tiên dùng spawnFFmpegInputSeek
-		if (position >= 0) {
-			if (!ffmpegPath) {
-				this.debug("[FilterManager] ffmpeg-static path not found, seeking may fail");
-				// Fallback or throw based on preference, here we try to proceed or throw
-				throw new Error("FFmpeg binary not found. Seeking is unavailable.");
-			}
-			const stream = await this.spawnFFmpegInputSeek(sourceStream, position, filterString, abortController.signal, generation);
-			return { ...streamInfo, stream };
+		this.debug(
+			`Applying filters and seek — filters: ${filterString || "none"}, seek: ${position >= 0 ? `${position}ms` : "none"}, source: ${typeof sourceStream === "string" ? "url" : "stream"}`,
+		);
+
+		if (position < 0 && !filterString) {
+			return { ...streamInfo, stream: sourceStream, wasRecreated };
 		}
+
+		if (!ffmpegPath) throw new Error("FFmpeg binary not found");
+
+		const seekSeconds = position >= 0 ? (position / 1000).toFixed(3) : null;
+		const args: string[] = ["-hide_banner", "-loglevel", "error"];
 
 		if (typeof sourceStream === "string") {
-			return {
-				...streamInfo,
-				stream: await this.createFFmpegFromUrl(sourceStream, filterString),
-			};
+			// URL/file inputs are seekable, so use input seeking for efficiency.
+			if (seekSeconds !== null) args.push("-ss", seekSeconds);
+			args.push("-i", sourceStream);
+		} else {
+			// Pipes are NOT seekable. `-ss` before `-i pipe:0` does not seek the
+			// stream; it is an input seek operation against a non-seekable input.
+			args.push("-i", "pipe:0");
+			if (seekSeconds !== null) args.push("-ss", seekSeconds);
 		}
 
-		const args = [
-			"-analyzeduration",
-			"0",
-			"-loglevel",
-			"0",
-			"-i",
-			"pipe:0",
-			"-acodec",
-			"libopus", // Chuyển sang opus ngay để nhẹ pipe
-			"-f",
-			"opus", // Format chuẩn cho Discord
-			"-ar",
-			"48000",
-			"-ac",
-			"2",
-		];
+		if (filterString) args.push("-af", filterString);
 
-		if (filterString) {
-			args.splice(4, 0, "-af", filterString);
-		}
-
-		try {
-			this.ffmpeg = sourceStream.pipe(new prism.FFmpeg({ args }));
-			return { ...streamInfo, stream: this.ffmpeg };
-		} catch (spawnError) {
-			this.debug(`FFmpeg spawn error:`, spawnError);
-			throw spawnError;
-		}
-	}
-
-	private spawnFFmpegInputSeek(
-		stream: Readable | string,
-		position: number,
-		filterString: string,
-		signal: AbortSignal,
-		generation: number,
-	): Readable {
-		// Convert milliseconds to seconds for FFmpeg (position is integer ms, convert to string for CLI)
-		const seekSeconds = String((position / 1000).toFixed(3));
-
-		// Chuyển sang dùng s16le (Raw PCM) để Discord.js dễ xử lý nhất khi có filter
-		// NOTE: -ss MUST come BEFORE -i for proper seeking and timing
-		//if url is provided, we can let ffmpeg handle it directly without piping, which is more efficient and less error-prone
-		const args: string[] =
-			typeof stream === "string" ?
-				["-ss", seekSeconds, "-i", stream, "-analyzeduration", "0", "-loglevel", "0"]
-			:	["-ss", seekSeconds, "-i", "pipe:0", "-analyzeduration", "0", "-loglevel", "0"];
-
-		if (filterString) {
-			args.push("-af", filterString);
-		}
-
-		// Xuất ra dạng s16le là dạng "an toàn" nhất cho mọi loại filter
+		// Filter/seek output is raw PCM. This makes the Discord voice input type
+		// deterministic and avoids feeding an Opus container into Raw mode.
 		args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
 
-		const proc = spawn(ffmpegPath!, args, {
+		const controller = new AbortController();
+		this.ffmpegAbortController = controller;
+
+		const proc = spawn(ffmpegPath, args, {
 			stdio: ["pipe", "pipe", "ignore"],
+			windowsHide: true,
 		});
-
-		const oldProcess = this.ffmpegProcess;
-
-		this.pendingFFmpegProcess = proc;
+		this.ffmpegProcess = proc;
 
 		if (generation !== this.ffmpegGeneration) {
-			try {
-				proc.kill("SIGKILL");
-			} catch {}
-
+			try { proc.kill("SIGKILL"); } catch {}
 			throw new Error("FFmpeg process superseded");
 		}
 
-		const onAbort = () => {
-			signal.removeEventListener("abort", onAbort);
+		const output = proc.stdout;
+		if (!output) {
+			try { proc.kill("SIGKILL"); } catch {}
+			throw new Error("FFmpeg stdout unavailable");
+		}
+		this.ffmpegOutput = output;
 
-			try {
-				if (typeof stream === "string") {
-					// If stream is a URL, no need to unpipe
-				} else {
-					stream.unpipe(proc.stdin!);
-				}
-			} catch {}
-
-			try {
-				if (proc.stdin && !proc.stdin.destroyed) {
-					proc.stdin.destroy();
-				}
-			} catch {}
-
-			try {
-				proc.kill("SIGKILL");
-			} catch {}
-
-			this.debug(`[FilterManager] FFmpeg process aborted (seek pos: ${position}ms)`);
+		const cleanup = () => {
+			if (this.ffmpegProcess === proc) this.ffmpegProcess = null;
+			if (this.ffmpegOutput === output) this.ffmpegOutput = null;
+			if (this.ffmpegAbortController === controller) this.ffmpegAbortController = null;
+			if (typeof sourceStream !== "string") {
+				try { sourceStream.unpipe(proc.stdin!); } catch {}
+			}
 		};
 
-		if (signal.aborted) {
-			// Already aborted before we even spawned
-			onAbort();
-		} else {
-			signal.addEventListener("abort", onAbort, { once: true });
-		}
-
-		// Pipe source → ffmpeg stdin
-		if (typeof stream === "string") {
-			// If stream is a URL, no need to pipe
-		} else {
-			stream.pipe(proc.stdin!);
-		}
-
-		// Suppress EPIPE on stdin when the process exits early
-		proc.stdin!.on("error", (err: Error) => {
-			if ((err as any).code !== "EPIPE") {
-				this.debug(`FFmpeg stdin error: ${err.message}`);
-			}
-			// EPIPE is expected when proc is killed — silence it
-		});
-
-		proc.stdout!.on("error", (err: Error) => {
-			this.debug(`FFmpeg stdout error: ${err.message}`);
-		});
-
-		proc.on("close", (code) => {
-			signal.removeEventListener("abort", onAbort);
-			this.debug(`FFmpeg process exited (code: ${code})`);
-			if (this.ffmpegProcess === proc) {
-				this.ffmpegProcess = null;
-			}
-		});
-
-		proc.on("error", (err: Error) => {
-			signal.removeEventListener("abort", onAbort);
-			this.debug(`FFmpeg process error: ${err.message}`);
-			if (this.ffmpegProcess === proc) {
-				this.ffmpegProcess = null;
-			}
-		});
-
-		this.ffmpegProcess = proc;
-		this.pendingFFmpegProcess = null;
-
-		// kill old AFTER new ready
-		if (oldProcess && oldProcess !== proc) {
+		const abort = () => {
+			cleanup();
 			try {
-				if (oldProcess.stdin && !oldProcess.stdin.destroyed) {
-					oldProcess.stdin.destroy();
-				}
+				if (proc.stdin && !proc.stdin.destroyed) proc.stdin.destroy();
 			} catch {}
-
 			try {
-				oldProcess.kill("SIGKILL");
+				if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
 			} catch {}
-		}
+		};
 
-		return proc.stdout as Readable;
-	}
-	private createFFmpegFromUrl(url: string, filterString: string): Readable {
-		const args = ["-analyzeduration", "0", "-loglevel", "0", "-i", url];
-
-		if (filterString) {
-			args.push("-af", filterString);
-		}
-
-		args.push("-acodec", "libopus", "-f", "opus", "-ar", "48000", "-ac", "2", "pipe:1");
-
-		const proc = spawn(ffmpegPath!, args, {
-			stdio: ["ignore", "pipe", "ignore"],
+		controller.signal.addEventListener("abort", abort, { once: true });
+		proc.once("error", (error) => {
+			this.debug(`FFmpeg process error: ${error.message}`);
+			cleanup();
 		});
-
-		const oldProcess = this.ffmpegProcess;
-		this.ffmpegProcess = proc;
-
-		proc.on("close", (code) => {
-			this.debug(`FFmpeg URL process exited (code: ${code})`);
-
-			if (this.ffmpegProcess === proc) {
-				this.ffmpegProcess = null;
-			}
+		proc.once("close", () => cleanup());
+		proc.stdin?.on("error", (error: Error) => {
+			if ((error as any).code !== "EPIPE") this.debug(`FFmpeg stdin error: ${error.message}`);
 		});
-
-		proc.on("error", (err) => {
-			this.debug(`FFmpeg URL process error: ${err.message}`);
-
-			if (this.ffmpegProcess === proc) {
-				this.ffmpegProcess = null;
-			}
-		});
-
-		// kill process cũ sau khi process mới đã sẵn sàng
-		if (oldProcess && oldProcess !== proc) {
-			try {
-				oldProcess.kill("SIGKILL");
-			} catch {}
-		}
-
-		const output = proc.stdout as Readable;
-
 		output.once("close", () => {
-			try {
-				proc.kill("SIGKILL");
-			} catch {}
+			if (this.ffmpegProcess === proc) {
+				try {
+					if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
+				} catch {}
+			}
+			cleanup();
+		});
+		output.once("error", (error: Error) => {
+			this.debug(`FFmpeg stdout error: ${error.message}`);
+			abort();
 		});
 
-		output.once("end", () => {
-			try {
-				proc.kill("SIGKILL");
-			} catch {}
-		});
+		if (typeof sourceStream !== "string") {
+			sourceStream.pipe(proc.stdin!);
+		}
 
-		return output;
+		return {
+			...streamInfo,
+			stream: output,
+			wasRecreated,
+		};
 	}
 }
