@@ -20,6 +20,14 @@
  */
 
 /**
+ * Install the YouTube BotGuard/WebPO download path before exposing the plugin.
+ *
+ * The side-effect module patches the existing YouTubePlugin implementation so
+ * consumers do not need to change their construction or configuration.
+ */
+import "./utils/youtube-download-botguard.js";
+
+/**
  * YouTube plugin for handling YouTube videos, playlists, and search.
  *
  * Provides comprehensive support for YouTube content including:
