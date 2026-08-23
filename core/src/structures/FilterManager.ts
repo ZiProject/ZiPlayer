@@ -13,10 +13,10 @@ export type FilterManagerStreamType = "webm/opus" | "ogg/opus" | "arbitrary" | "
 /**
  * Owns the FFmpeg process used for player filters and seek operations.
  *
- * Important: a Node/Web Readable is not seekable. For a stream input, `-ss`
- * must therefore be used after `-i` so FFmpeg decodes and discards samples
- * until the requested position. The Player is responsible for providing a
- * fresh source stream when an actual seek is requested.
+ * A Node/Web Readable is not seekable. For a stream input, `-ss` therefore
+ * has to be used after `-i`, which makes FFmpeg decode and discard samples
+ * until the requested position. The Player supplies a fresh source stream
+ * when an actual seek is requested.
  */
 export class FilterManager {
 	private activeFilters: AudioFilter[] = [];
@@ -47,7 +47,7 @@ export class FilterManager {
 		this.debug(`Source stream type set to: ${this.StreamType}`);
 	}
 
-	public destroy(): void {
+	destroy(): void {
 		this.activeFilters = [];
 		this.teardownFFmpeg();
 		this.currentInputStream = null;
@@ -111,9 +111,7 @@ export class FilterManager {
 			return false;
 		}
 
-		if (this.activeFilters.some((current) => current.name === audioFilter.name)) {
-			return false;
-		}
+		if (this.activeFilters.some((current) => current.name === audioFilter.name)) return false;
 
 		this.activeFilters.push(audioFilter);
 		this.debug(`Applied filter: ${audioFilter.name} - ${audioFilter.description}`);
@@ -165,9 +163,6 @@ export class FilterManager {
 		let sourceStream: Readable | string | undefined = streamInfo.stream || streamInfo.url;
 		if (!sourceStream) throw new Error("No source stream or URL available");
 
-		// `recreate()` is allowed to provide a fresh source for a seek. It does
-		// not need to implement time seeking itself; FFmpeg performs the skip
-		// below for non-seekable streams.
 		let wasRecreated = false;
 		if (position >= 0 && streamInfo.recreate) {
 			sourceStream = await streamInfo.recreate(position);
@@ -175,42 +170,45 @@ export class FilterManager {
 			if (!sourceStream) throw new Error("Stream recreation returned no stream");
 		}
 
-		if (generation !== this.ffmpegGeneration) {
-			throw new Error("FFmpeg generation outdated");
-		}
+		if (generation !== this.ffmpegGeneration) throw new Error("FFmpeg generation outdated");
 
 		this.currentInputStream = sourceStream;
 		const filterString = this.getFilterString();
+		const hasSeek = position >= 0;
 
 		this.debug(
-			`Applying filters and seek — filters: ${filterString || "none"}, seek: ${position >= 0 ? `${position}ms` : "none"}, source: ${typeof sourceStream === "string" ? "url" : "stream"}`,
+			`Applying filters and seek — filters: ${filterString || "none"}, seek: ${hasSeek ? `${position}ms` : "none"}, source: ${typeof sourceStream === "string" ? "url" : "stream"}`,
 		);
 
-		if (position < 0 && !filterString) {
+		if (!hasSeek && !filterString) {
 			return { ...streamInfo, stream: sourceStream, wasRecreated };
 		}
 
 		if (!ffmpegPath) throw new Error("FFmpeg binary not found");
 
-		const seekSeconds = position >= 0 ? (position / 1000).toFixed(3) : null;
 		const args: string[] = ["-hide_banner", "-loglevel", "error"];
+		const seekSeconds = hasSeek ? (position / 1000).toFixed(3) : null;
 
 		if (typeof sourceStream === "string") {
-			// URL/file inputs are seekable, so use input seeking for efficiency.
 			if (seekSeconds !== null) args.push("-ss", seekSeconds);
 			args.push("-i", sourceStream);
 		} else {
-			// Pipes are NOT seekable. `-ss` before `-i pipe:0` does not seek the
-			// stream; it is an input seek operation against a non-seekable input.
+			// pipe:0 is non-seekable, so input-side -ss cannot work here.
+			// Put -ss after -i to decode/discard until the requested timestamp.
 			args.push("-i", "pipe:0");
 			if (seekSeconds !== null) args.push("-ss", seekSeconds);
 		}
 
 		if (filterString) args.push("-af", filterString);
 
-		// Filter/seek output is raw PCM. This makes the Discord voice input type
-		// deterministic and avoids feeding an Opus container into Raw mode.
-		args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
+		if (hasSeek) {
+			// Seek output is raw PCM and Player.createResource marks it as Raw.
+			args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
+		} else {
+			// Keep filter-only output as Opus so existing AudioResource input-type
+			// handling remains compatible with filtered playback.
+			args.push("-c:a", "libopus", "-f", "opus", "-ar", "48000", "-ac", "2", "pipe:1");
+		}
 
 		const controller = new AbortController();
 		this.ffmpegAbortController = controller;
@@ -274,9 +272,7 @@ export class FilterManager {
 			abort();
 		});
 
-		if (typeof sourceStream !== "string") {
-			sourceStream.pipe(proc.stdin!);
-		}
+		if (typeof sourceStream !== "string") sourceStream.pipe(proc.stdin!);
 
 		return {
 			...streamInfo,
