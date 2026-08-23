@@ -181,7 +181,13 @@ export class FilterManager {
 		);
 
 		if (!hasSeek && !filterString) {
-			return { ...streamInfo, stream: sourceStream, wasRecreated };
+			// StreamInfo.stream only accepts a Readable. If the source is a URL,
+			// keep it in streamInfo.url and leave stream undefined.
+			return {
+				...streamInfo,
+				stream: typeof sourceStream === "string" ? undefined : sourceStream,
+				wasRecreated,
+			};
 		}
 
 		if (!ffmpegPath) throw new Error("FFmpeg binary not found");
