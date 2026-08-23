@@ -3,6 +3,7 @@ import { BasePlugin, Track, SearchResult, StreamInfo, Player } from "ziplayer";
 import { Innertube, Log, UniversalCache, Platform } from "youtubei.js";
 import { createSabrStream, DEFAULT_SABR_OPTIONS } from "./utils/sabr-stream-factory.js";
 import { webStreamToNodeStream } from "./utils/stream-converter.js";
+import { mintYouTubePoToken } from "./utils/youtube-botguard.js";
 import { Readable } from "stream";
 
 /**
@@ -472,28 +473,40 @@ export class YouTubePlugin extends BasePlugin {
 		if (!id) throw new Error("Invalid track id");
 
 		try {
-			this.debug("🚀 Attempting prioritized SABR download");
-			return await this.downloadWithSabr(track, id, signal);
-		} catch (e: any) {
+			this.debug("🚀 Attempting youtubei.js download with BotGuard");
+			return await this.downloadWithYoutubei(track, id, signal);
+		} catch (youtubeError: any) {
 			if (signal?.aborted) {
 				throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 			}
 
-			if (this.options?.fallbackStream && typeof this.options.fallbackStream === "function") {
-				this.debug("🔁 Attempting user-provided fallback stream method");
-				try {
-					const fbStream = await this.options.fallbackStream(track);
-					if (fbStream && fbStream.stream) {
-						this.debug("✅ User-provided fallback stream successful");
-						return fbStream;
-					}
-				} catch (err: any) {
-					this.debug("⚠️ User-provided fallback stream failed or returned invalid stream");
-				}
-			}
+			this.debug(
+				"⚠️ youtubei.js + BotGuard failed, trying SABR:",
+				youtubeError?.message,
+			);
 
-			this.debug("⚠️ SABR download failed, and youtubei.js download is temporarily disabled:", e.message);
-			throw e;
+			try {
+				return await this.downloadWithSabr(track, id, signal);
+			} catch (sabrError: any) {
+				if (signal?.aborted) {
+					throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+				}
+
+				if (this.options?.fallbackStream && typeof this.options.fallbackStream === "function") {
+					this.debug("🔁 Attempting user-provided fallback stream method");
+					try {
+						const fbStream = await this.options.fallbackStream(track);
+						if (fbStream && fbStream.stream) {
+							this.debug("✅ User-provided fallback stream successful");
+							return fbStream;
+						}
+					} catch (err: any) {
+						this.debug("⚠️ User-provided fallback stream failed or returned invalid stream");
+					}
+				}
+
+				throw sabrError;
+			}
 		}
 	}
 
@@ -501,12 +514,21 @@ export class YouTubePlugin extends BasePlugin {
 		this.debug("try youtubei.js to download track");
 		this.throwIfAborted(signal);
 
+		const poToken = await mintYouTubePoToken(id, signal);
+		this.throwIfAborted(signal);
+
 		const stream = await this.client.download(id, {
 			type: "audio",
 			quality: "best",
+			po_token: poToken,
 		} as any);
 
-		this.throwIfAborted(signal);
+		if (signal?.aborted) {
+			try {
+				await (stream as any)?.cancel(signal.reason);
+			} catch {}
+			this.throwIfAborted(signal);
+		}
 
 		this.debug("🔍 Checking stream type:", typeof stream, stream?.constructor?.name);
 		if (stream && typeof stream.getReader === "function") {
