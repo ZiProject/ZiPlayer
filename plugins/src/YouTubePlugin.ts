@@ -427,10 +427,11 @@ export class YouTubePlugin extends BasePlugin {
 	}
 
 	/**
-	 * Retrieves the audio stream for a YouTube track using sabr download.
+	 * Retrieves the audio stream for a YouTube track.
 	 *
-	 * This method extracts the audio stream from a YouTube video using the sabr download
-	 * method which provides better quality and more reliable streaming.
+	 * The plugin first attempts youtubei.js with a BotGuard WebPO token,
+	 * then falls back to SABR if the youtubei.js download fails.
+
 	 *
 	 * @param track - The Track object to get the stream for
 	 * @returns A StreamInfo object containing the audio stream and metadata
@@ -480,10 +481,7 @@ export class YouTubePlugin extends BasePlugin {
 				throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 			}
 
-			this.debug(
-				"⚠️ youtubei.js + BotGuard failed, trying SABR:",
-				youtubeError?.message,
-			);
+			this.debug("⚠️ youtubei.js + BotGuard failed, trying SABR:", youtubeError?.message);
 
 			try {
 				return await this.downloadWithSabr(track, id, signal);
