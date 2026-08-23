@@ -154,7 +154,7 @@ export class PreloadManager {
 	}
 
 	public async safeCancelPreload(): Promise<void> {
-		if (!this.preloadSlot.abortController && !this.preloadSlot.resource) {
+		if (!this.preloadSlot.abortController && !this.preloadSlot.resource && !this.preloadSlot.streamId) {
 			return;
 		}
 
@@ -233,10 +233,12 @@ export class PreloadManager {
 		}
 
 		const streamInfo = await this.getStreamWithCancel(track, abortController.signal);
-		if (abortController.signal.aborted) {
+		if (abortController.signal.aborted || this.isDestroyed()) {
+			this.destroyStreamInfo(streamInfo);
 			throw new Error("PRELOAD_CANCELLED");
 		}
 		if (!this.trackMatches(this.getNextTrack(), track)) {
+			this.destroyStreamInfo(streamInfo);
 			this.debugLog(`[Preload] Track changed after stream fetch`);
 			throw new Error("PRELOAD_CANCELLED");
 		}
@@ -253,45 +255,103 @@ export class PreloadManager {
 				})
 			:	null;
 
-		const resource = createAudioResource(streamInfo.stream || streamInfo.url!, {
-			inlineVolume: true,
-			metadata: { ...track, preloaded: true },
-		});
-
-		if (!resource.playStream || resource.playStream.readable === false) {
-			throw new Error("Resource not readable");
-		}
-
-		this.preloadSlot.resource = resource;
+		// Keep the raw stream ID in the slot immediately. If resource creation
+		// fails, clearPreloadSlot() can now destroy/unregister it as well.
 		this.preloadSlot.streamId = streamId;
-		this.preloadSlot.isValid = true;
-		this.preloadSlot.track = track;
 
-		this.debugLog(`[Preload] Successfully preloaded: ${track.title} (Stream ID: ${streamId})`);
+		try {
+			const resource = createAudioResource(streamInfo.stream || streamInfo.url!, {
+				inlineVolume: true,
+				metadata: { ...track, preloaded: true },
+			});
+
+			if (abortController.signal.aborted || this.isDestroyed()) {
+				try {
+					resource.playStream?.destroy?.();
+				} catch {}
+				throw new Error("PRELOAD_CANCELLED");
+			}
+
+			if (!resource.playStream || resource.playStream.readable === false) {
+				throw new Error("Resource not readable");
+			}
+
+			this.preloadSlot.resource = resource;
+			this.preloadSlot.isValid = true;
+			this.preloadSlot.track = track;
+
+			this.debugLog(`[Preload] Successfully preloaded: ${track.title} (Stream ID: ${streamId})`);
+		} catch (error) {
+			if (streamId) {
+				this.streamManager.unregisterStream(streamId, true);
+			}
+			this.preloadSlot.streamId = null;
+			throw error;
+		}
+	}
+
+	private destroyStreamInfo(streamInfo: StreamInfo | null): void {
+		const stream = streamInfo?.stream;
+		if (!stream) return;
+		try {
+			if (typeof stream.destroy === "function" && !stream.destroyed) {
+				stream.destroy();
+			}
+		} catch (error) {
+			this.debugLog(`[Preload] Error destroying abandoned stream:`, error);
+		}
 	}
 
 	private async getStreamWithCancel(track: Track, signal: AbortSignal): Promise<StreamInfo | null> {
 		if (this.isDestroyed()) throw new Error("PLAYER_DESTROYED");
+
+		let abortHandler: (() => void) | null = null;
+		let settled = false;
+
 		const abortPromise = new Promise<never>((_, reject) => {
 			if (signal.aborted) {
 				reject(new Error("PRELOAD_CANCELLED"));
 				return;
 			}
-			const handler = () => {
-				signal.removeEventListener("abort", handler);
+
+			abortHandler = () => {
 				reject(new Error("PRELOAD_CANCELLED"));
 			};
-			signal.addEventListener("abort", handler, { once: true });
+			signal.addEventListener("abort", abortHandler, { once: true });
 		});
 
 		const existingStream = this.streamManager.getStreamByTrack(track.id || track.title);
 		if (existingStream && !existingStream.destroyed && existingStream.readable !== false) {
+			if (abortHandler) signal.removeEventListener("abort", abortHandler);
 			this.debugLog(`[Stream] Using existing stream for preload: ${track.title}`);
 			return { stream: existingStream, type: "arbitrary" };
 		}
 
 		const streamPromise = this.getStream(track);
-		const result = await Promise.race([streamPromise, abortPromise]);
-		return result as StreamInfo | null;
+
+		// Promise.race() does not cancel getStream(). If the player is destroyed
+		// while extraction is still pending, make sure a stream that resolves later
+		// is immediately destroyed instead of escaping StreamManager.destroyAll().
+		void streamPromise.then(
+			(result) => {
+				if (signal.aborted || this.isDestroyed()) {
+					this.destroyStreamInfo(result);
+				}
+			},
+			() => undefined,
+		);
+
+		try {
+			const result = await Promise.race([streamPromise, abortPromise]);
+			settled = true;
+			return result as StreamInfo | null;
+		} finally {
+			if (!settled && signal.aborted) {
+				// The completion handler above owns cleanup of a late stream result.
+			}
+			if (abortHandler) {
+				signal.removeEventListener("abort", abortHandler);
+			}
+		}
 	}
 }
