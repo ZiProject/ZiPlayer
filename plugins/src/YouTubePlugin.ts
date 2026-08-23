@@ -667,7 +667,7 @@ export class YouTubePlugin extends BasePlugin {
 					track?.basic_info?.video_id ??
 					track?.basic_info?.videoId ??
 					track?.basic_info?.content_id,
-				{ client: this.options.searchClientType || "WEB" }
+				{ client: this.options.searchClientType || "WEB" },
 			);
 			if (info && info.basic_info) {
 				const track = this.buildTrack(info.basic_info, "auto");
