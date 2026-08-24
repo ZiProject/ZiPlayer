@@ -2591,6 +2591,30 @@ export class Player extends EventEmitter {
 
 			const { resource, processedStream } = await this.createResource(streaminfo, track, createPosition);
 
+			if (this.destroyed || refreshGeneration !== this.refreshGeneration || this.queue.currentTrack?.id !== refreshTrackId) {
+				this.debug(`[Player] refreshPlayerResource: resource became stale, destroying`);
+
+				try {
+					processedStream?.destroy();
+				} catch {}
+
+				try {
+					resource.playStream?.destroy?.();
+				} catch {}
+
+				if (streaminfo.stream) {
+					const managed = this.streamManager.getAllStreams().find((s) => s.stream === streaminfo.stream);
+
+					if (managed) {
+						this.streamManager.unregisterStream(managed.id, true);
+					} else if (!streaminfo.stream.destroyed) {
+						streaminfo.stream.destroy();
+					}
+				}
+
+				return false;
+			}
+
 			// Register raw source stream
 			const newStreamId =
 				streaminfo.stream ?
