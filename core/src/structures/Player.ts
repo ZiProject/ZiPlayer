@@ -119,6 +119,7 @@ export class Player extends EventEmitter {
 	private skipLoop = false;
 	private refreshLock = false;
 	private seekInProgress = false;
+	private refreshGeneration = 0;
 	private remoteHandle: StreamInfo["handle"];
 
 	private currentSlot: StreamSlot = {
@@ -916,16 +917,16 @@ export class Player extends EventEmitter {
 
 		this.filter.setSourceStreamType(streamInfo.type);
 
-		const seekArg = position > 0 ? position : -1;
+		const seekArg = position >= 0 ? position : -1;
 
-		if (filterString || position > 0) {
+		if (filterString || position >= 0) {
 			const processedStream = await this.filter.applyFiltersAndSeek(streamInfo, seekArg);
 
 			const resource = createAudioResource(processedStream.stream || processedStream.url!, {
 				metadata: track,
 				inputType:
 					processedStream.wasRecreated && !filterString ? StreamType.Arbitrary
-					: position > 0 ? StreamType.Raw
+					: position >= 0 ? StreamType.Raw
 					: StreamType.Arbitrary,
 				inlineVolume: true,
 			});
@@ -2394,6 +2395,7 @@ export class Player extends EventEmitter {
 	 */
 	destroy(): void {
 		this.debug(`[Player] destroy called`);
+		this.refreshGeneration++;
 		if (this.destroyed) return;
 		this.destroyed = true;
 
@@ -2405,6 +2407,11 @@ export class Player extends EventEmitter {
 		if (this.leaveTimeout) {
 			clearTimeout(this.leaveTimeout);
 			this.leaveTimeout = null;
+		}
+
+		if (this.stuckTimer) {
+			clearTimeout(this.stuckTimer);
+			this.stuckTimer = null;
 		}
 		this.streamManager.destroyAll(true);
 		// Destroy current stream before stopping audio
@@ -2482,11 +2489,10 @@ export class Player extends EventEmitter {
 	 * console.log(`Refreshed: ${refreshed}`);
 	 */
 	public async refreshPlayerResource(applyToCurrent: boolean = true, position: number = -1): Promise<boolean> {
+		const refreshGeneration = ++this.refreshGeneration;
+		const refreshTrackId = this.queue.currentTrack?.id;
+
 		if (!applyToCurrent || !this.queue.currentTrack || !(this.isPlaying || this.isPaused)) {
-			return false;
-		}
-		if (this.refreshLock) {
-			this.debug(`[Player] refreshPlayerResource skipped — lock held`);
 			return false;
 		}
 
@@ -2559,16 +2565,21 @@ export class Player extends EventEmitter {
 				this.extensionManager.clearCache("stream");
 				this.debug(`[Player] Fetching fresh stream${!isForwardSeek ? " (backward seek)" : " (reuse failed)"}`);
 				streaminfo = await this.getStream(track);
+			}
 
-				if (this.destroyed) {
-					this.debug(`[Player] refreshPlayerResource: Player destroyed during stream fetch`);
-					return false;
+			if (this.destroyed || refreshGeneration !== this.refreshGeneration || this.queue.currentTrack?.id !== refreshTrackId) {
+				this.debug(`[Player] refreshPlayerResource: refresh became stale, aborting`);
+
+				if (streaminfo?.stream) {
+					const managed = this.streamManager.getAllStreams().find((s) => s.stream === streaminfo.stream);
+					if (managed) {
+						this.streamManager.unregisterStream(managed.id, true);
+					} else {
+						streaminfo.stream.destroy();
+					}
 				}
 
-				if (!applyToCurrent || !this.queue.currentTrack || !(this.isPlaying || this.isPaused)) {
-					this.debug(`[Player] refreshPlayerResource: Player state changed during stream fetch, aborting`);
-					return false;
-				}
+				return false;
 			}
 
 			if (!streaminfo?.stream && !streaminfo?.url) {
@@ -2624,7 +2635,9 @@ export class Player extends EventEmitter {
 			this.emit("playerError", error as Error, this.queue.currentTrack ?? undefined);
 			return false;
 		} finally {
-			this.refreshLock = false;
+			if (refreshGeneration === this.refreshGeneration) {
+				this.refreshLock = false;
+			}
 		}
 	}
 
