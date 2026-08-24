@@ -914,7 +914,9 @@ export class Player extends EventEmitter {
 	): Promise<{ resource: AudioResource; processedStream: import("stream").Readable | null }> {
 		const filterString = this.filter.getFilterString();
 		const hasSeek = position !== undefined && position >= 0;
-		this.debug(`[Player] Creating AudioResource - filters: ${filterString || "none"}, seek: ${hasSeek ? `${position}ms` : "none"}`);
+		this.debug(
+			`[Player] Creating AudioResource - filters: ${filterString || "none"}, seek: ${hasSeek ? `${position}ms` : "none"}`,
+		);
 
 		this.filter.setSourceStreamType(streamInfo.type);
 

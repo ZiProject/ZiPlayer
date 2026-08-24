@@ -16,7 +16,7 @@ function throwIfAborted(signal?: AbortSignal): void {
 async function createMinter(signal?: AbortSignal): Promise<WebPoMinter> {
 	throwIfAborted(signal);
 
-	const dom = new JSDOM("<!DOCTYPE html><html lang=\"en\"><head><title></title></head><body></body></html>", {
+	const dom = new JSDOM('<!DOCTYPE html><html lang="en"><head><title></title></head><body></body></html>', {
 		url: "https://www.youtube.com/",
 		referrer: "https://www.youtube.com/",
 		userAgent: USER_AGENT,
@@ -62,8 +62,7 @@ async function createMinter(signal?: AbortSignal): Promise<WebPoMinter> {
 	const challengeResponse = initialAttestationDataJson.R;
 	if (!challengeResponse?.bgChallenge) throw new Error("Could not get BotGuard challenge");
 
-	const interpreterUrl =
-		challengeResponse.bgChallenge.interpreterUrl?.privateDoNotAccessOrElseTrustedResourceUrlWrappedValue;
+	const interpreterUrl = challengeResponse.bgChallenge.interpreterUrl?.privateDoNotAccessOrElseTrustedResourceUrlWrappedValue;
 	if (!interpreterUrl) throw new Error("Could not get BotGuard interpreter URL");
 
 	const bgScriptResponse = await fetch(`https:${interpreterUrl}`, { signal });

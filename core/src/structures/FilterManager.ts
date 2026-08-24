@@ -226,13 +226,17 @@ export class FilterManager {
 		this.ffmpegProcess = proc;
 
 		if (generation !== this.ffmpegGeneration) {
-			try { proc.kill("SIGKILL"); } catch {}
+			try {
+				proc.kill("SIGKILL");
+			} catch {}
 			throw new Error("FFmpeg process superseded");
 		}
 
 		const output = proc.stdout;
 		if (!output) {
-			try { proc.kill("SIGKILL"); } catch {}
+			try {
+				proc.kill("SIGKILL");
+			} catch {}
 			throw new Error("FFmpeg stdout unavailable");
 		}
 		this.ffmpegOutput = output;
@@ -242,7 +246,9 @@ export class FilterManager {
 			if (this.ffmpegOutput === output) this.ffmpegOutput = null;
 			if (this.ffmpegAbortController === controller) this.ffmpegAbortController = null;
 			if (typeof sourceStream !== "string") {
-				try { sourceStream.unpipe(proc.stdin!); } catch {}
+				try {
+					sourceStream.unpipe(proc.stdin!);
+				} catch {}
 			}
 		};
 

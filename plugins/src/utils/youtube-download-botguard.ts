@@ -101,10 +101,7 @@ export function installYouTubeBotGuardDownload(): void {
 			} catch (youtubeError: any) {
 				this.debug?.("❌ youtubei.js + BotGuard fallback failed:", youtubeError?.message);
 
-				throw new Error(
-					`YouTube stream extraction failed: ${youtubeError?.message || youtubeError}`,
-					{ cause: error },
-				);
+				throw new Error(`YouTube stream extraction failed: ${youtubeError?.message || youtubeError}`, { cause: error });
 			}
 		}
 	};
