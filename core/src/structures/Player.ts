@@ -904,29 +904,29 @@ export class Player extends EventEmitter {
 	 *
 	 * @param {StreamInfo} streamInfo - The stream information
 	 * @param {Track} track - The track being processed
-	 * @param {number} position - Position in milliseconds to seek to (0 = no seek)
+	 * @param {number} position - Optional position in milliseconds to seek to
 	 * @returns {Promise<AudioResource>} The AudioResource with filters and seek applied
 	 */
 	private async createResource(
 		streamInfo: StreamInfo,
 		track: Track,
-		position: number = 0,
+		position?: number,
 	): Promise<{ resource: AudioResource; processedStream: import("stream").Readable | null }> {
 		const filterString = this.filter.getFilterString();
-		this.debug(`[Player] Creating AudioResource — filters: ${filterString || "none"}, seek: ${position}ms`);
+		const hasSeek = position !== undefined && position >= 0;
+		this.debug(`[Player] Creating AudioResource - filters: ${filterString || "none"}, seek: ${hasSeek ? `${position}ms` : "none"}`);
 
 		this.filter.setSourceStreamType(streamInfo.type);
 
-		const seekArg = position >= 0 ? position : -1;
-
-		if (filterString || position >= 0) {
+		if (filterString || hasSeek) {
+			const seekArg = hasSeek ? position : -1;
 			const processedStream = await this.filter.applyFiltersAndSeek(streamInfo, seekArg);
 
 			const resource = createAudioResource(processedStream.stream || processedStream.url!, {
 				metadata: track,
 				inputType:
 					processedStream.wasRecreated && !filterString ? StreamType.Arbitrary
-					: position >= 0 ? StreamType.Raw
+					: hasSeek ? StreamType.Raw
 					: StreamType.Arbitrary,
 				inlineVolume: true,
 			});
@@ -1131,6 +1131,12 @@ export class Player extends EventEmitter {
 	 */
 	private async loadFreshStream(track: Track, preloadedStreamInfo?: StreamInfo | null): Promise<boolean> {
 		if (this.destroyed) return false;
+		const loadGeneration = ++this.refreshGeneration;
+		const loadTrackId = track.id;
+		const isLoadStale = () =>
+			this.destroyed ||
+			loadGeneration !== this.refreshGeneration ||
+			(loadTrackId ? this.queue.currentTrack?.id !== loadTrackId : this.queue.currentTrack !== track);
 
 		await this.safeCancelPreload();
 
@@ -1160,7 +1166,25 @@ export class Player extends EventEmitter {
 
 			// createResource now returns both the AudioResource
 			// AND the processedStream (ffmpeg stdout) when filters/seek are involved.
-			const { resource, processedStream } = await this.createResource(streamInfo, track, 0);
+			const { resource, processedStream } = await this.createResource(streamInfo, track);
+
+			if (isLoadStale()) {
+				this.debug(`[Player] loadFreshStream: resource became stale, destroying`);
+
+				try {
+					processedStream?.destroy();
+				} catch {}
+
+				try {
+					resource.playStream?.destroy?.();
+				} catch {}
+
+				if (rawStreamId) {
+					this.streamManager.unregisterStream(rawStreamId, true);
+				}
+
+				return false;
+			}
 
 			// when a processedStream exists, register it too so its
 			// lifecycle is tracked. Store its id separately in currentSlot so
