@@ -288,6 +288,16 @@ export class Player extends EventEmitter {
 				return this.queue.nextTrack;
 			},
 			getStream: (track) => this.getStream(track),
+			removeTrackFromQueue: (track) => {
+				const nextTrack = this.queue.nextTrack;
+				const matches =
+					nextTrack === track ||
+					(nextTrack?.id !== undefined && track.id !== undefined && nextTrack.id === track.id) ||
+					(nextTrack?.url !== undefined && track.url !== undefined && nextTrack.url === track.url);
+
+				if (!matches) return false;
+				return this.queue.remove(0) !== null;
+			},
 			isDestroyed: () => this.destroyed,
 			isEnabled: () => this.preloadEnabled,
 		});

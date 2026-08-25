@@ -7,6 +7,7 @@ interface PreloadManagerDeps {
 	debug: (message?: any, ...optionalParams: any[]) => void;
 	getNextTrack: () => Track | null;
 	getStream: (track: Track) => Promise<StreamInfo | null>;
+	removeTrackFromQueue?: (track: Track) => boolean;
 	isDestroyed: () => boolean;
 	isEnabled: () => boolean;
 }
@@ -16,6 +17,7 @@ export class PreloadManager {
 	private readonly debugLog: (message?: any, ...optionalParams: any[]) => void;
 	private readonly getNextTrack: () => Track | null;
 	private readonly getStream: (track: Track) => Promise<StreamInfo | null>;
+	private readonly removeTrackFromQueue?: (track: Track) => boolean;
 	private readonly isDestroyed: () => boolean;
 	private readonly isEnabled: () => boolean;
 
@@ -36,6 +38,7 @@ export class PreloadManager {
 		this.debugLog = deps.debug;
 		this.getNextTrack = deps.getNextTrack;
 		this.getStream = deps.getStream;
+		this.removeTrackFromQueue = deps.removeTrackFromQueue;
 		this.isDestroyed = deps.isDestroyed;
 		this.isEnabled = deps.isEnabled;
 	}
@@ -243,6 +246,12 @@ export class PreloadManager {
 			throw new Error("PRELOAD_CANCELLED");
 		}
 		if (!streamInfo?.stream && !streamInfo?.url) {
+			this.debugLog(`[Preload] No playable stream, removing track: ${track.title}`);
+
+			if (this.removeTrackFromQueue?.(track)) {
+				this.debugLog(`[Preload] Removed unplayable track from queue: ${track.title}`);
+			}
+
 			throw new Error(`No stream available`);
 		}
 
