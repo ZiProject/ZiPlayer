@@ -459,7 +459,7 @@ export class YouTubePlugin extends BasePlugin {
 				throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 			}
 
-			this.debug("⚠️ youtubei.js WebPO direct stream failed, trying SABR:", youtubeError?.message);
+			this.debug("⚠️ youtubei.js WebPO direct stream failed, trying SABR:", youtubeError);
 
 			try {
 				return await this.downloadWithSabr(track, id, signal);
