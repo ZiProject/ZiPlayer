@@ -221,6 +221,13 @@ export class Queue {
 			this.addToHistory(this.current);
 		}
 
+		// When bypassing a track loop, an anti-stuck retry may have reinserted
+		// the current track at the front of the queue. Consume that duplicate
+		// before selecting the real next track so a failed track cannot loop forever.
+		if (ignoreLoop && this.current && this.tracks[0] === this.current) {
+			this.tracks.shift();
+		}
+
 		// Get next track
 		this.current = this.tracks.shift() || null;
 
