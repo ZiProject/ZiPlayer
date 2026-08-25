@@ -161,7 +161,7 @@ export class Player extends EventEmitter {
 	private antiStuckReusePreloadFirst = true;
 	private antiStuckReduceQualityOnRetry = true;
 	private antiStuckControlledSkipThreshold = 3;
-	private antiStuckConsecutiveFailures = 0;
+	private antiStuckFailures = new Map<string, number>();
 	private loudnessNormalizationEnabled = false;
 	private loudnessTargetLUFS = -14;
 	private loudnessMaxBoostDb = 8;
@@ -811,11 +811,16 @@ export class Player extends EventEmitter {
 		return Math.min(this.loudnessLimiterCeiling, Math.max(0, adjusted));
 	}
 
+	private getAntiStuckTrackKey(track: Track): string {
+		return track.id || track.url || track.title;
+	}
+
 	private async attemptTrackRecovery(track: Track, reason: unknown): Promise<boolean> {
 		if (!this.antiStuckEnabled) return false;
 		this.recoveryInProgress = true;
 		this.debug(`[AntiStuck] Recovery started for: ${track.title}`, reason);
 
+		const key = this.getAntiStuckTrackKey(track);
 		const originalQuality = this.options.quality;
 		let attempted = 0;
 
@@ -833,7 +838,7 @@ export class Player extends EventEmitter {
 				if (this.antiStuckReusePreloadFirst && this.preloadManager.hasValidPreload(track)) {
 					const startedFromPreload = await this.startTrack(track);
 					if (startedFromPreload) {
-						this.antiStuckConsecutiveFailures = 0;
+						this.antiStuckFailures.delete(key);
 						this.options.quality = originalQuality;
 						this.recoveryInProgress = false;
 						return true;
@@ -842,7 +847,7 @@ export class Player extends EventEmitter {
 
 				const started = await this.loadFreshStream(track);
 				if (started) {
-					this.antiStuckConsecutiveFailures = 0;
+					this.antiStuckFailures.delete(key);
 					this.options.quality = originalQuality;
 					this.recoveryInProgress = false;
 					return true;
@@ -853,8 +858,9 @@ export class Player extends EventEmitter {
 		}
 
 		this.options.quality = originalQuality;
-		this.antiStuckConsecutiveFailures++;
-		if (this.antiStuckConsecutiveFailures >= this.antiStuckControlledSkipThreshold) {
+		const failures = (this.antiStuckFailures.get(key) ?? 0) + 1;
+		this.antiStuckFailures.set(key, failures);
+		if (failures >= this.antiStuckControlledSkipThreshold) {
 			this.debug(`[AntiStuck] Controlled skip threshold reached for ${track.title}`);
 			this.recoveryInProgress = false;
 			return false;
@@ -1135,6 +1141,7 @@ export class Player extends EventEmitter {
 			this.debug(`[Player] Preload error:`, err);
 		});
 
+		this.antiStuckFailures.delete(this.getAntiStuckTrackKey(track));
 		return true;
 	}
 
@@ -1248,6 +1255,7 @@ export class Player extends EventEmitter {
 				});
 			}
 
+			this.antiStuckFailures.delete(this.getAntiStuckTrackKey(track));
 			return true;
 		} catch (error) {
 			this.debug(`[Player] loadFreshStream error:`, error);
@@ -1305,7 +1313,7 @@ export class Player extends EventEmitter {
 			try {
 				const started = await this.startTrack(track);
 				if (started) {
-					this.antiStuckConsecutiveFailures = 0;
+					this.antiStuckFailures.delete(this.getAntiStuckTrackKey(track));
 					return true;
 				}
 
@@ -1319,13 +1327,15 @@ export class Player extends EventEmitter {
 				if (recovered) {
 					return true;
 				}
-				if (this.antiStuckEnabled && this.antiStuckConsecutiveFailures < this.antiStuckControlledSkipThreshold) {
+				const key = this.getAntiStuckTrackKey(track);
+				const failures = this.antiStuckFailures.get(key) ?? 0;
+				if (this.antiStuckEnabled && failures < this.antiStuckControlledSkipThreshold) {
 					this.queue.insert(track, 0);
 					if (this.antiStuckRetryDelayMs > 0) {
 						await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
 					}
 				} else {
-					this.antiStuckConsecutiveFailures = 0;
+					this.antiStuckFailures.delete(key);
 					this.skipLoop = true;
 				}
 			} catch (err) {
@@ -1346,13 +1356,15 @@ export class Player extends EventEmitter {
 				if (recovered) {
 					return true;
 				}
-				if (this.antiStuckEnabled && this.antiStuckConsecutiveFailures < this.antiStuckControlledSkipThreshold) {
+				const key = this.getAntiStuckTrackKey(track);
+				const failures = this.antiStuckFailures.get(key) ?? 0;
+				if (this.antiStuckEnabled && failures < this.antiStuckControlledSkipThreshold) {
 					this.queue.insert(track, 0);
 					if (this.antiStuckRetryDelayMs > 0) {
 						await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
 					}
 				} else {
-					this.antiStuckConsecutiveFailures = 0;
+					this.antiStuckFailures.delete(key);
 					this.skipLoop = true;
 				}
 				continue;
@@ -1378,6 +1390,7 @@ export class Player extends EventEmitter {
 
 			this.debug(`[Player] Remote playback started for: ${track.title}`);
 
+			this.antiStuckFailures.delete(this.getAntiStuckTrackKey(track));
 			return true;
 		} catch (error) {
 			this.debug(`[Player] Remote playback error:`, error);
