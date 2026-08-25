@@ -3,19 +3,43 @@ import type { WebPoSignalOutput } from "bgutils-js/shared-types";
 import { buildURL, getHeaders, parseLooseJSON, USER_AGENT } from "bgutils-js/utils";
 import { WebPoMinter } from "bgutils-js/webpo";
 import { JSDOM } from "jsdom";
+import { getManager } from "ziplayer";
 
 const REQUEST_KEY = "O43z0dpjhgX20SCx4KAo";
+const MINTER_CACHE_KEY = "youtube:botguard:minter";
 
-let minterPromise: Promise<WebPoMinter> | undefined;
+type CachedMinter = {
+	minter: WebPoMinter;
+};
+
+function getCachedMinter(): WebPoMinter | undefined {
+	const mng = getManager();
+	if (!mng) return undefined;
+
+	const cached = mng.cache.get(MINTER_CACHE_KEY) as CachedMinter | undefined;
+	return cached?.minter;
+}
+
+function setCachedMinter(minter: WebPoMinter): void {
+	const mng = getManager();
+	if (!mng) return;
+
+	mng.cache.set(MINTER_CACHE_KEY, { minter });
+}
+
+function clearCachedMinter(): void {
+	const mng = getManager();
+	if (!mng) return;
+
+	mng.cache.delete(MINTER_CACHE_KEY);
+}
 
 function throwIfAborted(signal?: AbortSignal): void {
 	if (!signal?.aborted) return;
 	throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 }
 
-async function createMinter(signal?: AbortSignal): Promise<WebPoMinter> {
-	throwIfAborted(signal);
-
+async function createMinter(): Promise<WebPoMinter> {
 	const dom = new JSDOM('<!DOCTYPE html><html lang="en"><head><title></title></head><body></body></html>', {
 		url: "https://www.youtube.com/",
 		referrer: "https://www.youtube.com/",
@@ -23,7 +47,6 @@ async function createMinter(signal?: AbortSignal): Promise<WebPoMinter> {
 	});
 
 	const pageResponse = await fetch("https://www.youtube.com", {
-		signal,
 		headers: {
 			accept: "*/*",
 			"accept-language": "en-US,en;q=0.7",
@@ -36,9 +59,10 @@ async function createMinter(signal?: AbortSignal): Promise<WebPoMinter> {
 	}
 
 	const pageHtml = await pageResponse.text();
-	throwIfAborted(signal);
 
-	const ytConfig = pageHtml.match(/ytcfg\\.set\\(({.+?})\\);/s)?.[1];
+	// YouTube may change its page HTML, so keep this extraction isolated and
+	// fail cleanly so callers can fall back to SABR.
+	const ytConfig = pageHtml.match(/ytcfg\.set\(({.+?})\);/s)?.[1];
 	if (!ytConfig) throw new Error("Could not find ytcfg in YouTube page HTML");
 
 	(dom.window as any).yt = { config_: JSON.parse(ytConfig) };
@@ -55,7 +79,7 @@ async function createMinter(signal?: AbortSignal): Promise<WebPoMinter> {
 		Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator });
 	}
 
-	const initialAttestationData = pageHtml.match(/window\\.ytAtN\\(\\s*({[\\s\\S]*?})\\s*\\)/);
+	const initialAttestationData = pageHtml.match(/window\.ytAtN\(\s*({[\s\S]*?})\s*\)/);
 	if (!initialAttestationData) throw new Error("Could not find BotGuard challenge in YouTube page HTML");
 
 	const initialAttestationDataJson = parseLooseJSON(initialAttestationData[1]) as any;
@@ -65,14 +89,12 @@ async function createMinter(signal?: AbortSignal): Promise<WebPoMinter> {
 	const interpreterUrl = challengeResponse.bgChallenge.interpreterUrl?.privateDoNotAccessOrElseTrustedResourceUrlWrappedValue;
 	if (!interpreterUrl) throw new Error("Could not get BotGuard interpreter URL");
 
-	const bgScriptResponse = await fetch(`https:${interpreterUrl}`, { signal });
+	const bgScriptResponse = await fetch(`https:${interpreterUrl}`);
 	if (!bgScriptResponse.ok) {
 		throw new Error(`Failed to load BotGuard interpreter: HTTP ${bgScriptResponse.status}`);
 	}
 
 	const interpreterJavascript = await bgScriptResponse.text();
-	throwIfAborted(signal);
-
 	if (!interpreterJavascript) throw new Error("Could not load BotGuard interpreter");
 
 	new Function(interpreterJavascript)();
@@ -85,12 +107,10 @@ async function createMinter(signal?: AbortSignal): Promise<WebPoMinter> {
 
 	const webPoSignalOutput: WebPoSignalOutput = [];
 	const botguardResponse = await botGuardClient.snapshot({ webPoSignalOutput });
-	throwIfAborted(signal);
 
 	const integrityTokenResponse = await fetch(buildURL("GenerateIT", true), {
 		method: "POST",
 		headers: getHeaders(),
-		signal,
 		body: JSON.stringify([REQUEST_KEY, botguardResponse]),
 	});
 
@@ -114,29 +134,53 @@ async function createMinter(signal?: AbortSignal): Promise<WebPoMinter> {
 	);
 }
 
-/**
- * Mint a current WebPO token bound to a YouTube video ID.
- *
- * The BotGuard challenge/interpreter and WebPO minter are initialized once
- * and reused. WebPoMinter handles the lifetime/refresh information returned
- * by GenerateIT.
- */
-export async function mintYouTubePoToken(videoId: string, signal?: AbortSignal): Promise<string> {
-	if (!videoId) throw new Error("videoId is required for a WebPO token");
-	throwIfAborted(signal);
+let minterPromise: Promise<WebPoMinter> | undefined;
+
+async function getMinter(): Promise<WebPoMinter> {
+	const cached = getCachedMinter();
+	if (cached) return cached;
 
 	if (!minterPromise) {
-		minterPromise = createMinter(signal).catch((error) => {
+		// Do not bind creation to a track AbortSignal: this promise is shared by
+		// every plugin/player using the manager cache.
+		minterPromise = createMinter().then((minter) => {
+			setCachedMinter(minter);
+			return minter;
+		}).catch((error) => {
 			minterPromise = undefined;
 			throw error;
 		});
 	}
 
-	const minter = await minterPromise;
+	return minterPromise;
+}
+
+/**
+ * Mint a current WebPO token bound to a YouTube video ID.
+ *
+ * The WebPoMinter is shared through PlayerManager.cache so multiple
+ * YouTubePlugin instances reuse the same BotGuard state. The manager's LRU
+ * cache owns eviction; WebPoMinter remains responsible for token lifetime.
+ */
+export async function mintYouTubePoToken(videoId: string, signal?: AbortSignal): Promise<string> {
+	if (!videoId) throw new Error("videoId is required for a WebPO token");
 	throwIfAborted(signal);
-	return minter.mintAsWebsafeString(videoId);
+
+	const minter = await getMinter();
+	throwIfAborted(signal);
+
+	try {
+		return await minter.mintAsWebsafeString(videoId);
+	} catch (error) {
+		// A cached minter can become invalid after YouTube changes its
+		// attestation state. Drop it so the next request can rebuild it.
+		clearCachedMinter();
+		minterPromise = undefined;
+		throw error;
+	}
 }
 
 export function resetYouTubeBotGuard(): void {
 	minterPromise = undefined;
+	clearCachedMinter();
 }
