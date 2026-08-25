@@ -22,6 +22,8 @@ export class PreloadManager {
 	private readonly isEnabled: () => boolean;
 
 	private preloadLock = false;
+	private preloadNext = false;
+
 	private readonly preloadSlot: StreamSlot = {
 		resource: null,
 		track: null,
@@ -132,6 +134,7 @@ export class PreloadManager {
 		}
 
 		this.preloadLock = true;
+		this.preloadNext = false;
 		const abortController = new AbortController();
 		this.preloadSlot.track = nextTrack;
 		this.preloadSlot.abortController = abortController;
@@ -145,14 +148,22 @@ export class PreloadManager {
 		} catch (err) {
 			if (err instanceof Error && err.message === "PRELOAD_CANCELLED") {
 				this.debugLog(`[Preload] Cancelled for ${nextTrack.title}`);
+			} else if (err instanceof Error && err.message === "No stream available") {
+				this.debugLog(`[Preload] Skipped unplayable track: ${nextTrack.title}`);
+				this.clearPreloadSlot();
+				this.preloadNext = true;
 			} else {
 				this.debugLog(`[Preload] Failed for ${nextTrack.title}:`, err);
+				this.clearPreloadSlot();
 			}
-			this.clearPreloadSlot();
 		} finally {
 			this.preloadLock = false;
 			this.preloadSlot.isLoading = false;
 			this.preloadSlot.loadPromise = null;
+		}
+
+		if (this.preloadNext && !this.isDestroyed() && this.isEnabled()) {
+			await this.preloadNextTrack();
 		}
 	}
 
