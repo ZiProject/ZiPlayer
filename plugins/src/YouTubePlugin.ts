@@ -10,15 +10,7 @@ import { Readable } from "stream";
  * YouTube VM shim
  * This allows the SABR stream to execute YouTube's custom JavaScript for deciphering signatures and generating tokens
  */
-Platform.shim.eval = async (data, env) => {
-	const properties = [];
-
-	if (env.n) properties.push(`n: exportedVars.nFunction("${env.n}")`);
-	if (env.sig) properties.push(`sig: exportedVars.sigFunction("${env.sig}")`);
-
-	const code = `${data.output}\nreturn { ${properties.join(", ")} }`;
-	return new Function(code)();
-};
+Platform.shim.eval = async (data: Types.BuildScriptResult) => new Function(data.output)();
 
 export interface PluginOptions {
 	player?: Player;
@@ -467,7 +459,7 @@ export class YouTubePlugin extends BasePlugin {
 				throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 			}
 
-			this.debug("⚠️ youtubei.js + BotGuard failed, trying SABR:", youtubeError?.message);
+			this.debug("⚠️ youtubei.js WebPO direct stream failed, trying SABR:", youtubeError?.message);
 
 			try {
 				return await this.downloadWithSabr(track, id, signal);
@@ -495,57 +487,93 @@ export class YouTubePlugin extends BasePlugin {
 	}
 
 	private async downloadWithYoutubei(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
-		this.debug("try youtubei.js to download track");
+		this.debug("🚀 Attempting youtubei.js download with BotGuard WebPO token");
 		this.throwIfAborted(signal);
 
 		const poToken = await mintYouTubePoToken(id, signal);
 		this.throwIfAborted(signal);
 
-		const stream = await this.client.download(id, {
-			type: "audio",
+		const videoInfo = await this.client.getBasicInfo(id, {
+			client: "YTMUSIC",
+		});
+
+		this.throwIfAborted(signal);
+
+		const format = videoInfo.chooseFormat({
 			quality: "best",
-			po_token: poToken,
-		} as any);
+			type: "audio",
+		});
 
-		if (signal?.aborted) {
-			try {
-				await (stream as any)?.cancel(signal.reason);
-			} catch {}
-			this.throwIfAborted(signal);
+		if (!format) {
+			throw new Error("youtubei.js could not choose an audio format");
 		}
 
-		this.debug("🔍 Checking stream type:", typeof stream, stream?.constructor?.name);
-		if (stream && typeof stream.getReader === "function") {
-			this.debug("🔄 Converting Web Stream to Node.js Stream with backpressure handling");
-			const nodeStream = await webStreamToNodeStream(stream, 32 * 1024, 0, signal); // Optimized buffer size
+		this.debug("🎵 Selected youtubei.js audio format:", {
+			itag: format.itag,
+			mimeType: format.mime_type,
+			bitrate: format.bitrate,
+			contentLength: format.content_length,
+		});
 
-			nodeStream.on("error", (error: Error) => {
-				const errorMsg = error.message || String(error);
-				if (!errorMsg.includes("Controller is already closed")) {
-					this.debug("⚠️ Fallback stream error:", errorMsg);
-				}
-			});
+		const decipheredUrl = await format.decipher(this.client.session.player);
 
-			this.debug("✅ Stream converted successfully");
-			if (Readable.isReadable(nodeStream))
-				return {
-					stream: nodeStream,
-					type: "arbitrary",
-					metadata: track.metadata,
-				};
-		} else {
-			this.debug("⚠️ Stream is not a Web Stream or is null");
+		this.throwIfAborted(signal);
+
+		if (!decipheredUrl) {
+			throw new Error("youtubei.js returned an empty deciphered URL");
 		}
-		const streamsrc = await webStreamToNodeStream(stream, 32 * 1024, 0, signal);
-		if (!Readable.isReadable(streamsrc)) throw new Error("youtubei.js not return Readable");
+
+		const separator = decipheredUrl.includes("&") ? "&" : "?";
+		const audioStreamingURL = `${decipheredUrl}${separator}pot=${encodeURIComponent(poToken)}`;
+
+		this.debug("✅ youtubei.js format deciphered successfully");
+
+		const response = await fetch(audioStreamingURL, {
+			signal,
+			headers: {
+				"User-Agent": "Mozilla/5.0",
+				Accept: "*/*",
+			},
+		});
+
+		this.throwIfAborted(signal);
+
+		if (!response.ok) {
+			throw new Error(`youtubei.js audio request failed: HTTP ${response.status} ${response.statusText}`);
+		}
+
+		if (!response.body) {
+			throw new Error("youtubei.js audio request returned no response body");
+		}
+
+		this.debug("🔄 Converting youtubei.js audio Web Stream to Node.js stream");
+
+		const nodeStream = await webStreamToNodeStream(response.body, 32 * 1024, 0, signal);
+
+		nodeStream.on("error", (error: Error) => {
+			const errorMsg = error.message || String(error);
+
+			if (!errorMsg.includes("Controller is already closed")) {
+				this.debug("⚠️ youtubei.js stream error:", errorMsg);
+			}
+		});
+
+		if (!Readable.isReadable(nodeStream)) {
+			throw new Error("youtubei.js audio stream is not readable");
+		}
+
+		this.debug("✅ youtubei.js audio stream ready");
 
 		return {
-			stream: streamsrc,
+			stream: nodeStream,
 			type: "arbitrary",
-			metadata: track.metadata,
+			metadata: {
+				...track.metadata,
+				itag: format.itag,
+				mime: (format as any).mime_type ?? (format as any).mimeType,
+			},
 		};
 	}
-
 	private async downloadWithSabr(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
 		const { stream, format } = await this.getSabrDL(track, id, signal);
 

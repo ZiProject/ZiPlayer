@@ -41,7 +41,7 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 async function createMinter(): Promise<WebPoMinter> {
 	const dom = new JSDOM('<!DOCTYPE html><html lang="en"><head><title></title></head><body></body></html>', {
-		url: "https://www.youtube.com/",
+		url: "https://www.youtube.com",
 		referrer: "https://www.youtube.com/",
 		userAgent: USER_AGENT,
 	});
@@ -143,13 +143,15 @@ async function getMinter(): Promise<WebPoMinter> {
 	if (!minterPromise) {
 		// Do not bind creation to a track AbortSignal: this promise is shared by
 		// every plugin/player using the manager cache.
-		minterPromise = createMinter().then((minter) => {
-			setCachedMinter(minter);
-			return minter;
-		}).catch((error) => {
-			minterPromise = undefined;
-			throw error;
-		});
+		minterPromise = createMinter()
+			.then((minter) => {
+				setCachedMinter(minter);
+				return minter;
+			})
+			.catch((error) => {
+				minterPromise = undefined;
+				throw error;
+			});
 	}
 
 	return minterPromise;
