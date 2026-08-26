@@ -87,8 +87,10 @@ export class PlaybackOrchestrator {
 				return;
 			case "SKIP":
 				this.playbackController?.stop();
-				if (this.session) this.bus.event({ type: "TRACK_END", session: this.session.snapshot() });
-				this.session?.markEnded();
+				if (this.session) {
+					this.session.markEnded();
+					this.bus.event({ type: "TRACK_END", session: this.session.snapshot() });
+				}
 				this.streamController?.abortCurrent();
 				return;
 			case "SET_VOLUME":
