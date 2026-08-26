@@ -92,6 +92,7 @@ export class PlaybackOrchestrator {
 				this.antiStuckController?.clear(this.session ?? undefined);
 				this.session?.markStopped();
 				this.streamController?.abortCurrent();
+				this.trackLoader?.cancelPreload();
 				this.publishState();
 				return;
 			case "SKIP":
@@ -102,6 +103,7 @@ export class PlaybackOrchestrator {
 					this.bus.event({ type: "TRACK_END", session: this.session.snapshot() });
 				}
 				this.streamController?.abortCurrent();
+				this.trackLoader?.cancelPreload();
 				return;
 			case "SET_VOLUME":
 				this.bus.publish("volumeRequested", action.volume);
@@ -113,6 +115,8 @@ export class PlaybackOrchestrator {
 		this.playbackController?.stop();
 		this.streamController?.abortCurrent();
 		this.antiStuckController?.clear(this.session ?? undefined);
+		this.trackLoader?.resetRecovery(this.session?.track ?? undefined);
+		this.trackLoader?.cancelPreload();
 		this.session?.destroy();
 
 		const session = new PlaybackSession();
@@ -128,9 +132,15 @@ export class PlaybackOrchestrator {
 		}
 
 		try {
-			const loaded = await this.trackLoader.load(track, session);
+			const loaded = await this.trackLoader.loadWithRecovery(track, session);
 			if (!this.session?.owns(session.id)) return;
 			this.bus.event({ type: "TRACK_LOADED", session: session.snapshot() });
+
+			if (loaded.stream.remote && loaded.stream.handle) {
+				this.bus.publish("trackRequested", loaded.track, session);
+				return;
+			}
+
 			const activeStream = await this.streamController.replace(loaded.stream, session);
 			if (!this.session?.owns(session.id)) return;
 			const resource = this.playbackController.createResource(activeStream.stream);
@@ -138,7 +148,7 @@ export class PlaybackOrchestrator {
 			this.playbackController.play(resource, session);
 			session.markPlaying();
 			this.bus.event({ type: "TRACK_STARTED", session: session.snapshot() });
-			void this.preloadController?.preload();
+			void this.trackLoader.preloadNext().catch(() => undefined);
 		} catch (error) {
 			if (!session.signal.aborted) {
 				this.bus.event({ type: "TRACK_ERROR", session: session.snapshot(), error: error instanceof Error ? error : new Error(String(error)) });
