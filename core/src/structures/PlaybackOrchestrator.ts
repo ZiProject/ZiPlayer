@@ -4,20 +4,22 @@ import type { Track } from "../types";
 import type { TrackLoader } from "./TrackLoader";
 import type { StreamController } from "./StreamController";
 import type { PlaybackController } from "./PlaybackController";
+import type { QueueController } from "./QueueController";
+import type { AntiStuckController } from "./AntiStuckController";
+import type { TransitionController } from "./TransitionController";
+import type { PreloadController } from "./PreloadController";
 
 export interface PlaybackOrchestratorOptions {
 	trackLoader?: TrackLoader;
 	streamController?: StreamController;
 	playbackController?: PlaybackController;
+	queueController?: QueueController;
+	antiStuckController?: AntiStuckController;
+	transitionController?: TransitionController;
+	preloadController?: PreloadController;
 }
 
-/**
- * Owns playback orchestration while keeping the public Player API separate.
- *
- * Controllers are optional during migration: Player can adopt the bus first,
- * then progressively inject the loader/stream/playback pipeline without a
- * flag-day rewrite.
- */
+/** Coordinates playback controllers while keeping Player as the public facade. */
 export class PlaybackOrchestrator {
 	private session: PlaybackSession | null = null;
 	private readonly detachAction: () => void;
@@ -25,20 +27,25 @@ export class PlaybackOrchestrator {
 	private readonly trackLoader?: TrackLoader;
 	private readonly streamController?: StreamController;
 	private readonly playbackController?: PlaybackController;
+	private readonly queueController?: QueueController;
+	private readonly antiStuckController?: AntiStuckController;
+	private readonly transitionController?: TransitionController;
+	private readonly preloadController?: PreloadController;
 
-	public constructor(
-		private readonly bus: PlayerBus,
-		options: PlaybackOrchestratorOptions = {},
-	) {
+	public constructor(private readonly bus: PlayerBus, options: PlaybackOrchestratorOptions = {}) {
 		this.trackLoader = options.trackLoader;
 		this.streamController = options.streamController;
 		this.playbackController = options.playbackController;
+		this.queueController = options.queueController;
+		this.antiStuckController = options.antiStuckController;
+		this.transitionController = options.transitionController;
+		this.preloadController = options.preloadController;
 
 		this.detachAction = this.bus.onAction((action) => this.handleAction(action));
 		this.detachQueries.push(
-			this.bus.registerQuery("currentTrack", () => this.session?.track ?? null),
+			this.bus.registerQuery("currentTrack", () => this.session?.track ?? this.queueController?.queue.currentTrack ?? null),
 			this.bus.registerQuery("playerState", () => this.session?.status ?? "idle"),
-			this.bus.registerQuery("queue", () => []),
+			this.bus.registerQuery("queue", () => this.queueController?.snapshot() ?? []),
 			this.bus.registerQuery("playbackSession", () => this.session?.snapshot() ?? null),
 			this.bus.registerQuery("position", () => this.session?.position ?? null),
 			this.bus.registerQuery("volume", () => 100),
@@ -47,13 +54,14 @@ export class PlaybackOrchestrator {
 		);
 	}
 
-	public get currentSession(): PlaybackSession | null {
-		return this.session;
-	}
+	public get currentSession(): PlaybackSession | null { return this.session; }
+	public get transitionPolicy(): TransitionController | undefined { return this.transitionController; }
 
 	public dispose(): void {
 		this.detachAction();
 		for (const detach of this.detachQueries) detach();
+		this.antiStuckController?.dispose();
+		this.preloadController?.dispose();
 		this.playbackController?.dispose();
 		this.streamController?.dispose();
 		this.session?.destroy();
@@ -81,6 +89,7 @@ export class PlaybackOrchestrator {
 				return;
 			case "STOP":
 				this.playbackController?.stop();
+				this.antiStuckController?.clear(this.session ?? undefined);
 				this.session?.markStopped();
 				this.streamController?.abortCurrent();
 				this.publishState();
@@ -88,6 +97,7 @@ export class PlaybackOrchestrator {
 			case "SKIP":
 				this.playbackController?.stop();
 				if (this.session) {
+					this.antiStuckController?.clear(this.session);
 					this.session.markEnded();
 					this.bus.event({ type: "TRACK_END", session: this.session.snapshot() });
 				}
@@ -102,11 +112,13 @@ export class PlaybackOrchestrator {
 	private async start(track: Track): Promise<void> {
 		this.playbackController?.stop();
 		this.streamController?.abortCurrent();
+		this.antiStuckController?.clear(this.session ?? undefined);
 		this.session?.destroy();
 
 		const session = new PlaybackSession();
 		this.session = session;
 		session.begin(track);
+		this.queueController?.queue.setCurrentTrack(track);
 		this.bus.event({ type: "TRACK_LOADING", session: session.snapshot() });
 
 		if (!this.trackLoader || !this.streamController || !this.playbackController) {
@@ -119,22 +131,17 @@ export class PlaybackOrchestrator {
 			const loaded = await this.trackLoader.load(track, session);
 			if (!this.session?.owns(session.id)) return;
 			this.bus.event({ type: "TRACK_LOADED", session: session.snapshot() });
-
 			const activeStream = await this.streamController.replace(loaded.stream, session);
 			if (!this.session?.owns(session.id)) return;
-
 			const resource = this.playbackController.createResource(activeStream.stream);
 			session.setResource(resource);
 			this.playbackController.play(resource, session);
 			session.markPlaying();
 			this.bus.event({ type: "TRACK_STARTED", session: session.snapshot() });
+			void this.preloadController?.preload();
 		} catch (error) {
 			if (!session.signal.aborted) {
-				this.bus.event({
-					type: "TRACK_ERROR",
-					session: session.snapshot(),
-					error: error instanceof Error ? error : new Error(String(error)),
-				});
+				this.bus.event({ type: "TRACK_ERROR", session: session.snapshot(), error: error instanceof Error ? error : new Error(String(error)) });
 			}
 		}
 	}
