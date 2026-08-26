@@ -62,7 +62,9 @@ export class AntiStuckController {
 		this.clearTimer();
 		if (!this.enabled || timeoutMs <= 0 || !session.track) return;
 		const generation = ++this.generation;
-		this.timer = setTimeout(() => { void this.recover(session, generation, "playback timeout", handlers); }, timeoutMs);
+		this.timer = setTimeout(() => {
+			void this.recover(session, generation, "playback timeout", handlers);
+		}, timeoutMs);
 	}
 
 	public async reportStuck(session: PlaybackSession, reason: string, handlers: AntiStuckRetryHandlers): Promise<boolean> {
@@ -70,7 +72,12 @@ export class AntiStuckController {
 	}
 
 	/** Legacy Player adapter: preserves the old retry loop while moving policy/state into this controller. */
-	public async recoverTrack(track: Track, signal: AbortSignal, reason: unknown, handlers: LegacyAntiStuckRetryHandlers): Promise<boolean> {
+	public async recoverTrack(
+		track: Track,
+		signal: AbortSignal,
+		reason: unknown,
+		handlers: LegacyAntiStuckRetryHandlers,
+	): Promise<boolean> {
 		if (!this.enabled || signal.aborted) return false;
 		const generation = ++this.generation;
 		const key = this.key(track);
@@ -103,22 +110,52 @@ export class AntiStuckController {
 		this.failures.delete(this.key(track));
 	}
 
-	public reset(): void { this.clearTimer(); this.generation++; this.failures.clear(); }
-	public getRetryCount(track: Track): number { return this.failures.get(this.key(track)) ?? 0; }
-	public get controlledSkipThreshold(): number { return this.controlledSkipThresholdValue; }
-	private get controlledSkipThresholdValue(): number { return this.controlledSkipThreshold; }
-	public get shouldControlledSkip(): boolean { return false; }
-	public get policy(): Readonly<{ enabled: boolean; maxRetries: number; retryDelayMs: number; reusePreloadFirst: boolean; reduceQualityOnRetry: boolean; controlledSkipThreshold: number }> {
-		return { enabled: this.enabled, maxRetries: this.maxRetries, retryDelayMs: this.retryDelayMs, reusePreloadFirst: this.reusePreloadFirst, reduceQualityOnRetry: this.reduceQualityOnRetry, controlledSkipThreshold: this.controlledSkipThreshold };
+	public reset(): void {
+		this.clearTimer();
+		this.generation++;
+		this.failures.clear();
 	}
-	public dispose(): void { this.reset(); }
+	public getRetryCount(track: Track): number {
+		return this.failures.get(this.key(track)) ?? 0;
+	}
+	public get shouldControlledSkip(): boolean {
+		return false;
+	}
+	public get policy(): Readonly<{
+		enabled: boolean;
+		maxRetries: number;
+		retryDelayMs: number;
+		reusePreloadFirst: boolean;
+		reduceQualityOnRetry: boolean;
+		controlledSkipThreshold: number;
+	}> {
+		return {
+			enabled: this.enabled,
+			maxRetries: this.maxRetries,
+			retryDelayMs: this.retryDelayMs,
+			reusePreloadFirst: this.reusePreloadFirst,
+			reduceQualityOnRetry: this.reduceQualityOnRetry,
+			controlledSkipThreshold: this.controlledSkipThreshold,
+		};
+	}
+	public dispose(): void {
+		this.reset();
+	}
 
-	private async recover(session: PlaybackSession, generation: number, reason: string, handlers: AntiStuckRetryHandlers): Promise<boolean> {
+	private async recover(
+		session: PlaybackSession,
+		generation: number,
+		reason: string,
+		handlers: AntiStuckRetryHandlers,
+	): Promise<boolean> {
 		const track = session.track;
 		if (!this.enabled || !track || !session.isActive() || generation !== this.generation) return false;
 		const retry = this.getRetryCount(track);
 		this.bus?.event({ type: "STUCK_DETECTED", session: session.snapshot(), reason });
-		if (retry >= this.maxRetries) { await handlers.skip({ session, track, retry, reason }); return false; }
+		if (retry >= this.maxRetries) {
+			await handlers.skip({ session, track, retry, reason });
+			return false;
+		}
 		this.failures.set(this.key(track), retry + 1);
 		this.bus?.event({ type: "RECOVERY_STARTED", session: session.snapshot() });
 		if (this.retryDelayMs > 0) await this.delay(this.retryDelayMs, session.signal);
@@ -126,7 +163,8 @@ export class AntiStuckController {
 		const ok = await handlers.retry({ session, track, retry: retry + 1, reason });
 		if (!ok && session.isActive()) {
 			this.bus?.event({ type: "RECOVERY_FAILED", session: session.snapshot() });
-			if (this.getRetryCount(track) >= this.controlledSkipThreshold) await handlers.skip({ session, track, retry: this.getRetryCount(track), reason });
+			if (this.getRetryCount(track) >= this.controlledSkipThreshold)
+				await handlers.skip({ session, track, retry: this.getRetryCount(track), reason });
 		}
 		return ok;
 	}
@@ -135,10 +173,22 @@ export class AntiStuckController {
 		return new Promise((resolve) => {
 			if (signal.aborted) return resolve();
 			const timer = setTimeout(resolve, ms);
-			signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+			signal.addEventListener(
+				"abort",
+				() => {
+					clearTimeout(timer);
+					resolve();
+				},
+				{ once: true },
+			);
 		});
 	}
 
-	private clearTimer(): void { if (this.timer) clearTimeout(this.timer); this.timer = null; }
-	private key(track: Track): string { return track.id ?? track.url ?? `${track.source}:${track.title}`; }
+	private clearTimer(): void {
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = null;
+	}
+	private key(track: Track): string {
+		return track.id ?? track.url ?? `${track.source}:${track.title}`;
+	}
 }
