@@ -13,23 +13,16 @@ export { QueueController } from "./structures/QueueController";
 export { AntiStuckController } from "./structures/AntiStuckController";
 export { TransitionController } from "./structures/TransitionController";
 export { PreloadController } from "./structures/PreloadController";
-export type {
-	PlayerAction,
-	PlayerActionType,
-	PlayerEvent,
-	PlayerEventType,
-	PlayerBusEvents,
-	PlayerLifecycleEvents,
-	PlayerQuery,
-	PlayerQueryMap,
-} from "./structures/PlayerBus";
+export { PlayerControllerRuntime } from "./structures/PlayerControllerRuntime";
+export type { PlayerControllerRuntimeHost } from "./structures/PlayerControllerRuntime";
+export type { PlayerAction, PlayerActionType, PlayerEvent, PlayerEventType, PlayerBusEvents, PlayerLifecycleEvents, PlayerQuery, PlayerQueryMap } from "./structures/PlayerBus";
 export type { TrackLoadResult, TrackLoaderContext, TrackLoaderOptions, TrackStreamResolver } from "./structures/TrackLoader";
 export type { ActiveStream, StreamControllerOptions } from "./structures/StreamController";
 export type { PlaybackOrchestratorOptions } from "./structures/PlaybackOrchestrator";
 export type { PlaybackSessionSnapshot, PlaybackSessionStatus } from "./structures/PlaybackSession";
 export type { PlaybackControllerOptions } from "./structures/PlaybackController";
 export type { QueueControllerOptions } from "./structures/QueueController";
-export type { AntiStuckControllerOptions, AntiStuckRetryContext, AntiStuckRetryHandlers } from "./structures/AntiStuckController";
+export type { AntiStuckControllerOptions, AntiStuckRetryContext, AntiStuckRetryHandlers, LegacyAntiStuckRetryContext, LegacyAntiStuckRetryHandlers } from "./structures/AntiStuckController";
 export type { TransitionControllerOptions, TransitionPlan } from "./structures/TransitionController";
 export type { PreloadControllerOptions } from "./structures/PreloadController";
 export { PreloadManager } from "./structures/PreloadManager";
@@ -38,6 +31,5 @@ export * from "./plugins";
 export * from "./extensions";
 
 export default PlayerManager;
-
 export const getManager = () => getGlobalManager();
 export const getPlayer = (guildOrId: string) => getManager()?.get(guildOrId);
