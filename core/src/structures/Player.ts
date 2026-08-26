@@ -1,48 +1,47 @@
-import type { PlayerOptions, TrackMiddleware } from "../types";
+import type { PlayerOptions } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 import { Player as LegacyPlayer } from "./Player.old";
-import { PlayerBus, type PlayerAction as PlayerActionMessage, type PlayerEvent, type PlayerEventType, type PlayerQuery, type PlayerQueryMap } from "./PlayerBus";
-import { PlayerAction } from "./PlayerAction";
-import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
-import { PlaybackController } from "../Controller/PlaybackController";
-import { StreamController } from "../Controller/StreamController";
-import { QueueController } from "../Controller/QueueController";
-import { TrackLoader } from "./TrackLoader";
-import { AntiStuckController } from "../Controller/AntiStuckController";
-import { TransitionController } from "../Controller/TransitionController";
-import { PreloadController } from "../Controller/PreloadController";
+import { type PlayerAction as PlayerActionMessage, type PlayerEvent, type PlayerEventType, type PlayerQuery, type PlayerQueryMap } from "./PlayerBus";
+import { PlayerRuntimeController } from "../Controller/PlayerRuntimeController";
 
 /** Public Player facade. */
 export class Player extends LegacyPlayer {
-	public readonly bus: PlayerBus;
-	public readonly actionExecutor: PlayerAction;
-	public readonly orchestrator: PlaybackOrchestrator;
-	public readonly trackLoader: TrackLoader;
-	public readonly streamController: StreamController;
-	public readonly playbackController: PlaybackController;
-	public readonly queueController: QueueController;
-	public readonly antiStuckController: AntiStuckController;
-	public readonly transitionController: TransitionController;
-	public readonly preloadController: PreloadController;
+	public readonly runtime: PlayerRuntimeController;
+
+	public get bus() { return this.runtime.bus; }
+	public get actionExecutor() { return this.runtime.actionExecutor; }
+	public get orchestrator() { return this.runtime.orchestrator; }
+	public get trackLoader() { return this.runtime.trackLoader; }
+	public get streamController() { return this.runtime.streamController; }
+	public get playbackController() { return this.runtime.playbackController; }
+	public get queueController() { return this.runtime.queueController; }
+	public get antiStuckController() { return this.runtime.antiStuckController; }
+	public get transitionController() { return this.runtime.transitionController; }
+	public get preloadController() { return this.runtime.preloadController; }
 
 	public constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
 		super(guildId, options, manager);
-		this.bus = new PlayerBus();
-		this.actionExecutor = new PlayerAction(this.bus);
-		const middleware: TrackMiddleware[] = [...manager.getTrackMiddlewareChain(), ...(Array.isArray(options.trackMiddleware) ? options.trackMiddleware : options.trackMiddleware ? [options.trackMiddleware] : [])];
-		this.queueController = new QueueController({ queue: this.queue, bus: this.bus });
-		this.trackLoader = new TrackLoader({ middleware, context: { player: this, manager }, resolvers: [(track) => this.getStream(track)], recovery: options.antiStuck, preloadManager: this.preloadManager, debug: this.debug.bind(this) });
-		this.playbackController = new PlaybackController({ audioPlayer: this.audioPlayer, bus: this.bus });
-		this.streamController = new StreamController({ streamManager: this.streamManager, bus: this.bus });
-		this.antiStuckController = new AntiStuckController({ ...options.antiStuck, bus: this.bus });
-		this.transitionController = new TransitionController({ enabled: options.crossfade?.enabled ?? true, durationMs: options.crossfade?.durationMs, smartEnabled: options.smartTransition?.enabled ?? true, genreAware: options.smartTransition?.genreAware ?? true, beatAlign: options.smartTransition?.beatAlign ?? true, baseDurationMs: options.smartTransition?.baseDurationMs ?? options.crossfade?.durationMs, minDurationMs: options.smartTransition?.minDurationMs, maxDurationMs: options.smartTransition?.maxDurationMs, beatAlignMaxWaitMs: options.smartTransition?.beatAlignMaxWaitMs, genreDurations: options.smartTransition?.genreDurations });
-		this.preloadController = new PreloadController({ loader: this.trackLoader, manager: this.preloadManager, bus: this.bus });
-		this.orchestrator = new PlaybackOrchestrator(this.bus, { trackLoader: this.trackLoader, streamController: this.streamController, playbackController: this.playbackController, queueController: this.queueController, antiStuckController: this.antiStuckController, transitionController: this.transitionController, preloadController: this.preloadController });
-		this.bus.publish("initialized");
-		this.bus.publish("ready");
+		this.runtime = new PlayerRuntimeController({
+			player: this,
+			manager,
+			options: this.options,
+			audioPlayer: this.audioPlayer,
+			streamManager: this.streamManager,
+			preloadManager: this.preloadManager,
+			queue: this.queue,
+			debug: this.debug.bind(this),
+		});
 	}
-	public action(action: PlayerActionMessage): Promise<void> { return this.actionExecutor.enqueue(action); }
-	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> { return this.bus.query(query); }
-	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void { return this.bus.subscribe(type, listener); }
-	public override destroy(): void { if (this.destroyed) return; this.bus.publish("destroyed"); this.actionExecutor.dispose(); this.orchestrator.dispose(); this.bus.clear(); super.destroy(); }
+
+	public action(action: PlayerActionMessage): Promise<void> { return this.runtime.actionExecutor.enqueue(action); }
+	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> { return this.runtime.bus.query(query); }
+	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void {
+		return this.runtime.bus.subscribe(type, listener);
+	}
+
+	public override destroy(): void {
+		if (this.destroyed) return;
+		this.runtime.dispose();
+		super.destroy();
+	}
 }
