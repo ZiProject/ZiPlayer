@@ -23,7 +23,10 @@ export interface PlaybackControllerOptions {
 export class PlaybackController {
 	public readonly audioPlayer: AudioPlayer;
 	private readonly bus?: PlayerBus;
-	private readonly onStateChange: (oldState: AudioPlayerState, newState: AudioPlayerState) => void;
+	private readonly onStateChange: (
+		oldState: AudioPlayerState,
+		newState: AudioPlayerState,
+	) => void;
 
 	public constructor(options: PlaybackControllerOptions) {
 		this.audioPlayer = options.audioPlayer;
