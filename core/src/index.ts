@@ -1,5 +1,4 @@
 import { PlayerManager, getGlobalManager } from "./structures/PlayerManager";
-import { PlayerBus } from "./structures/PlayerBus";
 import type { PlayerManagerOptions } from "./types";
 
 export { Player } from "./structures/Player";
