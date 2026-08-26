@@ -25,12 +25,16 @@ export class Player extends LegacyPlayer {
 			player: this,
 			manager,
 			options: this.options,
-			audioPlayer: this.audioPlayer,
-			streamManager: this.streamManager,
-			preloadManager: this.preloadManager,
-			queue: this.queue,
 			debug: this.debug.bind(this),
 		});
+
+		// Compatibility bridge: legacy methods now observe the runtime-owned
+		// resources. The old instances created by LegacyPlayer are no longer
+		// authoritative after this point.
+		this.queue = this.runtime.queue;
+		this.audioPlayer = this.runtime.audioPlayer;
+		this.streamManager = this.runtime.streamManager;
+		this.preloadManager = this.runtime.preloadManager;
 	}
 
 	public action(action: PlayerActionMessage): Promise<void> { return this.runtime.actionExecutor.enqueue(action); }
