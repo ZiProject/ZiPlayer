@@ -1,11 +1,13 @@
 import { EventEmitter } from "events";
-import type { Track, PlayerEvents } from "../types";
+import type { PlayerEvents, Track } from "../types";
 
 /**
- * Commands understood by the playback orchestration layer.
+ * Actions are messages sent through the playback communication hub.
  *
- * The bus is intentionally transport-only for now. Player remains the
- * compatibility facade while commands are migrated incrementally.
+ * `PlayerAction` deliberately describes a message category, not a command
+ * bus contract. The bus also carries events, lifecycle notifications and
+ * queries, so no architectural assumption is made about command -> handler
+ * semantics.
  */
 export type PlayerAction =
 	| { type: "play"; track?: Track; query?: string }
@@ -15,6 +17,8 @@ export type PlayerAction =
 	| { type: "stop" }
 	| { type: "seek"; position: number }
 	| { type: "setVolume"; volume: number };
+
+export type PlayerActionType = PlayerAction["type"];
 
 export interface PlayerQueryMap {
 	currentTrack: Track | null;
@@ -26,26 +30,42 @@ export interface PlayerQueryMap {
 
 export type PlayerQuery = keyof PlayerQueryMap;
 
-export type PlayerBusEvents = PlayerEvents & {
+/** Lifecycle notifications are intentionally carried by the same event lane. */
+export interface PlayerLifecycleEvents {
+	initialized: [];
+	ready: [];
+	destroyed: [];
+	stateChanged: [];
+}
+
+export type PlayerBusEvents = PlayerEvents & PlayerLifecycleEvents & {
 	actionDispatched: [action: PlayerAction];
 };
 
-type Handler<A extends PlayerAction = PlayerAction> = (action: A) => void | Promise<void>;
+type ActionHandler<A extends PlayerAction> = (action: A) => void | Promise<void>;
+type QueryHandler<T> = () => T | Promise<T>;
 
 /**
- * Typed internal bus used to decouple Player's public API from playback
- * orchestration. It provides three primitives:
+ * Communication hub for one Player instance.
  *
- * - dispatch(action): send a command to the current handler
- * - on(event): subscribe to typed playback events
- * - query(name): synchronously read a typed playback value
+ * Flow:
  *
- * The bus does not own playback state. That ownership moves to the
- * orchestrator/session controllers in subsequent refactor steps.
+ *   Player -> PlayerBus -> Action / Event / Query -> PlaybackOrchestrator
+ *                                      |               |
+ *                                      +-> controllers +-> PlayerBus
+ *
+ * PlayerBus is deliberately transport/orchestration-neutral. It does not own
+ * playback state and does not know about PlaybackOrchestrator, Queue,
+ * TrackLoader, StreamController, AntiStuck, Transition or Preload.
+ *
+ * Actions, events and lifecycle notifications use typed message channels.
+ * Queries use registered providers and may be synchronous or asynchronous.
+ * This lets the playback implementation migrate behind the bus incrementally
+ * without changing Player's public API.
  */
 export class PlayerBus extends EventEmitter {
-	private actionHandler: Handler | null = null;
-	private readonly queryHandlers = new Map<PlayerQuery, () => unknown>();
+	private readonly actionHandlers = new Map<PlayerActionType, Set<ActionHandler<any>>>();
+	private readonly queryHandlers = new Map<PlayerQuery, QueryHandler<any>>();
 
 	public on<K extends keyof PlayerBusEvents>(
 		event: K,
@@ -65,22 +85,41 @@ export class PlayerBus extends EventEmitter {
 		return super.emit(event, ...args);
 	}
 
-	public setActionHandler(handler: Handler): () => void {
-		this.actionHandler = handler;
+	/** Register a handler for one action message type. */
+	public onAction<K extends PlayerActionType>(
+		type: K,
+		handler: ActionHandler<Extract<PlayerAction, { type: K }>>,
+	): () => void {
+		let handlers = this.actionHandlers.get(type);
+		if (!handlers) {
+			handlers = new Set();
+			this.actionHandlers.set(type, handlers);
+		}
 
+		handlers.add(handler);
 		return () => {
-			if (this.actionHandler === handler) this.actionHandler = null;
+			handlers?.delete(handler);
+			if (handlers?.size === 0) this.actionHandlers.delete(type);
 		};
 	}
 
+	/** Publish an action message to all interested action subscribers. */
 	public async dispatch(action: PlayerAction): Promise<void> {
 		this.emit("actionDispatched", action);
 
-		if (!this.actionHandler) return;
-		await this.actionHandler(action);
+		const handlers = this.actionHandlers.get(action.type);
+		if (!handlers?.size) return;
+
+		await Promise.all([...handlers].map((handler) => handler(action)));
 	}
 
-	public registerQuery<K extends PlayerQuery>(query: K, handler: () => PlayerQueryMap[K]): () => void {
+	/** Publish an event or lifecycle notification through the event lane. */
+	public publish<K extends keyof PlayerBusEvents>(event: K, ...args: PlayerBusEvents[K]): boolean {
+		return this.emit(event, ...args);
+	}
+
+	/** Register a provider for a query message. */
+	public registerQuery<K extends PlayerQuery>(query: K, handler: QueryHandler<PlayerQueryMap[K]>): () => void {
 		this.queryHandlers.set(query, handler);
 
 		return () => {
@@ -88,14 +127,16 @@ export class PlayerBus extends EventEmitter {
 		};
 	}
 
-	public query<K extends PlayerQuery>(query: K): PlayerQueryMap[K] {
-		const handler = this.queryHandlers.get(query) as (() => PlayerQueryMap[K]) | undefined;
+	/** Request current state through a typed query message. */
+	public async query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> {
+		const handler = this.queryHandlers.get(query) as QueryHandler<PlayerQueryMap[K]> | undefined;
 		if (!handler) throw new Error(`No playback query handler registered for "${query}"`);
 		return handler();
 	}
 
+	/** Remove all routes, providers and subscriptions owned by this bus. */
 	public clear(): void {
-		this.actionHandler = null;
+		this.actionHandlers.clear();
 		this.queryHandlers.clear();
 		this.removeAllListeners();
 	}
