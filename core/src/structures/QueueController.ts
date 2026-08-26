@@ -2,21 +2,13 @@ import type { LoopMode, Track } from "../types";
 import type { PlayerBus } from "./PlayerBus";
 import { Queue } from "./Queue";
 
-export interface QueueControllerOptions {
-	queue?: Queue;
-	bus?: PlayerBus;
-}
+export interface QueueControllerOptions { queue?: Queue; bus?: PlayerBus; }
 
 /** Owns queue policy while Queue remains the data structure/public API. */
 export class QueueController {
 	public readonly queue: Queue;
 	private readonly bus?: PlayerBus;
-
-	public constructor(options: QueueControllerOptions = {}) {
-		this.queue = options.queue ?? new Queue();
-		this.bus = options.bus;
-	}
-
+	public constructor(options: QueueControllerOptions = {}) { this.queue = options.queue ?? new Queue(); this.bus = options.bus; }
 	public add(track: Track): number { const size = this.queue.add(track); this.publishChanged(); return size; }
 	public addMultiple(tracks: Track[]): number { const size = this.queue.addMultiple(tracks); this.publishChanged(); return size; }
 	public insert(track: Track, index = 0): number { const size = this.queue.insert(track, index); this.publishChanged(); return size; }
@@ -28,9 +20,14 @@ export class QueueController {
 	public clear(): void { this.queue.clear(); this.publishChanged(); }
 	public reset(): void { this.queue.reset(); this.publishChanged(); }
 	public snapshot(): Track[] { return this.queue.getTracks(); }
+	public get current(): Track | null { return this.queue.currentTrack; }
+	public setCurrent(track: Track | null): void { this.queue.setCurrentTrack(track); this.publishChanged(); }
+	public get nextTrack(): Track | null { return this.queue.nextTrack; }
+	public get autoPlay(): boolean { return this.queue.autoPlay(); }
+	public get loop(): LoopMode { return this.queue.loop(); }
+	public get willNext(): Track | null { return this.queue.willNextTrack(); }
+	public setWillNext(track: Track | null): void { this.queue.willNextTrack(track ?? undefined); this.publishChanged(); }
+	public setRelated(tracks: Track[]): void { this.queue.relatedTracks(tracks); this.publishChanged(); }
 	public dispose(): void { this.queue.reset(); }
-
-	private publishChanged(): void {
-		this.bus?.publish("queueChanged", this.snapshot());
-	}
+	private publishChanged(): void { this.bus?.publish("queueChanged", this.snapshot()); }
 }
