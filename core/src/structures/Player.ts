@@ -3,12 +3,13 @@ import type { PlayerManager } from "./PlayerManager";
 import { Player as LegacyPlayer } from "./Player.old";
 import {
 	PlayerBus,
-	type PlayerAction,
+	type PlayerAction as PlayerActionMessage,
 	type PlayerEvent,
 	type PlayerEventType,
 	type PlayerQuery,
 	type PlayerQueryMap,
 } from "./PlayerBus";
+import { PlayerAction } from "./PlayerAction";
 import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { PlaybackController } from "./PlaybackController";
 import { StreamController } from "./StreamController";
@@ -21,13 +22,13 @@ import { PreloadController } from "./PreloadController";
 /**
  * Public Player facade.
  *
- * The legacy implementation is kept behind this boundary while playback
- * ownership moves into the controller graph. PlayerBus is the communication
- * surface between the facade and the subsystem graph; it is intentionally
- * not a playback command queue.
+ * PlayerBus is the communication surface between the facade and the
+ * subsystem graph. PlayerAction is the separate execution boundary that
+ * serializes public playback operations before they enter the bus.
  */
 export class Player extends LegacyPlayer {
 	public readonly bus: PlayerBus;
+	public readonly actionExecutor: PlayerAction;
 	public readonly orchestrator: PlaybackOrchestrator;
 
 	public readonly trackLoader: TrackLoader;
@@ -42,6 +43,7 @@ export class Player extends LegacyPlayer {
 		super(guildId, options, manager);
 
 		this.bus = new PlayerBus();
+		this.actionExecutor = new PlayerAction(this.bus);
 
 		const middleware: TrackMiddleware[] = [
 			...manager.getTrackMiddlewareChain(),
@@ -107,14 +109,12 @@ export class Player extends LegacyPlayer {
 			preloadController: this.preloadController,
 		});
 
-		// PlaybackController owns the AudioPlayer state listener and forwards it
-		// through PlayerBus. Do not attach a second facade-level listener here.
 		this.bus.publish("initialized");
 		this.bus.publish("ready");
 	}
 
-	public action(action: PlayerAction): Promise<void> {
-		return this.bus.action(action);
+	public action(action: PlayerActionMessage): Promise<void> {
+		return this.actionExecutor.enqueue(action);
 	}
 
 	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> {
@@ -131,6 +131,7 @@ export class Player extends LegacyPlayer {
 	public override destroy(): void {
 		if (this.destroyed) return;
 		this.bus.publish("destroyed");
+		this.actionExecutor.dispose();
 		this.orchestrator.dispose();
 		this.bus.clear();
 		super.destroy();
