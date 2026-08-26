@@ -1,40 +1,5 @@
 import { Track, LoopMode } from "../types";
 
-/**
- * Manages the track queue for a player.
- *
- * @example
- * // Basic queue operations
- * const queue = player.queue;
- *
- * // Add single track
- * queue.add(track);
- *
- * // Add multiple tracks
- * queue.add([track1, track2, track3]);
- *
- * // Queue controls
- * queue.shuffle(); // Randomize order
- * queue.clear(); // Remove all tracks
- * queue.autoPlay(true); // Enable auto-play
- *
- * // Get queue information
- * console.log(`Queue length: ${queue.length}`);
- * console.log(`Current track: ${queue.current?.title}`);
- * console.log(`Is empty: ${queue.isEmpty}`);
- * console.log(`Is playing: ${queue.isPlaying}`);
- *
- * // Loop modes
- * queue.setLoopMode("track"); // Loop current track
- * queue.setLoopMode("queue"); // Loop entire queue
- * queue.setLoopMode("off"); // No loop
- *
- * // Remove specific track
- * const removed = queue.remove(0); // Remove first track
- * if (removed) {
- * 	console.log(`Removed: ${removed.title}`);
- * }
- */
 export class Queue {
 	private tracks: Track[] = [];
 	private current: Track | null = null;
@@ -43,46 +8,24 @@ export class Queue {
 	private _autoPlay = false;
 	private _loop: LoopMode = "off";
 	private willnext: Track | null = null;
-
-	// Configuration
 	private readonly MAX_HISTORY_SIZE = 200;
-	private readonly MAX_QUEUE_SIZE = 1000; // Prevent memory issues
+	private readonly MAX_QUEUE_SIZE = 1000;
 
-	/** Immutable snapshot of upcoming tracks for controller/query consumers. */
-	public get tracks(): Track[] {
-		return [...this.tracks];
-	}
-
-	/**
-	 * Add track(s) to the queue
-	 *
-	 * @param {Track | Track[]} track - Track or array of tracks to add
-	 * @returns {number} New queue size
-	 */
 	add(track: Track): number {
-		if (this.tracks.length >= this.MAX_QUEUE_SIZE) {
-			throw new Error(`Queue size limit reached (${this.MAX_QUEUE_SIZE})`);
-		}
+		if (this.tracks.length >= this.MAX_QUEUE_SIZE) throw new Error(`Queue size limit reached (${this.MAX_QUEUE_SIZE})`);
 		this.tracks.push(track);
 		return this.tracks.length;
 	}
 
 	addMultiple(tracks: Track[]): number {
-		if (this.tracks.length + tracks.length > this.MAX_QUEUE_SIZE) {
-			throw new Error(`Adding ${tracks.length} tracks would exceed queue size limit (${this.MAX_QUEUE_SIZE})`);
-		}
+		if (this.tracks.length + tracks.length > this.MAX_QUEUE_SIZE) throw new Error(`Adding ${tracks.length} tracks would exceed queue size limit (${this.MAX_QUEUE_SIZE})`);
 		this.tracks.push(...tracks);
 		return this.tracks.length;
 	}
 
 	insert(track: Track, index: number): number {
-		if (this.tracks.length >= this.MAX_QUEUE_SIZE) {
-			throw new Error(`Queue size limit reached (${this.MAX_QUEUE_SIZE})`);
-		}
-		if (!Number.isFinite(index)) {
-			this.tracks.push(track);
-			return this.tracks.length;
-		}
+		if (this.tracks.length >= this.MAX_QUEUE_SIZE) throw new Error(`Queue size limit reached (${this.MAX_QUEUE_SIZE})`);
+		if (!Number.isFinite(index)) { this.tracks.push(track); return this.tracks.length; }
 		const i = Math.max(0, Math.min(Math.floor(index), this.tracks.length));
 		this.tracks.splice(i, 0, track);
 		return this.tracks.length;
@@ -90,9 +33,7 @@ export class Queue {
 
 	insertMultiple(tracks: Track[], index: number): number {
 		if (!Array.isArray(tracks) || tracks.length === 0) return this.tracks.length;
-		if (this.tracks.length + tracks.length > this.MAX_QUEUE_SIZE) {
-			throw new Error(`Inserting ${tracks.length} tracks would exceed queue size limit (${this.MAX_QUEUE_SIZE})`);
-		}
+		if (this.tracks.length + tracks.length > this.MAX_QUEUE_SIZE) throw new Error(`Inserting ${tracks.length} tracks would exceed queue size limit (${this.MAX_QUEUE_SIZE})`);
 		const i = Number.isFinite(index) ? Math.max(0, Math.min(Math.floor(index), this.tracks.length)) : this.tracks.length;
 		this.tracks.splice(i, 0, ...tracks);
 		return this.tracks.length;
@@ -106,17 +47,13 @@ export class Queue {
 	removeMultiple(indices: number[]): Track[] {
 		const sorted = [...new Set(indices)].sort((a, b) => b - a);
 		const removed: Track[] = [];
-		for (const index of sorted) {
-			if (index >= 0 && index < this.tracks.length) removed.unshift(this.tracks.splice(index, 1)[0]);
-		}
+		for (const index of sorted) if (index >= 0 && index < this.tracks.length) removed.unshift(this.tracks.splice(index, 1)[0]);
 		return removed;
 	}
 
 	removeWhere(predicate: (track: Track, index: number) => boolean): Track[] {
 		const removed: Track[] = [];
-		for (let i = this.tracks.length - 1; i >= 0; i--) {
-			if (predicate(this.tracks[i], i)) removed.unshift(this.tracks.splice(i, 1)[0]);
-		}
+		for (let i = this.tracks.length - 1; i >= 0; i--) if (predicate(this.tracks[i], i)) removed.unshift(this.tracks.splice(i, 1)[0]);
 		return removed;
 	}
 
@@ -139,32 +76,11 @@ export class Queue {
 		if (this.history.length > this.MAX_HISTORY_SIZE) this.history.shift();
 	}
 
-	clear(): void {
-		this.tracks = [];
-	}
-
-	clearHistory(): void {
-		this.history = [];
-	}
-
-	reset(): void {
-		this.tracks = [];
-		this.current = null;
-		this.history = [];
-		this.related = [];
-		this.willnext = null;
-	}
-
-	autoPlay(value?: boolean): boolean {
-		if (typeof value !== "undefined") this._autoPlay = value;
-		return this._autoPlay;
-	}
-
-	loop(mode?: LoopMode): LoopMode {
-		if (mode) this._loop = mode;
-		return this._loop;
-	}
-
+	clear(): void { this.tracks = []; }
+	clearHistory(): void { this.history = []; }
+	reset(): void { this.tracks = []; this.current = null; this.history = []; this.related = []; this.willnext = null; }
+	autoPlay(value?: boolean): boolean { if (typeof value !== "undefined") this._autoPlay = value; return this._autoPlay; }
+	loop(mode?: LoopMode): LoopMode { if (mode) this._loop = mode; return this._loop; }
 	isLooping(): boolean { return this._loop !== "off"; }
 	getLoopMode(): LoopMode { return this._loop; }
 
@@ -198,6 +114,11 @@ export class Queue {
 	get previousTracksCount(): number { return this.history.length; }
 	get nextTrack(): Track | null { return this.tracks[0] || null; }
 	get lastTrack(): Track | null { return this.tracks[this.tracks.length - 1] || null; }
+	getTracks(): Track[] { return [...this.tracks]; }
+	getTrack(index: number): Track | null { return this.tracks[index] || null; }
+	findTracks(predicate: (track: Track) => boolean): Track[] { return this.tracks.filter(predicate); }
+	indexOf(identifier: string | Track): number { return typeof identifier === "string" ? this.tracks.findIndex((t) => t.id === identifier || t.url === identifier) : this.tracks.findIndex((t) => t.id === identifier.id); }
+	has(identifier: string | Track): boolean { return this.indexOf(identifier) !== -1; }
 
 	previous(): Track | null {
 		if (this.history.length === 0) return null;
@@ -207,13 +128,28 @@ export class Queue {
 	}
 
 	jumpToHistory(stepsBack: number): Track | null {
-		if (!Number.isInteger(stepsBack) || stepsBack <= 0 || stepsBack > this.history.length) return null;
-		const index = this.history.length - stepsBack;
-		const target = this.history[index] ?? null;
-		if (!target) return null;
+		if (stepsBack <= 0 || stepsBack > this.history.length) return null;
+		const targetIndex = this.history.length - stepsBack;
+		if (targetIndex < 0) return null;
 		if (this.current) this.tracks.unshift(this.current);
-		this.current = target;
-		this.history = this.history.slice(0, index);
+		const tracksAfterTarget = this.history.splice(targetIndex + 1);
+		this.current = this.history.pop() || null;
+		for (let i = tracksAfterTarget.length - 1; i >= 0; i--) this.tracks.unshift(tracksAfterTarget[i]);
 		return this.current;
+	}
+
+	willNextTrack(track?: Track): Track | null { if (track) this.willnext = track; return this.willnext; }
+	relatedTracks(track?: Track[]): Track[] | null { if (track) this.related = track; return this.related; }
+
+	toJSON(): object {
+		return { tracks: this.tracks, current: this.current, history: this.history, size: this.size, loopMode: this._loop, autoPlay: this._autoPlay };
+	}
+
+	fromJSON(data: { tracks: Track[]; current: Track | null; history: Track[]; loopMode: LoopMode; autoPlay: boolean }): void {
+		this.tracks = [...data.tracks];
+		this.current = data.current;
+		this.history = [...data.history];
+		this._loop = data.loopMode;
+		this._autoPlay = data.autoPlay;
 	}
 }
