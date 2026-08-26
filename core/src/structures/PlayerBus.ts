@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import type { AudioPlayerState } from "@discordjs/voice";
 import type { PlayerEvents, Track } from "../types";
+import type { PlaybackSession } from "./PlaybackSession";
 import type { PlaybackSessionSnapshot } from "./PlaybackSession";
 
 export type PlayerAction =
@@ -47,7 +48,14 @@ export interface PlayerLifecycleEvents {
 	stateChanged: [oldState: AudioPlayerState, newState: AudioPlayerState];
 }
 
-export type PlayerBusEvents = PlayerEvents & PlayerLifecycleEvents & {
+export interface PlayerInternalEvents {
+	volumeRequested: [volume: number];
+	playbackSessionCreated: [session: PlaybackSessionSnapshot];
+	trackRequested: [track: Track, session: PlaybackSession];
+	playbackStateChanged: [session: PlaybackSessionSnapshot];
+}
+
+export type PlayerBusEvents = PlayerEvents & PlayerLifecycleEvents & PlayerInternalEvents & {
 	actionDispatched: [action: PlayerAction];
 };
 
