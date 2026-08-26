@@ -5,6 +5,8 @@ export { Player } from "./structures/Player";
 export { Queue } from "./structures/Queue";
 export { PlayerManager } from "./structures/PlayerManager";
 export { PreloadManager } from "./structures/PreloadManager";
+export { PlayerBus } from "./structures/PlayerBus";
+export type { PlayerAction, PlayerBusEvents, PlayerQuery, PlayerQueryMap } from "./structures/PlayerBus";
 export * from "./types";
 export * from "./plugins";
 export * from "./extensions";
