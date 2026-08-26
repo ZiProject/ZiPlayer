@@ -12,6 +12,7 @@ import { QueueController } from "./QueueController";
 import { AntiStuckController } from "./AntiStuckController";
 import { TransitionController } from "./TransitionController";
 import { PreloadController } from "./PreloadController";
+import { ConnectionController } from "./ConnectionController";
 import { Queue } from "../structures/Queue";
 import { StreamManager } from "../structures/StreamManager";
 import { PreloadManager } from "../structures/PreloadManager";
@@ -27,6 +28,7 @@ export interface PlayerRuntimeControllerOptions {
 export class PlayerRuntimeController {
 	public readonly bus = new PlayerBus();
 	public readonly actionExecutor = new PlayerAction(this.bus);
+	public readonly connectionController: ConnectionController;
 	public readonly queue: Queue;
 	public readonly audioPlayer: AudioPlayer;
 	public readonly streamManager: StreamManager;
@@ -49,6 +51,12 @@ export class PlayerRuntimeController {
 			...(Array.isArray(playerOptions.trackMiddleware) ? playerOptions.trackMiddleware : playerOptions.trackMiddleware ? [playerOptions.trackMiddleware] : []),
 		];
 
+		this.connectionController = new ConnectionController({
+			guildId: player.guildId,
+			bus: this.bus,
+			options: playerOptions,
+			debug: (...args) => options.debug(...args),
+		});
 		this.queue = new Queue();
 		this.audioPlayer = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: 100 } });
 		this.streamManager = new StreamManager({ maxConcurrentStreams: playerOptions.maxStreamStore ?? 4, streamTimeout: 5 * 60 * 1000, maxListenersPerStream: 15, enableMetrics: true, autoDestroy: true });
@@ -80,6 +88,7 @@ export class PlayerRuntimeController {
 	public dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		void this.connectionController.dispose();
 		this.actionExecutor.dispose();
 		this.orchestrator.dispose();
 		this.preloadController.dispose();
