@@ -8,7 +8,6 @@ import {
 	type PlayerEventType,
 	type PlayerQuery,
 	type PlayerQueryMap,
-	type PlayerConnectionOutput,
 	createPlayerRequestId,
 } from "./PlayerBus";
 import { PlayerRuntimeController } from "../Controller/PlayerRuntimeController";
@@ -50,18 +49,21 @@ export class Player extends LegacyPlayer {
 		const requestId = createPlayerRequestId();
 		return new Promise<VoiceConnection>((resolve, reject) => {
 			let settled = false;
-			const cleanup = this.bus.onOutput("[Connection]->[Player]:connected", (event) => {
+			let cleanupConnected: () => void = () => undefined;
+			let cleanupError: () => void = () => undefined;
+
+			cleanupConnected = this.bus.onOutput("[Connection]->[Player]:connected", (event) => {
 				if (event.requestId !== requestId || settled) return;
 				settled = true;
-				cleanup();
+				cleanupConnected();
 				cleanupError();
 				resolve(event.connection);
 			});
-			const cleanupError = this.bus.onOutput("[Connection]->[Player]:error", (event) => {
+			cleanupError = this.bus.onOutput("[Connection]->[Player]:error", (event) => {
 				if (event.requestId !== requestId || settled) return;
 				settled = true;
 				cleanupError();
-				cleanup();
+				cleanupConnected();
 				reject(event.error);
 			});
 
@@ -78,52 +80,27 @@ export class Player extends LegacyPlayer {
 		const requestId = createPlayerRequestId();
 		return new Promise<void>((resolve, reject) => {
 			let settled = false;
-			const cleanup = this.bus.onOutput("[Connection]->[Player]:disconnected", (event) => {
+			let cleanupDisconnected: () => void = () => undefined;
+			let cleanupError: () => void = () => undefined;
+
+			cleanupDisconnected = this.bus.onOutput("[Connection]->[Player]:disconnected", (event) => {
 				if (event.requestId !== requestId || settled) return;
 				settled = true;
-				cleanup();
+				cleanupDisconnected();
 				cleanupError();
 				resolve();
 			});
-			const cleanupError = this.bus.onOutput("[Connection]->[Player]:error", (event) => {
+			cleanupError = this.bus.onOutput("[Connection]->[Player]:error", (event) => {
 				if (event.requestId !== requestId || settled) return;
 				settled = true;
 				cleanupError();
-				cleanup();
+				cleanupDisconnected();
 				reject(event.error);
 			});
 
 			this.bus.emitInput({
 				type: "[Player]->[Connection]:disconnect",
 				requestId,
-			});
-		});
-	}
-
-	/** Request a voice reconnection through PlayerBus. */
-	public override reconnect(channel: VoiceChannel): Promise<VoiceConnection> {
-		const requestId = createPlayerRequestId();
-		return new Promise<VoiceConnection>((resolve, reject) => {
-			let settled = false;
-			const cleanup = this.bus.onOutput("[Connection]->[Player]:connected", (event) => {
-				if (event.requestId !== requestId || settled) return;
-				settled = true;
-				cleanup();
-				cleanupError();
-				resolve(event.connection);
-			});
-			const cleanupError = this.bus.onOutput("[Connection]->[Player]:error", (event) => {
-				if (event.requestId !== requestId || settled) return;
-				settled = true;
-				cleanupError();
-				cleanup();
-				reject(event.error);
-			});
-
-			this.bus.emitInput({
-				type: "[Player]->[Connection]:reconnect",
-				requestId,
-				channel,
 			});
 		});
 	}
