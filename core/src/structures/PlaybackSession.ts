@@ -15,9 +15,9 @@ export interface PlaybackSessionSnapshot {
 /**
  * Owns the lifecycle state of one active playback operation.
  *
- * The session deliberately contains no orchestration logic. Controllers can
- * replace the active session atomically and use its AbortSignal to cancel
- * work belonging to an obsolete playback operation.
+ * A session is the concurrency token for every asynchronous playback step.
+ * Once destroyed, work associated with this session must be discarded before
+ * it can mutate playback state.
  */
 export class PlaybackSession {
 	private static nextId = 0;
@@ -34,7 +34,16 @@ export class PlaybackSession {
 		return this.abortController.signal;
 	}
 
+	public isActive(): boolean {
+		return !this.signal.aborted && this.status !== "destroyed" && this.status !== "ended" && this.status !== "stopped";
+	}
+
+	public owns(operationSessionId: number): boolean {
+		return this.id === operationSessionId && this.isActive();
+	}
+
 	public begin(track: Track): void {
+		if (this.signal.aborted) throw new Error("Cannot begin an aborted playback session");
 		this.track = track;
 		this.resource = null;
 		this.position = 0;
@@ -43,30 +52,36 @@ export class PlaybackSession {
 	}
 
 	public setResource(resource: AudioResource | null): void {
+		if (!this.isActive()) return;
 		this.resource = resource;
 	}
 
 	public markPlaying(position = this.position ?? 0): void {
+		if (!this.isActive()) return;
 		this.position = position;
 		this.startedAt ??= Date.now();
 		this.status = "playing";
 	}
 
 	public markPaused(position = this.position ?? 0): void {
+		if (!this.isActive()) return;
 		this.position = position;
 		this.status = "paused";
 	}
 
 	public markStopped(): void {
+		if (this.signal.aborted) return;
 		this.status = "stopped";
 	}
 
 	public markEnded(): void {
+		if (this.signal.aborted) return;
 		this.status = "ended";
 	}
 
 	public updatePosition(position: number): void {
-		this.position = position;
+		if (!this.isActive()) return;
+		this.position = Math.max(0, position);
 	}
 
 	public destroy(): void {
