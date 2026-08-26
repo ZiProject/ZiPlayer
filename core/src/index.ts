@@ -9,6 +9,10 @@ export { PlaybackSession } from "./structures/PlaybackSession";
 export { TrackLoader } from "./structures/TrackLoader";
 export { StreamController } from "./structures/StreamController";
 export { PlaybackController } from "./structures/PlaybackController";
+export { QueueController } from "./structures/QueueController";
+export { AntiStuckController } from "./structures/AntiStuckController";
+export { TransitionController } from "./structures/TransitionController";
+export { PreloadController } from "./structures/PreloadController";
 export type {
 	PlayerAction,
 	PlayerActionType,
@@ -24,6 +28,10 @@ export type { ActiveStream, StreamControllerOptions } from "./structures/StreamC
 export type { PlaybackOrchestratorOptions } from "./structures/PlaybackOrchestrator";
 export type { PlaybackSessionSnapshot, PlaybackSessionStatus } from "./structures/PlaybackSession";
 export type { PlaybackControllerOptions } from "./structures/PlaybackController";
+export type { QueueControllerOptions } from "./structures/QueueController";
+export type { AntiStuckControllerOptions, AntiStuckRetryContext, AntiStuckRetryHandlers } from "./structures/AntiStuckController";
+export type { TransitionControllerOptions, TransitionPlan } from "./structures/TransitionController";
+export type { PreloadControllerOptions } from "./structures/PreloadController";
 export { PreloadManager } from "./structures/PreloadManager";
 export * from "./types";
 export * from "./plugins";
