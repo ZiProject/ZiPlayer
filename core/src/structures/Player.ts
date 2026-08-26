@@ -1,4 +1,3 @@
-import type { AudioPlayerState } from "@discordjs/voice";
 import type { PlayerOptions, TrackMiddleware } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 import { Player as LegacyPlayer } from "./Player.old";
@@ -23,8 +22,9 @@ import { PreloadController } from "./PreloadController";
  * Public Player facade.
  *
  * The legacy implementation is kept behind this boundary while playback
- * ownership moves into the controller graph. PlayerBus is the wiring surface
- * between the facade and the orchestration layer.
+ * ownership moves into the controller graph. PlayerBus is the communication
+ * surface between the facade and the subsystem graph; it is intentionally
+ * not a playback command queue.
  */
 export class Player extends LegacyPlayer {
 	public readonly bus: PlayerBus;
@@ -37,8 +37,6 @@ export class Player extends LegacyPlayer {
 	public readonly antiStuckController: AntiStuckController;
 	public readonly transitionController: TransitionController;
 	public readonly preloadController: PreloadController;
-
-	private readonly detachStateForwarding: () => void;
 
 	public constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
 		super(guildId, options, manager);
@@ -109,12 +107,8 @@ export class Player extends LegacyPlayer {
 			preloadController: this.preloadController,
 		});
 
-		const stateListener = (oldState: AudioPlayerState, newState: AudioPlayerState) => {
-			this.bus.publish("stateChanged", oldState, newState);
-		};
-		this.audioPlayer.on("stateChange", stateListener);
-		this.detachStateForwarding = () => this.audioPlayer.removeListener("stateChange", stateListener);
-
+		// PlaybackController owns the AudioPlayer state listener and forwards it
+		// through PlayerBus. Do not attach a second facade-level listener here.
 		this.bus.publish("initialized");
 		this.bus.publish("ready");
 	}
@@ -137,7 +131,6 @@ export class Player extends LegacyPlayer {
 	public override destroy(): void {
 		if (this.destroyed) return;
 		this.bus.publish("destroyed");
-		this.detachStateForwarding();
 		this.orchestrator.dispose();
 		this.bus.clear();
 		super.destroy();
