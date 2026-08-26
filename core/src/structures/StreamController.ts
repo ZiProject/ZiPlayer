@@ -2,9 +2,11 @@ import { Readable } from "stream";
 import type { StreamInfo, Track } from "../types";
 import type { PlaybackSession } from "./PlaybackSession";
 import type { StreamManager } from "./StreamManager";
+import type { PlayerBus } from "./PlayerBus";
 
 export interface ActiveStream {
 	sessionId: number;
+	session: PlaybackSession;
 	track: Track;
 	stream: Readable;
 	streamId: string | null;
@@ -12,6 +14,7 @@ export interface ActiveStream {
 
 export interface StreamControllerOptions {
 	streamManager?: StreamManager;
+	bus?: PlayerBus;
 }
 
 /**
@@ -23,9 +26,11 @@ export interface StreamControllerOptions {
 export class StreamController {
 	private active: ActiveStream | null = null;
 	private readonly streamManager?: StreamManager;
+	private readonly bus?: PlayerBus;
 
 	public constructor(options: StreamControllerOptions = {}) {
 		this.streamManager = options.streamManager;
+		this.bus = options.bus;
 	}
 
 	public get current(): ActiveStream | null {
@@ -66,6 +71,7 @@ export class StreamController {
 
 		const active: ActiveStream = {
 			sessionId: session.id,
+			session,
 			track: session.track!,
 			stream,
 			streamId: streamId ?? null,
@@ -93,6 +99,7 @@ export class StreamController {
 	public abort(stream: ActiveStream): void {
 		if (this.active?.stream !== stream.stream) return;
 		this.active = null;
+		this.bus?.event({ type: "STREAM_ABORTED", session: stream.session.snapshot() });
 
 		if (stream.streamId) {
 			this.streamManager?.unregisterStream(stream.streamId, true);
