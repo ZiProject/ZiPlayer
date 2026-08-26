@@ -53,15 +53,17 @@ export interface PlayerInternalEvents {
 	playbackSessionCreated: [session: PlaybackSessionSnapshot];
 	trackRequested: [track: Track, session: PlaybackSession];
 	playbackStateChanged: [session: PlaybackSessionSnapshot];
+	queueChanged: [tracks: Track[]];
+	preloadStateChanged: [state: { requestedTrack: Track | null; valid: boolean }];
+	preloadPromoted: [track: Track];
+	preloadCancelled: [];
 }
 
 export type PlayerBusEvents =
 	& PlayerEvents
 	& PlayerLifecycleEvents
 	& PlayerInternalEvents
-	& {
-		actionDispatched: [action: PlayerAction];
-	};
+	& { actionDispatched: [action: PlayerAction] };
 
 type ActionHandler<A extends PlayerAction> = (action: A) => void | Promise<void>;
 type EventHandler<E extends PlayerEvent> = (event: E) => void;
@@ -73,68 +75,27 @@ export class PlayerBus extends EventEmitter {
 	private readonly eventHandlers = new Map<PlayerEventType, Set<EventHandler<any>>>();
 	private readonly queryHandlers = new Map<PlayerQuery, QueryHandler<any>>();
 
-	public on<K extends keyof PlayerBusEvents>(
-		event: K,
-		listener: (...args: PlayerBusEvents[K]) => void,
-	): this {
-		return super.on(event, listener);
-	}
+	public on<K extends keyof PlayerBusEvents>(event: K, listener: (...args: PlayerBusEvents[K]) => void): this { return super.on(event, listener); }
+	public once<K extends keyof PlayerBusEvents>(event: K, listener: (...args: PlayerBusEvents[K]) => void): this { return super.once(event, listener); }
+	public emit<K extends keyof PlayerBusEvents>(event: K, ...args: PlayerBusEvents[K]): boolean { return super.emit(event, ...args); }
 
-	public once<K extends keyof PlayerBusEvents>(
-		event: K,
-		listener: (...args: PlayerBusEvents[K]) => void,
-	): this {
-		return super.once(event, listener);
-	}
-
-	public emit<K extends keyof PlayerBusEvents>(
-		event: K,
-		...args: PlayerBusEvents[K]
-	): boolean {
-		return super.emit(event, ...args);
-	}
-
-	public onAction<K extends PlayerActionType>(
-		type: K,
-		handler: ActionHandler<Extract<PlayerAction, { type: K }>>,
-	): () => void;
+	public onAction<K extends PlayerActionType>(type: K, handler: ActionHandler<Extract<PlayerAction, { type: K }>>): () => void;
 	public onAction(handler: ActionHandler<PlayerAction>): () => void;
-	public onAction<K extends PlayerActionType>(
-		typeOrHandler: K | ActionHandler<PlayerAction>,
-		handler?: ActionHandler<Extract<PlayerAction, { type: K }>>,
-	): () => void {
+	public onAction<K extends PlayerActionType>(typeOrHandler: K | ActionHandler<PlayerAction>, handler?: ActionHandler<Extract<PlayerAction, { type: K }>>): () => void {
 		if (typeof typeOrHandler === "function") {
-			const actionTypes: PlayerActionType[] = [
-				"PLAY",
-				"SKIP",
-				"STOP",
-				"PAUSE",
-				"RESUME",
-				"SEEK",
-				"SET_VOLUME",
-			];
+			const actionTypes: PlayerActionType[] = ["PLAY", "SKIP", "STOP", "PAUSE", "RESUME", "SEEK", "SET_VOLUME"];
 			const remove = actionTypes.map((type) => this.addActionHandler(type, typeOrHandler));
 			return () => remove.forEach((dispose) => dispose());
 		}
-
 		if (!handler) throw new TypeError(`Missing handler for action ${typeOrHandler}`);
 		return this.addActionHandler(typeOrHandler, handler);
 	}
 
-	private addActionHandler<K extends PlayerActionType>(
-		type: K,
-		handler: ActionHandler<Extract<PlayerAction, { type: K }>>,
-	): () => void {
+	private addActionHandler<K extends PlayerActionType>(type: K, handler: ActionHandler<Extract<PlayerAction, { type: K }>>): () => void {
 		let handlers = this.actionHandlers.get(type);
-		if (!handlers) {
-			handlers = new Set();
-			this.actionHandlers.set(type, handlers);
-		}
+		if (!handlers) { handlers = new Set(); this.actionHandlers.set(type, handlers); }
 		handlers.add(handler);
-		return () => {
-			handlers?.delete(handler);
-			if (handlers?.size === 0) this.actionHandlers.delete(type);
-		};
+		return () => { handlers?.delete(handler); if (handlers?.size === 0) this.actionHandlers.delete(type); };
 	}
 
 	public async action(message: PlayerAction): Promise<void> {
@@ -144,49 +105,26 @@ export class PlayerBus extends EventEmitter {
 		await Promise.all([...handlers].map((handler) => handler(message)));
 	}
 
-	public dispatch(message: PlayerAction): Promise<void> {
-		return this.action(message);
-	}
+	public dispatch(message: PlayerAction): Promise<void> { return this.action(message); }
 
 	public event(message: PlayerEvent): boolean {
 		const handlers = this.eventHandlers.get(message.type);
-		if (handlers) {
-			for (const handler of [...handlers]) handler(message);
-		}
+		if (handlers) for (const handler of [...handlers]) handler(message);
 		return super.emit(message.type, message);
 	}
 
-	public subscribe<K extends PlayerEventType>(
-		type: K,
-		listener: EventHandler<Extract<PlayerEvent, { type: K }>>,
-	): () => void {
+	public subscribe<K extends PlayerEventType>(type: K, listener: EventHandler<Extract<PlayerEvent, { type: K }>>): () => void {
 		let handlers = this.eventHandlers.get(type);
-		if (!handlers) {
-			handlers = new Set();
-			this.eventHandlers.set(type, handlers);
-		}
+		if (!handlers) { handlers = new Set(); this.eventHandlers.set(type, handlers); }
 		handlers.add(listener);
-		return () => {
-			handlers?.delete(listener);
-			if (handlers?.size === 0) this.eventHandlers.delete(type);
-		};
+		return () => { handlers?.delete(listener); if (handlers?.size === 0) this.eventHandlers.delete(type); };
 	}
 
-	public publish<K extends keyof PlayerBusEvents>(
-		event: K,
-		...args: PlayerBusEvents[K]
-	): boolean {
-		return super.emit(event, ...args);
-	}
+	public publish<K extends keyof PlayerBusEvents>(event: K, ...args: PlayerBusEvents[K]): boolean { return super.emit(event, ...args); }
 
-	public registerQuery<K extends PlayerQuery>(
-		query: K,
-		handler: QueryHandler<PlayerQueryMap[K]>,
-	): () => void {
+	public registerQuery<K extends PlayerQuery>(query: K, handler: QueryHandler<PlayerQueryMap[K]>): () => void {
 		this.queryHandlers.set(query, handler);
-		return () => {
-			if (this.queryHandlers.get(query) === handler) this.queryHandlers.delete(query);
-		};
+		return () => { if (this.queryHandlers.get(query) === handler) this.queryHandlers.delete(query); };
 	}
 
 	public async query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> {
