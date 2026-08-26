@@ -83,14 +83,9 @@ export class PlayerBus extends EventEmitter {
 		handler?: ActionHandler<Extract<PlayerAction, { type: K }>>,
 	): () => void {
 		if (typeof typeOrHandler === "function") {
-			const genericHandler = typeOrHandler;
-			const disposers = (Object.keys(this.actionHandlers) as PlayerActionType[]).map(() => undefined);
 			const actionTypes: PlayerActionType[] = ["PLAY", "SKIP", "STOP", "PAUSE", "RESUME", "SEEK", "SET_VOLUME"];
-			const remove: Array<() => void> = actionTypes.map((type) => this.addActionHandler(type, genericHandler));
-			return () => {
-				for (const dispose of remove) dispose();
-				void disposers;
-			};
+			const remove = actionTypes.map((type) => this.addActionHandler(type, typeOrHandler));
+			return () => remove.forEach((dispose) => dispose());
 		}
 
 		if (!handler) throw new TypeError(`Missing handler for action ${typeOrHandler}`);
