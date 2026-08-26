@@ -69,7 +69,14 @@ type ActionHandler<A extends PlayerAction> = (action: A) => void | Promise<void>
 type EventHandler<E extends PlayerEvent> = (event: E) => void;
 type QueryHandler<T> = () => T | Promise<T>;
 
-/** Communication hub for one Player instance. */
+/**
+ * Communication hub for one Player instance.
+ *
+ * PlayerBus deliberately does not serialize, retry, debounce or otherwise
+ * schedule playback operations. It only routes actions, events and queries
+ * between Player and the subsystem graph. Execution/concurrency policy stays
+ * with the orchestration/execution layer.
+ */
 export class PlayerBus extends EventEmitter {
 	private readonly actionHandlers = new Map<PlayerActionType, Set<ActionHandler<any>>>();
 	private readonly eventHandlers = new Map<PlayerEventType, Set<EventHandler<any>>>();
@@ -98,6 +105,7 @@ export class PlayerBus extends EventEmitter {
 		return () => { handlers?.delete(handler); if (handlers?.size === 0) this.actionHandlers.delete(type); };
 	}
 
+	/** Dispatch an action to subscribers; this is routing, not a command queue. */
 	public async action(message: PlayerAction): Promise<void> {
 		this.emit("actionDispatched", message);
 		const handlers = this.actionHandlers.get(message.type);
