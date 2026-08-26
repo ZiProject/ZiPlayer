@@ -119,6 +119,11 @@ export class Player extends EventEmitter {
 	private skipLoop = false;
 	private refreshLock = false;
 	private seekInProgress = false;
+	private refreshGeneration = 0;
+	private playbackOperationGeneration = 0;
+	private recoveryGeneration = 0;
+	private playNextPromise: Promise<boolean> | null = null;
+	private playNextRerunRequested = false;
 	private remoteHandle: StreamInfo["handle"];
 
 	private currentSlot: StreamSlot = {
@@ -160,7 +165,7 @@ export class Player extends EventEmitter {
 	private antiStuckReusePreloadFirst = true;
 	private antiStuckReduceQualityOnRetry = true;
 	private antiStuckControlledSkipThreshold = 3;
-	private antiStuckConsecutiveFailures = 0;
+	private antiStuckFailures = new Map<string, number>();
 	private loudnessNormalizationEnabled = false;
 	private loudnessTargetLUFS = -14;
 	private loudnessMaxBoostDb = 8;
@@ -287,6 +292,16 @@ export class Player extends EventEmitter {
 				return this.queue.nextTrack;
 			},
 			getStream: (track) => this.getStream(track),
+			removeTrackFromQueue: (track) => {
+				const nextTrack = this.queue.nextTrack;
+				const matches =
+					nextTrack === track ||
+					(nextTrack?.id !== undefined && track.id !== undefined && nextTrack.id === track.id) ||
+					(nextTrack?.url !== undefined && track.url !== undefined && nextTrack.url === track.url);
+
+				if (!matches) return false;
+				return this.queue.remove(0) !== null;
+			},
 			isDestroyed: () => this.destroyed,
 			isEnabled: () => this.preloadEnabled,
 		});
@@ -472,13 +487,11 @@ export class Player extends EventEmitter {
 		let related = await this.pluginManager.getRelatedTracks(lastTrack);
 		if (!related || related.length === 0) return;
 
-		// Lọc bỏ các bài đã có trong hàng đợi sắp tới
 		const upcomingUrls = new Set(this.queue.getTracks().map((t) => t.url));
 		related = related.filter((t) => !upcomingUrls.has(t.url));
 
 		if (related.length === 0) return;
 
-		// Ưu tiên chọn trong top 5 để đảm bảo chất lượng cao nhất
 		const poolSize = Math.min(5, related.length);
 		const randomchoice = Math.floor(Math.random() * poolSize);
 		const nextTrack = this.queue.nextTrack ? this.queue.nextTrack : related[randomchoice];
@@ -675,6 +688,22 @@ export class Player extends EventEmitter {
 		await this.preloadManager.safeCancelPreload();
 	}
 
+	private invalidatePlaybackOperations(): void {
+		this.refreshGeneration++;
+		this.recoveryGeneration++;
+		this.playbackOperationGeneration++;
+
+		if (this.stuckTimer) {
+			clearTimeout(this.stuckTimer);
+			this.stuckTimer = null;
+		}
+
+		if (this.currentSlot.abortController) {
+			this.currentSlot.abortController.abort();
+			this.currentSlot.abortController = null;
+		}
+	}
+
 	// Preload stream fetch/cancel flow has been moved to PreloadManager.
 	/**
 	 * Preload next track with proper error handling and cleanup
@@ -800,58 +829,93 @@ export class Player extends EventEmitter {
 		return Math.min(this.loudnessLimiterCeiling, Math.max(0, adjusted));
 	}
 
+	private getAntiStuckTrackKey(track: Track): string {
+		return track.id || track.url || track.title;
+	}
+
 	private async attemptTrackRecovery(track: Track, reason: unknown): Promise<boolean> {
 		if (!this.antiStuckEnabled) return false;
+		const recoveryGeneration = ++this.recoveryGeneration;
+		const recoveryTrackId = track.id;
+		const isRecoveryStale = () =>
+			this.destroyed ||
+			recoveryGeneration !== this.recoveryGeneration ||
+			(recoveryTrackId ? this.queue.currentTrack?.id !== recoveryTrackId : this.queue.currentTrack !== track);
+
 		this.recoveryInProgress = true;
 		this.debug(`[AntiStuck] Recovery started for: ${track.title}`, reason);
 
+		const key = this.getAntiStuckTrackKey(track);
 		const originalQuality = this.options.quality;
 		let attempted = 0;
 
-		while (attempted < this.antiStuckMaxRetries) {
-			attempted++;
-			if (this.antiStuckReduceQualityOnRetry) {
-				this.options.quality = "low";
-			}
+		try {
+			while (attempted < this.antiStuckMaxRetries) {
+				attempted++;
+				if (this.antiStuckReduceQualityOnRetry) {
+					this.options.quality = "low";
+				}
 
-			if (this.antiStuckRetryDelayMs > 0) {
-				await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
-			}
+				if (this.antiStuckRetryDelayMs > 0) {
+					await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
+				}
 
-			try {
-				if (this.antiStuckReusePreloadFirst && this.preloadManager.hasValidPreload(track)) {
-					const startedFromPreload = await this.startTrack(track);
-					if (startedFromPreload) {
-						this.antiStuckConsecutiveFailures = 0;
-						this.options.quality = originalQuality;
-						this.recoveryInProgress = false;
+				if (isRecoveryStale()) {
+					this.debug(`[AntiStuck] Recovery became stale for: ${track.title}`);
+					return false;
+				}
+
+				try {
+					if (this.antiStuckReusePreloadFirst && this.preloadManager.hasValidPreload(track)) {
+						const startedFromPreload = await this.startTrack(track);
+						if (isRecoveryStale()) {
+							this.debug(`[AntiStuck] Recovery became stale after preload retry for: ${track.title}`);
+							return false;
+						}
+						if (startedFromPreload) {
+							this.antiStuckFailures.delete(key);
+							return true;
+						}
+					}
+
+					const started = await this.loadFreshStream(track);
+					if (isRecoveryStale()) {
+						this.debug(`[AntiStuck] Recovery became stale after fresh stream retry for: ${track.title}`);
+						return false;
+					}
+					if (started) {
+						this.antiStuckFailures.delete(key);
 						return true;
 					}
+				} catch (error) {
+					if (isRecoveryStale()) {
+						this.debug(`[AntiStuck] Recovery became stale after retry error for: ${track.title}`);
+						return false;
+					}
+					this.debug(`[AntiStuck] Retry ${attempted} failed for ${track.title}:`, error);
 				}
+			}
 
-				const started = await this.loadFreshStream(track);
-				if (started) {
-					this.antiStuckConsecutiveFailures = 0;
-					this.options.quality = originalQuality;
-					this.recoveryInProgress = false;
-					return true;
-				}
-			} catch (error) {
-				this.debug(`[AntiStuck] Retry ${attempted} failed for ${track.title}:`, error);
+			if (isRecoveryStale()) {
+				this.debug(`[AntiStuck] Recovery became stale before failure accounting for: ${track.title}`);
+				return false;
+			}
+
+			const failures = (this.antiStuckFailures.get(key) ?? 0) + 1;
+			this.antiStuckFailures.set(key, failures);
+			if (failures >= this.antiStuckControlledSkipThreshold) {
+				this.debug(`[AntiStuck] Controlled skip threshold reached for ${track.title}`);
+				return false;
+			}
+			// Avoid hard skip storm by leaving track for next natural retry window.
+			this.debug(`[AntiStuck] Keeping track for controlled retry window: ${track.title}`);
+			return false;
+		} finally {
+			this.options.quality = originalQuality;
+			if (recoveryGeneration === this.recoveryGeneration) {
+				this.recoveryInProgress = false;
 			}
 		}
-
-		this.options.quality = originalQuality;
-		this.antiStuckConsecutiveFailures++;
-		if (this.antiStuckConsecutiveFailures >= this.antiStuckControlledSkipThreshold) {
-			this.debug(`[AntiStuck] Controlled skip threshold reached for ${track.title}`);
-			this.recoveryInProgress = false;
-			return false;
-		}
-		this.recoveryInProgress = false;
-		// Avoid hard skip storm by leaving track for next natural retry window.
-		this.debug(`[AntiStuck] Keeping track for controlled retry window: ${track.title}`);
-		return false;
 	}
 
 	/**
@@ -903,29 +967,31 @@ export class Player extends EventEmitter {
 	 *
 	 * @param {StreamInfo} streamInfo - The stream information
 	 * @param {Track} track - The track being processed
-	 * @param {number} position - Position in milliseconds to seek to (0 = no seek)
+	 * @param {number} position - Optional position in milliseconds to seek to
 	 * @returns {Promise<AudioResource>} The AudioResource with filters and seek applied
 	 */
 	private async createResource(
 		streamInfo: StreamInfo,
 		track: Track,
-		position: number = 0,
+		position?: number,
 	): Promise<{ resource: AudioResource; processedStream: import("stream").Readable | null }> {
 		const filterString = this.filter.getFilterString();
-		this.debug(`[Player] Creating AudioResource — filters: ${filterString || "none"}, seek: ${position}ms`);
+		const hasSeek = position !== undefined && position >= 0;
+		this.debug(
+			`[Player] Creating AudioResource - filters: ${filterString || "none"}, seek: ${hasSeek ? `${position}ms` : "none"}`,
+		);
 
 		this.filter.setSourceStreamType(streamInfo.type);
 
-		const seekArg = position > 0 ? position : -1;
-
-		if (filterString || position > 0) {
+		if (filterString || hasSeek) {
+			const seekArg = hasSeek ? position : -1;
 			const processedStream = await this.filter.applyFiltersAndSeek(streamInfo, seekArg);
 
 			const resource = createAudioResource(processedStream.stream || processedStream.url!, {
 				metadata: track,
 				inputType:
 					processedStream.wasRecreated && !filterString ? StreamType.Arbitrary
-					: position > 0 ? StreamType.Raw
+					: hasSeek ? StreamType.Raw
 					: StreamType.Arbitrary,
 				inlineVolume: true,
 			});
@@ -1056,10 +1122,6 @@ export class Player extends EventEmitter {
 	private async startTrack(track: Track): Promise<boolean> {
 		if (this.destroyed) return false;
 
-		// Check preload BEFORE calling getStream so we never fetch a
-		// stream we're about to throw away. The original code called getStream()
-		// unconditionally at the top, then used the preload if available — leaking
-		// the just-fetched stream and running middleware twice.
 		if (this.preloadManager.hasValidPreload(track)) {
 			return await this.startFromPreload(track);
 		}
@@ -1122,6 +1184,7 @@ export class Player extends EventEmitter {
 			this.debug(`[Player] Preload error:`, err);
 		});
 
+		this.antiStuckFailures.delete(this.getAntiStuckTrackKey(track));
 		return true;
 	}
 
@@ -1130,6 +1193,12 @@ export class Player extends EventEmitter {
 	 */
 	private async loadFreshStream(track: Track, preloadedStreamInfo?: StreamInfo | null): Promise<boolean> {
 		if (this.destroyed) return false;
+		const loadGeneration = ++this.refreshGeneration;
+		const loadTrackId = track.id;
+		const isLoadStale = () =>
+			this.destroyed ||
+			loadGeneration !== this.refreshGeneration ||
+			(loadTrackId ? this.queue.currentTrack?.id !== loadTrackId : this.queue.currentTrack !== track);
 
 		await this.safeCancelPreload();
 
@@ -1159,7 +1228,25 @@ export class Player extends EventEmitter {
 
 			// createResource now returns both the AudioResource
 			// AND the processedStream (ffmpeg stdout) when filters/seek are involved.
-			const { resource, processedStream } = await this.createResource(streamInfo, track, 0);
+			const { resource, processedStream } = await this.createResource(streamInfo, track);
+
+			if (isLoadStale()) {
+				this.debug(`[Player] loadFreshStream: resource became stale, destroying`);
+
+				try {
+					processedStream?.destroy();
+				} catch {}
+
+				try {
+					resource.playStream?.destroy?.();
+				} catch {}
+
+				if (rawStreamId) {
+					this.streamManager.unregisterStream(rawStreamId, true);
+				}
+
+				return false;
+			}
 
 			// when a processedStream exists, register it too so its
 			// lifecycle is tracked. Store its id separately in currentSlot so
@@ -1211,6 +1298,7 @@ export class Player extends EventEmitter {
 				});
 			}
 
+			this.antiStuckFailures.delete(this.getAntiStuckTrackKey(track));
 			return true;
 		} catch (error) {
 			this.debug(`[Player] loadFreshStream error:`, error);
@@ -1221,15 +1309,55 @@ export class Player extends EventEmitter {
 	/**
 	 * Play the next track in the queue, handling errors and edge cases gracefully
 	 */
-	public async playNext(): Promise<boolean> {
+	public playNext(): Promise<boolean> {
+		if (this.destroyed) return Promise.resolve(false);
+		if (this.playNextPromise) {
+			this.playNextRerunRequested = true;
+			this.debug("[Player] playNext already running - reusing existing operation");
+			return this.playNextPromise;
+		}
+
+		const playNextPromise = this.runSerializedPlayNext();
+		this.playNextPromise = playNextPromise;
+		void playNextPromise.finally(() => {
+			if (this.playNextPromise === playNextPromise) {
+				this.playNextPromise = null;
+			}
+		});
+		return playNextPromise;
+	}
+
+	private async runSerializedPlayNext(): Promise<boolean> {
+		let result = false;
+		do {
+			this.playNextRerunRequested = false;
+			result = await this.playNextInternal();
+		} while (!result && this.playNextRerunRequested && !this.destroyed);
+
+		return result;
+	}
+
+	private async playNextInternal(): Promise<boolean> {
 		if (this.destroyed) return false;
+		const playNextGeneration = this.playbackOperationGeneration;
+		const isPlayNextStale = () => this.destroyed || playNextGeneration !== this.playbackOperationGeneration;
 		this.debug("[Player] playNext called");
 
 		while (true) {
+			if (isPlayNextStale()) {
+				this.debug("[Player] playNext became stale before selecting track");
+				return false;
+			}
+
 			const track = this.queue.next(this.skipLoop);
 			this.skipLoop = false;
 
 			if (!track) {
+				if (isPlayNextStale()) {
+					this.debug("[Player] playNext became stale with no selected track");
+					return false;
+				}
+
 				if (this.queue.autoPlay()) {
 					const willnext = this.queue.willNextTrack();
 					if (willnext) {
@@ -1267,8 +1395,12 @@ export class Player extends EventEmitter {
 
 			try {
 				const started = await this.startTrack(track);
+				if (isPlayNextStale()) {
+					this.debug(`[Player] playNext became stale after start attempt for: ${track.title}`);
+					return false;
+				}
 				if (started) {
-					this.antiStuckConsecutiveFailures = 0;
+					this.antiStuckFailures.delete(this.getAntiStuckTrackKey(track));
 					return true;
 				}
 
@@ -1279,19 +1411,33 @@ export class Player extends EventEmitter {
 				}
 
 				const recovered = await this.attemptTrackRecovery(track, new Error("TRACK_START_RETURNED_FALSE"));
+				if (isPlayNextStale()) {
+					this.debug(`[Player] playNext became stale after recovery attempt for: ${track.title}`);
+					return false;
+				}
 				if (recovered) {
 					return true;
 				}
-				if (this.antiStuckEnabled && this.antiStuckConsecutiveFailures < this.antiStuckControlledSkipThreshold) {
+				const key = this.getAntiStuckTrackKey(track);
+				const failures = this.antiStuckFailures.get(key) ?? 0;
+				if (this.antiStuckEnabled && failures < this.antiStuckControlledSkipThreshold) {
 					this.queue.insert(track, 0);
 					if (this.antiStuckRetryDelayMs > 0) {
 						await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
 					}
+					if (isPlayNextStale()) {
+						this.debug(`[Player] playNext became stale during retry delay for: ${track.title}`);
+						return false;
+					}
 				} else {
-					this.antiStuckConsecutiveFailures = 0;
+					this.antiStuckFailures.delete(key);
 					this.skipLoop = true;
 				}
 			} catch (err) {
+				if (isPlayNextStale()) {
+					this.debug(`[Player] playNext became stale after error for: ${track.title}`);
+					return false;
+				}
 				this.debug(`[Player] playNext error:`, err);
 				this.emit("playerError", err as Error, track);
 
@@ -1306,16 +1452,26 @@ export class Player extends EventEmitter {
 					continue;
 				}
 				const recovered = await this.attemptTrackRecovery(track, err);
+				if (isPlayNextStale()) {
+					this.debug(`[Player] playNext became stale after error recovery for: ${track.title}`);
+					return false;
+				}
 				if (recovered) {
 					return true;
 				}
-				if (this.antiStuckEnabled && this.antiStuckConsecutiveFailures < this.antiStuckControlledSkipThreshold) {
+				const key = this.getAntiStuckTrackKey(track);
+				const failures = this.antiStuckFailures.get(key) ?? 0;
+				if (this.antiStuckEnabled && failures < this.antiStuckControlledSkipThreshold) {
 					this.queue.insert(track, 0);
 					if (this.antiStuckRetryDelayMs > 0) {
 						await new Promise((resolve) => setTimeout(resolve, this.antiStuckRetryDelayMs));
 					}
+					if (isPlayNextStale()) {
+						this.debug(`[Player] playNext became stale during error retry delay for: ${track.title}`);
+						return false;
+					}
 				} else {
-					this.antiStuckConsecutiveFailures = 0;
+					this.antiStuckFailures.delete(key);
 					this.skipLoop = true;
 				}
 				continue;
@@ -1341,6 +1497,7 @@ export class Player extends EventEmitter {
 
 			this.debug(`[Player] Remote playback started for: ${track.title}`);
 
+			this.antiStuckFailures.delete(this.getAntiStuckTrackKey(track));
 			return true;
 		} catch (error) {
 			this.debug(`[Player] Remote playback error:`, error);
@@ -1765,6 +1922,7 @@ export class Player extends EventEmitter {
 			this.debug("[Player] Cannot stop while subscribed to another player");
 			return false;
 		}
+		this.invalidatePlaybackOperations();
 		this.recoveryInProgress = false;
 		this.debug(`[Player] stop called`);
 		if (this.playbackMode === PlaybackMode.REMOTE) {
@@ -1857,6 +2015,7 @@ export class Player extends EventEmitter {
 			return false;
 		}
 		this.debug(`[Player] skip called with index: ${index}`);
+		this.invalidatePlaybackOperations();
 		this.recoveryInProgress = false;
 		if (this.playbackMode === PlaybackMode.REMOTE) {
 			if (typeof index === "number" && index >= 0) {
@@ -2394,6 +2553,7 @@ export class Player extends EventEmitter {
 	 */
 	destroy(): void {
 		this.debug(`[Player] destroy called`);
+		this.invalidatePlaybackOperations();
 		if (this.destroyed) return;
 		this.destroyed = true;
 
@@ -2405,6 +2565,11 @@ export class Player extends EventEmitter {
 		if (this.leaveTimeout) {
 			clearTimeout(this.leaveTimeout);
 			this.leaveTimeout = null;
+		}
+
+		if (this.stuckTimer) {
+			clearTimeout(this.stuckTimer);
+			this.stuckTimer = null;
 		}
 		this.streamManager.destroyAll(true);
 		// Destroy current stream before stopping audio
@@ -2482,11 +2647,10 @@ export class Player extends EventEmitter {
 	 * console.log(`Refreshed: ${refreshed}`);
 	 */
 	public async refreshPlayerResource(applyToCurrent: boolean = true, position: number = -1): Promise<boolean> {
+		const refreshGeneration = ++this.refreshGeneration;
+		const refreshTrackId = this.queue.currentTrack?.id;
+
 		if (!applyToCurrent || !this.queue.currentTrack || !(this.isPlaying || this.isPaused)) {
-			return false;
-		}
-		if (this.refreshLock) {
-			this.debug(`[Player] refreshPlayerResource skipped — lock held`);
 			return false;
 		}
 
@@ -2559,16 +2723,21 @@ export class Player extends EventEmitter {
 				this.extensionManager.clearCache("stream");
 				this.debug(`[Player] Fetching fresh stream${!isForwardSeek ? " (backward seek)" : " (reuse failed)"}`);
 				streaminfo = await this.getStream(track);
+			}
 
-				if (this.destroyed) {
-					this.debug(`[Player] refreshPlayerResource: Player destroyed during stream fetch`);
-					return false;
+			if (this.destroyed || refreshGeneration !== this.refreshGeneration || this.queue.currentTrack?.id !== refreshTrackId) {
+				this.debug(`[Player] refreshPlayerResource: refresh became stale, aborting`);
+
+				if (streaminfo?.stream) {
+					const managed = this.streamManager.getAllStreams().find((s) => s.stream === streaminfo.stream);
+					if (managed) {
+						this.streamManager.unregisterStream(managed.id, true);
+					} else {
+						streaminfo.stream.destroy();
+					}
 				}
 
-				if (!applyToCurrent || !this.queue.currentTrack || !(this.isPlaying || this.isPaused)) {
-					this.debug(`[Player] refreshPlayerResource: Player state changed during stream fetch, aborting`);
-					return false;
-				}
+				return false;
 			}
 
 			if (!streaminfo?.stream && !streaminfo?.url) {
@@ -2579,6 +2748,30 @@ export class Player extends EventEmitter {
 			const createPosition = reuseStream ? -1 : currentPosition;
 
 			const { resource, processedStream } = await this.createResource(streaminfo, track, createPosition);
+
+			if (this.destroyed || refreshGeneration !== this.refreshGeneration || this.queue.currentTrack?.id !== refreshTrackId) {
+				this.debug(`[Player] refreshPlayerResource: resource became stale, destroying`);
+
+				try {
+					processedStream?.destroy();
+				} catch {}
+
+				try {
+					resource.playStream?.destroy?.();
+				} catch {}
+
+				if (streaminfo.stream) {
+					const managed = this.streamManager.getAllStreams().find((s) => s.stream === streaminfo.stream);
+
+					if (managed) {
+						this.streamManager.unregisterStream(managed.id, true);
+					} else if (!streaminfo.stream.destroyed) {
+						streaminfo.stream.destroy();
+					}
+				}
+
+				return false;
+			}
 
 			// Register raw source stream
 			const newStreamId =
@@ -2624,7 +2817,9 @@ export class Player extends EventEmitter {
 			this.emit("playerError", error as Error, this.queue.currentTrack ?? undefined);
 			return false;
 		} finally {
-			this.refreshLock = false;
+			if (refreshGeneration === this.refreshGeneration) {
+				this.refreshLock = false;
+			}
 		}
 	}
 

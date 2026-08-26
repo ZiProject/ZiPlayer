@@ -12,25 +12,43 @@ export async function webStreamToNodeStream(
 	let bytesSkipped = 0;
 	let streamEnded = false;
 	let reading = false;
+	let cleanedUp = false;
+	let cleanupPromise: Promise<void> | undefined;
 	let abortHandler: (() => void) | undefined;
 
-	const cleanup = async () => {
-		if (abortHandler && signal) {
-			signal.removeEventListener("abort", abortHandler);
-			abortHandler = undefined;
-		}
+	/**
+	 * Cancel the underlying Web ReadableStream before releasing the reader.
+	 *
+	 * Releasing a reader lock does NOT cancel the underlying stream. This is
+	 * important when the Node stream is destroyed by StreamManager/player
+	 * cleanup: the YouTube request must be cancelled as well.
+	 */
+	const cleanup = (): Promise<void> => {
+		if (cleanupPromise) return cleanupPromise;
 
-		try {
-			await reader.cancel();
-		} catch {
-			// Stream may already be closed.
-		}
+		cleanupPromise = (async () => {
+			if (cleanedUp) return;
+			cleanedUp = true;
 
-		try {
-			reader.releaseLock();
-		} catch {
-			// Ignore.
-		}
+			if (abortHandler && signal) {
+				signal.removeEventListener("abort", abortHandler);
+				abortHandler = undefined;
+			}
+
+			try {
+				await reader.cancel();
+			} catch {
+				// The stream may already be closed, errored, or cancelled.
+			}
+
+			try {
+				reader.releaseLock();
+			} catch {
+				// Ignore.
+			}
+		})();
+
+		return cleanupPromise;
 	};
 
 	if (signal?.aborted) {
@@ -42,7 +60,7 @@ export async function webStreamToNodeStream(
 		highWaterMark,
 
 		async read() {
-			if (streamEnded || reading) {
+			if (streamEnded || reading || cleanedUp) {
 				return;
 			}
 
@@ -54,6 +72,8 @@ export async function webStreamToNodeStream(
 				}
 
 				while (true) {
+					if (streamEnded || cleanedUp) return;
+
 					if (signal?.aborted) {
 						throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 					}
@@ -109,39 +129,36 @@ export async function webStreamToNodeStream(
 	});
 
 	abortHandler = () => {
-		if (streamEnded) return;
+		if (streamEnded || cleanedUp) return;
 
 		streamEnded = true;
 
-		// This is important:
-		// cancel() causes the pending reader.read() to settle.
-		void reader
-			.cancel(signal?.reason)
-			.catch(() => {})
-			.finally(() => {
-				if (!nodeStream.destroyed) {
-					nodeStream.destroy(signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));
-				}
-			});
+		const reason = signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
+
+		// Cancel first so a pending reader.read() settles, then destroy the
+		// Node stream. cleanup() is idempotent and also removes this listener.
+		void cleanup().finally(() => {
+			if (!nodeStream.destroyed) {
+				nodeStream.destroy(reason);
+			}
+		});
 	};
 
 	signal?.addEventListener("abort", abortHandler, { once: true });
 
-	const cleanupNodeStream = () => {
-		if (abortHandler && signal) {
-			signal.removeEventListener("abort", abortHandler);
-			abortHandler = undefined;
-		}
+	// Node consumers may call destroy() directly (StreamManager does this
+	// when replacing/evicting a stream). Always cancel the WebStream too.
+	nodeStream.once("close", () => {
+		void cleanup();
+	});
 
-		try {
-			reader.releaseLock();
-		} catch {
-			// Ignore.
-		}
-	};
+	nodeStream.once("error", () => {
+		void cleanup();
+	});
 
-	nodeStream.once("close", cleanupNodeStream);
-	nodeStream.once("error", cleanupNodeStream);
+	nodeStream.once("end", () => {
+		void cleanup();
+	});
 
 	return nodeStream;
 }

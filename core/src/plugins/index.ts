@@ -332,7 +332,7 @@ export class PluginManager {
 	}
 
 	debug(message?: any, ...optionalParams: any[]): void {
-		if (this.manager.debugEnabled) {
+		if (this.manager?.debugEnabled) {
 			this.manager.emit("debug", `[Plugins] ${message}`, ...optionalParams);
 		}
 	}

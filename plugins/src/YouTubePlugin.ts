@@ -1,32 +1,24 @@
 import { BasePlugin, Track, SearchResult, StreamInfo, Player } from "ziplayer";
 
-import { Innertube, Log, UniversalCache, Platform } from "youtubei.js";
+import { Innertube, Log, UniversalCache, Platform, type Types } from "youtubei.js";
 import { createSabrStream, DEFAULT_SABR_OPTIONS } from "./utils/sabr-stream-factory.js";
 import { webStreamToNodeStream } from "./utils/stream-converter.js";
+import { mintYouTubePoToken } from "./utils/youtube-botguard.js";
 import { Readable } from "stream";
 
 /**
  * YouTube VM shim
  * This allows the SABR stream to execute YouTube's custom JavaScript for deciphering signatures and generating tokens
  */
-Platform.shim.eval = async (data, env) => {
-	const properties = [];
-
-	if (env.n) properties.push(`n: exportedVars.nFunction("${env.n}")`);
-	if (env.sig) properties.push(`sig: exportedVars.sigFunction("${env.sig}")`);
-
-	const code = `${data.output}\nreturn { ${properties.join(", ")} }`;
-	return new Function(code)();
-};
+Platform.shim.eval = async (data: Types.BuildScriptResult) => new Function(data.output)();
 
 export interface PluginOptions {
 	player?: Player;
 	debug?: (message?: any, ...optionalParams: any[]) => any;
-	searchClient?: Innertube;
 	client?: Innertube;
 	searchLimit?: number;
-	clientType?: "WEB" | "ANDROID" | "IOS";
-	searchClientType?: "WEB" | "ANDROID" | "IOS";
+	clientType?: Types.InnerTubeClient;
+	searchClientType?: Types.InnerTubeClient;
 	fallbackStream?: (track: Track) => Promise<StreamInfo>;
 	fistStream?: (track: Track) => Promise<StreamInfo>;
 }
@@ -63,8 +55,6 @@ export class YouTubePlugin extends BasePlugin {
 	priority = 10; // Higher priority to handle YouTube URLs before more generic plugins
 
 	private client!: Innertube;
-	private searchClient!: Innertube;
-	private sabrClient!: Innertube;
 	private ready: Promise<void>;
 	private player: Player | undefined;
 	private options: PluginOptions;
@@ -93,17 +83,6 @@ export class YouTubePlugin extends BasePlugin {
 
 				client_type: this.options.clientType || "WEB",
 				// retrieve_player: false,
-			} as any));
-
-		// Use a separate web client for search to avoid mobile parser issues
-		this.sabrClient = await Innertube.create({
-			cache: new UniversalCache(true),
-		} as any);
-		this.searchClient =
-			this.options.searchClient ??
-			(await Innertube.create({
-				client_type: this.options.searchClientType || "WEB",
-				retrieve_player: false,
 			} as any));
 		Log.setLevel(0);
 	}
@@ -295,7 +274,7 @@ export class YouTubePlugin extends BasePlugin {
 					if (anchorVideoId) {
 						try {
 							this.debug("Getting info for anchor video ID:", anchorVideoId);
-							const info: any = await (this.searchClient as any).getInfo(anchorVideoId);
+							const info: any = await this.client.getInfo(anchorVideoId, { client: this.options.searchClientType || "WEB" });
 							this.debug("Info:", info);
 							const feed: any[] = info?.watch_next_feed || [];
 							this.debug("Feed:", feed);
@@ -319,7 +298,7 @@ export class YouTubePlugin extends BasePlugin {
 					}
 				}
 				try {
-					const playlist: any = await (this.searchClient as any).getPlaylist(listId);
+					const playlist: any = await this.client.getPlaylist(listId);
 					const videos: any[] = playlist?.videos || playlist?.items || [];
 					const tracks: Track[] = videos.map((v: any) => this.buildTrack(v, requestedBy, { playlist: listId }));
 
@@ -343,7 +322,7 @@ export class YouTubePlugin extends BasePlugin {
 			if (videoId) {
 				try {
 					// Get the specific video info directly
-					const info: any = await (this.searchClient as any).getInfo(videoId);
+					const info: any = await this.client.getInfo(videoId, { client: this.options.searchClientType || "WEB" });
 					this.debug("Video info:", info);
 
 					if (info && info.basic_info) {
@@ -358,7 +337,7 @@ export class YouTubePlugin extends BasePlugin {
 			}
 
 			// If we get here, either no videoId or getInfo failed - try search as fallback
-			const res: any = await this.searchClient.search(videoId || query, {
+			const res: any = await this.client.search(videoId || query, {
 				type: "video" as any,
 			});
 			const items: any[] = res?.items || res?.videos || res?.results || [];
@@ -370,7 +349,7 @@ export class YouTubePlugin extends BasePlugin {
 		if (this.canHandle(query) === false) return { tracks: [] };
 
 		// Text search → return up to 10 video tracks
-		const res: any = await this.searchClient.search(query, {
+		const res: any = await this.client.search(query, {
 			type: "video" as any,
 		});
 		const items: any[] = res?.items || res?.videos || res?.results || [];
@@ -406,7 +385,7 @@ export class YouTubePlugin extends BasePlugin {
 				const anchorVideoId = this.extractVideoId(url);
 				if (anchorVideoId) {
 					try {
-						const info: any = await (this.searchClient as any).getInfo(anchorVideoId);
+						const info: any = await this.client.getInfo(anchorVideoId, { client: this.options.searchClientType || "WEB" });
 						const feed: any[] = info?.watch_next_feed || [];
 						return feed
 							.filter((tr: any) => tr?.content_type === "VIDEO")
@@ -426,10 +405,11 @@ export class YouTubePlugin extends BasePlugin {
 	}
 
 	/**
-	 * Retrieves the audio stream for a YouTube track using sabr download.
+	 * Retrieves the audio stream for a YouTube track.
 	 *
-	 * This method extracts the audio stream from a YouTube video using the sabr download
-	 * method which provides better quality and more reliable streaming.
+	 * The plugin first attempts youtubei.js with a BotGuard WebPO token,
+	 * then falls back to SABR if the youtubei.js download fails.
+
 	 *
 	 * @param track - The Track object to get the stream for
 	 * @returns A StreamInfo object containing the audio stream and metadata
@@ -472,74 +452,128 @@ export class YouTubePlugin extends BasePlugin {
 		if (!id) throw new Error("Invalid track id");
 
 		try {
-			this.debug("🚀 Attempting prioritized SABR download");
-			return await this.downloadWithSabr(track, id, signal);
-		} catch (e: any) {
+			this.debug("🚀 Attempting youtubei.js download with BotGuard");
+			return await this.downloadWithYoutubei(track, id, signal);
+		} catch (youtubeError: any) {
 			if (signal?.aborted) {
 				throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 			}
 
-			if (this.options?.fallbackStream && typeof this.options.fallbackStream === "function") {
-				this.debug("🔁 Attempting user-provided fallback stream method");
-				try {
-					const fbStream = await this.options.fallbackStream(track);
-					if (fbStream && fbStream.stream) {
-						this.debug("✅ User-provided fallback stream successful");
-						return fbStream;
-					}
-				} catch (err: any) {
-					this.debug("⚠️ User-provided fallback stream failed or returned invalid stream");
-				}
-			}
+			this.debug("⚠️ youtubei.js WebPO direct stream failed, trying SABR:", youtubeError);
 
-			this.debug("⚠️ SABR download failed, and youtubei.js download is temporarily disabled:", e.message);
-			throw e;
+			try {
+				return await this.downloadWithSabr(track, id, signal);
+			} catch (sabrError: any) {
+				if (signal?.aborted) {
+					throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+				}
+
+				if (this.options?.fallbackStream && typeof this.options.fallbackStream === "function") {
+					this.debug("🔁 Attempting user-provided fallback stream method");
+					try {
+						const fbStream = await this.options.fallbackStream(track);
+						if (fbStream && fbStream.stream) {
+							this.debug("✅ User-provided fallback stream successful");
+							return fbStream;
+						}
+					} catch (err: any) {
+						this.debug("⚠️ User-provided fallback stream failed or returned invalid stream");
+					}
+				}
+
+				throw sabrError;
+			}
 		}
 	}
 
 	private async downloadWithYoutubei(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
-		this.debug("try youtubei.js to download track");
+		this.debug("🚀 Attempting youtubei.js download with BotGuard WebPO token");
 		this.throwIfAborted(signal);
 
-		const stream = await this.client.download(id, {
-			type: "audio",
+		const poToken = await mintYouTubePoToken(id, signal);
+		this.throwIfAborted(signal);
+
+		const videoInfo = await this.client.getBasicInfo(id, {
+			client: "YTMUSIC",
+		});
+
+		this.throwIfAborted(signal);
+
+		const format = videoInfo.chooseFormat({
 			quality: "best",
-		} as any);
+			type: "audio",
+		});
+
+		if (!format) {
+			throw new Error("youtubei.js could not choose an audio format");
+		}
+
+		this.debug("🎵 Selected youtubei.js audio format:", {
+			itag: format.itag,
+			mimeType: format.mime_type,
+			bitrate: format.bitrate,
+			contentLength: format.content_length,
+		});
+
+		const decipheredUrl = await format.decipher(this.client.session.player);
 
 		this.throwIfAborted(signal);
 
-		this.debug("🔍 Checking stream type:", typeof stream, stream?.constructor?.name);
-		if (stream && typeof stream.getReader === "function") {
-			this.debug("🔄 Converting Web Stream to Node.js Stream with backpressure handling");
-			const nodeStream = await webStreamToNodeStream(stream, 32 * 1024, 0, signal); // Optimized buffer size
-
-			nodeStream.on("error", (error: Error) => {
-				const errorMsg = error.message || String(error);
-				if (!errorMsg.includes("Controller is already closed")) {
-					this.debug("⚠️ Fallback stream error:", errorMsg);
-				}
-			});
-
-			this.debug("✅ Stream converted successfully");
-			if (Readable.isReadable(nodeStream))
-				return {
-					stream: nodeStream,
-					type: "arbitrary",
-					metadata: track.metadata,
-				};
-		} else {
-			this.debug("⚠️ Stream is not a Web Stream or is null");
+		if (!decipheredUrl) {
+			throw new Error("youtubei.js returned an empty deciphered URL");
 		}
-		const streamsrc = await webStreamToNodeStream(stream, 32 * 1024, 0, signal);
-		if (!Readable.isReadable(streamsrc)) throw new Error("youtubei.js not return Readable");
+
+		const separator = decipheredUrl.includes("&") ? "&" : "?";
+		const audioStreamingURL = `${decipheredUrl}${separator}pot=${encodeURIComponent(poToken)}`;
+
+		this.debug("✅ youtubei.js format deciphered successfully");
+
+		const response = await fetch(audioStreamingURL, {
+			signal,
+			headers: {
+				"User-Agent": "Mozilla/5.0",
+				Accept: "*/*",
+			},
+		});
+
+		this.throwIfAborted(signal);
+
+		if (!response.ok) {
+			throw new Error(`youtubei.js audio request failed: HTTP ${response.status} ${response.statusText}`);
+		}
+
+		if (!response.body) {
+			throw new Error("youtubei.js audio request returned no response body");
+		}
+
+		this.debug("🔄 Converting youtubei.js audio Web Stream to Node.js stream");
+
+		const nodeStream = await webStreamToNodeStream(response.body, 32 * 1024, 0, signal);
+
+		nodeStream.on("error", (error: Error) => {
+			const errorMsg = error.message || String(error);
+
+			if (!errorMsg.includes("Controller is already closed")) {
+				this.debug("⚠️ youtubei.js stream error:", errorMsg);
+			}
+		});
+
+		if (!Readable.isReadable(nodeStream)) {
+			throw new Error("youtubei.js audio stream is not readable");
+		}
+
+		this.debug("✅ youtubei.js audio stream ready");
 
 		return {
-			stream: streamsrc,
+			stream: nodeStream,
 			type: "arbitrary",
-			metadata: track.metadata,
+			metadata: {
+				...track.metadata,
+				itag: format.itag,
+				mime: (format as any).mime_type ?? (format as any).mimeType,
+			},
 		};
 	}
-
 	private async downloadWithSabr(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
 		const { stream, format } = await this.getSabrDL(track, id, signal);
 
@@ -565,7 +599,7 @@ export class YouTubePlugin extends BasePlugin {
 		}
 
 		this.debug("🚀 Attempting sabr download for video ID:", id);
-		const videoInfo = await this.sabrClient.getInfo(id);
+		const videoInfo = await this.client.getInfo(id, { client: "WEB" });
 		this.throwIfAborted(signal);
 
 		const actualTitle = videoInfo.basic_info?.title || "";
@@ -581,7 +615,7 @@ export class YouTubePlugin extends BasePlugin {
 		this.debug(`Actual: "${actualTitle}"`);
 
 		const sabrOptions = { ...DEFAULT_SABR_OPTIONS };
-		const { stream, title, format } = await createSabrStream(id, this.sabrClient, sabrOptions, signal);
+		const { stream, title, format } = await createSabrStream(id, this.client, sabrOptions, signal);
 
 		this.debug("✅ Sabr download successful, stream ready");
 
@@ -641,9 +675,9 @@ export class YouTubePlugin extends BasePlugin {
 			return [];
 		}
 		this.debug("Getting info for video ID:", videoId);
-		const info: any = await (this.searchClient as any).getInfo(videoId);
+		const info: any = await this.client.getInfo(videoId, { client: this.options.searchClientType || "WEB" });
 		const related: any[] = info?.watch_next_feed || [];
-		this.debug("Related:", related);
+		this.debug("Found related videos:", related.length);
 		const offset = opts?.offset ?? 0;
 		const limit = opts?.limit ?? this.options.searchLimit ?? 10;
 
@@ -651,7 +685,7 @@ export class YouTubePlugin extends BasePlugin {
 		const relatedfilter = related.filter((tr: any) => tr?.content_type === "VIDEO" && !historyUrls.has(tr?.url));
 
 		const reSearchTrack = async (track: any) => {
-			const info: any = await (this.searchClient as any).getInfo(
+			const info: any = await this.client.getInfo(
 				track?.id ??
 					track?.video_id ??
 					track?.videoId ??
@@ -661,6 +695,7 @@ export class YouTubePlugin extends BasePlugin {
 					track?.basic_info?.video_id ??
 					track?.basic_info?.videoId ??
 					track?.basic_info?.content_id,
+				{ client: this.options.searchClientType || "WEB" },
 			);
 			if (info && info.basic_info) {
 				const track = this.buildTrack(info.basic_info, "auto");
