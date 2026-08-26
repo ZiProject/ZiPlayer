@@ -1,8 +1,8 @@
 import { EventEmitter } from "events";
+import type { AudioPlayerState } from "@discordjs/voice";
 import type { PlayerEvents, Track } from "../types";
 import type { PlaybackSessionSnapshot } from "./PlaybackSession";
 
-/** Public action messages accepted by the playback architecture. */
 export type PlayerAction =
 	| { type: "PLAY"; track?: Track; query?: string }
 	| { type: "SKIP" }
@@ -40,12 +40,11 @@ export interface PlayerQueryMap {
 
 export type PlayerQuery = keyof PlayerQueryMap;
 
-/** Lifecycle notifications are intentionally carried by the same event lane. */
 export interface PlayerLifecycleEvents {
 	initialized: [];
 	ready: [];
 	destroyed: [];
-	stateChanged: [];
+	stateChanged: [oldState: AudioPlayerState, newState: AudioPlayerState];
 }
 
 export type PlayerBusEvents = PlayerEvents & PlayerLifecycleEvents & {
@@ -53,32 +52,20 @@ export type PlayerBusEvents = PlayerEvents & PlayerLifecycleEvents & {
 };
 
 type ActionHandler<A extends PlayerAction> = (action: A) => void | Promise<void>;
-type QueryHandler<T> = () => T | Promise<T>;
 type EventHandler<E extends PlayerEvent> = (event: E) => void;
+type QueryHandler<T> = () => T | Promise<T>;
 
-/**
- * Communication hub for one Player instance.
- *
- * Player is the public facade. Everything behind it communicates through this
- * hub using four explicit lanes: action, event, query and subscription.
- * Controllers never need a direct reference to sibling controllers.
- */
+/** Communication hub for one Player instance. */
 export class PlayerBus extends EventEmitter {
 	private readonly actionHandlers = new Map<PlayerActionType, Set<ActionHandler<any>>>();
 	private readonly eventHandlers = new Map<PlayerEventType, Set<EventHandler<any>>>();
 	private readonly queryHandlers = new Map<PlayerQuery, QueryHandler<any>>();
 
-	public on<K extends keyof PlayerBusEvents>(
-		event: K,
-		listener: (...args: PlayerBusEvents[K]) => void,
-	): this {
+	public on<K extends keyof PlayerBusEvents>(event: K, listener: (...args: PlayerBusEvents[K]) => void): this {
 		return super.on(event, listener);
 	}
 
-	public once<K extends keyof PlayerBusEvents>(
-		event: K,
-		listener: (...args: PlayerBusEvents[K]) => void,
-	): this {
+	public once<K extends keyof PlayerBusEvents>(event: K, listener: (...args: PlayerBusEvents[K]) => void): this {
 		return super.once(event, listener);
 	}
 
@@ -87,23 +74,27 @@ export class PlayerBus extends EventEmitter {
 	}
 
 	public onAction<K extends PlayerActionType>(
-		type: K | ActionHandler<Extract<PlayerAction, { type: K }>>,
+		type: K,
+		handler: ActionHandler<Extract<PlayerAction, { type: K }>>,
+	): () => void;
+	public onAction(handler: ActionHandler<PlayerAction>): () => void;
+	public onAction<K extends PlayerActionType>(
+		typeOrHandler: K | ActionHandler<PlayerAction>,
 		handler?: ActionHandler<Extract<PlayerAction, { type: K }>>,
 	): () => void {
-		const actionType = typeof type === "string" ? type : undefined;
-		if (!actionType) {
-			const genericHandler = type as ActionHandler<Extract<PlayerAction, { type: K }>>;
-			for (const action of ["PLAY", "SKIP", "STOP", "PAUSE", "RESUME", "SEEK", "SET_VOLUME"] as PlayerActionType[]) {
-				this.addActionHandler(action, genericHandler);
-			}
+		if (typeof typeOrHandler === "function") {
+			const genericHandler = typeOrHandler;
+			const disposers = (Object.keys(this.actionHandlers) as PlayerActionType[]).map(() => undefined);
+			const actionTypes: PlayerActionType[] = ["PLAY", "SKIP", "STOP", "PAUSE", "RESUME", "SEEK", "SET_VOLUME"];
+			const remove: Array<() => void> = actionTypes.map((type) => this.addActionHandler(type, genericHandler));
 			return () => {
-				for (const action of ["PLAY", "SKIP", "STOP", "PAUSE", "RESUME", "SEEK", "SET_VOLUME"] as PlayerActionType[]) {
-					this.removeActionHandler(action, genericHandler);
-				}
+				for (const dispose of remove) dispose();
+				void disposers;
 			};
 		}
-		if (!handler) throw new TypeError(`Missing handler for action ${actionType}`);
-		return this.addActionHandler(actionType, handler);
+
+		if (!handler) throw new TypeError(`Missing handler for action ${typeOrHandler}`);
+		return this.addActionHandler(typeOrHandler, handler);
 	}
 
 	private addActionHandler<K extends PlayerActionType>(
@@ -116,16 +107,12 @@ export class PlayerBus extends EventEmitter {
 			this.actionHandlers.set(type, handlers);
 		}
 		handlers.add(handler);
-		return () => this.removeActionHandler(type, handler);
+		return () => {
+			handlers?.delete(handler);
+			if (handlers?.size === 0) this.actionHandlers.delete(type);
+		};
 	}
 
-	private removeActionHandler(type: PlayerActionType, handler: ActionHandler<any>): void {
-		const handlers = this.actionHandlers.get(type);
-		handlers?.delete(handler);
-		if (handlers?.size === 0) this.actionHandlers.delete(type);
-	}
-
-	/** Dispatch an action through the action lane. */
 	public async action(message: PlayerAction): Promise<void> {
 		this.emit("actionDispatched", message);
 		const handlers = this.actionHandlers.get(message.type);
@@ -133,21 +120,18 @@ export class PlayerBus extends EventEmitter {
 		await Promise.all([...handlers].map((handler) => handler(message)));
 	}
 
-	/** Backward-compatible name for action(). */
 	public dispatch(message: PlayerAction): Promise<void> {
 		return this.action(message);
 	}
 
-	/** Publish an architecture event. */
 	public event(message: PlayerEvent): boolean {
 		const handlers = this.eventHandlers.get(message.type);
 		if (handlers) {
 			for (const handler of [...handlers]) handler(message);
 		}
-		return this.emit(message.type as keyof PlayerBusEvents, message as never);
+		return super.emit(message.type, message);
 	}
 
-	/** Subscribe to one architecture event type. */
 	public subscribe<K extends PlayerEventType>(type: K, listener: EventHandler<Extract<PlayerEvent, { type: K }>>): () => void {
 		let handlers = this.eventHandlers.get(type);
 		if (!handlers) {
@@ -161,9 +145,8 @@ export class PlayerBus extends EventEmitter {
 		};
 	}
 
-	/** Legacy event publisher retained for PlayerEvents/lifecycle notifications. */
 	public publish<K extends keyof PlayerBusEvents>(event: K, ...args: PlayerBusEvents[K]): boolean {
-		return this.emit(event, ...args);
+		return super.emit(event, ...args);
 	}
 
 	public registerQuery<K extends PlayerQuery>(query: K, handler: QueryHandler<PlayerQueryMap[K]>): () => void {
