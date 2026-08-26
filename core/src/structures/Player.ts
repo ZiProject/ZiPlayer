@@ -4,12 +4,13 @@ import { Player as LegacyPlayer } from "./Player.old";
 import { type PlayerAction as PlayerActionMessage, type PlayerEvent, type PlayerEventType, type PlayerQuery, type PlayerQueryMap } from "./PlayerBus";
 import { PlayerRuntimeController } from "../Controller/PlayerRuntimeController";
 
-/** Public Player facade. */
+/** Public Player facade. LegacyPlayer is temporary and will be removed. */
 export class Player extends LegacyPlayer {
 	public readonly runtime: PlayerRuntimeController;
 
 	public get bus() { return this.runtime.bus; }
 	public get actionExecutor() { return this.runtime.actionExecutor; }
+	public get connectionController() { return this.runtime.connectionController; }
 	public get orchestrator() { return this.runtime.orchestrator; }
 	public get trackLoader() { return this.runtime.trackLoader; }
 	public get streamController() { return this.runtime.streamController; }
@@ -28,9 +29,7 @@ export class Player extends LegacyPlayer {
 			debug: this.debug.bind(this),
 		});
 
-		// Compatibility bridge: legacy methods now observe the runtime-owned
-		// resources. The old instances created by LegacyPlayer are no longer
-		// authoritative after this point.
+		// Runtime resources are authoritative during decomposition.
 		this.queue = this.runtime.queue;
 		this.audioPlayer = this.runtime.audioPlayer;
 		this.streamManager = this.runtime.streamManager;
