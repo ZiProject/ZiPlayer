@@ -2,7 +2,14 @@ import type { AudioPlayerState } from "@discordjs/voice";
 import type { PlayerOptions } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 import { Player as LegacyPlayer } from "./Player.old";
-import { PlayerBus, type PlayerAction, type PlayerQuery } from "./PlayerBus";
+import {
+	PlayerBus,
+	type PlayerAction,
+	type PlayerEvent,
+	type PlayerEventType,
+	type PlayerQuery,
+	type PlayerQueryMap,
+} from "./PlayerBus";
 import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 
 /**
@@ -40,17 +47,17 @@ export class Player extends LegacyPlayer {
 		return this.bus.action(action);
 	}
 
-	/** Read orchestrated player state through the communication hub. */
-	public query<K extends PlayerQuery>(query: K): ReturnType<PlayerBus["query"]> {
+	/** Read player state through the communication hub. */
+	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> {
 		return this.bus.query(query);
 	}
 
 	/** Subscribe to a typed playback lifecycle event. */
-	public subscribe<K extends Parameters<PlayerBus["subscribe"]>[0]>(
+	public subscribe<K extends PlayerEventType>(
 		type: K,
-		listener: Parameters<PlayerBus["subscribe"]>[1],
+		listener: (event: Extract<PlayerEvent, { type: K }>) => void,
 	): () => void {
-		return this.bus.subscribe(type, listener as never);
+		return this.bus.subscribe(type, listener);
 	}
 
 	public override destroy(): void {
