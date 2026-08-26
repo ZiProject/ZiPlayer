@@ -1,49 +1,52 @@
 import type { AudioResource } from "@discordjs/voice";
-import type { Track } from "../types";
+import type { Track, StreamSlot } from "../types";
 import type { PlayerBus } from "./PlayerBus";
+import type { TrackLoader } from "./TrackLoader";
 import { PreloadManager } from "./PreloadManager";
 
 export interface PreloadControllerOptions {
+	loader: TrackLoader;
 	manager: PreloadManager;
 	bus?: PlayerBus;
 }
 
-/** Coordinates preload policy without exposing PreloadManager internals to Player. */
+/**
+ * Thin lifecycle boundary. TrackLoader owns acquisition; this class only
+ * exposes preload lifecycle to the orchestration layer.
+ */
 export class PreloadController {
+	private readonly loader: TrackLoader;
 	private readonly manager: PreloadManager;
 	private readonly bus?: PlayerBus;
 
 	public constructor(options: PreloadControllerOptions) {
+		this.loader = options.loader;
 		this.manager = options.manager;
 		this.bus = options.bus;
 	}
 
-	public async preload(track?: Track): Promise<void> {
-		if (track) {
-			await this.manager.preloadNextTrack();
-		} else {
-			await this.manager.preloadNextTrack();
-		}
-		this.bus?.publish("preloadStateChanged", this.snapshot(track ?? null));
+	public async preload(): Promise<void> {
+		await this.loader.preloadNext();
+		this.bus?.publish("preloadStateChanged", { requestedTrack: null, valid: false });
 	}
 
 	public has(track: Track): boolean {
-		return this.manager.hasValidPreload(track);
+		return this.loader.hasPreload(track);
 	}
 
-	public promote(track: Track, currentSlot: Parameters<PreloadManager["promoteToCurrent"]>[1]): AudioResource | null {
+	public promote(track: Track, currentSlot: StreamSlot): AudioResource | null {
 		const resource = this.manager.promoteToCurrent(track, currentSlot);
 		if (resource) this.bus?.publish("preloadPromoted", track);
 		return resource;
 	}
 
 	public cancel(): void {
-		this.manager.cancelPreload();
+		this.loader.cancelPreload();
 		this.bus?.publish("preloadCancelled");
 	}
 
 	public async cancelSafely(): Promise<void> {
-		await this.manager.safeCancelPreload();
+		await this.loader.cancelPreloadSafely();
 		this.bus?.publish("preloadCancelled");
 	}
 
@@ -52,10 +55,6 @@ export class PreloadController {
 	}
 
 	public dispose(): void {
-		this.manager.cancelPreload();
-	}
-
-	private snapshot(track: Track | null): { requestedTrack: Track | null; valid: boolean } {
-		return { requestedTrack: track, valid: !!track && this.manager.hasValidPreload(track) };
+		this.loader.cancelPreload();
 	}
 }
