@@ -1,3 +1,5 @@
+import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
+import type { AudioPlayer } from "@discordjs/voice";
 import type { PlayerOptions, TrackMiddleware } from "../types";
 import type { PlayerManager } from "../structures/PlayerManager";
 import { PlayerBus } from "../structures/PlayerBus";
@@ -14,29 +16,22 @@ import { Queue } from "../structures/Queue";
 import { StreamManager } from "../structures/StreamManager";
 import { PreloadManager } from "../structures/PreloadManager";
 import type { Player } from "../structures/Player";
-import type { AudioPlayer } from "@discordjs/voice";
 
-/**
- * Owns the decomposed runtime graph of a Player.
- *
- * This is deliberately independent from LegacyPlayer. The remaining legacy
- * dependency is injected only for compatibility while individual resources
- * are migrated into their controllers.
- */
+/** Owns the decomposed runtime graph of a Player. */
 export interface PlayerRuntimeControllerOptions {
 	player: Player;
 	manager: PlayerManager;
 	options: PlayerOptions;
-	audioPlayer: AudioPlayer;
-	streamManager?: StreamManager;
-	preloadManager?: PreloadManager;
-	queue?: Queue;
 	debug: (...args: any[]) => void;
 }
 
 export class PlayerRuntimeController {
 	public readonly bus = new PlayerBus();
 	public readonly actionExecutor = new PlayerAction(this.bus);
+	public readonly queue: Queue;
+	public readonly audioPlayer: AudioPlayer;
+	public readonly streamManager: StreamManager;
+	public readonly preloadManager: PreloadManager;
 	public readonly queueController: QueueController;
 	public readonly trackLoader: TrackLoader;
 	public readonly playbackController: PlaybackController;
@@ -59,42 +54,49 @@ export class PlayerRuntimeController {
 					: []),
 		];
 
-		const queue = options.queue ?? new Queue();
-		const streamManager = options.streamManager ?? new StreamManager({
+		this.queue = new Queue();
+		this.audioPlayer = createAudioPlayer({
+			behaviors: {
+				noSubscriber: NoSubscriberBehavior.Pause,
+				maxMissedFrames: 100,
+			},
+		});
+		this.streamManager = new StreamManager({
 			maxConcurrentStreams: playerOptions.maxStreamStore ?? 4,
 			streamTimeout: 5 * 60 * 1000,
 			maxListenersPerStream: 15,
 			enableMetrics: true,
 			autoDestroy: true,
 		});
-		const preloadManager = options.preloadManager ?? new PreloadManager({
-			streamManager,
+		this.queueController = new QueueController({ queue: this.queue, bus: this.bus });
+		this.preloadManager = new PreloadManager({
+			streamManager: this.streamManager,
 			debug: options.debug,
-			getNextTrack: () => this.queueController?.queue.nextTrack ?? null,
+			getNextTrack: () => {
+				if (this.queue.loop() === "track") return this.queue.currentTrack;
+				return this.queue.nextTrack;
+			},
 			getStream: (track) => player.getStream(track),
 			removeTrackFromQueue: (track) => {
-				const nextTrack = this.queueController?.queue.nextTrack;
-				if (!nextTrack) return false;
+				const nextTrack = this.queue.nextTrack;
 				const matches = nextTrack === track ||
-					(nextTrack.id !== undefined && track.id !== undefined && nextTrack.id === track.id) ||
-					(nextTrack.url !== undefined && track.url !== undefined && nextTrack.url === track.url);
-				return matches ? this.queueController.queue.remove(0) !== null : false;
+					(nextTrack?.id !== undefined && track.id !== undefined && nextTrack.id === track.id) ||
+					(nextTrack?.url !== undefined && track.url !== undefined && nextTrack.url === track.url);
+				return matches ? this.queue.remove(0) !== null : false;
 			},
 			isDestroyed: () => this.disposed,
 			isEnabled: () => playerOptions.preload?.enabled ?? true,
 		});
-
-		this.queueController = new QueueController({ queue, bus: this.bus });
 		this.trackLoader = new TrackLoader({
 			middleware,
 			context: { player, manager },
 			resolvers: [(track) => player.getStream(track)],
 			recovery: playerOptions.antiStuck,
-			preloadManager,
+			preloadManager: this.preloadManager,
 			debug: options.debug,
 		});
-		this.playbackController = new PlaybackController({ audioPlayer: options.audioPlayer, bus: this.bus });
-		this.streamController = new StreamController({ streamManager, bus: this.bus });
+		this.playbackController = new PlaybackController({ audioPlayer: this.audioPlayer, bus: this.bus });
+		this.streamController = new StreamController({ streamManager: this.streamManager, bus: this.bus });
 		this.antiStuckController = new AntiStuckController({ ...playerOptions.antiStuck, bus: this.bus });
 		this.transitionController = new TransitionController({
 			enabled: playerOptions.crossfade?.enabled ?? true,
@@ -108,7 +110,7 @@ export class PlayerRuntimeController {
 			beatAlignMaxWaitMs: playerOptions.smartTransition?.beatAlignMaxWaitMs,
 			genreDurations: playerOptions.smartTransition?.genreDurations,
 		});
-		this.preloadController = new PreloadController({ loader: this.trackLoader, manager: preloadManager, bus: this.bus });
+		this.preloadController = new PreloadController({ loader: this.trackLoader, manager: this.preloadManager, bus: this.bus });
 		this.orchestrator = new PlaybackOrchestrator(this.bus, {
 			trackLoader: this.trackLoader,
 			streamController: this.streamController,
@@ -128,7 +130,12 @@ export class PlayerRuntimeController {
 		this.disposed = true;
 		this.actionExecutor.dispose();
 		this.orchestrator.dispose();
+		this.preloadController.dispose();
+		this.preloadManager.destroy();
+		this.streamController.dispose();
+		this.streamManager.destroy();
 		this.queueController.dispose();
+		this.playbackController.dispose();
 		this.bus.publish("destroyed");
 		this.bus.clear();
 	}
