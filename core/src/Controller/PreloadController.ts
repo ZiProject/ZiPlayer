@@ -5,7 +5,11 @@ import { createPlayerRequestId } from "../structures/PlayerBus";
 import type { TrackLoader } from "../structures/TrackLoader";
 import { PreloadManager } from "../structures/PreloadManager";
 
-export interface PreloadControllerOptions { loader: TrackLoader; manager: PreloadManager; bus?: PlayerBus; }
+export interface PreloadControllerOptions {
+	loader: TrackLoader;
+	manager: PreloadManager;
+	bus?: PlayerBus;
+}
 
 /** Owns preload lifecycle. Player-facing requests are routed through PlayerBus. */
 export class PreloadController {
@@ -55,17 +59,32 @@ export class PreloadController {
 
 	public request(track: Track): Promise<Track> {
 		if (!this.bus) return Promise.reject(new Error("PreloadController is not connected to PlayerBus"));
-		return this.bus.request({ type: "[Player]->[Preload]:request", requestId: createPlayerRequestId(), track }).then((event) => event.track);
+		return this.bus
+			.request({ type: "[Player]->[Preload]:request", requestId: createPlayerRequestId(), track })
+			.then((event) => event.track);
 	}
 
-	public has(track: Track): boolean { return this.loader.hasPreload(track); }
+	public has(track: Track): boolean {
+		return this.loader.hasPreload(track);
+	}
 	public promote(track: Track, currentSlot: StreamSlot): AudioResource | null {
 		const resource = this.manager.promoteToCurrent(track, currentSlot);
 		if (resource) this.bus?.publish("preloadPromoted", track);
 		return resource;
 	}
-	public cancel(): void { this.loader.cancelPreload(); this.bus?.publish("preloadCancelled"); }
-	public async cancelSafely(): Promise<void> { await this.loader.cancelPreloadSafely(); this.bus?.publish("preloadCancelled"); }
-	public clear(): void { this.manager.clearPreloadSlot(); }
-	public dispose(): void { this.unsubscribe?.(); this.loader.cancelPreload(); }
+	public cancel(): void {
+		this.loader.cancelPreload();
+		this.bus?.publish("preloadCancelled");
+	}
+	public async cancelSafely(): Promise<void> {
+		await this.loader.cancelPreloadSafely();
+		this.bus?.publish("preloadCancelled");
+	}
+	public clear(): void {
+		this.manager.clearPreloadSlot();
+	}
+	public dispose(): void {
+		this.unsubscribe?.();
+		this.loader.cancelPreload();
+	}
 }

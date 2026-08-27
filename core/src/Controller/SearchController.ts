@@ -41,7 +41,9 @@ export class SearchController {
 
 		const pluginResult = await this.options.pluginManager.search(query, requestedBy);
 		if (pluginResult?.tracks?.length) {
-			this.options.debug(`[Player] Plugin search returned ${pluginResult.tracks.length} tracks (score: ${pluginResult.score?.score}%)`);
+			this.options.debug(
+				`[Player] Plugin search returned ${pluginResult.tracks.length} tracks (score: ${pluginResult.score?.score}%)`,
+			);
 			if (pluginResult.score) this.options.debug(`[Player] Search evaluation - ${pluginResult.score.reason}`);
 			this.cacheResult(query, pluginResult);
 			return pluginResult;
@@ -70,11 +72,15 @@ export class SearchController {
 	} {
 		const isCached = this.cache.has(this.key(query));
 		const allPlugins = this.options.pluginManager.getAll();
-		const plugins = allPlugins.filter((plugin) => !(plugin.name.toLowerCase() === "tts" && !query.toLowerCase().startsWith("tts:")));
+		const plugins = allPlugins.filter(
+			(plugin) => !(plugin.name.toLowerCase() === "tts" && !query.toLowerCase().startsWith("tts:")),
+		);
 		return { isCached, cacheAge: undefined, pluginCount: plugins.length, ttsFiltered: allPlugins.length > plugins.length };
 	}
 
-	private key(query: string): string { return query.toLowerCase().trim(); }
+	private key(query: string): string {
+		return query.toLowerCase().trim();
+	}
 	private cacheResult(query: string, result: SearchResult): void {
 		this.cache.set(this.key(query), result);
 		this.options.debug(`[SearchCache] Cached search result for: ${query} (${result.tracks.length} tracks)`);

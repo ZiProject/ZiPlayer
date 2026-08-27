@@ -1,10 +1,4 @@
-import {
-	VoiceConnection,
-	VoiceConnectionStatus,
-	entersState,
-	joinVoiceChannel,
-	getVoiceConnection,
-} from "@discordjs/voice";
+import { VoiceConnection, VoiceConnectionStatus, entersState, joinVoiceChannel, getVoiceConnection } from "@discordjs/voice";
 import type { PlayerOptions, VoiceChannel } from "../types";
 import {
 	PlayerBus,
@@ -55,9 +49,15 @@ export class ConnectionController {
 		this.unsubscribe = () => unsubscribers.forEach((unsubscribe) => unsubscribe());
 	}
 
-	public get active(): VoiceConnection | null { return this.connection; }
-	public get activeChannel(): VoiceChannel | null { return this.channel; }
-	public get activeSessionId(): PlayerSessionId | null { return this.sessionId; }
+	public get active(): VoiceConnection | null {
+		return this.connection;
+	}
+	public get activeChannel(): VoiceChannel | null {
+		return this.channel;
+	}
+	public get activeSessionId(): PlayerSessionId | null {
+		return this.sessionId;
+	}
 
 	public async dispose(): Promise<void> {
 		if (this.disposed) return;
@@ -84,10 +84,19 @@ export class ConnectionController {
 		this.requestId = event.requestId;
 		this.sessionId = sessionId;
 		this.channel = event.channel;
-		this.bus.emitOutput({ type: "[Connection]->[Player]:connecting", requestId: event.requestId, sessionId, channel: event.channel });
+		this.bus.emitOutput({
+			type: "[Connection]->[Player]:connecting",
+			requestId: event.requestId,
+			sessionId,
+			channel: event.channel,
+		});
 
 		try {
-			if (this.connection && this.channel?.id === event.channel.id && this.connection.state.status === VoiceConnectionStatus.Ready) {
+			if (
+				this.connection &&
+				this.channel?.id === event.channel.id &&
+				this.connection.state.status === VoiceConnectionStatus.Ready
+			) {
 				this.emitConnected(event.requestId, sessionId, event.channel, this.connection);
 				return;
 			}
@@ -108,7 +117,12 @@ export class ConnectionController {
 			connection.once(VoiceConnectionStatus.Destroyed, () => {
 				if (this.connection !== connection) return;
 				this.connection = null;
-				this.bus.emitOutput({ type: "[Connection]->[Player]:disconnected", requestId: this.requestId ?? undefined, sessionId: this.sessionId ?? sessionId, reason: "destroyed" });
+				this.bus.emitOutput({
+					type: "[Connection]->[Player]:disconnected",
+					requestId: this.requestId ?? undefined,
+					sessionId: this.sessionId ?? sessionId,
+					reason: "destroyed",
+				});
 			});
 
 			await entersState(connection, VoiceConnectionStatus.Ready, this.readyTimeoutMs);
@@ -121,7 +135,13 @@ export class ConnectionController {
 			if (this.sessionId !== sessionId) return;
 			this.connection?.destroy();
 			this.connection = null;
-			this.bus.emitOutput({ type: "[Connection]->[Player]:error", requestId: event.requestId, sessionId, operation: "connect", error: this.toError(error) });
+			this.bus.emitOutput({
+				type: "[Connection]->[Player]:error",
+				requestId: event.requestId,
+				sessionId,
+				operation: "connect",
+				error: this.toError(error),
+			});
 		}
 	}
 
@@ -135,9 +155,20 @@ export class ConnectionController {
 		this.requestId = null;
 		try {
 			connection?.destroy();
-			this.bus.emitOutput({ type: "[Connection]->[Player]:disconnected", requestId: event.requestId, sessionId, reason: event.reason });
+			this.bus.emitOutput({
+				type: "[Connection]->[Player]:disconnected",
+				requestId: event.requestId,
+				sessionId,
+				reason: event.reason,
+			});
 		} catch (error) {
-			this.bus.emitOutput({ type: "[Connection]->[Player]:error", requestId: event.requestId, sessionId, operation: "disconnect", error: this.toError(error) });
+			this.bus.emitOutput({
+				type: "[Connection]->[Player]:error",
+				requestId: event.requestId,
+				sessionId,
+				operation: "disconnect",
+				error: this.toError(error),
+			});
 		}
 	}
 
@@ -150,11 +181,20 @@ export class ConnectionController {
 		await this.connect({ type: "[Player]->[Connection]:connect", requestId: event.requestId, channel: event.channel });
 	}
 
-	private emitConnected(requestId: PlayerRequestId, sessionId: PlayerSessionId, channel: VoiceChannel, connection: VoiceConnection): void {
+	private emitConnected(
+		requestId: PlayerRequestId,
+		sessionId: PlayerSessionId,
+		channel: VoiceChannel,
+		connection: VoiceConnection,
+	): void {
 		this.debug?.(`[ConnectionController] connected guild=${this.guildId} channel=${channel.id}`);
 		this.bus.emitOutput({ type: "[Connection]->[Player]:connected", requestId, sessionId, channel, connection });
 	}
 
-	private toError(error: unknown): Error { return error instanceof Error ? error : new Error(String(error)); }
-	private errorMessage(error: unknown): string { return this.toError(error).message; }
+	private toError(error: unknown): Error {
+		return error instanceof Error ? error : new Error(String(error));
+	}
+	private errorMessage(error: unknown): string {
+		return this.toError(error).message;
+	}
 }

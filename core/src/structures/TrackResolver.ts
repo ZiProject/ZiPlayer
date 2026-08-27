@@ -13,12 +13,18 @@ export class TrackResolver {
 		if (existing && !existing.destroyed) return { stream: existing, type: "arbitrary" };
 
 		let stream = await player.extensionManager.provideStream(track);
-		if (player.destroyed) { stream?.stream?.destroy?.(); throw new Error("PLAYER_DESTROYED"); }
+		if (player.destroyed) {
+			stream?.stream?.destroy?.();
+			throw new Error("PLAYER_DESTROYED");
+		}
 		if (stream?.remote && stream.handle) return stream;
 		if (stream?.stream) return stream;
 
 		stream = await player.pluginManager.getStream(track);
-		if (player.destroyed) { stream?.stream?.destroy?.(); throw new Error("PLAYER_DESTROYED"); }
+		if (player.destroyed) {
+			stream?.stream?.destroy?.();
+			throw new Error("PLAYER_DESTROYED");
+		}
 		if (stream?.stream) {
 			const existingAgain = this.streamManager.getStreamByTrack(trackId);
 			if (existingAgain && !existingAgain.destroyed) {

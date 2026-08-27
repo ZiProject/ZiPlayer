@@ -16,14 +16,29 @@ export { TransitionController } from "./Controller/TransitionController";
 export { PreloadController } from "./Controller/PreloadController";
 export { PlayerControllerRuntime } from "./structures/PlayerControllerRuntime";
 export type { PlayerControllerRuntimeHost } from "./structures/PlayerControllerRuntime";
-export type { PlayerAction as PlayerActionMessage, PlayerActionType, PlayerEvent, PlayerEventType, PlayerBusEvents, PlayerLifecycleEvents, PlayerQuery, PlayerQueryMap } from "./structures/PlayerBus";
+export type {
+	PlayerAction as PlayerActionMessage,
+	PlayerActionType,
+	PlayerEvent,
+	PlayerEventType,
+	PlayerBusEvents,
+	PlayerLifecycleEvents,
+	PlayerQuery,
+	PlayerQueryMap,
+} from "./structures/PlayerBus";
 export type { TrackLoadResult, TrackLoaderContext, TrackLoaderOptions, TrackStreamResolver } from "./structures/TrackLoader";
 export type { ActiveStream, StreamControllerOptions } from "./Controller/StreamController";
 export type { PlaybackOrchestratorOptions } from "./structures/PlaybackOrchestrator";
 export type { PlaybackSessionSnapshot, PlaybackSessionStatus } from "./structures/PlaybackSession";
 export type { PlaybackControllerOptions } from "./Controller/PlaybackController";
 export type { QueueControllerOptions } from "./Controller/QueueController";
-export type { AntiStuckControllerOptions, AntiStuckRetryContext, AntiStuckRetryHandlers, LegacyAntiStuckRetryContext, LegacyAntiStuckRetryHandlers } from "./Controller/AntiStuckController";
+export type {
+	AntiStuckControllerOptions,
+	AntiStuckRetryContext,
+	AntiStuckRetryHandlers,
+	LegacyAntiStuckRetryContext,
+	LegacyAntiStuckRetryHandlers,
+} from "./Controller/AntiStuckController";
 export type { TransitionControllerOptions, TransitionPlan } from "./Controller/TransitionController";
 export type { PreloadControllerOptions } from "./Controller/PreloadController";
 export { PreloadManager } from "./structures/PreloadManager";

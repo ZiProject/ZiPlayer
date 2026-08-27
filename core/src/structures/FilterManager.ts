@@ -11,9 +11,19 @@ export class FilterManager extends FilterController {
 		});
 	}
 
-	public async applyFilter(filter?: string | AudioFilter): Promise<boolean> { return super.applyFilter(filter); }
-	public async applyFilters(filters: (string | AudioFilter)[]): Promise<boolean> { return super.applyFilters(filters); }
-	public async removeFilter(filterName: string): Promise<boolean> { return super.removeFilter(filterName); }
-	public async clearAll(): Promise<boolean> { return super.clearAll(); }
-	public async applyFiltersAndSeek(streamInfo: StreamInfo, position = -1): Promise<StreamInfo & { wasRecreated?: boolean }> { return super.applyFiltersAndSeek(streamInfo, position); }
+	public async applyFilter(filter?: string | AudioFilter): Promise<boolean> {
+		return super.applyFilter(filter);
+	}
+	public async applyFilters(filters: (string | AudioFilter)[]): Promise<boolean> {
+		return super.applyFilters(filters);
+	}
+	public async removeFilter(filterName: string): Promise<boolean> {
+		return super.removeFilter(filterName);
+	}
+	public async clearAll(): Promise<boolean> {
+		return super.clearAll();
+	}
+	public async applyFiltersAndSeek(streamInfo: StreamInfo, position = -1): Promise<StreamInfo & { wasRecreated?: boolean }> {
+		return super.applyFiltersAndSeek(streamInfo, position);
+	}
 }

@@ -87,13 +87,11 @@ export class PlayerAction {
 			requestId: action.requestId ?? createPlayerRequestId(),
 		};
 		this.criticalRunning += 1;
-		return this.bus
-			.action(action, context)
-			.finally(() => {
-				this.criticalRunning -= 1;
-				this.drain();
-				this.flushIdleWaiters();
-			});
+		return this.bus.action(action, context).finally(() => {
+			this.criticalRunning -= 1;
+			this.drain();
+			this.flushIdleWaiters();
+		});
 	}
 
 	private drain(): void {

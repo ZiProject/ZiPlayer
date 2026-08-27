@@ -21,7 +21,10 @@ export class FilterController {
 	private ffmpegGeneration = 0;
 	public StreamType: FilterControllerStreamType = "arbitrary";
 
-	constructor(private readonly resourcePort: FilterControllerResourcePort, private readonly debug: DebugFn = () => {}) {}
+	constructor(
+		private readonly resourcePort: FilterControllerResourcePort,
+		private readonly debug: DebugFn = () => {},
+	) {}
 
 	public setSourceStreamType(type: string): void {
 		this.StreamType = type === "webm/opus" || type === "ogg/opus" || type === "mp3" ? type : "arbitrary";
@@ -40,20 +43,37 @@ export class FilterController {
 		this.ffmpegAbortController = null;
 		const output = this.ffmpegOutput;
 		this.ffmpegOutput = null;
-		if (output && !output.destroyed) try { output.destroy(); } catch {}
+		if (output && !output.destroyed)
+			try {
+				output.destroy();
+			} catch {}
 		const process = this.ffmpegProcess;
 		this.ffmpegProcess = null;
 		if (process) {
-			try { if (process.stdin && !process.stdin.destroyed) process.stdin.destroy(); } catch {}
-			try { if (process.exitCode === null && process.signalCode === null) process.kill("SIGKILL"); } catch {}
+			try {
+				if (process.stdin && !process.stdin.destroyed) process.stdin.destroy();
+			} catch {}
+			try {
+				if (process.exitCode === null && process.signalCode === null) process.kill("SIGKILL");
+			} catch {}
 		}
 	}
 
-	public getFilterString(): string { return this.activeFilters.map((filter) => filter.ffmpegFilter).join(","); }
-	public getActiveFilters(): AudioFilter[] { return [...this.activeFilters]; }
-	public hasFilter(filterName: string): boolean { return this.activeFilters.some((filter) => filter.name === filterName); }
-	public getAvailableFilters(): AudioFilter[] { return Object.values(PREDEFINED_FILTERS); }
-	public getFiltersByCategory(category: string): AudioFilter[] { return Object.values(PREDEFINED_FILTERS).filter((filter) => filter.category === category); }
+	public getFilterString(): string {
+		return this.activeFilters.map((filter) => filter.ffmpegFilter).join(",");
+	}
+	public getActiveFilters(): AudioFilter[] {
+		return [...this.activeFilters];
+	}
+	public hasFilter(filterName: string): boolean {
+		return this.activeFilters.some((filter) => filter.name === filterName);
+	}
+	public getAvailableFilters(): AudioFilter[] {
+		return Object.values(PREDEFINED_FILTERS);
+	}
+	public getFiltersByCategory(category: string): AudioFilter[] {
+		return Object.values(PREDEFINED_FILTERS).filter((filter) => filter.category === category);
+	}
 
 	private resolveFilter(filter: string | AudioFilter): AudioFilter | undefined {
 		return typeof filter === "string" ? PREDEFINED_FILTERS[filter] : filter;
@@ -73,13 +93,16 @@ export class FilterController {
 		let allApplied = true;
 		for (const filter of filters) {
 			const audioFilter = this.resolveFilter(filter);
-			if (!audioFilter) { allApplied = false; continue; }
+			if (!audioFilter) {
+				allApplied = false;
+				continue;
+			}
 			if (this.hasFilter(audioFilter.name)) continue;
 			this.activeFilters.push(audioFilter);
 			changed = true;
 		}
 		if (!changed) return allApplied;
-		return allApplied && await this.resourcePort.refreshPlayerResource();
+		return allApplied && (await this.resourcePort.refreshPlayerResource());
 	}
 
 	public async removeFilter(filterName: string): Promise<boolean> {
@@ -113,12 +136,18 @@ export class FilterController {
 		this.currentInputStream = sourceStream;
 		const filterString = this.getFilterString();
 		const hasSeek = position >= 0;
-		if (!hasSeek && !filterString) return { ...streamInfo, stream: typeof sourceStream === "string" ? undefined : sourceStream, wasRecreated };
+		if (!hasSeek && !filterString)
+			return { ...streamInfo, stream: typeof sourceStream === "string" ? undefined : sourceStream, wasRecreated };
 		if (!ffmpegPath) throw new Error("FFmpeg binary not found");
 		const args = ["-hide_banner", "-loglevel", "error"];
 		const seekSeconds = hasSeek ? (position / 1000).toFixed(3) : null;
-		if (typeof sourceStream === "string") { if (seekSeconds !== null) args.push("-ss", seekSeconds); args.push("-i", sourceStream); }
-		else { args.push("-i", "pipe:0"); if (seekSeconds !== null) args.push("-ss", seekSeconds); }
+		if (typeof sourceStream === "string") {
+			if (seekSeconds !== null) args.push("-ss", seekSeconds);
+			args.push("-i", sourceStream);
+		} else {
+			args.push("-i", "pipe:0");
+			if (seekSeconds !== null) args.push("-ss", seekSeconds);
+		}
 		if (filterString) args.push("-af", filterString);
 		if (hasSeek) args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
 		else args.push("-c:a", "libopus", "-f", "opus", "-ar", "48000", "-ac", "2", "pipe:1");
@@ -134,12 +163,32 @@ export class FilterController {
 			if (this.ffmpegOutput === output) this.ffmpegOutput = null;
 			if (this.ffmpegAbortController === controller) this.ffmpegAbortController = null;
 		};
-		const abort = () => { cleanup(); try { proc.stdin?.destroy(); } catch {} try { proc.kill("SIGKILL"); } catch {} };
+		const abort = () => {
+			cleanup();
+			try {
+				proc.stdin?.destroy();
+			} catch {}
+			try {
+				proc.kill("SIGKILL");
+			} catch {}
+		};
 		controller.signal.addEventListener("abort", abort, { once: true });
-		proc.once("error", (error) => { this.debug(`FFmpeg process error: ${error.message}`); cleanup(); });
+		proc.once("error", (error) => {
+			this.debug(`FFmpeg process error: ${error.message}`);
+			cleanup();
+		});
 		proc.once("close", cleanup);
-		output.once("close", () => { if (this.ffmpegProcess === proc) try { proc.kill("SIGKILL"); } catch {} cleanup(); });
-		output.once("error", (error: Error) => { this.debug(`FFmpeg stdout error: ${error.message}`); abort(); });
+		output.once("close", () => {
+			if (this.ffmpegProcess === proc)
+				try {
+					proc.kill("SIGKILL");
+				} catch {}
+			cleanup();
+		});
+		output.once("error", (error: Error) => {
+			this.debug(`FFmpeg stdout error: ${error.message}`);
+			abort();
+		});
 		if (typeof sourceStream !== "string") sourceStream.pipe(proc.stdin!);
 		return { ...streamInfo, stream: output, wasRecreated };
 	}
