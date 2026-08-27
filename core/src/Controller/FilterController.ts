@@ -8,7 +8,7 @@ type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 export type FilterControllerStreamType = "webm/opus" | "ogg/opus" | "arbitrary" | "mp3";
 
 export interface FilterControllerResourcePort {
-	refreshPlayerResource(): Promise<boolean>;
+	refreshPlayerResource(position?: number): Promise<boolean>;
 }
 
 /** Owns filter state and the FFmpeg lifecycle without owning Player. */
