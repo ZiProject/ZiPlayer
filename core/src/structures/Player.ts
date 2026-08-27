@@ -6,6 +6,8 @@ import { type PlayerAction as PlayerActionMessage, type PlayerEvent, type Player
 import { PlayerRuntimeController } from "../Controller/PlayerRuntimeController";
 import { SearchController } from "../Controller/SearchController";
 import type { ForwardController } from "../Controller/ForwardController";
+import type { BasePlugin } from "../plugins/BasePlugin";
+import type { BaseExtension } from "../extensions/BaseExtension";
 
 /** Public Player facade. Runtime controllers own playback state and lifecycles. */
 export class Player extends EventEmitter {
@@ -46,6 +48,12 @@ export class Player extends EventEmitter {
 	public get filterController() { return this.runtime.filterController; }
 	public get volumeController() { return this.runtime.volumeController; }
 	public get forwardController(): ForwardController { return this.runtime.forwardController; }
+	public get currentTrack(): Track | null { return this.queueController.current ?? null; }
+	public get queueSize(): number { return this.queueController.snapshot().length; }
+	public get isPlaying(): boolean { return this.playbackController.status === "playing"; }
+	public get isPaused(): boolean { return this.playbackController.status === "paused"; }
+	public get volume(): number { return this.volumeController.value; }
+	public set volume(value: number) { this.volumeController.setVolume(value); }
 
 	public constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
 		super();
@@ -65,7 +73,7 @@ export class Player extends EventEmitter {
 		};
 		this.userdata = this.options.userdata;
 		this.runtime = new PlayerRuntimeController({ player: this, manager, options: this.options, debug: this.debug.bind(this) });
-		this.searchController = new SearchController({ extensionManager: this.extensionManager, pluginManager: this.pluginManager, debug: this.debug.bind(this) });
+		this.searchController = new SearchController({ extensionManager: this.runtime.extensionManager, pluginManager: this.runtime.pluginManager, debug: this.debug.bind(this) });
 		this.queue = this.runtime.queue;
 		this.audioPlayer = this.runtime.audioPlayer;
 		this.streamManager = this.runtime.streamManager;
@@ -93,11 +101,32 @@ export class Player extends EventEmitter {
 	public stop(): boolean { void this.action({ type: "STOP" }); return true; }
 	public seek(position: number): Promise<boolean> { return this.action({ type: "SEEK", position }).then(() => true).catch(() => false); }
 	public skip(): boolean { void this.action({ type: "SKIP" }); return true; }
+	public addPlugin(plugin: BasePlugin): void { this.pluginManager.register(plugin); }
+	public removePlugin(name: string): boolean { return this.pluginManager.unregister(name); }
+	public attachExtension(extension: BaseExtension): void { this.extensionManager.register(extension); }
+	public detachExtension(extension: BaseExtension): boolean { return this.extensionManager.unregister(extension); }
 	public subscribeTo(leader: Player, options?: { forwardMode?: boolean }): boolean { return this.forwardController.subscribeTo(leader, options); }
 	public unsubscribeForward(reason?: string): boolean { return this.forwardController.unsubscribeForward(reason); }
-	public getForwardHealthStatus() { return { role: this.forwardController.isLeader ? "leader" : this.forwardController.isFollower ? "follower" : "standalone", leaderGuildId: this.forwardController.forwardLeader?.guildId ?? null, followerCount: this.forwardController.forwardFollowers.size }; }
+	public getForwardHealthStatus() {
+		const role = this.forwardController.isLeader ? "leader" : this.forwardController.isFollower ? "follower" : "none";
+		const issues: string[] = [];
+		if (role === "follower" && !this.forwardController.forwardLeader) issues.push("missing leader");
+		if (role === "leader" && this.forwardController.forwardFollowers.size === 0) issues.push("no followers");
+		return {
+			guildId: this.guildId,
+			healthy: issues.length === 0,
+			role,
+			issues,
+			details: {
+				leaderId: this.forwardController.forwardLeader?.guildId,
+				followerCount: this.forwardController.forwardFollowers.size,
+				connectionState: this.connection?.state?.status,
+				audioPlayerState: this.playbackController.status,
+			},
+		};
+	}
 	public action(action: PlayerActionMessage): Promise<void> { return this.runtime.actionExecutor.enqueue(action); }
 	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> { return this.runtime.bus.query(query); }
 	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void { return this.runtime.bus.subscribe(type, listener); }
-	public override destroy(): void { if (this.destroyed) return; this.destroyed = true; this.runtime.dispose(); this.removeAllListeners(); }
+	public destroy(): void { if (this.destroyed) return; this.destroyed = true; this.runtime.dispose(); this.emit("playerDestroy"); this.removeAllListeners(); }
 }

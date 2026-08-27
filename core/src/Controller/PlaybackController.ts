@@ -2,8 +2,9 @@ import { AudioPlayer, AudioPlayerState, AudioPlayerStatus, AudioResource, create
 import { Readable } from "stream";
 import type { PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
+import type { Track } from "../types";
 import type { VolumeController } from "./VolumeController";
-import type { TransitionController, TransitionPlan } from "./TransitionController";
+import type { TransitionController } from "./TransitionController";
 
 export interface PlaybackControllerOptions {
 	audioPlayer: AudioPlayer;
@@ -28,12 +29,12 @@ export class PlaybackController {
 		this.onStateChange = (a, b) => this.bus?.publish("stateChanged", a, b);
 		this.audioPlayer.on("stateChange", this.onStateChange);
 	}
-	public createResource(stream: Readable, track?: { duration?: number }): AudioResource {
+	public createResource(stream: Readable, track: Track): AudioResource {
 		const resource = createAudioResource(stream, { metadata: track, inlineVolume: true });
 		this.volume?.apply(resource);
 		return resource;
 	}
-	public play(resource: AudioResource, session?: PlaybackSession, from?: any, to?: any): void {
+	public play(resource: AudioResource, session?: PlaybackSession, from?: Track, to?: Track): void {
 		if (session && !session.isActive()) return;
 		this.cancelTransition();
 		this.volume?.apply(resource);
@@ -46,12 +47,8 @@ export class PlaybackController {
 		this.activeResource = resource;
 		this.audioPlayer.play(resource);
 	}
-	private crossfade(
-		_oldResource: AudioResource,
-		newResource: AudioResource,
-		plan: TransitionPlan,
-		session?: PlaybackSession,
-	): void {
+	private crossfade(oldResource: AudioResource, newResource: AudioResource, plan: { enabled: boolean; durationMs: number }, session?: PlaybackSession): void {
+		void oldResource;
 		this.volume?.apply(newResource, 0);
 		const wait = this.transitions?.beatWaitMs(session?.track ?? null, session?.position ?? 0) ?? 0;
 		const begin = () => {
@@ -68,7 +65,6 @@ export class PlaybackController {
 		};
 		if (wait > 0) this.transitionTimer = setTimeout(begin, wait);
 		else begin();
-		this.bus?.publish("transitionStarted", plan);
 	}
 	private cancelFade() {
 		if (this.fadeTimer) {
@@ -83,12 +79,8 @@ export class PlaybackController {
 		}
 		this.cancelFade();
 	}
-	public pause(): boolean {
-		return this.audioPlayer.pause(true);
-	}
-	public resume(): boolean {
-		return this.audioPlayer.unpause();
-	}
+	public pause(): boolean { return this.audioPlayer.pause(true); }
+	public resume(): boolean { return this.audioPlayer.unpause(); }
 	public stop(): boolean {
 		this.cancelTransition();
 		this.activeResource = null;
@@ -96,10 +88,7 @@ export class PlaybackController {
 	}
 	public seek(position: number, session?: PlaybackSession): boolean {
 		if (!session?.isActive()) return false;
-		const resource =
-			this.audioPlayer.state.status === AudioPlayerStatus.Playing || this.audioPlayer.state.status === AudioPlayerStatus.Paused ?
-				this.audioPlayer.state.resource
-			:	null;
+		const resource = this.audioPlayer.state.status === AudioPlayerStatus.Playing || this.audioPlayer.state.status === AudioPlayerStatus.Paused ? this.audioPlayer.state.resource : null;
 		if (!resource) return false;
 		const target = Math.max(0, position);
 		const stream: any = (resource as any).playStream;
@@ -117,15 +106,9 @@ export class PlaybackController {
 		if (this.activeResource) this.volume?.apply(this.activeResource);
 		return v;
 	}
-	public get volumeValue(): number {
-		return this.volume?.value ?? 100;
-	}
-	public get state(): AudioPlayerState {
-		return this.audioPlayer.state;
-	}
-	public get status(): AudioPlayerStatus {
-		return this.audioPlayer.state.status;
-	}
+	public get volumeValue(): number { return this.volume?.value ?? 100; }
+	public get state(): AudioPlayerState { return this.audioPlayer.state; }
+	public get status(): AudioPlayerStatus { return this.audioPlayer.state.status; }
 	public dispose(): void {
 		this.cancelTransition();
 		this.audioPlayer.removeListener("stateChange", this.onStateChange);
