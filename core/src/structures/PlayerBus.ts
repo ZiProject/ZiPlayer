@@ -29,7 +29,8 @@ export type PlayerConnectionInput =
 	| { type: "[Player]->[Connection]:reconnect"; requestId: PlayerRequestId; channel: VoiceChannel };
 export type PlayerPreloadInput = { type: "[Player]->[Preload]:request"; requestId: PlayerRequestId; track: Track };
 export type PlayerRecoveryInput = { type: "[Player]->[Recovery]:recover"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; reason: string };
-export type PlayerInput = PlayerConnectionInput | PlayerPreloadInput | PlayerRecoveryInput;
+export type PlayerResourceInput = { type: "[Player]->[Resource]:refresh"; requestId: PlayerRequestId; position?: number };
+export type PlayerInput = PlayerConnectionInput | PlayerPreloadInput | PlayerRecoveryInput | PlayerResourceInput;
 
 export type PlayerConnectionOutput =
 	| { type: "[Connection]->[Player]:connecting"; requestId: PlayerRequestId; sessionId: PlayerSessionId; channel: VoiceChannel }
@@ -44,6 +45,9 @@ export type PlayerRecoveryOutput =
 	| { type: "[Recovery]->[Player]:retrying"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; attempt: number }
 	| { type: "[Recovery]->[Player]:recovered"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot }
 	| { type: "[Recovery]->[Player]:failed"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; error: Error };
+export type PlayerResourceOutput =
+	| { type: "[Resource]->[Player]:refreshed"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot }
+	| { type: "[Resource]->[Player]:error"; requestId: PlayerRequestId; error: Error };
 
 export type PlayerLifecycleEvents = { type: "initialized" } | { type: "ready" } | { type: "destroyed" };
 export type PlayerPlaybackEvents =
@@ -84,7 +88,7 @@ export type PlayerEventArgsMap = {
 	: K extends "preloadPromoted" ? [Track] : never;
 };
 
-export type PlayerOutput = PlayerConnectionOutput | PlayerPreloadOutput | PlayerRecoveryOutput;
+export type PlayerOutput = PlayerConnectionOutput | PlayerPreloadOutput | PlayerRecoveryOutput | PlayerResourceOutput;
 export type PlayerBusEvents = PlayerInput | PlayerOutput;
 
 export interface PlayerRequestReplyMap {
@@ -93,6 +97,7 @@ export interface PlayerRequestReplyMap {
 	"[Player]->[Connection]:reconnect": { success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connected" }>; progress: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connecting" }> };
 	"[Player]->[Preload]:request": { success: Extract<PlayerPreloadOutput, { type: "[Preload]->[Player]:ready" }>; progress: Extract<PlayerPreloadOutput, { type: "[Preload]->[Player]:loading" }> };
 	"[Player]->[Recovery]:recover": { success: Extract<PlayerRecoveryOutput, { type: "[Recovery]->[Player]:recovered" }>; progress: Extract<PlayerRecoveryOutput, { type: "[Recovery]->[Player]:retrying" }> };
+	"[Player]->[Resource]:refresh": { success: Extract<PlayerResourceOutput, { type: "[Resource]->[Player]:refreshed" }> };
 }
 export type PlayerRequestInputType = keyof PlayerRequestReplyMap;
 type Reply<K extends PlayerRequestInputType> = PlayerRequestReplyMap[K];
@@ -104,6 +109,7 @@ const REQUESTS: Record<PlayerRequestInputType, RequestContract> = {
 	"[Player]->[Connection]:reconnect": { success: "[Connection]->[Player]:connected", error: "[Connection]->[Player]:error", progress: "[Connection]->[Player]:connecting" },
 	"[Player]->[Preload]:request": { success: "[Preload]->[Player]:ready", error: "[Preload]->[Player]:failed", progress: "[Preload]->[Player]:loading" },
 	"[Player]->[Recovery]:recover": { success: "[Recovery]->[Player]:recovered", error: "[Recovery]->[Player]:failed", progress: "[Recovery]->[Player]:retrying" },
+	"[Player]->[Resource]:refresh": { success: "[Resource]->[Player]:refreshed", error: "[Resource]->[Player]:error" },
 };
 export interface PlayerRequestOptions<K extends PlayerRequestInputType = PlayerRequestInputType> { timeoutMs?: number; signal?: AbortSignal; onProgress?: (event: Progress<K>) => void; }
 export type PlayerBusRequestErrorReason = "timeout" | "aborted" | "disposed" | "unhandled";
