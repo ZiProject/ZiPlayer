@@ -1,0 +1,89 @@
+import { createPlayerRequestId, type PlayerBus } from "../structures/PlayerBus";
+import type { PlayerOptions } from "../types";
+
+export interface LifecycleControllerOptions {
+  bus: PlayerBus;
+  options: Pick<PlayerOptions, "leaveOnEnd" | "leaveOnEmpty" | "leaveTimeout">;
+  debug?: (...args: any[]) => void;
+}
+
+/** Owns idle/leave policy and lifecycle cleanup outside the Player facade. */
+export class LifecycleController {
+  private readonly bus: PlayerBus;
+  private readonly leaveOnEnd: boolean;
+  private readonly leaveOnEmpty: boolean;
+  private readonly leaveTimeout: number;
+  private readonly debug?: (...args: any[]) => void;
+  private leaveTimer: NodeJS.Timeout | null = null;
+  private disposed = false;
+  private unsubscribe: Array<() => void> = [];
+
+  public constructor(options: LifecycleControllerOptions) {
+    this.bus = options.bus;
+    this.leaveOnEnd = options.options.leaveOnEnd ?? true;
+    this.leaveOnEmpty = options.options.leaveOnEmpty ?? true;
+    this.leaveTimeout = Math.max(0, options.options.leaveTimeout ?? 100000);
+    this.debug = options.debug;
+
+    this.unsubscribe.push(
+      bus.subscribe("TRACK_STARTED", () => this.clearLeaveTimeout()),
+      bus.subscribe("TRACK_LOADING", () => this.clearLeaveTimeout()),
+      bus.subscribe("trackRequested", () => this.clearLeaveTimeout()),
+      bus.subscribe("TRACK_END", () => {
+        if (this.leaveOnEnd) this.scheduleLeave("track-end");
+      }),
+      bus.subscribe("queueChanged", (event) => {
+        if (this.leaveOnEmpty && event.queue.length === 0) this.scheduleLeave("queue-empty");
+        else if (event.queue.length > 0) this.clearLeaveTimeout();
+      }),
+      bus.onOutput("[Connection]->[Player]:connected", () => this.clearLeaveTimeout()),
+      bus.onOutput("[Connection]->[Player]:connecting", () => this.clearLeaveTimeout()),
+    );
+  }
+
+  public scheduleLeave(reason: "track-end" | "queue-empty" | "manual" = "manual"): void {
+    if (this.disposed) return;
+    this.clearLeaveTimeout();
+    if (this.leaveTimeout === 0) {
+      void this.disconnect(reason);
+      return;
+    }
+    this.debug?.(`[LifecycleController] scheduling leave in ${this.leaveTimeout}ms (${reason})`);
+    this.leaveTimer = setTimeout(() => {
+      this.leaveTimer = null;
+      void this.disconnect(reason);
+    }, this.leaveTimeout);
+  }
+
+  public clearLeaveTimeout(): void {
+    if (!this.leaveTimer) return;
+    clearTimeout(this.leaveTimer);
+    this.leaveTimer = null;
+  }
+
+  public async leave(reason = "manual"): Promise<void> {
+    if (this.disposed) return;
+    this.clearLeaveTimeout();
+    await this.disconnect(reason);
+  }
+
+  public dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.clearLeaveTimeout();
+    for (const unsubscribe of this.unsubscribe.splice(0)) unsubscribe();
+  }
+
+  private async disconnect(reason: string): Promise<void> {
+    if (this.disposed) return;
+    try {
+      await this.bus.request({
+        type: "[Player]->[Connection]:disconnect",
+        requestId: createPlayerRequestId(),
+        reason,
+      }, { timeoutMs: Math.max(5000, this.leaveTimeout || 5000) });
+    } catch (error) {
+      this.debug?.(`[LifecycleController] disconnect failed:`, error);
+    }
+  }
+}
