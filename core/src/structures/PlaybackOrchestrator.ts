@@ -1,4 +1,5 @@
 import type { PlayerBus, PlayerAction } from "./PlayerBus";
+import { createPlayerRequestId } from "./PlayerBus";
 import { PlaybackSession } from "./PlaybackSession";
 import type { Track } from "../types";
 import type { TrackLoader } from "./TrackLoader";
@@ -14,12 +15,14 @@ export interface PlaybackOrchestratorOptions {
 	queueController?: QueueController; antiStuckController?: AntiStuckController; transitionController?: TransitionController; preloadController?: PreloadController;
 }
 
+/** Coordinates playback while keeping Player-facing traffic on PlayerBus. */
 export class PlaybackOrchestrator {
 	private session: PlaybackSession | null = null;
 	private readonly detachAction: () => void;
 	private readonly detachQueries: Array<() => void> = [];
 	private readonly trackLoader?: TrackLoader; private readonly streamController?: StreamController; private readonly playbackController?: PlaybackController;
 	private readonly queueController?: QueueController; private readonly antiStuckController?: AntiStuckController; private readonly transitionController?: TransitionController; private readonly preloadController?: PreloadController;
+
 	public constructor(private readonly bus: PlayerBus, options: PlaybackOrchestratorOptions = {}) {
 		this.trackLoader = options.trackLoader; this.streamController = options.streamController; this.playbackController = options.playbackController; this.queueController = options.queueController;
 		this.antiStuckController = options.antiStuckController; this.transitionController = options.transitionController; this.preloadController = options.preloadController;
@@ -33,9 +36,11 @@ export class PlaybackOrchestrator {
 			this.bus.registerQuery("volume", () => 100), this.bus.registerQuery("isPlaying", () => this.session?.status === "playing"), this.bus.registerQuery("isPaused", () => this.session?.status === "paused"),
 		);
 	}
+
 	public get currentSession(): PlaybackSession | null { return this.session; }
 	public get transitionPolicy(): TransitionController | undefined { return this.transitionController; }
 	public dispose(): void { this.detachAction(); for (const detach of this.detachQueries) detach(); this.antiStuckController?.dispose(); this.preloadController?.dispose(); this.playbackController?.dispose(); this.streamController?.dispose(); this.session?.destroy(); this.session = null; }
+
 	private async handleAction(action: PlayerAction): Promise<void> {
 		switch (action.type) {
 			case "PLAY": if (action.track) await this.start(action.track); return;
@@ -47,6 +52,7 @@ export class PlaybackOrchestrator {
 			case "SET_VOLUME": this.bus.publish("volumeRequested", action.volume); return;
 		}
 	}
+
 	private async start(track: Track): Promise<void> {
 		this.playbackController?.stop(); this.streamController?.abortCurrent(); this.antiStuckController?.clear(this.session ?? undefined); this.trackLoader?.resetRecovery(this.session?.track ?? undefined); this.trackLoader?.cancelPreload(); this.session?.destroy();
 		const session = new PlaybackSession(); this.session = session; session.begin(track); this.queueController?.queue.setCurrentTrack(track); this.bus.event({ type: "TRACK_LOADING", session: session.snapshot() });
@@ -54,8 +60,18 @@ export class PlaybackOrchestrator {
 		try {
 			const loaded = await this.trackLoader.loadWithRecovery(track, session); if (!this.session?.owns(session.id)) return; this.bus.event({ type: "TRACK_LOADED", session: session.snapshot() });
 			if (loaded.stream.remote && loaded.stream.handle) { this.bus.publish("trackRequested", loaded.track, session); return; }
-			const activeStream = await this.streamController.replace(loaded.stream, session); if (!this.session?.owns(session.id)) return; const resource = this.playbackController.createResource(activeStream.stream); session.setResource(resource); this.playbackController.play(resource, session); session.markPlaying(); this.bus.event({ type: "TRACK_STARTED", session: session.snapshot() }); void this.trackLoader.preloadNext().catch(() => undefined);
+			const activeStream = await this.streamController.replace(loaded.stream, session); if (!this.session?.owns(session.id)) return; const resource = this.playbackController.createResource(activeStream.stream); session.setResource(resource); this.playbackController.play(resource, session); session.markPlaying(); this.bus.event({ type: "TRACK_STARTED", session: session.snapshot() });
+			await this.requestPreload(loaded.track);
 		} catch (error) { if (!session.signal.aborted) this.bus.event({ type: "TRACK_ERROR", session: session.snapshot(), error: error instanceof Error ? error : new Error(String(error)) }); }
 	}
+
+	/** Preload is a peripheral transaction, so the orchestrator never calls the controller directly. */
+	private async requestPreload(track: Track): Promise<void> {
+		if (!this.preloadController || !this.bus) return;
+		try {
+			await this.bus.request({ type: "[Player]->[Preload]:request", requestId: createPlayerRequestId(), track }, { signal: this.session?.signal, timeoutMs: 30_000 });
+		} catch { /* preload is opportunistic and must not fail playback */ }
+	}
+
 	private publishState(): void { if (!this.session) return; this.bus.publish("playbackStateChanged", this.session.snapshot()); }
 }
