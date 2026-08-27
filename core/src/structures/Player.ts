@@ -1,5 +1,5 @@
 import type { VoiceConnection } from "@discordjs/voice";
-import type { PlayerOptions, VoiceChannel } from "../types";
+import type { PlayerOptions, VoiceChannel, SearchResult } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 import { Player as LegacyPlayer } from "./Player.old";
 import {
@@ -11,10 +11,12 @@ import {
 	createPlayerRequestId,
 } from "./PlayerBus";
 import { PlayerRuntimeController } from "../Controller/PlayerRuntimeController";
+import { SearchController } from "../Controller/SearchController";
 
 /** Public Player facade. LegacyPlayer is temporary and will be removed. */
 export class Player extends LegacyPlayer {
 	public readonly runtime: PlayerRuntimeController;
+	public readonly searchController: SearchController;
 
 	public get bus() { return this.runtime.bus; }
 	public get actionExecutor() { return this.runtime.actionExecutor; }
@@ -36,12 +38,30 @@ export class Player extends LegacyPlayer {
 			options: this.options,
 			debug: this.debug.bind(this),
 		});
+		this.searchController = new SearchController({
+			extensionManager: this.extensionManager,
+			pluginManager: this.pluginManager,
+			debug: this.debug.bind(this),
+		});
 
 		// Runtime resources are authoritative during decomposition.
 		this.queue = this.runtime.queue;
 		this.audioPlayer = this.runtime.audioPlayer;
 		this.streamManager = this.runtime.streamManager;
 		this.preloadManager = this.runtime.preloadManager;
+	}
+
+	/** Search through the extracted search subsystem. Legacy play() dispatches here polymorphically. */
+	public override search(query: string, requestedBy: string): Promise<SearchResult> {
+		return this.searchController.search(query, requestedBy);
+	}
+
+	public override clearSearchCache(): void {
+		this.searchController.clear();
+	}
+
+	public override debugSearchQuery(query: string): ReturnType<SearchController["debug"]> {
+		return this.searchController.debug(query);
 	}
 
 	/** Request a voice connection through PlayerBus. ConnectionController owns the connection. */
