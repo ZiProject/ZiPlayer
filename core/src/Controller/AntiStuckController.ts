@@ -1,4 +1,4 @@
-import type { PlayerBus, PlayerRecoveryInput } from "../structures/PlayerBus";
+import type { PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track } from "../types";
 
@@ -22,7 +22,6 @@ export class AntiStuckController {
 		this.reusePreloadFirst = options.reusePreloadFirst ?? true; this.reduceQualityOnRetry = options.reduceQualityOnRetry ?? true;
 		this.controlledSkipThreshold = Math.max(1, options.controlledSkipThreshold ?? 3); this.bus = options.bus;
 	}
-
 	public arm(session: PlaybackSession, timeoutMs: number, handlers: AntiStuckRetryHandlers): void { this.clearTimer(); if (!this.enabled || timeoutMs <= 0 || !session.track) return; const generation = ++this.generation; this.timer = setTimeout(() => { void this.recover(session, generation, "playback timeout", handlers); }, timeoutMs); }
 	public async reportStuck(session: PlaybackSession, reason: string, handlers: AntiStuckRetryHandlers): Promise<boolean> { return this.recover(session, ++this.generation, reason, handlers); }
 	public async recoverTrack(track: Track, signal: AbortSignal, reason: unknown, handlers: LegacyAntiStuckRetryHandlers): Promise<boolean> {
@@ -38,35 +37,30 @@ export class AntiStuckController {
 	public get policy() { return { enabled: this.enabled, maxRetries: this.maxRetries, retryDelayMs: this.retryDelayMs, reusePreloadFirst: this.reusePreloadFirst, reduceQualityOnRetry: this.reduceQualityOnRetry, controlledSkipThreshold: this.controlledSkipThreshold }; }
 	public dispose(): void { this.reset(); }
 
-	/**
-	 * Bus-facing recovery request. The orchestrator remains the owner of the
-	 * concrete retry/skip operations; this controller only arbitrates recovery
-	 * policy and publishes the request lifecycle on PlayerBus.
-	 */
-	public requestRecovery(session: PlaybackSession, reason: string, handlers: AntiStuckRetryHandlers): Promise<boolean> {
-		if (!this.bus) return this.recover(session, ++this.generation, reason, handlers);
-		return this.recover(session, ++this.generation, reason, handlers);
+	/** Execute a recovery transaction while exposing its lifecycle through PlayerBus. */
+	public requestRecovery(session: PlaybackSession, reason: string, handlers: AntiStuckRetryHandlers, requestId?: string): Promise<boolean> {
+		return this.recover(session, ++this.generation, reason, handlers, requestId);
 	}
 
-	private async recover(session: PlaybackSession, generation: number, reason: string, handlers: AntiStuckRetryHandlers): Promise<boolean> {
+	private async recover(session: PlaybackSession, generation: number, reason: string, handlers: AntiStuckRetryHandlers, requestId?: string): Promise<boolean> {
 		const track = session.track; if (!this.enabled || !track || !session.isActive() || generation !== this.generation) return false;
 		const retry = this.getRetryCount(track);
 		this.bus?.event({ type: "STUCK_DETECTED", session: session.snapshot(), reason });
 		if (retry >= this.maxRetries) { await handlers.skip({ session, track, retry, reason }); return false; }
 		this.failures.set(this.key(track), retry + 1);
 		this.bus?.event({ type: "RECOVERY_STARTED", session: session.snapshot() });
-		this.bus?.emitOutput({ type: "[Recovery]->[Player]:retrying", requestId: "internal", session: session.snapshot(), attempt: retry + 1 } as never);
+		if (requestId) this.bus?.emitOutput({ type: "[Recovery]->[Player]:retrying", requestId, session: session.snapshot(), attempt: retry + 1 });
 		if (this.retryDelayMs > 0) await this.delay(this.retryDelayMs, session.signal);
 		if (!session.isActive() || generation !== this.generation) return false;
 		const ok = await handlers.retry({ session, track, retry: retry + 1, reason });
 		if (ok) {
 			this.failures.delete(this.key(track));
-			this.bus?.emitOutput({ type: "[Recovery]->[Player]:recovered", requestId: "internal", session: session.snapshot() } as never);
+			if (requestId) this.bus?.emitOutput({ type: "[Recovery]->[Player]:recovered", requestId, session: session.snapshot() });
 			return true;
 		}
 		if (session.isActive()) {
 			this.bus?.event({ type: "RECOVERY_FAILED", session: session.snapshot() });
-			this.bus?.emitOutput({ type: "[Recovery]->[Player]:failed", requestId: "internal", session: session.snapshot(), error: new Error(reason) } as never);
+			if (requestId) this.bus?.emitOutput({ type: "[Recovery]->[Player]:failed", requestId, session: session.snapshot(), error: new Error(reason) });
 			if (this.getRetryCount(track) >= this.controlledSkipThreshold) await handlers.skip({ session, track, retry: this.getRetryCount(track), reason });
 		}
 		return false;
