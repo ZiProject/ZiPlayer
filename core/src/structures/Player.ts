@@ -46,63 +46,14 @@ export class Player extends LegacyPlayer {
 
 	/** Request a voice connection through PlayerBus. ConnectionController owns the connection. */
 	public override connect(channel: VoiceChannel): Promise<VoiceConnection> {
-		const requestId = createPlayerRequestId();
-		return new Promise<VoiceConnection>((resolve, reject) => {
-			let settled = false;
-			let cleanupConnected: () => void = () => undefined;
-			let cleanupError: () => void = () => undefined;
-
-			cleanupConnected = this.bus.onOutput("[Connection]->[Player]:connected", (event) => {
-				if (event.requestId !== requestId || settled) return;
-				settled = true;
-				cleanupConnected();
-				cleanupError();
-				resolve(event.connection);
-			});
-			cleanupError = this.bus.onOutput("[Connection]->[Player]:error", (event) => {
-				if (event.requestId !== requestId || settled) return;
-				settled = true;
-				cleanupError();
-				cleanupConnected();
-				reject(event.error);
-			});
-
-			this.bus.emitInput({
-				type: "[Player]->[Connection]:connect",
-				requestId,
-				channel,
-			});
-		});
+		return this.bus
+			.request({ type: "[Player]->[Connection]:connect", requestId: createPlayerRequestId(), channel })
+			.then((event) => event.connection);
 	}
 
 	/** Request voice disconnection through PlayerBus. */
 	public override disconnect(): Promise<void> {
-		const requestId = createPlayerRequestId();
-		return new Promise<void>((resolve, reject) => {
-			let settled = false;
-			let cleanupDisconnected: () => void = () => undefined;
-			let cleanupError: () => void = () => undefined;
-
-			cleanupDisconnected = this.bus.onOutput("[Connection]->[Player]:disconnected", (event) => {
-				if (event.requestId !== requestId || settled) return;
-				settled = true;
-				cleanupDisconnected();
-				cleanupError();
-				resolve();
-			});
-			cleanupError = this.bus.onOutput("[Connection]->[Player]:error", (event) => {
-				if (event.requestId !== requestId || settled) return;
-				settled = true;
-				cleanupError();
-				cleanupDisconnected();
-				reject(event.error);
-			});
-
-			this.bus.emitInput({
-				type: "[Player]->[Connection]:disconnect",
-				requestId,
-			});
-		});
+		return this.bus.request({ type: "[Player]->[Connection]:disconnect", requestId: createPlayerRequestId() }).then(() => undefined);
 	}
 
 	public action(action: PlayerActionMessage): Promise<void> { return this.runtime.actionExecutor.enqueue(action); }
