@@ -37,7 +37,7 @@ export class Player extends EventEmitter {
  // Keep the legacy compatibility API available while callers migrate to controllers.
  [key: string]: any;
 
- public get bus(){return this.runtime.bus;} public get actionExecutor(){return this.runtime.actionExecutor;} public get connectionController(){return this.runtime.connectionController;} public get orchestrator(){return this.runtime.orchestrator;} public get trackLoader(){return this.runtime.trackLoader;} public get streamController(){return this.runtime.streamController;} public get playbackController(){return this.runtime.playbackController;} public get queueController(){return this.runtime.queueController;} public get antiStuckController(){return this.runtime.antiStuckController;} public get transitionController(){return this.runtime.transitionController;} public get preloadController(){return this.runtime.preloadController;} public get forwardController():ForwardController{return this.runtime.forwardController;}
+ public get bus(){return this.runtime.bus;} public get actionExecutor(){return this.runtime.actionExecutor;} public get connectionController(){return this.runtime.connectionController;} public get orchestrator(){return this.runtime.orchestrator;} public get trackLoader(){return this.runtime.trackLoader;} public get streamController(){return this.runtime.streamController;} public get playbackController(){return this.runtime.playbackController;} public get queueController(){return this.runtime.queueController;} public get antiStuckController(){return this.runtime.antiStuckController;} public get transitionController(){return this.runtime.transitionController;} public get preloadController(){return this.runtime.preloadController;} public get filterController(){return this.runtime.filterController;} public get forwardController():ForwardController{return this.runtime.forwardController;}
 
  public constructor(guildId:string,options:PlayerOptions={},manager:PlayerManager){
   super();
@@ -45,7 +45,7 @@ export class Player extends EventEmitter {
   this.bindLegacyCompatibility();
   this.runtime=new PlayerRuntimeController({player:this,manager,options:this.options,debug:this.debug.bind(this)});
   this.searchController=new SearchController({extensionManager:this.extensionManager,pluginManager:this.pluginManager,debug:this.debug.bind(this)});
-  this.queue=this.runtime.queue;this.audioPlayer=this.runtime.audioPlayer;this.streamManager=this.runtime.streamManager;this.preloadManager=this.runtime.preloadManager;
+  this.queue=this.runtime.queue;this.audioPlayer=this.runtime.audioPlayer;this.streamManager=this.runtime.streamManager;this.preloadManager=this.runtime.preloadManager;this.filter=this.runtime.filterController;
  }
 
  private bindLegacyCompatibility():void{
