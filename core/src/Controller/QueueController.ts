@@ -88,6 +88,9 @@ export class QueueController {
 		this.queue.willNextTrack(track ?? undefined);
 		this.publishChanged();
 	}
+	public get relatedTracks(): Track[] | null {
+		return this.queue.relatedTracks();
+	}
 	public setRelated(tracks: Track[]): void {
 		this.queue.relatedTracks(tracks);
 		this.publishChanged();

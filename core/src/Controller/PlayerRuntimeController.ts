@@ -86,6 +86,11 @@ export class PlayerRuntimeController {
 		player.extensionManager = this.extensionManager;
 		player.streamManager = this.streamManager;
 		this.queueController = new QueueController({ queue: this.queue, bus: this.bus });
+		Object.defineProperty(player, "relatedTracks", {
+			enumerable: true,
+			configurable: true,
+			get: () => this.queueController.relatedTracks,
+		});
 		const resolver = new TrackResolver(this.streamManager);
 		this.preloadManager = new PreloadManager({
 			streamManager: this.streamManager,
@@ -167,9 +172,7 @@ export class PlayerRuntimeController {
 		this.bus.onOutput("[Connection]->[Player]:disconnected", (event) => {
 			this.audioPlayerSubscription?.unsubscribe();
 			this.audioPlayerSubscription = null;
-
 			this.player.connection = null;
-
 			o.debug(`[PlayerRuntimeController] AudioPlayer unsubscribed guild=${player.guildId} reason=${event.reason ?? "unknown"}`);
 		});
 		this.detachResourceRefresh = this.bus.onInput("[Player]->[Resource]:refresh", (event) => {
