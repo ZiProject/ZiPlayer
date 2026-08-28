@@ -17,7 +17,6 @@ export type PlayerAction =
 	| { type: "QUEUE_NEXT"; ignoreLoop?: boolean; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| { type: "QUEUE_SET_CURRENT"; track: Track | null; priority?: PlayerActionPriority; requestId?: PlayerRequestId };
 export type PlayerActionType = PlayerAction["type"];
-
 export type PlayerConnectionInput =
 	| { type: "[Player]->[Connection]:connect"; requestId: PlayerRequestId; channel: VoiceChannel }
 	| { type: "[Player]->[Connection]:disconnect"; requestId: PlayerRequestId; reason?: string }
@@ -26,7 +25,6 @@ export type PlayerPreloadInput = { type: "[Player]->[Preload]:request"; requestI
 export type PlayerRecoveryInput = { type: "[Player]->[Recovery]:recover"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; reason: string };
 export type PlayerResourceInput = { type: "[Player]->[Resource]:refresh"; requestId: PlayerRequestId; position?: number };
 export type PlayerInput = PlayerConnectionInput | PlayerPreloadInput | PlayerRecoveryInput | PlayerResourceInput;
-
 export type PlayerConnectionOutput =
 	| { type: "[Connection]->[Player]:connecting"; requestId: PlayerRequestId; sessionId: PlayerSessionId; channel: VoiceChannel }
 	| { type: "[Connection]->[Player]:connected"; requestId: PlayerRequestId; sessionId: PlayerSessionId; channel: VoiceChannel; connection: VoiceConnection }
@@ -83,7 +81,7 @@ const REQUESTS: Record<PlayerRequestInputType, RequestContract> = {
 	"[Player]->[Connection]:reconnect": { success: "[Connection]->[Player]:connected", error: "[Connection]->[Player]:error", progress: "[Connection]->[Player]:connecting" },
 	"[Player]->[Preload]:request": { success: "[Preload]->[Player]:ready", error: "[Preload]->[Player]:failed", progress: "[Preload]->[Player]:loading" },
 	"[Player]->[Recovery]:recover": { success: "[Recovery]->[Player]:recovered", error: "[Recovery]->[Player]:failed", progress: "[Recovery]->[Player]:retrying" },
-	"[Player]->[Resource]:refresh": { success: "[Resource]->[Resource]:refreshed" as any, error: "[Resource]->[Player]:error" },
+	"[Player]->[Resource]:refresh": { success: "[Resource]->[Player]:refreshed", error: "[Resource]->[Player]:error" },
 };
 export interface PlayerRequestOptions<K extends PlayerRequestInputType = PlayerRequestInputType> { timeoutMs?: number; signal?: AbortSignal; onProgress?: (event: Progress<K>) => void }
 export type PlayerBusRequestErrorReason = "timeout" | "aborted" | "disposed" | "unhandled";
