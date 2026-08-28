@@ -1,15 +1,17 @@
 import type { Player } from "../structures/Player";
 import type { PlayerManager } from "../structures/PlayerManager";
-import type { PlayerEventType, PlayerBus, PlayerEvent } from "../structures/PlayerBus";
+import type { ManagerEvents } from "../types";
+import type { PlayerEventType, PlayerBus, PlayerEvent, PlaybackSessionSnapshot } from "../structures/PlayerBus";
 import { PlayerEventDebug } from "./PlayerEventDebug";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
 
-/** Bridges canonical PlayerBus events to Player and PlayerManager. */
+/** Bridges canonical PlayerBus events to the typed public Player/PlayerManager event APIs. */
 export class PlayerEventBridge {
 	private readonly detach: Array<() => void> = [];
 	private readonly debugTracer: PlayerEventDebug;
 	private disposed = false;
 	private readonly recent = new Map<string, number>();
+	private lastVolume: number;
 
 	public constructor(
 		private readonly player: Player,
@@ -17,7 +19,8 @@ export class PlayerEventBridge {
 		private readonly bus: PlayerBus,
 	) {
 		this.debugTracer = new PlayerEventDebug(bus, player.guildId);
-		this.debug("attached");
+		this.lastVolume = player.volume;
+		this.debug("attached", { volume: this.lastVolume });
 
 		const events: PlayerEventType[] = [
 			"initialized", "ready", "destroyed", "TRACK_LOADING", "TRACK_LOADED", "TRACK_STARTED",
@@ -59,6 +62,7 @@ export class PlayerEventBridge {
 			playerEvent: publicType,
 			args: this.describeArgs(event, args),
 		});
+
 		try {
 			this.player.emit(publicType, ...args);
 			this.debug("PLAYER EMIT OK", { sequence: trace.sequence, event: publicType });
@@ -66,7 +70,7 @@ export class PlayerEventBridge {
 			this.debug("PLAYER EMIT ERROR", { sequence: trace.sequence, event: publicType, error });
 		}
 
-		this.emitManager(trace.sequence, event, publicType, args);
+		this.emitManager(trace.sequence, event, publicType);
 	}
 
 	private toPublicEventName(type: PlayerEventType): string | null {
@@ -96,7 +100,7 @@ export class PlayerEventBridge {
 		}
 	}
 
-	private toArgs(event: any): any[] {
+	private toArgs(event: PlayerEvent): any[] {
 		switch (event.type) {
 			case "TRACK_ERROR": return [event.session, event.error];
 			case "STUCK_DETECTED": return [event.session, event.reason];
@@ -115,18 +119,94 @@ export class PlayerEventBridge {
 		}
 	}
 
-	private emitManager(sequence: number, event: PlayerEvent, publicType: string, args: any[]): void {
+	/**
+	 * Translate canonical bus events into the legacy public ManagerEvents contract.
+	 * Every emitted manager event is constructed with the exact argument types declared
+	 * by ManagerEvents; internal-only bus events are deliberately not forwarded.
+	 */
+	private emitManager(sequence: number, event: PlayerEvent, _publicType: string): void {
 		try {
-			this.debug("PLAYER -> MANAGER", {
-				sequence,
-				event: publicType,
-				args: this.describeArgs(event, args),
-			});
-			(this.manager.emit as any)(publicType, this.player, ...args);
-			this.debug("MANAGER EMIT OK", { sequence, event: publicType });
+			switch (event.type) {
+				case "TRACK_STARTED": {
+					const track = this.resolveTrack(event.session);
+					if (track) this.emitTypedManager("trackStart", track);
+					break;
+				}
+				case "TRACK_END": {
+					const track = this.resolveTrack(event.session);
+					if (track) this.emitTypedManager("trackEnd", track);
+					else this.debug("SKIP MANAGER EVENT", { sequence, event: "trackEnd", reason: "missing-track" });
+					break;
+				}
+				case "TRACK_ERROR": {
+					const track = this.resolveTrack(event.session);
+					this.emitTypedManager("playerError", event.error, track ?? undefined);
+					break;
+				}
+				case "trackRequested": {
+					this.emitTypedManager("willPlay", event.track, this.player.queueController.snapshot());
+					break;
+				}
+				case "volumeRequested": {
+					const oldVolume = this.lastVolume;
+					this.lastVolume = event.volume;
+					this.emitTypedManager("volumeChange", oldVolume, event.volume);
+					break;
+				}
+				case "playbackStateChanged":
+				case "stateChanged": {
+					this.emitPlaybackStateManagerEvent(event);
+					break;
+				}
+				case "initialized":
+				case "ready":
+				case "destroyed":
+				case "TRACK_LOADING":
+				case "TRACK_LOADED":
+				case "STREAM_ABORTED":
+				case "playbackSessionCreated":
+				case "STUCK_DETECTED":
+				case "RECOVERY_STARTED":
+				case "RECOVERY_FAILED":
+				case "preloadStateChanged":
+				case "preloadPromoted":
+				case "preloadCancelled":
+				case "queueChanged":
+					// These are canonical PlayerBus events without a matching ManagerEvents contract.
+					break;
+			}
 		} catch (error) {
-			this.debug("MANAGER EMIT ERROR", { sequence, event: publicType, error });
+			this.debug("MANAGER EMIT ERROR", { sequence, event: event.type, error });
 		}
+	}
+
+	private emitPlaybackStateManagerEvent(event: Extract<PlayerEvent, { type: "playbackStateChanged" | "stateChanged" }>): void {
+		const newState = event.newState ?? null;
+		const track = "session" in event ? this.resolveTrack(event.session) : this.player.currentTrack;
+
+		if (!track) {
+			if (newState?.status === "idle") this.emitTypedManager("queueEnd");
+			return;
+		}
+
+		if (newState?.status === "paused") {
+			this.emitTypedManager("playerPause", track);
+		} else if (newState?.status === "playing") {
+			this.emitTypedManager("playerResume", track);
+		} else if (newState?.status === "idle") {
+			this.emitTypedManager("playerStop");
+			this.emitTypedManager("queueEnd");
+		}
+	}
+
+	private resolveTrack(session: PlaybackSessionSnapshot): NonNullable<PlaybackSessionSnapshot["track"]> | null {
+		return session.track ?? this.player.currentTrack ?? null;
+	}
+
+	private emitTypedManager<K extends keyof ManagerEvents>(event: K, ...args: ManagerEvents[K]): void {
+		this.debug("PLAYER -> MANAGER", { event, args });
+		this.manager.emit(event, ...args);
+		this.debug("MANAGER EMIT OK", { event });
 	}
 
 	private describeArgs(event: PlayerEvent, args: any[]): unknown[] {
