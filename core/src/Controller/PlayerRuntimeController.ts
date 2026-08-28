@@ -158,7 +158,6 @@ export class PlayerRuntimeController {
 			streamController: this.streamController,
 			playbackController: this.playbackController,
 			queueController: this.queueController,
-			antiStuckController: this.antiStuckController,
 			transitionController: this.transitionController,
 			preloadController: this.preloadController,
 		});
