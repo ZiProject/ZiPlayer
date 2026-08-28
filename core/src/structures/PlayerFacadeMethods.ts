@@ -53,14 +53,14 @@ declare module "./Player" {
 		getSerializableState(): any;
 		restoreState(state: any): void;
 		getStreamManagerStats(): any;
-		get previousTrack(): Track | null;
-		get upcomingTracks(): Track[];
-		get previousTracks(): Track[];
-		get availablePlugins(): any[];
-		get relatedTracks(): Track[] | null;
-		get isLive(): boolean;
-		get isIdle(): boolean;
-		get isBuffering(): boolean;
+		readonly previousTrack: Track | null;
+		readonly upcomingTracks: Track[];
+		readonly previousTracks: Track[];
+		readonly availablePlugins: any[];
+		readonly relatedTracks: Track[] | null;
+		readonly isLive: boolean;
+		readonly isIdle: boolean;
+		readonly isBuffering: boolean;
 	}
 }
 
@@ -96,14 +96,14 @@ P.promotePreloadToCurrent = function(this: Player, track: Track) { const s = thi
 P.createResource = function(this: Player, stream: any, track: Track) { return this.playbackController.createResource(stream, track); };
 P.mergeTrackPreserveRef = function(this: Player, target: Track, source: Track) { Object.assign(target, source); return target; };
 P.applyTrackMiddleware = async function(this: Player, track: Track) { const m: any = (this as any).options?.trackMiddleware; if (Array.isArray(m)) for (const fn of m) { const r = await fn(track, { player:this, manager:this.manager }); if (r && r !== track) Object.assign(track, r); } return track; };
-P.getStream = async function(this: Player, track: Track) { const session = this.orchestrator.currentSession; if (session) return (this.trackLoader as any).load(track, session); const e = await (this.extensionManager as any)?.provideStream?.(track); return e ?? (this.pluginManager as any)?.getStream?.(track); };
+P.getStream = async function(this: Player, track: Track) { const session = this.orchestrator.currentSession; if (session) return this.trackLoader.load(track, session); const e = await (this.extensionManager as any)?.provideStream?.(track); return e ?? (this.pluginManager as any)?.getStream?.(track); };
 P.isUnrecoverableStreamError = function(this: Player, error: unknown) { const n = error instanceof Error ? error.name : ""; const m = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase(); return n === "AbortError" || /unrecoverable|unsupported|not found|invalid source/.test(m); };
-P.startTrack = function(this: Player, track: Track) { return this.action({ type:"PLAY", track } as any); };
-P.startFromPreload = function(this: Player, track: Track) { return this.action({ type:"PLAY", track } as any); };
+P.startTrack = function(this: Player, track: Track, ..._args: any[]) { return this.action({ type:"PLAY", track } as any); };
+P.startFromPreload = function(this: Player, track: Track, ..._args: any[]) { return this.action({ type:"PLAY", track } as any); };
 P.loadFreshStream = function(this: Player, track: Track, session?: any) { return this.trackLoader.load(track, session ?? this.orchestrator.currentSession); };
-P.playRemote = async function(this: Player, _track: Track, stream: any) { if (stream?.handle?.play) await stream.handle.play(); return true; };
+P.playRemote = async function(this: Player, _track: Track, stream: any, ..._args: any[]) { if (stream?.handle?.play) await stream.handle.play(); return true; };
 P.ensureTTSPlayer = function(this: Player) { return (this as any).runtime?.ttsController?.ensurePlayer?.() ?? null; };
-P.interruptWithTTSTrack = function(this: Player, track: Track) { return this.play(track); };
+P.interruptWithTTSTrack = function(this: Player, track: Track, ..._args: any[]) { return this.play(track); };
 P.previous = function(this: Player) { return this.queueController.previous(); };
 P.save = async function(this: Player, track: Track, options?: any) { const e = await (this.extensionManager as any)?.save?.(track, options); if (e) return e; const p = (this.pluginManager as any)?.save; if (typeof p === "function") return p.call(this.pluginManager, track, options); throw new Error("No save provider is available for this track"); };
 P.loop = function(this: Player, mode?: any) { return mode === undefined ? this.queueController.loop : this.queueController.setLoop(mode); };
@@ -118,7 +118,7 @@ P.refreshPlayerResource = function(this: Player, position = 0) { return this.bus
 P.getExtensions = function(this: Player) { return (this.extensionManager as any)?.getAll?.() ?? []; };
 P.clearLeaveTimeout = function(this: Player) { (this.lifecycleController as any).clearLeaveTimeout?.(); };
 P.setupEventListeners = function(this: Player) { /* owned by PlayerEventBridge/runtime */ };
-P.saveSession = function(this: Player) { return this.getSerializableState(); };
+P.saveSession = function(this: Player, _options?: any) { return this.getSerializableState(); };
 P.exitRemoteMode = function(this: Player) { (this as any).playbackMode = "NATIVE"; };
 P.getSerializableState = function(this: Player) { return { guildId:this.guildId, queue:this.queue.toJSON?.(), volume:this.volume, playbackMode:(this as any).playbackMode }; };
 P.restoreState = function(this: Player, state: any) { if (state?.queue) this.queue.fromJSON?.(state.queue); if (typeof state?.volume === "number") this.setVolume(state.volume); if (state?.playbackMode !== undefined) (this as any).playbackMode = state.playbackMode; };
