@@ -157,18 +157,50 @@ export class Player extends EventEmitter {
 			.request({ type: "[Player]->[Connection]:disconnect", requestId: createPlayerRequestId() })
 			.then(() => undefined);
 	}
-	public play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
-		if (query === null) return this.action({ type: "SKIP" }).then(() => true);
-		if (typeof query === "string")
-			return this.search(query, requestedBy || "Unknown")
-				.then((r) => (r.tracks.length ? this.action({ type: "PLAY", track: r.tracks[0] }).then(() => true) : false))
-				.catch(() => false);
-		const track = "tracks" in query ? query.tracks[0] : query;
-		return track ? this.action({ type: "PLAY", track }).then(() => true) : Promise.resolve(false);
+	public async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
+		if (this.destroyed) return false;
+
+		// Preserve the legacy contract: null means "start the next queued track",
+		// not "skip the currently playing track".
+		if (query === null) {
+			if (this.isPlaying || this.isPaused) return true;
+			return this.playNext();
+		}
+
+		let tracks: Track[];
+		try {
+			if (typeof query === "string") {
+				const result = await this.search(query, requestedBy || "Unknown");
+				tracks = result.tracks;
+			} else if ("tracks" in query) {
+				tracks = query.tracks;
+			} else {
+				tracks = [query];
+			}
+		} catch (error) {
+			this.debug("[Player] Play search error:", error);
+			this.emit("playerError", error as Error);
+			return false;
+		}
+
+		if (tracks.length === 0) return false;
+
+		// Playback is queue-driven. Add first, then let the orchestrator consume
+		// the queue. This avoids starting a track outside QueueController and keeps
+		// subsequent SKIP/loop/autoplay behaviour consistent with the legacy flow.
+		this.queueController.addMultiple(tracks);
+
+		if (this.isPlaying || this.isPaused) {
+			void this.preloadController.preloadNext().catch((error: unknown) => this.debug("[Player] Preload after queue add error:", error));
+			return true;
+		}
+
+		return this.playNext();
 	}
 	public playNext(): Promise<boolean> {
+		if (this.destroyed) return Promise.resolve(false);
 		return this.action({ type: "SKIP" })
-			.then(() => true)
+			.then(() => this.isPlaying || this.currentTrack !== null)
 			.catch(() => false);
 	}
 	public pause(): boolean {
