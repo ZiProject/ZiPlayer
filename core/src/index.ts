@@ -1,4 +1,5 @@
 import { PlayerManager, getGlobalManager } from "./structures/PlayerManager";
+import "./structures/PlayerFacadeMethods";
 
 export { Player } from "./structures/Player";
 export { Queue } from "./structures/Queue";
