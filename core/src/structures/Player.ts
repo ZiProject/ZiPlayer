@@ -219,9 +219,49 @@ export class Player extends EventEmitter {
 			.catch(() => false);
 	}
 
-	/** Get the current playback position in milliseconds. */
-	public getTime(): number {
-		return Number(this.playbackController.activeResource?.playbackDuration ?? 0);
+	/** Get the current playback time using the legacy public contract. */
+	public getTime() {
+		const track = this.currentTrack;
+		const resource = this.currentResource ?? this.playbackController.activeResource;
+		const isLive = Boolean(track?.isLive);
+
+		if (isLive) {
+			return {
+				current: 0,
+				total: 0,
+				format: "LIVE",
+				formatted: {
+					current: "LIVE",
+					total: "LIVE",
+				},
+			};
+		}
+
+		if (!track || !resource) {
+			return {
+				current: 0,
+				total: 0,
+				format: "00:00",
+				formatted: {
+					current: "00:00",
+					total: "00:00",
+				},
+			};
+		}
+
+		const total = Math.floor(track.duration > 1000 ? track.duration : track.duration * 1000) | 0;
+		const seekOffset = Number((this as any).seekOffset ?? 0);
+		const current = Math.floor(Number(resource.playbackDuration ?? 0) + seekOffset) | 0;
+
+		return {
+			current,
+			total,
+			format: this.formatTime(current),
+			formatted: {
+				current: this.formatTimeCompact(current),
+				total: this.formatTimeCompact(total),
+			},
+		};
 	}
 
 	public skip(): boolean {
@@ -244,7 +284,6 @@ export class Player extends EventEmitter {
 		} = options;
 
 		const track = this.currentTrack;
-		const state = this.playbackController.state;
 		const resource = this.runtime.playbackController.activeResource ?? this.currentResource;
 		const isLive = Boolean((track as any)?.isLive);
 
