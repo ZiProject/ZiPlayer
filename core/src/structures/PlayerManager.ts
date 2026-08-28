@@ -486,9 +486,9 @@ export class PlayerManager extends EventEmitter {
 			this.debug(`Player destroyed for guildId: ${guildId}`);
 		});
 
-		player.on("debug", (...args) => {
+		player.on("debug", (message: string, ...rest: any[]) => {
 			if (this.listenerCount("debug") > 0) {
-				this.emit("debug", ...args);
+				this.emit("debug", message, ...rest);
 			}
 		});
 	}

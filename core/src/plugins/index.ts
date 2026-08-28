@@ -901,11 +901,11 @@ export class PluginManager {
 		}
 
 		const history = this.player?.queue?.previousTracks || [];
-		const historyUrls = new Set(history.map((t) => t.url));
+		const historyUrls = new Set(history.map((t: Track) => t.url));
 		const recentAuthors = new Set(
 			history
 				.slice(-5)
-				.map((t) => normalize(t.author || t.metadata?.author || ""))
+				.map((t: Track) => normalize(t.author || t.metadata?.author || ""))
 				.filter(Boolean),
 		);
 		const currentTrackUrl = track.url;

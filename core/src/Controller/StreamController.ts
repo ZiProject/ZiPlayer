@@ -66,7 +66,7 @@ export class StreamController {
 		return active;
 	}
 	createResource(stream: Readable, track?: Track): AudioResource {
-		return createAudioResource(stream, { metadata: track, inlineVolume: true });
+		return createAudioResource(stream, { metadata: { ...track, inlineVolume: true } });
 	}
 	abortCurrent() {
 		if (this.active) this.abort(this.active);
