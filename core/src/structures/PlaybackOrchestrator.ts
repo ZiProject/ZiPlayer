@@ -159,14 +159,13 @@ export class PlaybackOrchestrator {
 			queue.setRelated(related);
 			this.bus.publish("queueChanged", queue.snapshot());
 
-			if (!queue.autoPlay) return;
-
 			const pool = related.slice(0, Math.min(5, related.length));
 			const next = queue.nextTrack ?? pool[Math.floor(Math.random() * pool.length)];
 			if (!next) return;
 
 			queue.setWillNext(next);
 			this.bus.publish("queueChanged", queue.snapshot());
+			if (!queue.autoPlay) return;
 
 			if (this.o.preloadController) {
 				await this.requestPreload(next, s);
