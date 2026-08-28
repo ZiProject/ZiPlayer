@@ -160,8 +160,7 @@ export class Player extends EventEmitter {
 	public async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
 		if (this.destroyed) return false;
 
-		// Preserve the legacy contract: null means "start the next queued track",
-		// not "skip the currently playing track".
+		// Legacy contract: null starts the next queued track; it does not skip.
 		if (query === null) {
 			if (this.isPlaying || this.isPaused) return true;
 			return this.playNext();
@@ -170,8 +169,7 @@ export class Player extends EventEmitter {
 		let tracks: Track[];
 		try {
 			if (typeof query === "string") {
-				const result = await this.search(query, requestedBy || "Unknown");
-				tracks = result.tracks;
+				tracks = (await this.search(query, requestedBy || "Unknown")).tracks;
 			} else if ("tracks" in query) {
 				tracks = query.tracks;
 			} else {
@@ -185,13 +183,12 @@ export class Player extends EventEmitter {
 
 		if (tracks.length === 0) return false;
 
-		// Playback is queue-driven. Add first, then let the orchestrator consume
-		// the queue. This avoids starting a track outside QueueController and keeps
-		// subsequent SKIP/loop/autoplay behaviour consistent with the legacy flow.
+		// Playback is queue-driven. Queue first, then let the orchestrator consume
+		// the next item so loop/skip/autoplay semantics remain centralized.
 		this.queueController.addMultiple(tracks);
 
 		if (this.isPlaying || this.isPaused) {
-			void this.preloadController.preloadNext().catch((error: unknown) => this.debug("[Player] Preload after queue add error:", error));
+			void this.preloadController.preload().catch((error: unknown) => this.debug("[Player] Preload after queue add error:", error));
 			return true;
 		}
 
