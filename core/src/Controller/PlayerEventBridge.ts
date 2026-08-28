@@ -25,27 +25,10 @@ export class PlayerEventBridge {
 		this.debug("attached", { volume: this.lastVolume });
 
 		const events: PlayerEventType[] = [
-			"initialized",
-			"ready",
-			"destroyed",
-			"TRACK_LOADING",
-			"TRACK_LOADED",
-			"TRACK_STARTED",
-			"TRACK_ERROR",
-			"TRACK_END",
-			"STREAM_ABORTED",
-			"playbackStateChanged",
-			"playbackSessionCreated",
-			"trackRequested",
-			"stateChanged",
-			"STUCK_DETECTED",
-			"RECOVERY_STARTED",
-			"RECOVERY_FAILED",
-			"preloadStateChanged",
-			"preloadPromoted",
-			"preloadCancelled",
-			"queueChanged",
-			"volumeRequested",
+			"initialized", "ready", "destroyed", "TRACK_LOADING", "TRACK_LOADED", "TRACK_STARTED",
+			"TRACK_ERROR", "TRACK_END", "STREAM_ABORTED", "playbackStateChanged", "playbackSessionCreated",
+			"trackRequested", "stateChanged", "STUCK_DETECTED", "RECOVERY_STARTED", "RECOVERY_FAILED",
+			"preloadStateChanged", "preloadPromoted", "preloadCancelled", "queueChanged", "volumeRequested",
 		];
 		for (const type of events) this.detach.push(this.bus.subscribe(type, (event) => this.forward(event)));
 	}
@@ -67,19 +50,13 @@ export class PlayerEventBridge {
 		const previous = this.recent.get(trace.fingerprint);
 		if (previous !== undefined) {
 			this.debug("DUPLICATE PROPAGATION", {
-				sequence: trace.sequence,
-				previousSequence: previous,
-				fingerprint: trace.fingerprint,
-				...describeEvent(event),
+				sequence: trace.sequence, previousSequence: previous, fingerprint: trace.fingerprint, ...describeEvent(event),
 			});
 		}
 		this.recent.set(trace.fingerprint, trace.sequence);
 
 		this.debug("BUS -> PLAYER", {
-			sequence: trace.sequence,
-			busEvent: event.type,
-			playerEvent: publicType,
-			args: this.describeArgs(event, args),
+			sequence: trace.sequence, busEvent: event.type, playerEvent: publicType, args: this.describeArgs(event, args),
 		});
 
 		try {
@@ -94,125 +71,84 @@ export class PlayerEventBridge {
 
 	private toPublicEventName(type: PlayerEventType): string | null {
 		switch (type) {
-			case "initialized":
-				return "initialized";
-			case "ready":
-				return "ready";
-			case "destroyed":
-				return "destroyed";
-			case "TRACK_LOADING":
-				return "trackLoading";
-			case "TRACK_LOADED":
-				return "trackLoaded";
-			case "TRACK_STARTED":
-				return "trackStart";
-			case "TRACK_ERROR":
-				return "playerError";
-			case "TRACK_END":
-				return "trackEnd";
-			case "STREAM_ABORTED":
-				return "streamAborted";
-			case "STUCK_DETECTED":
-				return "trackStuck";
-			case "RECOVERY_STARTED":
-				return "recoveryStart";
-			case "RECOVERY_FAILED":
-				return "recoveryFailed";
-			case "preloadStateChanged":
-				return "preloadStateChanged";
-			case "preloadPromoted":
-				return "preloadPromoted";
-			case "preloadCancelled":
-				return "preloadCancelled";
-			case "queueChanged":
-				return "queueChange";
-			case "volumeRequested":
-				return "volumeChange";
-			case "playbackStateChanged":
-				return "playbackStateChanged";
-			case "playbackSessionCreated":
-				return "playbackSessionCreated";
-			case "trackRequested":
-				return "trackRequested";
-			case "stateChanged":
-				return "stateChanged";
-			default:
-				return null;
+			case "initialized": return "initialized";
+			case "ready": return "ready";
+			case "destroyed": return "destroyed";
+			case "TRACK_LOADING": return "trackLoading";
+			case "TRACK_LOADED": return "trackLoaded";
+			case "TRACK_STARTED": return "trackStart";
+			case "TRACK_ERROR": return "playerError";
+			case "TRACK_END": return "trackEnd";
+			case "STREAM_ABORTED": return "streamAborted";
+			case "STUCK_DETECTED": return "trackStuck";
+			case "RECOVERY_STARTED": return "recoveryStart";
+			case "RECOVERY_FAILED": return "recoveryFailed";
+			case "preloadStateChanged": return "preloadStateChanged";
+			case "preloadPromoted": return "preloadPromoted";
+			case "preloadCancelled": return "preloadCancelled";
+			case "queueChanged": return "queueChange";
+			case "volumeRequested": return "volumeChange";
+			case "playbackStateChanged": return "playbackStateChanged";
+			case "playbackSessionCreated": return "playbackSessionCreated";
+			case "trackRequested": return "trackRequested";
+			case "stateChanged": return "stateChanged";
+			default: return null;
 		}
 	}
 
 	private toArgs(event: PlayerEvent): any[] {
 		switch (event.type) {
-			case "TRACK_ERROR":
-				return [event.session, event.error];
-			case "STUCK_DETECTED":
-				return [event.session, event.reason];
-			case "RECOVERY_FAILED":
-				return [event.session, event.error];
-			case "trackRequested":
-				return [event.track, event.session];
-			case "stateChanged":
-				return [event.oldState, event.newState];
-			case "queueChanged":
-				return [event.queue];
-			case "volumeRequested":
-				return [event.volume];
-			case "preloadStateChanged":
-				return [event.state];
-			case "preloadPromoted":
-				return [event.track];
-			case "preloadCancelled":
-				return [];
+			case "TRACK_ERROR": return [event.session, event.error];
+			case "STUCK_DETECTED": return [event.session, event.reason];
+			case "RECOVERY_FAILED": return [event.session];
+			case "trackRequested": return [event.track, event.session];
+			case "stateChanged": return [event.oldState, event.newState];
+			case "queueChanged": return [event.queue];
+			case "volumeRequested": return [event.volume];
+			case "preloadStateChanged": return [event.state];
+			case "preloadPromoted": return [event.track];
+			case "preloadCancelled": return [];
 			case "initialized":
 			case "ready":
-			case "destroyed":
-				return [];
-			default:
-				return event.session ? [event.session] : [];
+			case "destroyed": return [];
+			default: return event.session ? [event.session] : [];
 		}
 	}
 
-	/**
-	 * Translate canonical bus events into the public ManagerEvents contract.
-	 * Internal-only bus events are deliberately not forwarded to the manager.
-	 */
+	/** Translate canonical bus events into the public ManagerEvents contract. */
 	private emitManager(sequence: number, event: PlayerEvent): void {
 		try {
 			switch (event.type) {
 				case "TRACK_STARTED": {
 					const track = this.resolveTrack(event.session);
-					if (track) this.emitTypedManager("trackStart", track);
+					if (track) this.emitTypedManager("trackStart", this.player, track);
 					else this.debug("SKIP MANAGER EVENT", { sequence, event: "trackStart", reason: "missing-track" });
 					break;
 				}
 				case "TRACK_END": {
 					const track = this.resolveTrack(event.session);
-					if (track) this.emitTypedManager("trackEnd", track);
+					if (track) this.emitTypedManager("trackEnd", this.player, track);
 					else this.debug("SKIP MANAGER EVENT", { sequence, event: "trackEnd", reason: "missing-track" });
 					break;
 				}
 				case "TRACK_ERROR": {
 					const track = this.resolveTrack(event.session);
-					this.emitTypedManager("playerError", event.error, track ?? undefined);
+					this.emitTypedManager("playerError", this.player, event.error, track ?? undefined);
 					break;
 				}
-				case "trackRequested": {
-					this.emitTypedManager("willPlay", event.track, this.player.queueController.snapshot());
+				case "trackRequested":
+					this.emitTypedManager("willPlay", this.player, event.track, this.player.queueController.snapshot());
 					break;
-				}
 				case "volumeRequested": {
 					const oldVolume = this.lastVolume;
 					this.lastVolume = event.volume;
-					this.emitTypedManager("volumeChange", oldVolume, event.volume);
+					this.emitTypedManager("volumeChange", this.player, oldVolume, event.volume);
 					break;
 				}
 				case "stateChanged":
 					this.emitAudioStateManagerEvent(sequence, event.oldState.status, event.newState.status);
 					break;
 				case "playbackStateChanged":
-					// Session-state notifications are public Player events, but there is no
-					// corresponding ManagerEvents member. Do not leak the wrong payload shape.
-					break;
 				case "initialized":
 				case "ready":
 				case "destroyed":
@@ -236,16 +172,15 @@ export class PlayerEventBridge {
 
 	private emitAudioStateManagerEvent(sequence: number, oldStatus: string, newStatus: string): void {
 		const track = this.player.currentTrack;
-
 		if (newStatus === "paused") {
-			if (track) this.emitTypedManager("playerPause", track);
+			if (track) this.emitTypedManager("playerPause", this.player, track);
 			else this.debug("SKIP MANAGER EVENT", { sequence, event: "playerPause", reason: "missing-track" });
 		} else if (newStatus === "playing" && oldStatus !== "playing") {
-			if (track) this.emitTypedManager("playerResume", track);
+			if (track) this.emitTypedManager("playerResume", this.player, track);
 			else this.debug("SKIP MANAGER EVENT", { sequence, event: "playerResume", reason: "missing-track" });
 		} else if ((newStatus === "idle" || newStatus === "stopped") && oldStatus !== newStatus) {
-			this.emitTypedManager("playerStop");
-			if (newStatus === "idle" && this.player.currentTrack === null) this.emitTypedManager("queueEnd");
+			this.emitTypedManager("playerStop", this.player);
+			if (newStatus === "idle" && this.player.currentTrack === null) this.emitTypedManager("queueEnd", this.player);
 		}
 	}
 
@@ -262,28 +197,11 @@ export class PlayerEventBridge {
 	private describeArgs(event: PlayerEvent, args: any[]): unknown[] {
 		return args.map((arg) => {
 			if (!arg || typeof arg !== "object") return arg;
-			if (event.type === "queueChanged")
-				return {
-					kind: "queue",
-					size: Array.isArray(arg) ? arg.length : undefined,
-					trackIds: Array.isArray(arg) ? arg.map((t: any) => t?.id) : undefined,
-				};
+			if (event.type === "queueChanged") return { kind: "queue", size: Array.isArray(arg) ? arg.length : undefined, trackIds: Array.isArray(arg) ? arg.map((t: any) => t?.id) : undefined };
 			if (event.type === "stateChanged") return { kind: "state", status: arg.status, state: arg.state };
-			if (event.type === "preloadStateChanged")
-				return {
-					kind: "preload",
-					requestedTrackId: arg.requestedTrack?.id,
-					valid: arg.valid,
-				};
+			if (event.type === "preloadStateChanged") return { kind: "preload", requestedTrackId: arg.requestedTrack?.id, valid: arg.valid };
 			const value = arg as any;
-			return {
-				kind: "object",
-				id: value.id,
-				title: value.title,
-				status: value.status,
-				trackId: value.track?.id,
-				track: value.track?.title,
-			};
+			return { kind: "object", id: value.id, title: value.title, status: value.status, trackId: value.track?.id, track: value.track?.title };
 		});
 	}
 
