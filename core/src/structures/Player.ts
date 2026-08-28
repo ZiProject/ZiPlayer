@@ -1,6 +1,6 @@
 import { EventEmitter } from "events";
 import type { VoiceConnection } from "@discordjs/voice";
-import type { PlayerOptions, VoiceChannel, SearchResult, Track } from "../types";
+import type { PlayerOptions, VoiceChannel, SearchResult, Track, ProgressBarOptions } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 import {
 	type PlayerAction as PlayerActionMessage,
@@ -222,6 +222,99 @@ export class Player extends EventEmitter {
 		void this.action({ type: "SKIP" });
 		return true;
 	}
+
+	/**
+	 * Get the progress bar of the current track.
+	 * Kept on the public facade for API compatibility; playback state is read from the runtime playback controller.
+	 */
+	public getProgressBar(options: ProgressBarOptions = {}): string {
+		const {
+			size = 20,
+			barChar = "▬",
+			progressChar = "🔘",
+			timeFormat = "compact",
+			showPercentage = false,
+			showTime = true,
+		} = options;
+
+		const track = this.currentTrack;
+		const state = this.playbackController.state;
+		const resource = state?.resource ?? this.currentResource;
+		const isLive = Boolean((track as any)?.isLive);
+
+		if (isLive || !track || !resource) {
+			if (isLive) return "🔴 LIVE";
+			return "";
+		}
+
+		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
+		const current = Number(resource.playbackDuration ?? 0);
+		if (!total) return this.formatTimeCompact(current);
+
+		const ratio = Math.min(Math.max(current / total, 0), 1);
+		const progress = Math.round(ratio * size);
+
+		let bar = "";
+		if (progressChar === "none" || (options as any).hideProgressChar) {
+			const filled = barChar.repeat(progress);
+			const empty = barChar.repeat(Math.max(0, size - progress));
+			bar = filled + empty;
+		} else {
+			const filled = barChar.repeat(progress);
+			const empty = barChar.repeat(Math.max(0, size - progress));
+			bar = filled + progressChar + empty;
+		}
+
+		const formatTimeFn = timeFormat === "compact" ? this.formatTimeCompact.bind(this) : this.formatTime.bind(this);
+		const currentTimeStr = formatTimeFn(current);
+		const totalTimeStr = formatTimeFn(total);
+
+		let result = "";
+		if (showTime) {
+			result = `${currentTimeStr} ${bar} ${totalTimeStr}`;
+		} else {
+			result = bar;
+		}
+
+		if (showPercentage) {
+			const percent = Math.round(ratio * 100);
+			result += ` (${percent}%)`;
+		}
+
+		return result;
+	}
+
+	/** Format time with leading zeros (00:00 or 00:00:00). */
+	public formatTime(ms: number): string {
+		const totalSeconds = Math.floor(ms / 1000) | 0;
+		const hours = Math.floor(totalSeconds / 3600) | 0;
+		const minutes = Math.floor((totalSeconds % 3600) / 60) | 0;
+		const seconds = (totalSeconds % 60) | 0;
+
+		const parts: string[] = [];
+		if (hours > 0) {
+			parts.push(String(hours));
+			parts.push(String(minutes).padStart(2, "0"));
+		} else {
+			parts.push(String(minutes));
+		}
+		parts.push(String(seconds).padStart(2, "0"));
+		return parts.join(":");
+	}
+
+	/** Format time without leading zeros for hours (1:22:12 or 3:45). */
+	public formatTimeCompact(ms: number): string {
+		const totalSeconds = Math.floor(ms / 1000) | 0;
+		const hours = Math.floor(totalSeconds / 3600) | 0;
+		const minutes = Math.floor((totalSeconds % 3600) / 60) | 0;
+		const seconds = (totalSeconds % 60) | 0;
+
+		if (hours > 0) {
+			return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+		}
+		return `${minutes}:${String(seconds).padStart(2, "0")}`;
+	}
+
 	public addPlugin(plugin: BasePlugin): void {
 		this.pluginManager.register(plugin);
 	}
