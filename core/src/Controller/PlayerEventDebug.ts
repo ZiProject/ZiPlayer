@@ -1,43 +1,19 @@
 import type { PlayerBus, PlayerEvent, PlayerAction, PlayerEventType } from "../structures/PlayerBus";
+import { describeEvent, traceEvent } from "./PlayerEventTrace";
 
-/**
- * Verbose diagnostics for the complete PlayerBus pipeline.
- *
- * This intentionally logs every canonical event/action, including events
- * which are not mapped to the public Player API, so the decomposition can be
- * debugged end-to-end.
- */
+/** Verbose diagnostics for the complete PlayerBus pipeline. */
 export class PlayerEventDebug {
 	private readonly detach: Array<() => void> = [];
+	private readonly recent = new Map<string, number>();
 
 	constructor(private readonly bus: PlayerBus, private readonly id = "unknown") {
 		const eventTypes: PlayerEventType[] = [
-			"initialized",
-			"ready",
-			"destroyed",
-			"TRACK_LOADING",
-			"TRACK_LOADED",
-			"TRACK_STARTED",
-			"TRACK_ERROR",
-			"TRACK_END",
-			"STREAM_ABORTED",
-			"playbackStateChanged",
-			"playbackSessionCreated",
-			"trackRequested",
-			"stateChanged",
-			"STUCK_DETECTED",
-			"RECOVERY_STARTED",
-			"RECOVERY_FAILED",
-			"preloadStateChanged",
-			"preloadPromoted",
-			"preloadCancelled",
-			"queueChanged",
-			"volumeRequested",
+			"initialized", "ready", "destroyed", "TRACK_LOADING", "TRACK_LOADED", "TRACK_STARTED",
+			"TRACK_ERROR", "TRACK_END", "STREAM_ABORTED", "playbackStateChanged", "playbackSessionCreated",
+			"trackRequested", "stateChanged", "STUCK_DETECTED", "RECOVERY_STARTED", "RECOVERY_FAILED",
+			"preloadStateChanged", "preloadPromoted", "preloadCancelled", "queueChanged", "volumeRequested",
 		];
-
-		for (const type of eventTypes) {
-			this.detach.push(this.bus.subscribe(type, (event) => this.event(event)));
-		}
+		for (const type of eventTypes) this.detach.push(this.bus.subscribe(type, (event) => this.event(event)));
 		this.detach.push(this.bus.onAction((action, context) => this.action(action, context)));
 		this.log("ATTACHED");
 	}
@@ -48,16 +24,14 @@ export class PlayerEventDebug {
 	}
 
 	private event(event: PlayerEvent) {
-		const value = event as unknown as Record<string, unknown>;
-		const session = value.session as { id?: string; status?: string; track?: { id?: string; title?: string } } | undefined;
-		this.log("EVENT", {
-			type: event.type,
-			requestId: value.requestId,
-			sessionId: session?.id,
-			status: session?.status,
-			trackId: session?.track?.id,
-			track: session?.track?.title,
-		});
+		const info = traceEvent(event);
+		const data = describeEvent(event);
+		const previous = this.recent.get(info.fingerprint);
+		if (previous !== undefined) {
+			this.log("DUPLICATE EVENT", { ...data, previousSequence: previous });
+		}
+		this.recent.set(info.fingerprint, info.sequence);
+		this.log("EVENT", data);
 	}
 
 	private action(action: PlayerAction, context: { requestId: string; priority: number; signal: AbortSignal }) {
