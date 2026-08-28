@@ -239,7 +239,7 @@ export class Player extends EventEmitter {
 
 		const track = this.currentTrack;
 		const state = this.playbackController.state;
-		const resource = state?.resource ?? this.currentResource;
+		const resource = this.runtime.playbackController.activeResource ?? this.currentResource;
 		const isLive = Boolean((track as any)?.isLive);
 
 		if (isLive || !track || !resource) {

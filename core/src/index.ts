@@ -14,8 +14,7 @@ export { QueueController } from "./Controller/QueueController";
 export { AntiStuckController } from "./Controller/AntiStuckController";
 export { TransitionController } from "./Controller/TransitionController";
 export { PreloadController } from "./Controller/PreloadController";
-export { PlayerControllerRuntime } from "./structures/PlayerControllerRuntime";
-export type { PlayerControllerRuntimeHost } from "./structures/PlayerControllerRuntime";
+
 export type {
 	PlayerAction as PlayerActionMessage,
 	PlayerActionType,

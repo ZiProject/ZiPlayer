@@ -14,12 +14,13 @@ export interface PlaybackControllerOptions {
 }
 export class PlaybackController {
 	public readonly audioPlayer: AudioPlayer;
+		public activeResource: AudioResource | null = null;
+
 	private readonly bus?: PlayerBus;
 	private readonly volume?: VolumeController;
 	private readonly transitions?: TransitionController;
 	private transitionTimer: ReturnType<typeof setTimeout> | null = null;
 	private fadeTimer: ReturnType<typeof setInterval> | null = null;
-	private activeResource: AudioResource | null = null;
 	private readonly onStateChange: (oldState: AudioPlayerState, newState: AudioPlayerState) => void;
 	constructor(o: PlaybackControllerOptions) {
 		this.audioPlayer = o.audioPlayer;
