@@ -1,4 +1,4 @@
-import type { VoiceChannel, Track } from "../types";
+import type { VoiceChannel, Track, StreamInfo } from "../types";
 import type { VoiceConnection, AudioPlayerState } from "@discordjs/voice";
 import type { PlaybackSessionSnapshot } from "./PlaybackSession";
 
@@ -15,7 +15,9 @@ export type PlayerAction =
 	| { type: "SKIP"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| { type: "SET_VOLUME"; volume: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| { type: "QUEUE_NEXT"; ignoreLoop?: boolean; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "QUEUE_SET_CURRENT"; track: Track | null; priority?: PlayerActionPriority; requestId?: PlayerRequestId };
+	| { type: "QUEUE_SET_CURRENT"; track: Track | null; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "FILTER_SET_SOURCE_TYPE"; streamType: string; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "FILTER_APPLY_AND_SEEK"; streamInfo: StreamInfo; position?: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId };
 export type PlayerActionType = PlayerAction["type"];
 export type PlayerConnectionInput =
 	| { type: "[Player]->[Connection]:connect"; requestId: PlayerRequestId; channel: VoiceChannel }
@@ -87,7 +89,7 @@ export interface PlayerRequestOptions<K extends PlayerRequestInputType = PlayerR
 export type PlayerBusRequestErrorReason = "timeout" | "aborted" | "disposed" | "unhandled";
 export class PlayerBusRequestError extends Error { public constructor(public readonly reason: PlayerBusRequestErrorReason, public readonly inputType: string, message: string) { super(message); this.name = "PlayerBusRequestError"; } }
 export type PlayerQuery = keyof PlayerQueryMap;
-export interface PlayerQueryMap { currentTrack: Track | null; queueCurrent: Track | null; playerState: PlaybackSessionSnapshot["status"] | "idle"; queue: Track[]; playbackSession: PlaybackSessionSnapshot | null; position: number | null; volume: number; isPlaying: boolean; isPaused: boolean }
+export interface PlayerQueryMap { currentTrack: Track | null; queueCurrent: Track | null; playerState: PlaybackSessionSnapshot["status"] | "idle"; queue: Track[]; playbackSession: PlaybackSessionSnapshot | null; position: number | null; volume: number; isPlaying: boolean; isPaused: boolean; filterString: string }
 export type PlayerQueryHandler<K extends PlayerQuery> = () => PlayerQueryMap[K] | Promise<PlayerQueryMap[K]>;
 export class PlayerBus {
 	private readonly inputListeners = new Map<PlayerInput["type"], Set<(event: PlayerInput) => void | Promise<void>>>();
