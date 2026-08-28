@@ -62,14 +62,22 @@ export class PlayerRuntimeController {
 		this.player = player;
 		const middleware: TrackMiddleware[] = [
 			...manager.getTrackMiddlewareChain(),
-			...(Array.isArray(options.trackMiddleware) ? options.trackMiddleware : options.trackMiddleware ? [options.trackMiddleware] : []),
+			...(Array.isArray(options.trackMiddleware) ? options.trackMiddleware
+			: options.trackMiddleware ? [options.trackMiddleware]
+			: []),
 		];
 		this.connectionController = new ConnectionController({ guildId: player.guildId, bus: this.bus, options, debug: o.debug });
 		this.lifecycleController = new LifecycleController({ bus: this.bus, options, debug: o.debug });
 		this.forwardController = new ForwardController(player, { debug: o.debug });
 		this.queue = new Queue();
 		this.audioPlayer = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: 100 } });
-		this.streamManager = new StreamManager({ maxConcurrentStreams: options.maxStreamStore ?? 4, streamTimeout: 5 * 60 * 1000, maxListenersPerStream: 15, enableMetrics: true, autoDestroy: true });
+		this.streamManager = new StreamManager({
+			maxConcurrentStreams: options.maxStreamStore ?? 4,
+			streamTimeout: 5 * 60 * 1000,
+			maxListenersPerStream: 15,
+			enableMetrics: true,
+			autoDestroy: true,
+		});
 		this.pluginManager = new PluginManager(player, manager, { extractorTimeout: options.extractorTimeout });
 		this.extensionManager = new ExtensionManager(player, manager);
 		player.pluginManager = this.pluginManager;
@@ -84,12 +92,25 @@ export class PlayerRuntimeController {
 			getStream: (t) => resolver.resolve(player, t),
 			removeTrackFromQueue: (t) => {
 				const n = this.queue.nextTrack;
-				return (n === t || (n?.id !== undefined && t.id !== undefined && n.id === t.id) || (n?.url !== undefined && t.url !== undefined && n.url === t.url)) ? this.queue.remove(0) !== null : false;
+				return (
+						n === t ||
+							(n?.id !== undefined && t.id !== undefined && n.id === t.id) ||
+							(n?.url !== undefined && t.url !== undefined && n.url === t.url)
+					) ?
+						this.queue.remove(0) !== null
+					:	false;
 			},
 			isDestroyed: () => this.disposed,
 			isEnabled: () => options.preload?.enabled ?? true,
 		});
-		this.trackLoader = new TrackLoader({ middleware, context: { player, manager }, resolvers: [(t) => resolver.resolve(player, t)], recovery: options.antiStuck, preloadManager: this.preloadManager, debug: o.debug });
+		this.trackLoader = new TrackLoader({
+			middleware,
+			context: { player, manager },
+			resolvers: [(t) => resolver.resolve(player, t)],
+			recovery: options.antiStuck,
+			preloadManager: this.preloadManager,
+			debug: o.debug,
+		});
 		this.transitionController = new TransitionController({
 			enabled: options.crossfade?.enabled ?? true,
 			durationMs: options.crossfade?.durationMs,
@@ -102,16 +123,46 @@ export class PlayerRuntimeController {
 			beatAlignMaxWaitMs: options.smartTransition?.beatAlignMaxWaitMs,
 			genreDurations: options.smartTransition?.genreDurations,
 		});
-		this.volumeController = new VolumeController(this.bus, { initialVolume: (options as any).volume ?? 100, loudness: (options as any).loudness });
-		this.playbackController = new PlaybackController({ audioPlayer: this.audioPlayer, bus: this.bus, volumeController: this.volumeController, transitionController: this.transitionController });
+		this.volumeController = new VolumeController(this.bus, {
+			initialVolume: (options as any).volume ?? 100,
+			loudness: (options as any).loudness,
+		});
+		this.playbackController = new PlaybackController({
+			audioPlayer: this.audioPlayer,
+			bus: this.bus,
+			volumeController: this.volumeController,
+			transitionController: this.transitionController,
+		});
 		this.streamController = new StreamController({ streamManager: this.streamManager, bus: this.bus });
 		this.antiStuckController = new AntiStuckController({ ...options.antiStuck, bus: this.bus });
 		this.preloadController = new PreloadController({ loader: this.trackLoader, manager: this.preloadManager, bus: this.bus });
-		this.filterController = new FilterController({ refreshPlayerResource: (position) => this.bus.request({ type: "[Player]->[Resource]:refresh", requestId: createPlayerRequestId(), position }, { timeoutMs: 30000 }).then(() => true).catch(() => false) }, o.debug);
-		this.orchestrator = new PlaybackOrchestrator(this.bus, { trackLoader: this.trackLoader, streamController: this.streamController, playbackController: this.playbackController, queueController: this.queueController, antiStuckController: this.antiStuckController, transitionController: this.transitionController, preloadController: this.preloadController });
-		this.detachResourceRefresh = this.bus.onInput("[Player]->[Resource]:refresh", (event) => { void this.handleResourceRefresh(event); });
+		this.filterController = new FilterController(
+			{
+				refreshPlayerResource: (position) =>
+					this.bus
+						.request({ type: "[Player]->[Resource]:refresh", requestId: createPlayerRequestId(), position }, { timeoutMs: 30000 })
+						.then(() => true)
+						.catch(() => false),
+			},
+			o.debug,
+		);
+		this.orchestrator = new PlaybackOrchestrator(this.bus, {
+			trackLoader: this.trackLoader,
+			streamController: this.streamController,
+			playbackController: this.playbackController,
+			queueController: this.queueController,
+			antiStuckController: this.antiStuckController,
+			transitionController: this.transitionController,
+			preloadController: this.preloadController,
+		});
+		this.detachResourceRefresh = this.bus.onInput("[Player]->[Resource]:refresh", (event) => {
+			void this.handleResourceRefresh(event);
+		});
 		this.bus.subscribe("volumeRequested", ({ volume }) => this.volumeController.setVolume(volume));
-		if (Array.isArray(options.filters) && options.filters.length > 0) void this.filterController.applyFilters(options.filters).catch((error) => o.debug("[FilterController] Initial filter error:", error));
+		if (Array.isArray(options.filters) && options.filters.length > 0)
+			void this.filterController
+				.applyFilters(options.filters)
+				.catch((error) => o.debug("[FilterController] Initial filter error:", error));
 		this.bus.publish("initialized");
 		this.bus.publish("ready");
 	}
@@ -135,7 +186,11 @@ export class PlayerRuntimeController {
 			this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
 			this.bus.emitOutput({ type: "[Resource]->[Player]:refreshed", requestId: event.requestId, session: session.snapshot() });
 		} catch (error) {
-			this.bus.emitOutput({ type: "[Resource]->[Player]:error", requestId: event.requestId, error: error instanceof Error ? error : new Error(String(error)) });
+			this.bus.emitOutput({
+				type: "[Resource]->[Player]:error",
+				requestId: event.requestId,
+				error: error instanceof Error ? error : new Error(String(error)),
+			});
 		}
 	}
 	private async resolveFreshStream(track: Track): Promise<StreamInfo | null> {

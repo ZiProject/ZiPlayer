@@ -23,8 +23,12 @@ export class VolumeController {
 			max: options.loudness?.max ?? 2,
 		};
 	}
-	get value(): number { return this.volume; }
-	get settings(): Readonly<typeof this.loudness> { return this.loudness; }
+	get value(): number {
+		return this.volume;
+	}
+	get settings(): Readonly<typeof this.loudness> {
+		return this.loudness;
+	}
 	setVolume(value: number): number {
 		if (this.disposed) return this.volume;
 		this.volume = this.clamp(value);
@@ -43,7 +47,13 @@ export class VolumeController {
 		const correction = measuredGain && measuredGain > 0 ? this.loudness.target / measuredGain : 1;
 		this.apply(resource, correction);
 	}
-	dispose(): void { this.disposed = true; }
-	private clamp(value: number): number { return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 100; }
-	private clampGain(value: number): number { return Math.min(this.loudness.max, Math.max(this.loudness.min, Number.isFinite(value) ? value : 1)); }
+	dispose(): void {
+		this.disposed = true;
+	}
+	private clamp(value: number): number {
+		return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 100;
+	}
+	private clampGain(value: number): number {
+		return Math.min(this.loudness.max, Math.max(this.loudness.min, Number.isFinite(value) ? value : 1));
+	}
 }
