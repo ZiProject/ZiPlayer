@@ -51,8 +51,12 @@ export class PlaybackOrchestrator {
 		);
 	}
 
-	get currentSession() { return this.session; }
-	get transitionPolicy() { return this.o.transitionController; }
+	get currentSession() {
+		return this.session;
+	}
+	get transitionPolicy() {
+		return this.o.transitionController;
+	}
 
 	dispose() {
 		this.detachAction();
@@ -123,7 +127,7 @@ export class PlaybackOrchestrator {
 		await this.bus.action(
 			{ type: "FILTER_APPLY_AND_SEEK", streamInfo, position, requestId: createPlayerRequestId() },
 			{ signal: s, priority: 50, requestId: createPlayerRequestId() },
-			);
+		);
 		return this.bus.query("filteredStream");
 	}
 
@@ -136,7 +140,8 @@ export class PlaybackOrchestrator {
 	private async prepareAutoplay(session: PlaybackSession, s: AbortSignal): Promise<void> {
 		const queue = this.o.queueController;
 		const source = session.track;
-		if (!queue || !queue.autoPlay || !source || s.aborted || !this.session?.owns(session.id)) return;
+
+		if (!queue || !source || s.aborted || !this.session?.owns(session.id)) return;
 		if (!this.o.relatedTrackResolver) return;
 
 		try {
@@ -152,6 +157,10 @@ export class PlaybackOrchestrator {
 			if (!related.length) return;
 
 			queue.setRelated(related);
+			this.bus.publish("queueChanged", queue.snapshot());
+
+			if (!queue.autoPlay) return;
+
 			const pool = related.slice(0, Math.min(5, related.length));
 			const next = queue.nextTrack ?? pool[Math.floor(Math.random() * pool.length)];
 			if (!next) return;
@@ -174,7 +183,8 @@ export class PlaybackOrchestrator {
 	}
 
 	private async advanceAfterTrackEnd(snapshot: ReturnType<PlaybackSession["snapshot"]>) {
-		if (!this.session || this.session.id !== snapshot.id || this.session.status === "ended" || this.session.status === "stopped") return;
+		if (!this.session || this.session.id !== snapshot.id || this.session.status === "ended" || this.session.status === "stopped")
+			return;
 		const from = this.session.track;
 		const endedSession = this.session;
 		endedSession.markEnded();
