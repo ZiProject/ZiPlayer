@@ -43,10 +43,22 @@ export class PlayerEventBridge {
 
 		const args = this.toArgs(event);
 		const previous = this.recent.get(trace.fingerprint);
-		if (previous !== undefined) this.debug("DUPLICATE PROPAGATION", { sequence: trace.sequence, previousSequence: previous, ...describeEvent(event) });
+		if (previous !== undefined) {
+			this.debug("DUPLICATE PROPAGATION", {
+				sequence: trace.sequence,
+				previousSequence: previous,
+				fingerprint: trace.fingerprint,
+				...describeEvent(event),
+			});
+		}
 		this.recent.set(trace.fingerprint, trace.sequence);
 
-		this.debug("BUS -> PLAYER", { sequence: trace.sequence, busEvent: event.type, playerEvent: publicType, args: this.describeArgs(event, args) });
+		this.debug("BUS -> PLAYER", {
+			sequence: trace.sequence,
+			busEvent: event.type,
+			playerEvent: publicType,
+			args: this.describeArgs(event, args),
+		});
 		try {
 			this.player.emit(publicType, ...args);
 			this.debug("PLAYER EMIT OK", { sequence: trace.sequence, event: publicType });
@@ -54,7 +66,7 @@ export class PlayerEventBridge {
 			this.debug("PLAYER EMIT ERROR", { sequence: trace.sequence, event: publicType, error });
 		}
 
-		this.emitManager(trace.sequence, publicType, args);
+		this.emitManager(trace.sequence, event, publicType, args);
 	}
 
 	private toPublicEventName(type: PlayerEventType): string | null {
@@ -96,31 +108,50 @@ export class PlayerEventBridge {
 			case "preloadStateChanged": return [event.state];
 			case "preloadPromoted": return [event.track];
 			case "preloadCancelled": return [];
-			case "initialized':
+			case "initialized":
 			case "ready":
 			case "destroyed": return [];
 			default: return event.session ? [event.session] : [];
 		}
 	}
 
-	private emitManager(sequence: number, event: string, args: any[]): void {
+	private emitManager(sequence: number, event: PlayerEvent, publicType: string, args: any[]): void {
 		try {
-			this.debug("PLAYER -> MANAGER", { sequence, event, args: this.describeArgs(undefined, args) });
-			(this.manager.emit as any)(event, this.player, ...args);
-			this.debug("MANAGER EMIT OK", { sequence, event });
+			this.debug("PLAYER -> MANAGER", {
+				sequence,
+				event: publicType,
+				args: this.describeArgs(event, args),
+			});
+			(this.manager.emit as any)(publicType, this.player, ...args);
+			this.debug("MANAGER EMIT OK", { sequence, event: publicType });
 		} catch (error) {
-			this.debug("MANAGER EMIT ERROR", { sequence, event, error });
+			this.debug("MANAGER EMIT ERROR", { sequence, event: publicType, error });
 		}
 	}
 
-	private describeArgs(event: PlayerEvent | undefined, args: any[]): unknown[] {
+	private describeArgs(event: PlayerEvent, args: any[]): unknown[] {
 		return args.map((arg) => {
 			if (!arg || typeof arg !== "object") return arg;
-			if (event?.type === "queueChanged") return { kind: "queue", size: Array.isArray(arg) ? arg.length : undefined, trackIds: Array.isArray(arg) ? arg.map((t: any) => t?.id) : undefined };
-			if (event?.type === "stateChanged") return { kind: "state", status: arg.status, state: arg.state };
-			if (event?.type === "preloadStateChanged") return { kind: "preload", requestedTrackId: arg.requestedTrack?.id, valid: arg.valid };
+			if (event.type === "queueChanged") return {
+				kind: "queue",
+				size: Array.isArray(arg) ? arg.length : undefined,
+				trackIds: Array.isArray(arg) ? arg.map((t: any) => t?.id) : undefined,
+			};
+			if (event.type === "stateChanged") return { kind: "state", status: arg.status, state: arg.state };
+			if (event.type === "preloadStateChanged") return {
+				kind: "preload",
+				requestedTrackId: arg.requestedTrack?.id,
+				valid: arg.valid,
+			};
 			const value = arg as any;
-			return { kind: "object", id: value.id, title: value.title, status: value.status, trackId: value.track?.id, track: value.track?.title };
+			return {
+				kind: "object",
+				id: value.id,
+				title: value.title,
+				status: value.status,
+				trackId: value.track?.id,
+				track: value.track?.title,
+			};
 		});
 	}
 
