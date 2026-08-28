@@ -11,6 +11,7 @@ import {
 	createPlayerRequestId,
 } from "./PlayerBus";
 import { PlayerRuntimeController } from "../Controller/PlayerRuntimeController";
+import { PlayerEventBridge } from "../Controller/PlayerEventBridge";
 import { SearchController } from "../Controller/SearchController";
 import type { ForwardController } from "../Controller/ForwardController";
 import type { BasePlugin } from "../plugins/BasePlugin";
@@ -20,6 +21,7 @@ import type { BaseExtension } from "../extensions/BaseExtension";
 export class Player extends EventEmitter {
 	public readonly runtime: PlayerRuntimeController;
 	public readonly searchController: SearchController;
+	public readonly eventBridge: PlayerEventBridge;
 	public readonly guildId: string;
 	public connection: VoiceConnection | null = null;
 	public audioPlayer!: any;
@@ -127,6 +129,7 @@ export class Player extends EventEmitter {
 			pluginManager: this.runtime.pluginManager,
 			debug: this.debug.bind(this),
 		});
+		this.eventBridge = new PlayerEventBridge(this, manager, this.runtime.bus);
 		this.queue = this.runtime.queue;
 		this.audioPlayer = this.runtime.audioPlayer;
 		this.streamManager = this.runtime.streamManager;
@@ -183,8 +186,6 @@ export class Player extends EventEmitter {
 
 		if (tracks.length === 0) return false;
 
-		// Playback is queue-driven. Queue first, then let the orchestrator consume
-		// the next item so loop/skip/autoplay semantics remain centralized.
 		this.queueController.addMultiple(tracks);
 
 		if (this.isPlaying || this.isPaused) {
@@ -272,6 +273,7 @@ export class Player extends EventEmitter {
 	public destroy(): void {
 		if (this.destroyed) return;
 		this.destroyed = true;
+		this.eventBridge.dispose();
 		this.runtime.dispose();
 		this.emit("playerDestroy");
 		this.removeAllListeners();
