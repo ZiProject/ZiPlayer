@@ -1,5 +1,5 @@
 import type { LoopMode, Track } from "../types";
-import type { PlayerBus } from "../structures/PlayerBus";
+import type { PlayerAction, PlayerActionExecutionContext, PlayerBus } from "../structures/PlayerBus";
 import { Queue } from "../structures/Queue";
 
 export interface QueueControllerOptions {
@@ -10,9 +10,22 @@ export interface QueueControllerOptions {
 export class QueueController {
 	public readonly queue: Queue;
 	private readonly bus?: PlayerBus;
+	private readonly detachAction?: () => void;
 	public constructor(options: QueueControllerOptions = {}) {
 		this.queue = options.queue ?? new Queue();
 		this.bus = options.bus;
+		if (this.bus) this.detachAction = this.bus.onAction((action, context) => this.handleAction(action, context));
+	}
+	private async handleAction(action: PlayerAction, context: PlayerActionExecutionContext): Promise<void> {
+		if (context.signal.aborted) return;
+		switch (action.type) {
+			case "QUEUE_NEXT":
+				this.next(action.ignoreLoop ?? false);
+				return;
+			case "QUEUE_SET_CURRENT":
+				this.setCurrent(action.track);
+				return;
+		}
 	}
 	public add(track: Track): number {
 		const size = this.queue.add(track);
@@ -96,6 +109,7 @@ export class QueueController {
 		this.publishChanged();
 	}
 	public dispose(): void {
+		this.detachAction?.();
 		this.queue.reset();
 	}
 	private publishChanged(): void {
