@@ -218,6 +218,12 @@ export class Player extends EventEmitter {
 			.then(() => true)
 			.catch(() => false);
 	}
+
+	/** Get the current playback position in milliseconds. */
+	public getTime(): number {
+		return Number(this.playbackController.activeResource?.playbackDuration ?? 0);
+	}
+
 	public skip(): boolean {
 		void this.action({ type: "SKIP" });
 		return true;
