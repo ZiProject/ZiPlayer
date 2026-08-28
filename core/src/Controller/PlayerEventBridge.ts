@@ -70,7 +70,7 @@ export class PlayerEventBridge {
 			this.debug("PLAYER EMIT ERROR", { sequence: trace.sequence, event: publicType, error });
 		}
 
-		this.emitManager(trace.sequence, event, publicType);
+		this.emitManager(trace.sequence, event);
 	}
 
 	private toPublicEventName(type: PlayerEventType): string | null {
@@ -120,16 +120,16 @@ export class PlayerEventBridge {
 	}
 
 	/**
-	 * Translate canonical bus events into the legacy public ManagerEvents contract.
-	 * Every emitted manager event is constructed with the exact argument types declared
-	 * by ManagerEvents; internal-only bus events are deliberately not forwarded.
+	 * Translate canonical bus events into the public ManagerEvents contract.
+	 * Internal-only bus events are deliberately not forwarded to the manager.
 	 */
-	private emitManager(sequence: number, event: PlayerEvent, _publicType: string): void {
+	private emitManager(sequence: number, event: PlayerEvent): void {
 		try {
 			switch (event.type) {
 				case "TRACK_STARTED": {
 					const track = this.resolveTrack(event.session);
 					if (track) this.emitTypedManager("trackStart", track);
+					else this.debug("SKIP MANAGER EVENT", { sequence, event: "trackStart", reason: "missing-track" });
 					break;
 				}
 				case "TRACK_END": {
@@ -153,11 +153,13 @@ export class PlayerEventBridge {
 					this.emitTypedManager("volumeChange", oldVolume, event.volume);
 					break;
 				}
-				case "playbackStateChanged":
-				case "stateChanged": {
-					this.emitPlaybackStateManagerEvent(event);
+				case "stateChanged":
+					this.emitAudioStateManagerEvent(sequence, event.oldState.status, event.newState.status);
 					break;
-				}
+				case "playbackStateChanged":
+					// Session-state notifications are public Player events, but there is no
+					// corresponding ManagerEvents member. Do not leak the wrong payload shape.
+					break;
 				case "initialized":
 				case "ready":
 				case "destroyed":
@@ -172,7 +174,6 @@ export class PlayerEventBridge {
 				case "preloadPromoted":
 				case "preloadCancelled":
 				case "queueChanged":
-					// These are canonical PlayerBus events without a matching ManagerEvents contract.
 					break;
 			}
 		} catch (error) {
@@ -180,22 +181,22 @@ export class PlayerEventBridge {
 		}
 	}
 
-	private emitPlaybackStateManagerEvent(event: Extract<PlayerEvent, { type: "playbackStateChanged" | "stateChanged" }>): void {
-		const newState = event.newState ?? null;
-		const track = "session" in event ? this.resolveTrack(event.session) : this.player.currentTrack;
+	private emitAudioStateManagerEvent(
+		sequence: number,
+		oldStatus: string,
+		newStatus: string,
+	): void {
+		const track = this.player.currentTrack;
 
-		if (!track) {
-			if (newState?.status === "idle") this.emitTypedManager("queueEnd");
-			return;
-		}
-
-		if (newState?.status === "paused") {
-			this.emitTypedManager("playerPause", track);
-		} else if (newState?.status === "playing") {
-			this.emitTypedManager("playerResume", track);
-		} else if (newState?.status === "idle") {
+		if (newStatus === "paused") {
+			if (track) this.emitTypedManager("playerPause", track);
+			else this.debug("SKIP MANAGER EVENT", { sequence, event: "playerPause", reason: "missing-track" });
+		} else if (newStatus === "playing" && oldStatus !== "playing") {
+			if (track) this.emitTypedManager("playerResume", track);
+			else this.debug("SKIP MANAGER EVENT", { sequence, event: "playerResume", reason: "missing-track" });
+		} else if ((newStatus === "idle" || newStatus === "stopped") && oldStatus !== newStatus) {
 			this.emitTypedManager("playerStop");
-			this.emitTypedManager("queueEnd");
+			if (newStatus === "idle" && this.player.currentTrack === null) this.emitTypedManager("queueEnd");
 		}
 	}
 
