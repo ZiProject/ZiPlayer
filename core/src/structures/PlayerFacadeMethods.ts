@@ -123,6 +123,93 @@ P.exitRemoteMode = function(this: Player) { (this as any).playbackMode = "NATIVE
 P.getSerializableState = function(this: Player) { return { guildId:this.guildId, queue:this.queue.toJSON?.(), volume:this.volume, playbackMode:(this as any).playbackMode }; };
 P.restoreState = function(this: Player, state: any) { if (state?.queue) this.queue.fromJSON?.(state.queue); if (typeof state?.volume === "number") this.setVolume(state.volume); if (state?.playbackMode !== undefined) (this as any).playbackMode = state.playbackMode; };
 P.getStreamManagerStats = function(this: Player) { return (this.streamManager as any)?.getStats?.() ?? {}; };
+
+// Keep time/progress formatting on the facade, but make it consistent with Track.duration/resource.playbackDuration (both ms).
+// The old implementation mixed compact/full output and added the progress cursor outside the requested bar size.
+const toMilliseconds = (value: unknown): number => {
+	const n = Number(value);
+	return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+};
+
+P.formatTime = function(this: Player, ms: number): string {
+	const totalSeconds = Math.floor(toMilliseconds(ms) / 1000);
+	const hours = Math.floor(totalSeconds / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
+	if (hours > 0) return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+	return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+};
+
+P.formatTimeCompact = function(this: Player, ms: number): string {
+	const totalSeconds = Math.floor(toMilliseconds(ms) / 1000);
+	const hours = Math.floor(totalSeconds / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
+	if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+	return `${minutes}:${String(seconds).padStart(2, "0")}`;
+};
+
+P.getTime = function(this: Player) {
+	const track = this.currentTrack;
+	const resource = this.currentResource ?? this.playbackController?.activeResource;
+	if (track?.isLive) {
+		return {
+			current: 0,
+			total: 0,
+			format: "LIVE",
+			formatted: { current: "LIVE", total: "LIVE" },
+		};
+	}
+
+	const total = toMilliseconds(track?.duration);
+	const current = Math.min(total || Number.MAX_SAFE_INTEGER, toMilliseconds(resource?.playbackDuration));
+	const safeCurrent = Number.isSafeInteger(current) ? current : 0;
+	return {
+		current: safeCurrent,
+		total,
+		format: this.formatTime(safeCurrent),
+		formatted: {
+			current: this.formatTimeCompact(safeCurrent),
+			total: this.formatTimeCompact(total),
+		},
+	};
+};
+
+P.getProgressBar = function(this: Player, options: any = {}): string {
+	const {
+		size = 20,
+		barChar = "▬",
+		progressChar = "🔘",
+		timeFormat = "compact",
+		showPercentage = false,
+		showTime = true,
+		hideProgressChar = false,
+	} = options;
+	const length = Math.max(1, Math.floor(Number(size) || 20));
+	const track = this.currentTrack;
+	if (track?.isLive) return "🔴 LIVE";
+	if (!track) return "";
+
+	const total = toMilliseconds(track.duration);
+	if (total <= 0) return showTime ? `${timeFormat === "full" ? "00:00" : "0:00"} ${barChar.repeat(length)} ${timeFormat === "full" ? "00:00" : "0:00"}` : barChar.repeat(length);
+
+	const resource = this.currentResource ?? this.playbackController?.activeResource;
+	const current = Math.min(total, toMilliseconds(resource?.playbackDuration));
+	const ratio = current / total;
+	const cursorIndex = Math.min(length - 1, Math.floor(ratio * (length - 1)));
+	let bar: string;
+	if (hideProgressChar || progressChar === "none") {
+		bar = barChar.repeat(length);
+	} else {
+		bar = barChar.repeat(cursorIndex) + progressChar + barChar.repeat(length - cursorIndex - 1);
+	}
+
+	const format = timeFormat === "full" ? this.formatTime : this.formatTimeCompact;
+	let result = showTime ? `${format(current)} ${bar} ${format(total)}` : bar;
+	if (showPercentage) result += ` (${Math.round(ratio * 100)}%)`;
+	return result;
+};
+
 Object.defineProperties(P, {
 	previousTrack:{configurable:true,get(this:Player){return this.queue?.previousTracks?.at?.(-1) ?? null;}},
 	upcomingTracks:{configurable:true,get(this:Player){return this.queueController?.snapshot?.() ?? []; }},
