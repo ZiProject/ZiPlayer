@@ -1,9 +1,16 @@
 import type { AudioResource } from "@discordjs/voice";
 import type { PlayerBus } from "../structures/PlayerBus";
+import type { Track } from "../types";
 
 export interface VolumeControllerOptions {
 	initialVolume?: number;
-	loudness?: { enabled?: boolean; target?: number; min?: number; max?: number };
+	loudness?: {
+		enabled?: boolean;
+		targetLUFS?: number;
+		maxBoostDb?: number;
+		maxCutDb?: number;
+		limiterCeiling?: number;
+	};
 }
 
 /** Owns player volume state and resource-level volume application. */
@@ -11,6 +18,7 @@ export class VolumeController {
 	private volume: number;
 	private readonly loudness: Required<NonNullable<VolumeControllerOptions["loudness"]>>;
 	private disposed = false;
+
 	constructor(
 		private readonly bus: PlayerBus,
 		options: VolumeControllerOptions = {},
@@ -18,42 +26,62 @@ export class VolumeController {
 		this.volume = this.clamp(options.initialVolume ?? 100);
 		this.loudness = {
 			enabled: options.loudness?.enabled ?? false,
-			target: options.loudness?.target ?? 1,
-			min: options.loudness?.min ?? 0,
-			max: options.loudness?.max ?? 2,
+			targetLUFS: options.loudness?.targetLUFS ?? -14,
+			maxBoostDb: Math.max(0, options.loudness?.maxBoostDb ?? 6),
+			maxCutDb: Math.max(0, options.loudness?.maxCutDb ?? 12),
+			limiterCeiling: Math.min(1, Math.max(0, options.loudness?.limiterCeiling ?? 1)),
 		};
 	}
+
 	get value(): number {
 		return this.volume;
 	}
+
 	get settings(): Readonly<typeof this.loudness> {
 		return this.loudness;
 	}
+
 	setVolume(value: number): number {
 		if (this.disposed) return this.volume;
 		this.volume = this.clamp(value);
 		return this.volume;
 	}
+
 	apply(resource: AudioResource | null, gain = 1): void {
 		if (!resource?.volume) return;
-		const normalized = this.clampGain(gain);
-		resource.volume.setVolume((this.volume / 100) * normalized);
+		resource.volume.setVolume((this.volume / 100) * this.clampGain(gain));
 	}
-	applyLoudness(resource: AudioResource | null, measuredGain?: number): void {
-		if (!this.loudness.enabled) {
-			this.apply(resource);
+
+	/** Apply LUFS-based loudness normalization using track.metadata.lufs. */
+	applyLoudness(resource: AudioResource | null, track?: Track | null, transitionGain = 1): void {
+		if (!this.loudness.enabled || !track) {
+			this.apply(resource, transitionGain);
 			return;
 		}
-		const correction = measuredGain && measuredGain > 0 ? this.loudness.target / measuredGain : 1;
-		this.apply(resource, correction);
+
+		const measuredLUFS = Number(track.metadata?.lufs);
+		if (!Number.isFinite(measuredLUFS)) {
+			this.apply(resource, transitionGain);
+			return;
+		}
+
+		let correctionDb = this.loudness.targetLUFS - measuredLUFS;
+		correctionDb = Math.min(this.loudness.maxBoostDb, Math.max(-this.loudness.maxCutDb, correctionDb));
+
+		const correction = Math.pow(10, correctionDb / 20);
+		const limitedCorrection = Math.min(correction, this.loudness.limiterCeiling);
+		this.apply(resource, limitedCorrection * transitionGain);
 	}
+
 	dispose(): void {
 		this.disposed = true;
 	}
+
 	private clamp(value: number): number {
 		return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 100;
 	}
+
 	private clampGain(value: number): number {
-		return Math.min(this.loudness.max, Math.max(this.loudness.min, Number.isFinite(value) ? value : 1));
+		return Number.isFinite(value) ? Math.max(0, value) : 1;
 	}
 }
