@@ -14,6 +14,10 @@ export interface TrackLoadResult {
 	retry: number;
 	usedFallback: boolean;
 }
+export interface TrackAttemptQualityController {
+	get(): "high" | "low" | undefined;
+	set(quality: "high" | "low"): void;
+}
 export interface TrackLoadAttemptContext {
 	track: Track;
 	session: PlaybackSession;
@@ -36,6 +40,7 @@ export interface TrackLoaderOptions {
 	resolvers?: TrackStreamResolver[];
 	preloadManager?: PreloadManager;
 	recovery?: TrackRecoveryPolicy;
+	qualityController?: TrackAttemptQualityController;
 	debug?: (message?: any, ...optionalParams: any[]) => void;
 }
 export class TrackLoader {
@@ -44,6 +49,7 @@ export class TrackLoader {
 	private readonly resolvers: TrackStreamResolver[];
 	private readonly preloadManager?: PreloadManager;
 	private readonly recovery: Required<TrackRecoveryPolicy>;
+	private readonly qualityController?: TrackAttemptQualityController;
 	private readonly debugLog: (message?: any, ...optionalParams: any[]) => void;
 	private readonly failures = new Map<string, number>();
 	constructor(options: TrackLoaderOptions) {
@@ -59,6 +65,7 @@ export class TrackLoader {
 			reduceQualityOnRetry: options.recovery?.reduceQualityOnRetry ?? true,
 			controlledSkipThreshold: Math.max(1, options.recovery?.controlledSkipThreshold ?? 3),
 		};
+		this.qualityController = options.qualityController;
 		this.debugLog = options.debug ?? (() => undefined);
 	}
 	addResolver(resolver: TrackStreamResolver): () => void {
@@ -102,6 +109,7 @@ export class TrackLoader {
 				if (this.isAbort(error) || !this.recovery.enabled || attempt >= this.recovery.maxRetries) break;
 				retry++;
 				this.failures.set(key, retry);
+				if (this.recovery.reduceQualityOnRetry) this.reduceQualityForRetry(track, retry);
 				this.debugLog(`[TrackLoader] Recovery attempt ${retry}/${this.recovery.maxRetries} for ${track.title}`, error);
 				if (this.recovery.retryDelayMs > 0) await this.delay(this.recovery.retryDelayMs, session.signal);
 			}
@@ -148,6 +156,15 @@ export class TrackLoader {
 			return stream;
 		}
 		throw new Error(`No stream resolver could load track: ${track.title}`);
+	}
+	private reduceQualityForRetry(track: Track, retry: number): void {
+		if (!this.qualityController) {
+			this.debugLog(`[TrackLoader] reduceQualityOnRetry enabled but no quality controller is configured for ${track.title}`);
+			return;
+		}
+		if (this.qualityController.get() === "low") return;
+		this.qualityController.set("low");
+		this.debugLog(`[TrackLoader] Reduced quality to low for recovery retry ${retry} on ${track.title}`);
 	}
 	private assertActive(session: PlaybackSession): void {
 		if (!session.isActive()) throw new DOMException("Playback session is no longer active", "AbortError");
