@@ -124,6 +124,10 @@ export class PlayerRuntimeController {
 			resolvers: [(t) => resolver.resolve(player, t)],
 			recovery: options.antiStuck,
 			preloadManager: this.preloadManager,
+			qualityController: {
+				get: () => options.quality,
+				set: (quality) => { options.quality = quality; },
+			},
 			debug: o.debug,
 		});
 		this.transitionController = new TransitionController({
