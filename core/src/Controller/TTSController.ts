@@ -1,3 +1,12 @@
+import {
+	AudioPlayer,
+	AudioPlayerState,
+	AudioPlayerStatus,
+	AudioResource,
+	createAudioResource,
+} from "@discordjs/voice";
+import type { VoiceConnection } from "@discordjs/voice";
+import type { Readable } from "stream";
 import type { StreamInfo, Track } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
@@ -5,19 +14,39 @@ import type { ExtensionManager } from "../extensions";
 export interface TTSControllerOptions {
 	pluginManager: PluginManager;
 	extensionManager?: ExtensionManager;
+	connection?: VoiceConnection | null;
+	audioPlayer?: AudioPlayer;
 	debug?: (...args: any[]) => void;
+	onStart?: (track: Track) => void;
+	onEnd?: () => void;
 }
 
-/** Owns TTS stream resolution. TTS generation remains implemented by the TTS plugin. */
+/** Owns TTS stream resolution and the independent interrupt playback lifecycle. */
 export class TTSController {
 	private readonly pluginManager: PluginManager;
 	private readonly extensionManager?: ExtensionManager;
 	private readonly debug: (...args: any[]) => void;
+	private connection: VoiceConnection | null;
+	private readonly audioPlayer?: AudioPlayer;
+	private readonly ttsPlayer: AudioPlayer;
+	private readonly onStart?: (track: Track) => void;
+	private readonly onEnd?: () => void;
+	private activeResource: AudioResource | null = null;
+	private running: Promise<void> | null = null;
 
 	constructor(options: TTSControllerOptions) {
 		this.pluginManager = options.pluginManager;
 		this.extensionManager = options.extensionManager;
+		this.connection = options.connection ?? null;
+		this.audioPlayer = options.audioPlayer;
 		this.debug = options.debug ?? (() => undefined);
+		this.onStart = options.onStart;
+		this.onEnd = options.onEnd;
+		this.ttsPlayer = new AudioPlayer();
+	}
+
+	public setConnection(connection: VoiceConnection | null): void {
+		this.connection = connection;
 	}
 
 	isTTS(track: Track): boolean {
@@ -39,5 +68,96 @@ export class TTSController {
 		}
 	}
 
-	dispose(): void {}
+	/**
+	 * Legacy-compatible TTS interrupt playback.
+	 * TTS uses a dedicated AudioPlayer and is not part of normal track lifecycle events.
+	 */
+	public play(track: Track): Promise<void> {
+		if (!this.isTTS(track)) return Promise.reject(new Error("Track is not a TTS track"));
+		if (this.running) return this.running;
+		this.running = this.playInternal(track).finally(() => {
+			this.running = null;
+		});
+		return this.running;
+	}
+
+	private async playInternal(track: Track): Promise<void> {
+		const connection = this.connection;
+		if (!connection) throw new Error("Cannot play TTS without a voice connection");
+
+		const wasPlaying = this.audioPlayer?.state.status === AudioPlayerStatus.Playing;
+		let started = false;
+
+		try {
+			const streamInfo = await this.resolve(track);
+			const stream = streamInfo.stream as Readable;
+			const resource = createAudioResource(stream as any, { metadata: track });
+			this.activeResource = resource;
+
+			if (wasPlaying) this.audioPlayer?.pause(true);
+			connection.subscribe(this.ttsPlayer);
+
+			// Preserve Player.old.ts ordering: subscribe -> ttsStart -> play.
+			this.onStart?.(track);
+			started = true;
+			this.ttsPlayer.play(resource);
+
+			await this.waitForPlayingOrIdle();
+			if (this.ttsPlayer.state.status === AudioPlayerStatus.Playing) {
+				await this.waitForIdle();
+			}
+		} finally {
+			this.activeResource = null;
+			this.ttsPlayer.stop(true);
+
+			if (this.audioPlayer) {
+				connection.subscribe(this.audioPlayer);
+				if (wasPlaying && this.audioPlayer.state.status === AudioPlayerStatus.Paused) {
+					this.audioPlayer.unpause();
+				}
+			}
+
+			if (started) this.onEnd?.();
+		}
+	}
+
+	private waitForPlayingOrIdle(): Promise<void> {
+		const status = this.ttsPlayer.state.status;
+		if (status === AudioPlayerStatus.Playing || status === AudioPlayerStatus.Idle) {
+			return Promise.resolve();
+		}
+		return new Promise((resolve) => {
+			const onState = (_oldState: AudioPlayerState, newState: AudioPlayerState) => {
+				if (newState.status === AudioPlayerStatus.Playing || newState.status === AudioPlayerStatus.Idle) {
+					this.ttsPlayer.removeListener("stateChange", onState);
+					resolve();
+				}
+			};
+			this.ttsPlayer.on("stateChange", onState);
+		});
+	}
+
+	private waitForIdle(): Promise<void> {
+		if (this.ttsPlayer.state.status === AudioPlayerStatus.Idle) return Promise.resolve();
+		return new Promise((resolve) => {
+			const onState = (_oldState: AudioPlayerState, newState: AudioPlayerState) => {
+				if (newState.status === AudioPlayerStatus.Idle) {
+					this.ttsPlayer.removeListener("stateChange", onState);
+					resolve();
+				}
+			};
+			this.ttsPlayer.on("stateChange", onState);
+		});
+	}
+
+	public get player(): AudioPlayer {
+		return this.ttsPlayer;
+	}
+
+	dispose(): void {
+		this.ttsPlayer.stop(true);
+		this.activeResource = null;
+		this.connection = null;
+		this.running = null;
+	}
 }
