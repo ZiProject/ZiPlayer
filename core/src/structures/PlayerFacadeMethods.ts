@@ -64,7 +64,25 @@ declare module "./Player" {
 	}
 }
 
-const P: any = Player.prototype;
+/**
+ * Transitional compatibility layer.
+ *
+ * Concrete methods/getters now owned by Player must win over this legacy
+ * prototype patch. Remaining facade methods are still installed here until
+ * their ownership is migrated into Player/controllers.
+ */
+const P: any = new Proxy(Player.prototype, {
+	set(target, property, value) {
+		if (property in target) return true;
+		Reflect.set(target, property, value);
+		return true;
+	},
+	defineProperty(target, property, descriptor) {
+		if (property in target) return true;
+		Reflect.defineProperty(target, property, descriptor);
+		return true;
+	},
+});
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 P.destroyCurrentStream = function (this: Player) {
@@ -116,12 +134,7 @@ P.applyCrossfadeIn = async function (this: Player, resource: any, track: Track) 
 P.applyCrossfadeOutCurrent = async function (this: Player) {
 	const r = this.currentResource ?? this.playbackController.activeResource;
 	if (!r?.volume) return;
-	await this.fadeResourceVolume(
-		r,
-		r.volume.volume ?? this.getTrackTargetVolume(this.currentTrack as Track),
-		0,
-		this.resolveSmartTransitionDuration(this.currentTrack as Track),
-	);
+	await this.fadeResourceVolume(r, r.volume.volume ?? this.getTrackTargetVolume(this.currentTrack as Track), 0, this.resolveSmartTransitionDuration(this.currentTrack as Track));
 };
 P.crossfadeSkipAndStop = async function (this: Player) {
 	await this.applyCrossfadeOutCurrent();
@@ -131,8 +144,7 @@ P.getTrackMetadataValue = function (this: Player, track: Track, key: string) {
 	return (track as any)?.metadata?.[key];
 };
 P.resolveSmartTransitionDuration = function (this: Player, track: Track) {
-	const plan = this.transitionController.plan(this.currentTrack, track);
-	return plan.durationMs;
+	return this.transitionController.plan(this.currentTrack, track).durationMs;
 };
 P.maybeAlignToBeatBoundary = async function (this: Player, track?: Track) {
 	const wait = this.transitionController.beatWaitMs(track ?? this.currentTrack, this.getTime().current);
@@ -148,41 +160,21 @@ P.attemptTrackRecovery = function (this: Player, track: Track, session?: any) {
 	if (!session) return Promise.reject(new Error("attemptTrackRecovery requires an active PlaybackSession"));
 	return this.trackLoader.loadWithRecovery(track, session);
 };
-P.cancelPreload = function (this: Player) {
-	this.preloadController.cancel();
-};
-P.clearSlot = function (this: Player) {
-	this.preloadController.clear();
-	this.streamController.abortCurrent();
-};
+P.cancelPreload = function (this: Player) { this.preloadController.cancel(); };
+P.clearSlot = function (this: Player) { this.preloadController.clear(); this.streamController.abortCurrent(); };
 P.promotePreloadToCurrent = function (this: Player, track: Track) {
 	const s = this.orchestrator.currentSession;
 	if (!s) return null;
-	return this.preloadController.promote(track, {
-		resource: null,
-		track: null,
-		streamId: null,
-		processedStreamId: null,
-		abortController: null,
-		isValid: false,
-		isLoading: false,
-		loadPromise: null,
-	} as any);
+	return this.preloadController.promote(track, { resource: null, track: null, streamId: null, processedStreamId: null, abortController: null, isValid: false, isLoading: false, loadPromise: null } as any);
 };
-P.createResource = function (this: Player, stream: any, track: Track) {
-	return this.playbackController.createResource(stream, track);
-};
-P.mergeTrackPreserveRef = function (this: Player, target: Track, source: Track) {
-	Object.assign(target, source);
-	return target;
-};
+P.createResource = function (this: Player, stream: any, track: Track) { return this.playbackController.createResource(stream, track); };
+P.mergeTrackPreserveRef = function (this: Player, target: Track, source: Track) { Object.assign(target, source); return target; };
 P.applyTrackMiddleware = async function (this: Player, track: Track) {
 	const m: any = (this as any).options?.trackMiddleware;
-	if (Array.isArray(m))
-		for (const fn of m) {
-			const r = await fn(track, { player: this, manager: this.manager });
-			if (r && r !== track) Object.assign(track, r);
-		}
+	if (Array.isArray(m)) for (const fn of m) {
+		const r = await fn(track, { player: this, manager: this.manager });
+		if (r && r !== track) Object.assign(track, r);
+	}
 	return track;
 };
 P.getStream = async function (this: Player, track: Track) {
@@ -196,28 +188,13 @@ P.isUnrecoverableStreamError = function (this: Player, error: unknown) {
 	const m = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
 	return n === "AbortError" || /unrecoverable|unsupported|not found|invalid source/.test(m);
 };
-P.startTrack = function (this: Player, track: Track, ..._args: any[]) {
-	return this.action({ type: "PLAY", track } as any);
-};
-P.startFromPreload = function (this: Player, track: Track, ..._args: any[]) {
-	return this.action({ type: "PLAY", track } as any);
-};
-P.loadFreshStream = function (this: Player, track: Track, session?: any) {
-	return this.trackLoader.load(track, session ?? this.orchestrator.currentSession);
-};
-P.playRemote = async function (this: Player, _track: Track, stream: any, ..._args: any[]) {
-	if (stream?.handle?.play) await stream.handle.play();
-	return true;
-};
-P.ensureTTSPlayer = function (this: Player) {
-	return (this as any).runtime?.ttsController?.ensurePlayer?.() ?? null;
-};
-P.interruptWithTTSTrack = function (this: Player, track: Track, ..._args: any[]) {
-	return this.play(track);
-};
-P.previous = function (this: Player) {
-	return this.queueController.previous();
-};
+P.startTrack = function (this: Player, track: Track, ..._args: any[]) { return this.action({ type: "PLAY", track } as any); };
+P.startFromPreload = function (this: Player, track: Track, ..._args: any[]) { return this.action({ type: "PLAY", track } as any); };
+P.loadFreshStream = function (this: Player, track: Track, session?: any) { return this.trackLoader.load(track, session ?? this.orchestrator.currentSession); };
+P.playRemote = async function (this: Player, _track: Track, stream: any, ..._args: any[]) { if (stream?.handle?.play) await stream.handle.play(); return true; };
+P.ensureTTSPlayer = function (this: Player) { return (this as any).runtime?.ttsController?.ensurePlayer?.() ?? null; };
+P.interruptWithTTSTrack = function (this: Player, track: Track, ..._args: any[]) { return this.play(track); };
+P.previous = function (this: Player) { return this.queueController.previous(); };
 P.save = async function (this: Player, track: Track, options?: any) {
 	const e = await (this.extensionManager as any)?.save?.(track, options);
 	if (e) return e;
@@ -225,81 +202,36 @@ P.save = async function (this: Player, track: Track, options?: any) {
 	if (typeof p === "function") return p.call(this.pluginManager, track, options);
 	throw new Error("No save provider is available for this track");
 };
-P.loop = function (this: Player, mode?: any) {
-	return mode === undefined ? this.queueController.loop : this.queueController.setLoop(mode);
-};
-P.autoPlay = function (this: Player, enabled?: boolean) {
-	return enabled === undefined ? this.queueController.autoPlay : this.queueController.setAutoPlay(enabled);
-};
-P.setVolume = function (this: Player, value: number) {
-	return this.volumeController.setVolume(value);
-};
-P.shuffle = function (this: Player) {
-	this.queue.shuffle();
-	this.bus.publish("queueChanged", this.queueController.snapshot());
-};
-P.clearQueue = function (this: Player) {
-	this.queueController.clear();
-};
-P.insert = function (this: Player, track: Track, index = 0) {
-	return this.queueController.insert(track, index);
-};
-P.remove = function (this: Player, index: number) {
-	return this.queueController.remove(index);
-};
-P.scheduleLeave = function (this: Player) {
-	(this.lifecycleController as any).scheduleLeave?.();
-};
-P.refreshPlayerResource = function (this: Player, position = 0) {
-	return this.bus
-		.request({ type: "[Player]->[Resource]:refresh", requestId: `${this.guildId}:${Date.now()}`, position } as any)
-		.then(() => true)
-		.catch(() => false);
-};
-P.getExtensions = function (this: Player) {
-	return (this.extensionManager as any)?.getAll?.() ?? [];
-};
-P.clearLeaveTimeout = function (this: Player) {
-	(this.lifecycleController as any).clearLeaveTimeout?.();
-};
-P.setupEventListeners = function (this: Player) {
-	/* owned by PlayerEventBridge/runtime */
-};
-P.saveSession = function (this: Player, _options?: any) {
-	return this.getSerializableState();
-};
-P.exitRemoteMode = function (this: Player) {
-	(this as any).playbackMode = "NATIVE";
-};
-P.getSerializableState = function (this: Player) {
-	return { guildId: this.guildId, queue: this.queue.toJSON?.(), volume: this.volume, playbackMode: (this as any).playbackMode };
-};
-P.restoreState = function (this: Player, state: any) {
-	if (state?.queue) this.queue.fromJSON?.(state.queue);
-	if (typeof state?.volume === "number") this.setVolume(state.volume);
-	if (state?.playbackMode !== undefined) (this as any).playbackMode = state.playbackMode;
-};
-P.getStreamManagerStats = function (this: Player) {
-	return (this.streamManager as any)?.getStats?.() ?? {};
-};
+P.loop = function (this: Player, mode?: any) { return mode === undefined ? this.queueController.loop : this.queueController.setLoop(mode); };
+P.autoPlay = function (this: Player, enabled?: boolean) { return enabled === undefined ? this.queueController.autoPlay : this.queueController.setAutoPlay(enabled); };
+P.setVolume = function (this: Player, value: number) { return this.volumeController.setVolume(value); };
+P.shuffle = function (this: Player) { this.queue.shuffle(); this.bus.publish("queueChanged", this.queueController.snapshot()); };
+P.clearQueue = function (this: Player) { this.queueController.clear(); };
+P.insert = function (this: Player, track: Track, index = 0) { return this.queueController.insert(track, index); };
+P.remove = function (this: Player, index: number) { return this.queueController.remove(index); };
+P.scheduleLeave = function (this: Player) { (this.lifecycleController as any).scheduleLeave?.(); };
+P.refreshPlayerResource = function (this: Player, position = 0) { return this.bus.request({ type: "[Player]->[Resource]:refresh", requestId: `${this.guildId}:${Date.now()}`, position } as any).then(() => true).catch(() => false); };
+P.getExtensions = function (this: Player) { return (this.extensionManager as any)?.getAll?.() ?? []; };
+P.clearLeaveTimeout = function (this: Player) { (this.lifecycleController as any).clearLeaveTimeout?.(); };
+P.setupEventListeners = function (_this: Player) { /* owned by PlayerEventBridge/runtime */ };
+P.saveSession = function (this: Player, _options?: any) { return this.getSerializableState(); };
+P.exitRemoteMode = function (this: Player) { (this as any).playbackMode = "NATIVE"; };
+P.getSerializableState = function (this: Player) { return { guildId: this.guildId, queue: this.queue.toJSON?.(), volume: this.volume, playbackMode: (this as any).playbackMode }; };
+P.restoreState = function (this: Player, state: any) { if (state?.queue) this.queue.fromJSON?.(state.queue); if (typeof state?.volume === "number") this.setVolume(state.volume); if (state?.playbackMode !== undefined) (this as any).playbackMode = state.playbackMode; };
+P.getStreamManagerStats = function (this: Player) { return (this.streamManager as any)?.getStats?.() ?? {}; };
 
-// Keep time/progress formatting on the facade, but make it consistent with Track.duration/resource.playbackDuration (both ms).
-// The old implementation mixed compact/full output and added the progress cursor outside the requested bar size.
 const toMilliseconds = (value: unknown): number => {
 	const n = Number(value);
 	return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 };
-
 P.formatTime = function (this: Player, ms: number): string {
 	const totalSeconds = Math.floor(toMilliseconds(ms) / 1000);
 	const hours = Math.floor(totalSeconds / 3600);
 	const minutes = Math.floor((totalSeconds % 3600) / 60);
 	const seconds = totalSeconds % 60;
-	if (hours > 0)
-		return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+	if (hours > 0) return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 	return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 };
-
 P.formatTimeCompact = function (this: Player, ms: number): string {
 	const totalSeconds = Math.floor(toMilliseconds(ms) / 1000);
 	const hours = Math.floor(totalSeconds / 3600);
@@ -308,65 +240,28 @@ P.formatTimeCompact = function (this: Player, ms: number): string {
 	if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 	return `${minutes}:${String(seconds).padStart(2, "0")}`;
 };
-
 P.getTime = function (this: Player) {
 	const track = this.currentTrack;
 	const resource = this.currentResource ?? this.playbackController?.activeResource;
-	if (track?.isLive) {
-		return {
-			current: 0,
-			total: 0,
-			format: "LIVE",
-			formatted: { current: "LIVE", total: "LIVE" },
-		};
-	}
-
+	if (track?.isLive) return { current: 0, total: 0, format: "LIVE", formatted: { current: "LIVE", total: "LIVE" } };
 	const total = toMilliseconds(track?.duration);
 	const current = Math.min(total || Number.MAX_SAFE_INTEGER, toMilliseconds(resource?.playbackDuration));
 	const safeCurrent = Number.isSafeInteger(current) ? current : 0;
-	return {
-		current: safeCurrent,
-		total,
-		format: this.formatTime(safeCurrent),
-		formatted: {
-			current: this.formatTimeCompact(safeCurrent),
-			total: this.formatTimeCompact(total),
-		},
-	};
+	return { current: safeCurrent, total, format: this.formatTime(safeCurrent), formatted: { current: this.formatTimeCompact(safeCurrent), total: this.formatTimeCompact(total) } };
 };
-
 P.getProgressBar = function (this: Player, options: any = {}): string {
-	const {
-		size = 20,
-		barChar = "▬",
-		progressChar = "🔘",
-		timeFormat = "compact",
-		showPercentage = false,
-		showTime = true,
-		hideProgressChar = false,
-	} = options;
+	const { size = 20, barChar = "▬", progressChar = "🔘", timeFormat = "compact", showPercentage = false, showTime = true, hideProgressChar = false } = options;
 	const length = Math.max(1, Math.floor(Number(size) || 20));
 	const track = this.currentTrack;
 	if (track?.isLive) return "🔴 LIVE";
 	if (!track) return "";
-
 	const total = toMilliseconds(track.duration);
-	if (total <= 0)
-		return showTime ?
-				`${timeFormat === "full" ? "00:00" : "0:00"} ${barChar.repeat(length)} ${timeFormat === "full" ? "00:00" : "0:00"}`
-			:	barChar.repeat(length);
-
+	if (total <= 0) return showTime ? `${timeFormat === "full" ? "00:00" : "0:00"} ${barChar.repeat(length)} ${timeFormat === "full" ? "00:00" : "0:00"}` : barChar.repeat(length);
 	const resource = this.currentResource ?? this.playbackController?.activeResource;
 	const current = Math.min(total, toMilliseconds(resource?.playbackDuration));
 	const ratio = current / total;
 	const cursorIndex = Math.min(length - 1, Math.floor(ratio * (length - 1)));
-	let bar: string;
-	if (hideProgressChar || progressChar === "none") {
-		bar = barChar.repeat(length);
-	} else {
-		bar = barChar.repeat(cursorIndex) + progressChar + barChar.repeat(length - cursorIndex - 1);
-	}
-
+	const bar = hideProgressChar || progressChar === "none" ? barChar.repeat(length) : barChar.repeat(cursorIndex) + progressChar + barChar.repeat(length - cursorIndex - 1);
 	const format = timeFormat === "full" ? this.formatTime : this.formatTimeCompact;
 	let result = showTime ? `${format(current)} ${bar} ${format(total)}` : bar;
 	if (showPercentage) result += ` (${Math.round(ratio * 100)}%)`;
@@ -374,52 +269,12 @@ P.getProgressBar = function (this: Player, options: any = {}): string {
 };
 
 Object.defineProperties(P, {
-	previousTrack: {
-		configurable: true,
-		get(this: Player) {
-			return this.queue?.previousTracks?.at?.(-1) ?? null;
-		},
-	},
-	upcomingTracks: {
-		configurable: true,
-		get(this: Player) {
-			return this.queueController?.snapshot?.() ?? [];
-		},
-	},
-	previousTracks: {
-		configurable: true,
-		get(this: Player) {
-			return this.queue?.previousTracks ?? [];
-		},
-	},
-	availablePlugins: {
-		configurable: true,
-		get(this: Player) {
-			return this.pluginManager?.getAll?.() ?? [];
-		},
-	},
-	relatedTracks: {
-		configurable: true,
-		get(this: Player) {
-			return this.queueController?.relatedTracks ?? null;
-		},
-	},
-	isLive: {
-		configurable: true,
-		get(this: Player) {
-			return Boolean(this.currentTrack?.isLive);
-		},
-	},
-	isIdle: {
-		configurable: true,
-		get(this: Player) {
-			return this.playbackController?.status === "idle";
-		},
-	},
-	isBuffering: {
-		configurable: true,
-		get(this: Player) {
-			return this.playbackController?.status === "buffering";
-		},
-	},
+	previousTrack: { configurable: true, get(this: Player) { return this.queue?.previousTracks?.at?.(-1) ?? null; } },
+	upcomingTracks: { configurable: true, get(this: Player) { return this.queueController?.snapshot?.() ?? []; } },
+	previousTracks: { configurable: true, get(this: Player) { return this.queue?.previousTracks ?? []; } },
+	availablePlugins: { configurable: true, get(this: Player) { return this.pluginManager?.getAll?.() ?? []; } },
+	relatedTracks: { configurable: true, get(this: Player) { return this.queueController?.relatedTracks ?? null; } },
+	isLive: { configurable: true, get(this: Player) { return Boolean(this.currentTrack?.isLive); } },
+	isIdle: { configurable: true, get(this: Player) { return this.playbackController?.status === "idle"; } },
+	isBuffering: { configurable: true, get(this: Player) { return this.playbackController?.status === "buffering"; } },
 });
