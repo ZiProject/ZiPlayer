@@ -70,34 +70,11 @@ export class PlayerEventBridge {
 
 		try {
 			this.player.emit(publicType, ...args);
-			this.emitTTSEvent(event);
 			this.emitQueueCompatibilityEvents(event);
 			this.debug("PLAYER EMIT OK", { sequence: trace.sequence, event: publicType });
 		} catch (error) {
 			this.debug("PLAYER EMIT ERROR", { sequence: trace.sequence, event: publicType, error });
 		}
-	}
-
-	/** Restores the legacy TTS lifecycle at the canonical playback boundary.
-	 *
-	 * TTSController owns stream resolution only. PlaybackOrchestrator owns the
-	 * actual TRACK_STARTED/TRACK_END lifecycle, so TTS public events are derived
-	 * here from those canonical events instead of being emitted during resolution.
-	 */
-	private emitTTSEvent(event: PlayerEvent): void {
-		if (event.type !== "TRACK_STARTED" && event.type !== "TRACK_END") return;
-		const track = event.session?.track;
-		if (!track || !this.isTTSTrack(track)) return;
-
-		if (event.type === "TRACK_STARTED") {
-			this.player.emit("ttsStart", track);
-		} else {
-			this.player.emit("ttsEnd", track);
-		}
-	}
-
-	private isTTSTrack(track: any): boolean {
-		return track?.source?.toLowerCase() === "tts" || track?.id?.toLowerCase().startsWith("tts-") || !!track?.metadata?.tts;
 	}
 
 	private toPublicEventName(type: PlayerEventType): string | null {
