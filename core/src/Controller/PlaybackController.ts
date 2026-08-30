@@ -48,21 +48,43 @@ export class PlaybackController {
 		}
 	}
 
-	public createResource(stream: Readable, track: Track): AudioResource { const resource = createAudioResource(stream, { metadata: track, inlineVolume: true }); this.volume?.apply(resource); return resource; }
+	public createResource(stream: Readable, track: Track): AudioResource {
+		const resource = createAudioResource(stream, { metadata: track, inlineVolume: true });
+		this.volume?.applyLoudness(resource, track);
+		return resource;
+	}
+
 	public play(resource: AudioResource, session?: PlaybackSession, from?: Track | null, to?: Track): void {
 		if (session && !session.isActive()) return;
-		this.cancelTransition(); this.volume?.apply(resource);
+		this.cancelTransition();
+		const track = session?.track ?? to ?? (resource.metadata as Track | undefined);
+		this.volume?.applyLoudness(resource, track);
 		const plan = from && to ? this.transitions?.plan(from, to) : undefined;
-		if (plan?.enabled && this.activeResource && this.audioPlayer.state.status !== AudioPlayerStatus.Idle) { this.crossfade(this.activeResource, resource, plan, session); return; }
+		if (plan?.enabled && this.activeResource && this.audioPlayer.state.status !== AudioPlayerStatus.Idle) { this.crossfade(this.activeResource, resource, plan, session, track); return; }
 		if (session) session.setResource(resource);
 		this.activeSession = session ?? null; this.activeResource = resource; this.audioPlayer.play(resource);
 	}
-	private crossfade(oldResource: AudioResource, newResource: AudioResource, plan: { enabled: boolean; durationMs: number }, session?: PlaybackSession): void {
-		void oldResource; this.volume?.apply(newResource, 0);
+
+	private crossfade(oldResource: AudioResource, newResource: AudioResource, plan: { enabled: boolean; durationMs: number }, session?: PlaybackSession, track?: Track): void {
+		void oldResource;
+		this.volume?.applyLoudness(newResource, track, 0);
 		const wait = this.transitions?.beatWaitMs(session?.track ?? null, session?.position ?? 0) ?? 0;
-		const begin = () => { if (session && !session.isActive()) return; this.audioPlayer.play(newResource); if (session) session.setResource(newResource); this.activeSession = session ?? null; this.activeResource = newResource; const start = Date.now(); this.fadeTimer = setInterval(() => { const p = Math.min(1, (Date.now() - start) / Math.max(1, plan.durationMs)); this.volume?.apply(newResource, p); if (p >= 1) this.cancelFade(); }, 25); };
+		const begin = () => {
+			if (session && !session.isActive()) return;
+			this.audioPlayer.play(newResource);
+			if (session) session.setResource(newResource);
+			this.activeSession = session ?? null;
+			this.activeResource = newResource;
+			const start = Date.now();
+			this.fadeTimer = setInterval(() => {
+				const p = Math.min(1, (Date.now() - start) / Math.max(1, plan.durationMs));
+				this.volume?.applyLoudness(newResource, track, p);
+				if (p >= 1) this.cancelFade();
+			}, 25);
+		};
 		if (wait > 0) this.transitionTimer = setTimeout(begin, wait); else begin();
 	}
+
 	private cancelFade() { if (this.fadeTimer) { clearInterval(this.fadeTimer); this.fadeTimer = null; } }
 	private cancelTransition() { if (this.transitionTimer) { clearTimeout(this.transitionTimer); this.transitionTimer = null; } this.cancelFade(); }
 	public pause(): boolean { return this.audioPlayer.pause(true); }
@@ -75,7 +97,7 @@ export class PlaybackController {
 		if (stream && typeof stream.seek === "function") { try { stream.seek(target); session.updatePosition(target); return true; } catch {} }
 		return false;
 	}
-	public setVolume(value: number): number { const v = this.volume?.setVolume(value) ?? value; if (this.activeResource) this.volume?.apply(this.activeResource); return v; }
+	public setVolume(value: number): number { const v = this.volume?.setVolume(value) ?? value; if (this.activeResource) { const track = this.activeSession?.track ?? (this.activeResource.metadata as Track | undefined); this.volume?.applyLoudness(this.activeResource, track); } return v; }
 	public get volumeValue(): number { return this.volume?.value ?? 100; }
 	public get state(): AudioPlayerState { return this.audioPlayer.state; }
 	public get status(): AudioPlayerStatus { return this.audioPlayer.state.status; }
