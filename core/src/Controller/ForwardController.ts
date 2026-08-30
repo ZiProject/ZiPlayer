@@ -17,7 +17,35 @@ export class ForwardController {
 		options: ForwardControllerOptions = {},
 	) {
 		this.debug = options.debug ?? (() => undefined);
+		this.installForwardStateFacade();
 	}
+
+	private installForwardStateFacade(): void {
+		Object.defineProperties(this.player, {
+			isLive: {
+				configurable: true,
+				get: () => {
+					if (this.player.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isLive ?? true;
+					return Boolean(this.player.currentTrack?.isLive);
+				},
+			},
+			isIdle: {
+				configurable: true,
+				get: () => {
+					if (this.player.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isIdle ?? false;
+					return this.player.playbackController?.status === "idle";
+				},
+			},
+			isBuffering: {
+				configurable: true,
+				get: () => {
+					if (this.player.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isBuffering ?? false;
+					return this.player.playbackController?.status === "buffering";
+				},
+			},
+		});
+	}
+
 	get forwardLeader(): Player | null {
 		return this.leader;
 	}
@@ -45,7 +73,6 @@ export class ForwardController {
 			this.player.stop();
 			for (const fp of [...this.followers]) fp.unsubscribeForward(`leader changed to ${leader.guildId}`);
 			this.followers.clear();
-			this.player.queue.clear();
 			const track = leader.currentTrack as Track | null | undefined;
 			if (track) this.player.queue.setCurrentTrack(track);
 			if (options?.forwardMode ?? true) this.player.playbackMode = PlaybackMode.FORWARD;
