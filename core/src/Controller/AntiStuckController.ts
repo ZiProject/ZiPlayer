@@ -23,7 +23,6 @@ export class AntiStuckController {
 	public clearTrack(track: Track): void { this.generation++; this.failures.delete(this.key(track)); }
 	public reset(): void { this.clearTimer(); this.generation++; this.failures.clear(); }
 	public getRetryCount(track: Track): number { return this.failures.get(this.key(track)) ?? 0; }
-	public get shouldControlledSkip(): boolean { return false; }
 	public get policy() { return { enabled: this.enabled, maxRetries: this.maxRetries, retryDelayMs: this.retryDelayMs, reusePreloadFirst: this.reusePreloadFirst, reduceQualityOnRetry: this.reduceQualityOnRetry, controlledSkipThreshold: this.controlledSkipThreshold }; }
 	public dispose(): void { this.detachAction?.(); this.reset(); }
 	public requestRecovery(session: PlaybackSession, reason: string, handlers: AntiStuckRetryHandlers, requestId?: string): Promise<boolean> { return this.recover(session, ++this.generation, reason, handlers, requestId); }
