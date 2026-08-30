@@ -18,6 +18,7 @@ import { PreloadController } from "./PreloadController";
 import { ConnectionController } from "./ConnectionController";
 import { LifecycleController } from "./LifecycleController";
 import { ForwardController } from "./ForwardController";
+import { TTSController } from "./TTSController";
 import { Queue } from "../structures/Queue";
 import { StreamManager } from "../structures/StreamManager";
 import { PreloadManager } from "../structures/PreloadManager";
@@ -52,6 +53,7 @@ export class PlayerRuntimeController {
 	public readonly volumeController: VolumeController;
 	public readonly preloadController: PreloadController;
 	public readonly orchestrator: PlaybackOrchestrator;
+	public readonly ttsController: TTSController;
 	private disposed = false;
 	private readonly player: Player;
 	private readonly detachResourceRefresh: () => void;
@@ -83,6 +85,14 @@ export class PlayerRuntimeController {
 		player.pluginManager = this.pluginManager;
 		player.extensionManager = this.extensionManager;
 		player.streamManager = this.streamManager;
+		this.ttsController = new TTSController({
+			pluginManager: this.pluginManager,
+			extensionManager: this.extensionManager,
+			audioPlayer: this.audioPlayer,
+			debug: o.debug,
+			onStart: (track) => this.player.emit("ttsStart", { track }),
+			onEnd: () => this.player.emit("ttsEnd"),
+		});
 		this.queueController = new QueueController({ queue: this.queue, bus: this.bus });
 		Object.defineProperty(player, "relatedTracks", {
 			enumerable: true,
@@ -166,12 +176,14 @@ export class PlayerRuntimeController {
 			if (this.player.connection === event.connection) return;
 			this.audioPlayerSubscription?.unsubscribe();
 			this.audioPlayerSubscription = event.connection.subscribe(this.audioPlayer) ?? null;
+			this.ttsController.setConnection(event.connection);
 			this.player.connection = event.connection;
 			o.debug(`[PlayerRuntimeController] AudioPlayer subscribed guild=${player.guildId} session=${event.sessionId}`);
 		});
 		this.bus.onOutput("[Connection]->[Player]:disconnected", (event) => {
 			this.audioPlayerSubscription?.unsubscribe();
 			this.audioPlayerSubscription = null;
+			this.ttsController.setConnection(null);
 			this.player.connection = null;
 			o.debug(`[PlayerRuntimeController] AudioPlayer unsubscribed guild=${player.guildId} reason=${event.reason ?? "unknown"}`);
 		});
@@ -252,6 +264,7 @@ export class PlayerRuntimeController {
 		this.streamManager.destroyAll();
 		this.queueController.dispose();
 		this.playbackController.dispose();
+		this.ttsController.dispose();
 		this.pluginManager.clear();
 		this.extensionManager.destroy?.();
 		this.bus.publish("destroyed");
