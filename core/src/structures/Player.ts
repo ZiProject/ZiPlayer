@@ -87,6 +87,9 @@ export class Player extends EventEmitter {
 	public get forwardController(): ForwardController {
 		return this.runtime.forwardController;
 	}
+	public get ttsController() {
+		return this.runtime.ttsController;
+	}
 	public get currentTrack(): Track | null {
 		return this.queueController.current ?? null;
 	}
@@ -150,12 +153,12 @@ export class Player extends EventEmitter {
 	public debugSearchQuery(query: string): ReturnType<SearchController["debug"]> {
 		return this.searchController.debug(query);
 	}
-	public connect(channel: VoiceChannel): Promise<VoiceConnection> {
+	public async connect(channel: VoiceChannel): Promise<VoiceConnection> {
 		return this.bus
 			.request({ type: "[Player]->[Connection]:connect", requestId: createPlayerRequestId(), channel })
 			.then((e) => e.connection);
 	}
-	public disconnect(): Promise<void> {
+	public async disconnect(): Promise<void> {
 		return this.bus
 			.request({ type: "[Player]->[Connection]:disconnect", requestId: createPlayerRequestId() })
 			.then(() => undefined);
@@ -186,16 +189,26 @@ export class Player extends EventEmitter {
 
 		if (tracks.length === 0) return false;
 
+		//for tts track
+		const isTTS = (track: Track): boolean => this.runtime.ttsController.isTTS(track);
+
+		if (tracks.length === 1 && this.options.tts?.interrupt !== false && isTTS(tracks[0])) {
+			await this.runtime.ttsController.play(tracks[0]);
+			return true;
+		}
+
 		this.queueController.addMultiple(tracks);
 
 		if (this.isPlaying || this.isPaused) {
-			void this.preloadController.preload().catch((error: unknown) => this.debug("[Player] Preload after queue add error:", error));
+			void this.preloadController
+				.preload()
+				.catch((error: unknown) => this.debug("[Player] Preload after queue add error:", error));
 			return true;
 		}
 
 		return this.playNext();
 	}
-	public playNext(): Promise<boolean> {
+	public async playNext(): Promise<boolean> {
 		if (this.destroyed) return Promise.resolve(false);
 		return this.action({ type: "SKIP" })
 			.then(() => this.isPlaying || this.currentTrack !== null)
@@ -213,7 +226,7 @@ export class Player extends EventEmitter {
 		void this.action({ type: "STOP" });
 		return true;
 	}
-	public seek(position: number): Promise<boolean> {
+	public async seek(position: number): Promise<boolean> {
 		return this.action({ type: "SEEK", position })
 			.then(() => true)
 			.catch(() => false);
