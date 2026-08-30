@@ -33,6 +33,13 @@ export class PlayerEventBridge {
 			"preloadStateChanged", "preloadPromoted", "preloadCancelled", "queueChanged", "volumeRequested",
 		];
 		for (const type of events) this.detach.push(this.bus.subscribe(type, (event) => this.forward(event)));
+
+		// Connection errors are canonical bus outputs, not PlayerEvents. Bridge them
+		// into the legacy public Player event so existing Manager forwarding keeps working.
+		this.detach.push(this.bus.onOutput("[Connection]->[Player]:error", (event) => {
+			if (this.disposed || this.player.destroyed) return;
+			this.player.emit("connectionError", event.error, event.operation, event.sessionId);
+		}));
 	}
 
 	private forward(event: PlayerEvent): void {
