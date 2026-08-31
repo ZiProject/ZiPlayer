@@ -2,14 +2,7 @@ import { EventEmitter } from "events";
 import type { VoiceConnection } from "@discordjs/voice";
 import type { PlayerOptions, VoiceChannel, SearchResult, Track, ProgressBarOptions } from "../types";
 import type { PlayerManager } from "./PlayerManager";
-import {
-	type PlayerAction as PlayerActionMessage,
-	type PlayerEvent,
-	type PlayerEventType,
-	type PlayerQuery,
-	type PlayerQueryMap,
-	createPlayerRequestId,
-} from "./PlayerBus";
+import { type PlayerAction as PlayerActionMessage, type PlayerEvent, type PlayerEventType, type PlayerQuery, type PlayerQueryMap, createPlayerRequestId } from "./PlayerBus";
 import { PlayerRuntimeController } from "../Controller/PlayerRuntimeController";
 import { PlayerEventBridge } from "../Controller/PlayerEventBridge";
 import { SearchController } from "../Controller/SearchController";
@@ -61,51 +54,23 @@ export class Player extends EventEmitter {
 	public get queueSize(): number { return this.queueController.snapshot().length; }
 	public get isPlaying(): boolean { return this.playbackController.status === "playing"; }
 	public get isPaused(): boolean { return this.playbackController.status === "paused"; }
-	public get isLive(): boolean {
-		if (this.playbackMode === "FORWARD") return this.forwardLeader?.isLive ?? false;
-		return Boolean(this.currentTrack?.isLive);
-	}
-	public get isIdle(): boolean {
-		if (this.playbackMode === "FORWARD") return this.forwardLeader?.isIdle ?? true;
-		return this.playbackController.status === "idle";
-	}
-	public get isBuffering(): boolean {
-		if (this.playbackMode === "FORWARD") return this.forwardLeader?.isBuffering ?? false;
-		return this.playbackController.status === "buffering";
-	}
+	public get isLive(): boolean { if (this.playbackMode === "FORWARD") return this.forwardLeader?.isLive ?? false; return Boolean(this.currentTrack?.isLive); }
+	public get isIdle(): boolean { if (this.playbackMode === "FORWARD") return this.forwardLeader?.isIdle ?? true; return this.playbackController.status === "idle"; }
+	public get isBuffering(): boolean { if (this.playbackMode === "FORWARD") return this.forwardLeader?.isBuffering ?? false; return this.playbackController.status === "buffering"; }
 	public get volume(): number { return this.volumeController.value; }
 	public set volume(value: number) { this.volumeController.setVolume(value); }
 
 	public constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
-		super();
-		this.guildId = guildId;
-		this.manager = manager;
-		this.options = {
-			leaveOnEnd: true,
-			leaveOnEmpty: true,
-			leaveTimeout: 100000,
-			volume: 100,
-			quality: "high",
-			extractorTimeout: 50000,
-			selfDeaf: true,
-			selfMute: false,
-			...options,
-			tts: { createPlayer: false, interrupt: true, volume: 100, maxTimeTts: 60_000, ...(options.tts || {}) },
-		};
+		super(); this.guildId = guildId; this.manager = manager;
+		this.options = { leaveOnEnd: true, leaveOnEmpty: true, leaveTimeout: 100000, volume: 100, quality: "high", extractorTimeout: 50000, selfDeaf: true, selfMute: false, ...options, tts: { createPlayer: false, interrupt: true, volume: 100, maxTimeTts: 60_000, ...(options.tts || {}) } };
 		this.userdata = this.options.userdata;
 		this.runtime = new PlayerRuntimeController({ player: this, manager, options: this.options, debug: this.debug.bind(this) });
 		this.searchController = new SearchController({ extensionManager: this.runtime.extensionManager, pluginManager: this.runtime.pluginManager, debug: this.debug.bind(this) });
 		this.eventBridge = new PlayerEventBridge(this, manager, this.runtime.bus);
-		this.queue = this.runtime.queue;
-		this.audioPlayer = this.runtime.audioPlayer;
-		this.streamManager = this.runtime.streamManager;
-		this.preloadManager = this.runtime.preloadManager;
-		this.filter = this.runtime.filterController;
+		this.queue = this.runtime.queue; this.audioPlayer = this.runtime.audioPlayer; this.streamManager = this.runtime.streamManager; this.preloadManager = this.runtime.preloadManager; this.filter = this.runtime.filterController;
 	}
 
-	public debug(message?: any, ...optionalParams: any[]): void {
-		if (this.manager.listenerCount("debug") > 0 || this.manager.debugEnabled) this.manager.emit("debug", `[Player:${this.guildId}] ${message}`, ...optionalParams);
-	}
+	public debug(message?: any, ...optionalParams: any[]): void { if (this.manager.listenerCount("debug") > 0 || this.manager.debugEnabled) this.manager.emit("debug", `[Player:${this.guildId}] ${message}`, ...optionalParams); }
 	public search(query: string, requestedBy: string): Promise<SearchResult> { return this.searchController.search(query, requestedBy); }
 	public clearSearchCache(): void { this.searchController.clear(); }
 	public debugSearchQuery(query: string): ReturnType<SearchController["debug"]> { return this.searchController.debug(query); }
@@ -115,11 +80,8 @@ export class Player extends EventEmitter {
 		if (this.destroyed) return false;
 		if (query === null) { if (this.isPlaying || this.isPaused) return true; return this.playNext(); }
 		let tracks: Track[];
-		try {
-			if (typeof query === "string") tracks = (await this.search(query, requestedBy || "Unknown")).tracks;
-			else if ("tracks" in query) tracks = query.tracks;
-			else tracks = [query];
-		} catch (error) { this.debug("[Player] Play search error:", error); this.emit("playerError", error as Error); return false; }
+		try { if (typeof query === "string") tracks = (await this.search(query, requestedBy || "Unknown")).tracks; else if ("tracks" in query) tracks = query.tracks; else tracks = [query]; }
+		catch (error) { this.debug("[Player] Play search error:", error); this.emit("playerError", error as Error); return false; }
 		if (tracks.length === 0) return false;
 		const isTTS = (track: Track): boolean => this.runtime.ttsController.isTTS(track);
 		if (tracks.length === 1 && this.options.tts?.interrupt !== false && isTTS(tracks[0])) { await this.runtime.ttsController.play(tracks[0]); return true; }
@@ -146,42 +108,27 @@ export class Player extends EventEmitter {
 		const duration = Math.max(0, durationMs);
 		if (duration === 0) { resource.volume.setVolume(to); return; }
 		const start = Date.now();
-		while (true) {
-			const progress = Math.min(1, (Date.now() - start) / duration);
-			resource.volume.setVolume(from + (to - from) * progress);
-			if (progress >= 1) return;
-			await new Promise<void>((resolve) => setTimeout(resolve, 25));
-		}
+		while (true) { const progress = Math.min(1, (Date.now() - start) / duration); resource.volume.setVolume(from + (to - from) * progress); if (progress >= 1) return; await new Promise<void>((resolve) => setTimeout(resolve, 25)); }
 	}
-	public async applyCrossfadeIn(resource: any, track: Track): Promise<void> {
-		if (!resource?.volume) return;
-		const target = this.getTrackTargetVolume(track);
-		resource.volume.setVolume(0);
-		this.volumeController.applyLoudness(resource, track, 0);
-		await this.fadeResourceVolume(resource, 0, target, this.resolveSmartTransitionDuration(track));
-	}
-	public async applyCrossfadeOutCurrent(): Promise<void> {
-		const resource = this.currentResource ?? this.playbackController.activeResource;
-		if (!resource?.volume) return;
-		const current = Number(resource.volume.volume ?? this.getTrackTargetVolume(this.currentTrack as Track));
-		await this.fadeResourceVolume(resource, current, 0, this.resolveSmartTransitionDuration(this.currentTrack as Track));
-	}
+	public async applyCrossfadeIn(resource: any, track: Track): Promise<void> { if (!resource?.volume) return; const target = this.getTrackTargetVolume(track); resource.volume.setVolume(0); this.volumeController.applyLoudness(resource, track, 0); await this.fadeResourceVolume(resource, 0, target, this.resolveSmartTransitionDuration(track)); }
+	public async applyCrossfadeOutCurrent(): Promise<void> { const resource = this.currentResource ?? this.playbackController.activeResource; if (!resource?.volume) return; const current = Number(resource.volume.volume ?? this.getTrackTargetVolume(this.currentTrack as Track)); await this.fadeResourceVolume(resource, current, 0, this.resolveSmartTransitionDuration(this.currentTrack as Track)); }
 	public async crossfadeSkipAndStop(): Promise<void> { await this.applyCrossfadeOutCurrent(); this.playbackController.stop(); }
 	public getTrackMetadataValue(track: Track, key: string): any { return (track as any)?.metadata?.[key]; }
 	public resolveSmartTransitionDuration(track: Track): number { return this.transitionController.plan(this.currentTrack, track).durationMs; }
-	public async maybeAlignToBeatBoundary(track?: Track): Promise<void> {
-		const wait = this.transitionController.beatWaitMs(track ?? this.currentTrack, this.getTime().current);
-		if (wait > 0) await new Promise<void>((resolve) => setTimeout(resolve, wait));
-	}
-	public getTrackTargetVolume(track: Track): number {
-		const settings = this.volumeController.settings;
-		const lufs = Number((track as any)?.metadata?.lufs);
-		if (!settings.enabled || !Number.isFinite(lufs)) return this.volume / 100;
-		const correctionDb = Math.max(-settings.maxCutDb, Math.min(settings.maxBoostDb, settings.targetLUFS - lufs));
-		const gain = Math.pow(10, correctionDb / 20);
-		const ceiling = Math.pow(10, settings.limiterCeiling / 20);
-		return Math.min((this.volume / 100) * gain, ceiling);
-	}
+	public async maybeAlignToBeatBoundary(track?: Track): Promise<void> { const wait = this.transitionController.beatWaitMs(track ?? this.currentTrack, this.getTime().current); if (wait > 0) await new Promise<void>((resolve) => setTimeout(resolve, wait)); }
+	public getTrackTargetVolume(track: Track): number { const settings = this.volumeController.settings; const lufs = Number((track as any)?.metadata?.lufs); if (!settings.enabled || !Number.isFinite(lufs)) return this.volume / 100; const correctionDb = Math.max(-settings.maxCutDb, Math.min(settings.maxBoostDb, settings.targetLUFS - lufs)); const gain = Math.pow(10, correctionDb / 20); const ceiling = Math.pow(10, settings.limiterCeiling / 20); return Math.min((this.volume / 100) * gain, ceiling); }
+
+	public createResource(stream: any, track: Track): any { return this.playbackController.createResource(stream, track); }
+	public mergeTrackPreserveRef(target: Track, source: Track): Track { Object.assign(target, source); return target; }
+	public async applyTrackMiddleware(track: Track): Promise<Track> { const middleware: any = (this.options as any).trackMiddleware; if (!Array.isArray(middleware)) return track; for (const fn of middleware) { const result = await fn(track, { player: this, manager: this.manager }); if (result && result !== track) Object.assign(track, result); } return track; }
+	public async getStream(track: Track): Promise<any> { const session = this.orchestrator.currentSession; if (session) return this.trackLoader.load(track, session); const extensionStream = await (this.extensionManager as any)?.provideStream?.(track); return extensionStream ?? (this.pluginManager as any)?.getStream?.(track); }
+	public isUnrecoverableStreamError(error: unknown): boolean { const name = error instanceof Error ? error.name : ""; const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase(); return name === "AbortError" || /unrecoverable|unsupported|not found|invalid source/.test(message); }
+	public startTrack(track: Track, ..._args: any[]): Promise<void> { return this.action({ type: "PLAY", track } as any); }
+	public startFromPreload(track: Track, ..._args: any[]): Promise<void> { return this.action({ type: "PLAY", track } as any); }
+	public loadFreshStream(track: Track, session?: any): Promise<any> { return this.trackLoader.load(track, session ?? this.orchestrator.currentSession); }
+	public async playRemote(_track: Track, stream: any, ..._args: any[]): Promise<boolean> { if (stream?.handle?.play) await stream.handle.play(); return true; }
+	public ensureTTSPlayer(): any { return this.ttsController.ensurePlayer?.() ?? null; }
+	public interruptWithTTSTrack(track: Track, ..._args: any[]): Promise<boolean> { return this.play(track); }
 
 	public previous(): any { return this.queueController.previous(); }
 	public loop(mode?: any): any { return mode === undefined ? this.queueController.loop : this.queueController.setLoop(mode); }
@@ -195,68 +142,18 @@ export class Player extends EventEmitter {
 	public restoreState(state: any): void { if (state?.queue) this.queue.fromJSON?.(state.queue); if (typeof state?.volume === "number") this.setVolume(state.volume); if (state?.playbackMode !== undefined) this.playbackMode = state.playbackMode; }
 	public getStreamManagerStats(): any { return this.streamManager?.getStats?.() ?? {}; }
 
-	public getTime() {
-		const track = this.currentTrack;
-		const resource = this.currentResource ?? this.playbackController.activeResource;
-		const isLive = Boolean(track?.isLive);
-		if (isLive) return { current: 0, total: 0, format: "LIVE", formatted: { current: "LIVE", total: "LIVE" } };
-		if (!track || !resource) return { current: 0, total: 0, format: "00:00", formatted: { current: "00:00", total: "00:00" } };
-		const total = Math.floor(track.duration > 1000 ? track.duration : track.duration * 1000) | 0;
-		const seekOffset = Number((this as any).seekOffset ?? 0);
-		const current = Math.floor(Number(resource.playbackDuration ?? 0) + seekOffset) | 0;
-		return { current, total, format: this.formatTime(current), formatted: { current: this.formatTimeCompact(current), total: this.formatTimeCompact(total) } };
-	}
+	public getTime() { const track = this.currentTrack; const resource = this.currentResource ?? this.playbackController.activeResource; const isLive = Boolean(track?.isLive); if (isLive) return { current: 0, total: 0, format: "LIVE", formatted: { current: "LIVE", total: "LIVE" } }; if (!track || !resource) return { current: 0, total: 0, format: "00:00", formatted: { current: "00:00", total: "00:00" } }; const total = Math.floor(track.duration > 1000 ? track.duration : track.duration * 1000) | 0; const seekOffset = Number((this as any).seekOffset ?? 0); const current = Math.floor(Number(resource.playbackDuration ?? 0) + seekOffset) | 0; return { current, total, format: this.formatTime(current), formatted: { current: this.formatTimeCompact(current), total: this.formatTimeCompact(total) } }; }
 	public skip(): boolean { void this.action({ type: "SKIP" }); return true; }
-	public getProgressBar(options: ProgressBarOptions = {}): string {
-		const { size = 20, barChar = "▬", progressChar = "🔘", timeFormat = "compact", showPercentage = false, showTime = true } = options;
-		const track = this.currentTrack;
-		const resource = this.runtime.playbackController.activeResource ?? this.currentResource;
-		const isLive = Boolean((track as any)?.isLive);
-		if (isLive || !track || !resource) return isLive ? "🔴 LIVE" : "";
-		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
-		const current = Number(resource.playbackDuration ?? 0);
-		if (!total) return this.formatTimeCompact(current);
-		const ratio = Math.min(Math.max(current / total, 0), 1);
-		const progress = Math.round(ratio * size);
-		const filled = barChar.repeat(progress);
-		const empty = barChar.repeat(Math.max(0, size - progress));
-		const bar = progressChar === "none" || (options as any).hideProgressChar ? filled + empty : filled + progressChar + empty;
-		const formatTimeFn = timeFormat === "compact" ? this.formatTimeCompact.bind(this) : this.formatTime.bind(this);
-		let result = showTime ? `${formatTimeFn(current)} ${bar} ${formatTimeFn(total)}` : bar;
-		if (showPercentage) result += ` (${Math.round(ratio * 100)}%)`;
-		return result;
-	}
-	public formatTime(ms: number): string {
-		const totalSeconds = Math.floor(ms / 1000) | 0;
-		const hours = Math.floor(totalSeconds / 3600) | 0;
-		const minutes = Math.floor((totalSeconds % 3600) / 60) | 0;
-		const seconds = totalSeconds % 60;
-		const parts: string[] = [];
-		if (hours > 0) { parts.push(String(hours)); parts.push(String(minutes).padStart(2, "0")); } else parts.push(String(minutes));
-		parts.push(String(seconds).padStart(2, "0"));
-		return parts.join(":");
-	}
-	public formatTimeCompact(ms: number): string {
-		const totalSeconds = Math.floor(ms / 1000) | 0;
-		const hours = Math.floor(totalSeconds / 3600) | 0;
-		const minutes = Math.floor((totalSeconds % 3600) / 60) | 0;
-		const seconds = totalSeconds % 60;
-		if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-		return `${minutes}:${String(seconds).padStart(2, "0")}`;
-	}
+	public getProgressBar(options: ProgressBarOptions = {}): string { const { size = 20, barChar = "▬", progressChar = "🔘", timeFormat = "compact", showPercentage = false, showTime = true } = options; const track = this.currentTrack; const resource = this.runtime.playbackController.activeResource ?? this.currentResource; const isLive = Boolean((track as any)?.isLive); if (isLive || !track || !resource) return isLive ? "🔴 LIVE" : ""; const total = track.duration > 1000 ? track.duration : track.duration * 1000; const current = Number(resource.playbackDuration ?? 0); if (!total) return this.formatTimeCompact(current); const ratio = Math.min(Math.max(current / total, 0), 1); const progress = Math.round(ratio * size); const filled = barChar.repeat(progress); const empty = barChar.repeat(Math.max(0, size - progress)); const bar = progressChar === "none" || (options as any).hideProgressChar ? filled + empty : filled + progressChar + empty; const formatTimeFn = timeFormat === "compact" ? this.formatTimeCompact.bind(this) : this.formatTime.bind(this); let result = showTime ? `${formatTimeFn(current)} ${bar} ${formatTimeFn(total)}` : bar; if (showPercentage) result += ` (${Math.round(ratio * 100)}%)`; return result; }
+	public formatTime(ms: number): string { const totalSeconds = Math.floor(ms / 1000) | 0; const hours = Math.floor(totalSeconds / 3600) | 0; const minutes = Math.floor((totalSeconds % 3600) / 60) | 0; const seconds = totalSeconds % 60; const parts: string[] = []; if (hours > 0) { parts.push(String(hours)); parts.push(String(minutes).padStart(2, "0")); } else parts.push(String(minutes)); parts.push(String(seconds).padStart(2, "0")); return parts.join(":"); }
+	public formatTimeCompact(ms: number): string { const totalSeconds = Math.floor(ms / 1000) | 0; const hours = Math.floor(totalSeconds / 3600) | 0; const minutes = Math.floor((totalSeconds % 3600) / 60) | 0; const seconds = totalSeconds % 60; if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`; return `${minutes}:${String(seconds).padStart(2, "0")}`; }
 	public addPlugin(plugin: BasePlugin): void { this.pluginManager.register(plugin); }
 	public removePlugin(name: string): boolean { return this.pluginManager.unregister(name); }
 	public attachExtension(extension: BaseExtension): void { this.extensionManager.register(extension); }
 	public detachExtension(extension: BaseExtension): boolean { return this.extensionManager.unregister(extension); }
 	public subscribeTo(leader: Player, options?: { forwardMode?: boolean }): boolean { return this.forwardController.subscribeTo(leader, options); }
 	public unsubscribeForward(reason?: string): boolean { return this.forwardController.unsubscribeForward(reason); }
-	public getForwardHealthStatus() {
-		const role: "leader" | "follower" | "none" = this.forwardController.isLeader ? "leader" : this.forwardController.isFollower ? "follower" : "none";
-		const issues: string[] = [];
-		if (role === "follower" && !this.forwardController.forwardLeader) issues.push("missing leader");
-		if (role === "leader" && this.forwardController.forwardFollowers.size === 0) issues.push("no followers");
-		return { guildId: this.guildId, healthy: issues.length === 0, role, issues, details: { leaderId: this.forwardController.forwardLeader?.guildId, followerCount: this.forwardController.forwardFollowers.size, connectionState: this.connection?.state?.status, audioPlayerState: this.playbackController.status } };
-	}
+	public getForwardHealthStatus() { const role: "leader" | "follower" | "none" = this.forwardController.isLeader ? "leader" : this.forwardController.isFollower ? "follower" : "none"; const issues: string[] = []; if (role === "follower" && !this.forwardController.forwardLeader) issues.push("missing leader"); if (role === "leader" && this.forwardController.forwardFollowers.size === 0) issues.push("no followers"); return { guildId: this.guildId, healthy: issues.length === 0, role, issues, details: { leaderId: this.forwardController.forwardLeader?.guildId, followerCount: this.forwardController.forwardFollowers.size, connectionState: this.connection?.state?.status, audioPlayerState: this.playbackController.status } }; }
 	public action(action: PlayerActionMessage): Promise<void> { return this.runtime.actionExecutor.enqueue(action); }
 	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> { return this.runtime.bus.query(query); }
 	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void { return this.runtime.bus.subscribe(type, listener); }
