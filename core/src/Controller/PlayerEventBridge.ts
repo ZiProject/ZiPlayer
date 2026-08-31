@@ -22,7 +22,7 @@ export class PlayerEventBridge {
 		private readonly manager: PlayerManager,
 		private readonly bus: PlayerBus,
 	) {
-		this.debugTracer = new PlayerEventDebug(bus, player.guildId);
+		this.debugTracer = new PlayerEventDebug(bus, player.guildId, (message, value) => this.debug(message, value));
 		this.previousQueue = player.queueController.snapshot();
 		this.debug("attached", { queueSize: this.previousQueue.length });
 
@@ -153,8 +153,7 @@ export class PlayerEventBridge {
 	}
 
 	private debug(message: string, value?: unknown): void {
-		if (value === undefined) console.debug(`[PlayerEventBridge:${this.player.guildId}] ${message}`);
-		else console.debug(`[PlayerEventBridge:${this.player.guildId}] ${message}`, value);
+		this.player.debug(`[PlayerEventBridge:${this.player.guildId}] ${message}`, value);
 	}
 
 	public dispose(): void {
