@@ -1,10 +1,4 @@
-import {
-	AudioPlayer,
-	AudioPlayerState,
-	AudioPlayerStatus,
-	AudioResource,
-	createAudioResource,
-} from "@discordjs/voice";
+import { AudioPlayer, AudioPlayerState, AudioPlayerStatus, AudioResource, createAudioResource } from "@discordjs/voice";
 import type { VoiceConnection } from "@discordjs/voice";
 import type { Readable } from "stream";
 import type { StreamInfo, Track } from "../types";
@@ -23,12 +17,12 @@ export interface TTSControllerOptions {
 
 /** Owns TTS stream resolution and the independent interrupt playback lifecycle. */
 export class TTSController {
+	public readonly ttsPlayer: AudioPlayer;
 	private readonly pluginManager: PluginManager;
 	private readonly extensionManager?: ExtensionManager;
 	private readonly debug: (...args: any[]) => void;
 	private connection: VoiceConnection | null;
 	private readonly audioPlayer?: AudioPlayer;
-	private readonly ttsPlayer: AudioPlayer;
 	private readonly onStart?: (track: Track) => void;
 	private readonly onEnd?: () => void;
 	private activeResource: AudioResource | null = null;
