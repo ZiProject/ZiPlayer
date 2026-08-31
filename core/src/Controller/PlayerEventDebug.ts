@@ -1,12 +1,18 @@
 import type { PlayerBus, PlayerEvent, PlayerAction, PlayerEventType } from "../structures/PlayerBus";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
 
+export type PlayerEventDebugLogger = (message: string, value?: unknown) => void;
+
 /** Verbose diagnostics for the complete PlayerBus pipeline. */
 export class PlayerEventDebug {
 	private readonly detach: Array<() => void> = [];
 	private readonly recent = new Map<string, number>();
 
-	constructor(private readonly bus: PlayerBus, private readonly id = "unknown") {
+	constructor(
+		private readonly bus: PlayerBus,
+		private readonly id = "unknown",
+		private readonly logger?: PlayerEventDebugLogger,
+	) {
 		const eventTypes: PlayerEventType[] = [
 			"initialized", "ready", "destroyed", "TRACK_LOADING", "TRACK_LOADED", "TRACK_STARTED",
 			"TRACK_ERROR", "TRACK_END", "STREAM_ABORTED", "playbackStateChanged", "playbackSessionCreated",
@@ -45,8 +51,6 @@ export class PlayerEventDebug {
 	}
 
 	private log(message: string, value?: unknown) {
-		const prefix = `[PlayerBus:${this.id}]`;
-		if (value === undefined) console.debug(prefix, message);
-		else console.debug(prefix, message, value);
+		this.logger?.(`[PlayerEventDebug:${this.id}] ${message}`, value);
 	}
 }
