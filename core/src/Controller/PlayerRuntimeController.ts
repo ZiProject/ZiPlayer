@@ -25,6 +25,7 @@ import { PreloadManager } from "../structures/PreloadManager";
 import { PluginManager } from "../plugins";
 import { ExtensionManager } from "../extensions";
 import type { Player } from "../structures/Player";
+import { PlayerEventDebug } from "./PlayerEventDebug";
 export interface PlayerRuntimeControllerOptions {
 	player: Player;
 	manager: PlayerManager;
@@ -54,13 +55,16 @@ export class PlayerRuntimeController {
 	public readonly preloadController: PreloadController;
 	public readonly orchestrator: PlaybackOrchestrator;
 	public readonly ttsController: TTSController;
+	public readonly debugTracer: PlayerEventDebug;
 	private disposed = false;
 	private readonly player: Player;
 	private readonly detachResourceRefresh: () => void;
 	private readonly detachConnectionSubscription: () => void;
 	private audioPlayerSubscription: PlayerSubscription | null = null;
+
 	public constructor(o: PlayerRuntimeControllerOptions) {
 		const { player, manager, options } = o;
+		this.debugTracer = new PlayerEventDebug(this.bus, player.guildId, o.debug, manager.debugLevel ?? "info");
 		const middleware: TrackMiddleware[] = [
 			...manager.getTrackMiddlewareChain(),
 			...(Array.isArray(options.trackMiddleware) ? options.trackMiddleware
@@ -284,6 +288,7 @@ export class PlayerRuntimeController {
 		this.ttsController.dispose();
 		this.pluginManager.clear();
 		this.extensionManager.destroy?.();
+		this.debugTracer.dispose();
 		this.bus.publish("destroyed");
 		this.bus.clear();
 	}

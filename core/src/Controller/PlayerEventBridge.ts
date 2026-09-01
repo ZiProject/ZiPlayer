@@ -12,7 +12,6 @@ import { describeEvent, traceEvent } from "./PlayerEventTrace";
  */
 export class PlayerEventBridge {
 	private readonly detach: Array<() => void> = [];
-	private readonly debugTracer: PlayerEventDebug;
 	private disposed = false;
 	private readonly recent = new Map<string, number>();
 	private previousQueue: any[];
@@ -22,7 +21,6 @@ export class PlayerEventBridge {
 		private readonly manager: PlayerManager,
 		private readonly bus: PlayerBus,
 	) {
-		this.debugTracer = new PlayerEventDebug(bus, player.guildId, (message, value) => this.debug(message, value));
 		this.previousQueue = player.queueController.snapshot();
 		this.debug("attached", { queueSize: this.previousQueue.length });
 
@@ -236,6 +234,5 @@ export class PlayerEventBridge {
 		this.disposed = true;
 		this.debug("disposing");
 		for (const detach of this.detach.splice(0)) detach();
-		this.debugTracer.dispose();
 	}
 }

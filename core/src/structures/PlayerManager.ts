@@ -91,6 +91,7 @@ interface ManagerCacheEntry<T> {
  * }
  */
 export class PlayerManager extends EventEmitter {
+	public debugLevel: PlayerDebugLevel = "info";
 	private static instance: PlayerManager | null = null;
 	private players: Map<string, Player> = new Map();
 	private pendingPlayers: Map<string, Promise<Player>> = new Map();
@@ -132,7 +133,6 @@ export class PlayerManager extends EventEmitter {
 	private cleanupTimeout: number = 60000; // 1 minute
 	private enableSearchCache: boolean = true;
 	private trackMiddlewareFromOptions: TrackMiddleware[] = [];
-	private debugLevel: PlayerDebugLevel = "info";
 
 	private debug(message?: any, ...optionalParams: any[]): void {
 		if (this.listenerCount("debug") > 0) {
