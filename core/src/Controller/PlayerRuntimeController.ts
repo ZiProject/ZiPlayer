@@ -90,6 +90,8 @@ export class PlayerRuntimeController {
 			extensionManager: this.extensionManager,
 			audioPlayer: this.audioPlayer,
 			debug: o.debug,
+			maxTimeTts: options.tts?.maxTimeTts,
+			volume: options.tts?.volume ?? options.volume ?? 100,
 			onStart: (track) => this.player.emit("ttsStart", { track }),
 			onEnd: () => this.player.emit("ttsEnd"),
 		});
@@ -108,10 +110,10 @@ export class PlayerRuntimeController {
 			removeTrackFromQueue: (t) => {
 				const n = this.queue.nextTrack;
 				return (
-						n === t ||
-							(n?.id !== undefined && t.id !== undefined && n.id === t.id) ||
-							(n?.url !== undefined && t.url !== undefined && n.url === t.url)
-					) ?
+					n === t ||
+						(n?.id !== undefined && t.id !== undefined && n.id === t.id) ||
+						(n?.url !== undefined && t.url !== undefined && n.url === t.url)
+				) ?
 						this.queue.remove(0) !== null
 					:	false;
 			},
