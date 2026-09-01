@@ -1,6 +1,6 @@
 import { AudioPlayer, AudioPlayerState, AudioPlayerStatus, AudioResource, createAudioResource } from "@discordjs/voice";
 import { Readable } from "stream";
-import type { PlayerBus, PlayerAction } from "../structures/PlayerBus";
+import type { PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track } from "../types";
 import type { VolumeController } from "./VolumeController";
@@ -18,7 +18,6 @@ export class PlaybackController {
 	private transitionTimer: ReturnType<typeof setTimeout> | null = null;
 	private fadeTimer: ReturnType<typeof setInterval> | null = null;
 	private readonly onStateChange: (oldState: AudioPlayerState, newState: AudioPlayerState) => void;
-	private readonly detachAction?: () => void;
 
 	constructor(o: PlaybackControllerOptions) {
 		this.audioPlayer = o.audioPlayer;
@@ -28,9 +27,8 @@ export class PlaybackController {
 		this.onStateChange = (a, b) => {
 			this.bus?.publish("stateChanged", a, b);
 			if (b.status === AudioPlayerStatus.Idle && a.status !== AudioPlayerStatus.Idle) {
-				// Discord's AudioPlayer can emit a late Idle transition for the
-				// resource that was replaced by a newer session. Never let that
-				// stale transition terminate the current session.
+				// A replaced resource can emit a late Idle transition. Only the
+				// resource owned by the active session may end that session.
 				const previousResource = "resource" in a ? a.resource : undefined;
 				if (previousResource && this.activeResource && previousResource !== this.activeResource) return;
 				const session = this.activeSession;
@@ -40,17 +38,6 @@ export class PlaybackController {
 			}
 		};
 		this.audioPlayer.on("stateChange", this.onStateChange);
-		if (this.bus) this.detachAction = this.bus.onAction((action, context) => this.handleBusAction(action, context.signal));
-	}
-
-	private async handleBusAction(action: PlayerAction, signal: AbortSignal): Promise<void> {
-		if (signal.aborted) return;
-		switch (action.type) {
-			case "PAUSE": this.pause(); break;
-			case "RESUME": this.resume(); break;
-			case "STOP": this.stop(); break;
-			case "SET_VOLUME": this.setVolume(action.volume); break;
-		}
 	}
 
 	public createResource(stream: Readable, track: Track): AudioResource {
@@ -67,7 +54,9 @@ export class PlaybackController {
 		const plan = from && to ? this.transitions?.plan(from, to) : undefined;
 		if (plan?.enabled && this.activeResource && this.audioPlayer.state.status !== AudioPlayerStatus.Idle) { this.crossfade(this.activeResource, resource, plan, session, track); return; }
 		if (session) session.setResource(resource);
-		this.activeSession = session ?? null; this.activeResource = resource; this.audioPlayer.play(resource);
+		this.activeSession = session ?? null;
+		this.activeResource = resource;
+		this.audioPlayer.play(resource);
 	}
 
 	private crossfade(oldResource: AudioResource, newResource: AudioResource, plan: { enabled: boolean; durationMs: number }, session?: PlaybackSession, track?: Track): void {
@@ -99,13 +88,31 @@ export class PlaybackController {
 	public seek(position: number, session?: PlaybackSession): boolean {
 		if (!session?.isActive()) return false;
 		const resource = this.audioPlayer.state.status === AudioPlayerStatus.Playing || this.audioPlayer.state.status === AudioPlayerStatus.Paused ? this.audioPlayer.state.resource : null;
-		if (!resource) return false; const target = Math.max(0, position); const stream: any = (resource as any).playStream;
-		if (stream && typeof stream.seek === "function") { try { stream.seek(target); session.updatePosition(target); return true; } catch {} }
+		if (!resource) return false;
+		const target = Math.max(0, position);
+		const stream: any = (resource as any).playStream;
+		if (stream && typeof stream.seek === "function") {
+			try { stream.seek(target); session.updatePosition(target); return true; } catch {}
+		}
 		return false;
 	}
-	public setVolume(value: number): number { const v = this.volume?.setVolume(value) ?? value; if (this.activeResource) { const track = this.activeSession?.track ?? (this.activeResource.metadata as Track | undefined); this.volume?.applyLoudness(this.activeResource, track); } return v; }
+	public setVolume(value: number): number {
+		const v = this.volume?.setVolume(value) ?? value;
+		if (this.activeResource) {
+			const track = this.activeSession?.track ?? (this.activeResource.metadata as Track | undefined);
+			this.volume?.applyLoudness(this.activeResource, track);
+		}
+		return v;
+	}
 	public get volumeValue(): number { return this.volume?.value ?? 100; }
 	public get state(): AudioPlayerState { return this.audioPlayer.state; }
 	public get status(): AudioPlayerStatus { return this.audioPlayer.state.status; }
-	public dispose(): void { this.detachAction?.(); this.cancelTransition(); this.activeSession?.destroy(); this.activeSession = null; this.audioPlayer.removeListener("stateChange", this.onStateChange); this.audioPlayer.stop(true); this.activeResource = null; }
+	public dispose(): void {
+		this.cancelTransition();
+		this.activeSession?.destroy();
+		this.activeSession = null;
+		this.audioPlayer.removeListener("stateChange", this.onStateChange);
+		this.audioPlayer.stop(true);
+		this.activeResource = null;
+	}
 }
