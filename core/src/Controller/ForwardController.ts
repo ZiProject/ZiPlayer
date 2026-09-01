@@ -1,68 +1,30 @@
 import { PlaybackMode, type Track } from "../types";
 import type { Player } from "../structures/Player";
 
-export interface ForwardControllerOptions {
-	debug?: (...args: any[]) => void;
-}
+export interface ForwardControllerOptions { debug?: (...args: any[]) => void; }
 
 /** Owns leader/follower voice-subscription state for forward playback. */
 export class ForwardController {
 	private leader: Player | null = null;
 	private readonly followers = new Set<Player>();
+	private mode: PlaybackMode = PlaybackMode.NATIVE;
 	private disposed = false;
 	private readonly debug: (...args: any[]) => void;
 
-	constructor(
-		private readonly player: Player,
-		options: ForwardControllerOptions = {},
-	) {
+	constructor(private readonly player: Player, options: ForwardControllerOptions = {}) {
 		this.debug = options.debug ?? (() => undefined);
-		this.installForwardStateFacade();
 	}
 
-	private installForwardStateFacade(): void {
-		Object.defineProperties(this.player, {
-			isLive: {
-				configurable: true,
-				get: () => {
-					if (this.player.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isLive ?? true;
-					return Boolean(this.player.currentTrack?.isLive);
-				},
-			},
-			isIdle: {
-				configurable: true,
-				get: () => {
-					if (this.player.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isIdle ?? false;
-					return this.player.playbackController?.status === "idle";
-				},
-			},
-			isBuffering: {
-				configurable: true,
-				get: () => {
-					if (this.player.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isBuffering ?? false;
-					return this.player.playbackController?.status === "buffering";
-				},
-			},
-		});
-	}
-
-	get forwardLeader(): Player | null {
-		return this.leader;
-	}
-	get forwardFollowers(): ReadonlySet<Player> {
-		return this.followers;
-	}
-	get isFollower(): boolean {
-		return this.leader !== null;
-	}
-	get isLeader(): boolean {
-		return this.followers.size > 0;
-	}
+	get playbackMode(): PlaybackMode { return this.mode; }
+	get forwardLeader(): Player | null { return this.leader; }
+	get forwardFollowers(): ReadonlySet<Player> { return this.followers; }
+	get isFollower(): boolean { return this.leader !== null; }
+	get isLeader(): boolean { return this.followers.size > 0; }
 
 	subscribeTo(leader: Player, options?: { forwardMode?: boolean }): boolean {
 		if (this.disposed || !leader || leader === this.player || leader.destroyed || this.player.destroyed) return false;
 		const leaderForward = (leader as any).forwardController as ForwardController | undefined;
-		if (leaderForward?.isFollower || (leader as any).forwardLeader) return false;
+		if (leaderForward?.isFollower || leaderForward?.forwardLeader) return false;
 		if (!this.player.connection || !leader.connection) return false;
 
 		this.unsubscribeForward(`replaced by ${leader.guildId}`);
@@ -75,8 +37,8 @@ export class ForwardController {
 			this.followers.clear();
 			const track = leader.currentTrack as Track | null | undefined;
 			if (track) this.player.queue.setCurrentTrack(track);
-			if (options?.forwardMode ?? true) this.player.playbackMode = PlaybackMode.FORWARD;
-			if (this.player.playbackMode === PlaybackMode.FORWARD) this.player.connection.subscribe(leader.audioPlayer);
+			this.mode = options?.forwardMode ?? true ? PlaybackMode.FORWARD : PlaybackMode.NATIVE;
+			if (this.mode === PlaybackMode.FORWARD) this.player.connection.subscribe(leader.audioPlayer);
 			this.player.volume = leader.volume;
 			this.player.emit("forwardModeStart", leader);
 			return true;
@@ -84,7 +46,7 @@ export class ForwardController {
 			this.debug("[Forward] subscribe error:", error);
 			leaderForward?.followers.delete(this.player);
 			this.leader = null;
-			this.player.playbackMode = PlaybackMode.NATIVE;
+			this.mode = PlaybackMode.NATIVE;
 			return false;
 		}
 	}
@@ -94,31 +56,23 @@ export class ForwardController {
 		if (!leader) return false;
 		const leaderForward = (leader as any).forwardController as ForwardController | undefined;
 		leaderForward?.followers.delete(this.player);
-		(leader as any).forwardFollowers?.delete?.(this.player);
 		this.leader = null;
-		this.player.playbackMode = PlaybackMode.NATIVE;
-		try {
-			this.player.connection?.subscribe(this.player.audioPlayer);
-		} catch {}
+		this.mode = PlaybackMode.NATIVE;
+		try { this.player.connection?.subscribe(this.player.audioPlayer); } catch {}
 		this.player.queue.clear();
 		this.player.emit("forwardModeEnd", leader, reason);
 		return true;
 	}
 
-	addFollower(follower: Player): void {
-		if (!this.disposed && follower !== this.player) this.followers.add(follower);
-	}
-	removeFollower(follower: Player): void {
-		this.followers.delete(follower);
-	}
-	clearFollowers(reason = "leader destroyed"): void {
-		for (const follower of [...this.followers]) follower.unsubscribeForward(reason);
-		this.followers.clear();
-	}
+	addFollower(follower: Player): void { if (!this.disposed && follower !== this.player) this.followers.add(follower); }
+	removeFollower(follower: Player): void { this.followers.delete(follower); }
+	clearFollowers(reason = "leader destroyed"): void { for (const follower of [...this.followers]) follower.unsubscribeForward(reason); this.followers.clear(); }
+
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.clearFollowers();
 		this.unsubscribeForward("controller disposed");
+		this.mode = PlaybackMode.NATIVE;
 	}
 }
