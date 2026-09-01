@@ -371,8 +371,22 @@ export class Player extends EventEmitter {
 	public clearQueue(): void {
 		this.queueController.clear();
 	}
-	public insert(track: Track, index = 0): number {
-		return this.queueController.insert(track, index);
+	public async insert(query: string | Track | Track[], index = 0, requestedBy?: string): Promise<boolean> {
+		try {
+			const tracks =
+				typeof query === "string"
+					? (await this.search(query, requestedBy || "Unknown")).tracks
+					: Array.isArray(query)
+						? query
+						: [query];
+			if (tracks.length === 0) return false;
+			for (let i = 0; i < tracks.length; i++) this.queueController.insert(tracks[i], index + i);
+			return true;
+		} catch (error) {
+			this.debug("[Player] Insert error:", error);
+			this.emit("playerError", error as Error);
+			return false;
+		}
 	}
 	public remove(index: number): Track | null {
 		return this.queueController.remove(index);
@@ -480,11 +494,16 @@ export class Player extends EventEmitter {
 			: this.forwardController.isFollower ? "follower"
 			: "none";
 		const issues: string[] = [];
-		if (role === "follower" && !this.forwardController.forwardLeader) issues.push("missing leader");
-		if (role === "leader" && this.forwardController.forwardFollowers.size === 0) issues.push("no followers");
+		if (role === "leader") {
+			for (const follower of this.forwardController.forwardFollowers) {
+				if (follower.destroyed || !follower.connection) issues.push(follower.guildId);
+			}
+		} else if (role === "follower" && (!this.forwardController.forwardLeader || this.forwardController.forwardLeader.destroyed)) {
+			issues.push("missing leader");
+		}
 		return {
 			guildId: this.guildId,
-			healthy: issues.length === 0,
+			healthy: role === "leader" ? true : issues.length === 0,
 			role,
 			issues,
 			details: {
