@@ -206,12 +206,18 @@ export class PlayerRuntimeController {
 		this.bus.publish("initialized");
 		this.bus.publish("ready");
 	}
+	private isCurrentSession(sessionId: number): boolean {
+		const session = this.orchestrator.currentSession;
+		return !!session && session.owns(sessionId);
+	}
 	private async handleResourceRefresh(event: Extract<PlayerInput, { type: "[Player]->[Resource]:refresh" }>): Promise<void> {
 		try {
 			const session = this.orchestrator.currentSession;
 			if (!session?.track || !session.isActive()) throw new Error("No active playback session");
+			const sessionId = session.id;
 			const position = event.position ?? session.position ?? 0;
 			const info = await this.resolveFreshStream(session.track);
+			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed during resource refresh");
 			if (!info?.stream && !info?.url) throw new Error("No stream available for resource refresh");
 			if (info.remote) throw new Error("Cannot refresh a remote playback resource");
 			await this.bus.action({
@@ -219,18 +225,21 @@ export class PlayerRuntimeController {
 				streamType: info.type ?? "arbitrary",
 				requestId: createPlayerRequestId(),
 			});
+			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after filter source update");
 			await this.bus.action({
 				type: "FILTER_APPLY_AND_SEEK",
 				streamInfo: info,
 				position: Math.max(0, position),
 				requestId: createPlayerRequestId(),
 			});
+			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after filter seek");
 			const processed = await this.bus.query("filteredStream");
+			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed while reading filtered stream");
 			if (!processed) throw new Error("Filter controller did not produce a stream");
-			if (!session.isActive()) throw new Error("Playback session became inactive during resource refresh");
 			const active = await this.streamController.replace(processed, session);
-			if (!session.isActive()) throw new Error("Playback session became inactive after stream replacement");
+			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after stream replacement");
 			const resource = this.playbackController.createResource(active.stream, session.track);
+			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed before resource activation");
 			session.setResource(resource);
 			this.playbackController.play(resource, session);
 			session.markPlaying(Math.max(0, position));
