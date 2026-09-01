@@ -97,4 +97,7 @@ export class PlayerEventDebug {
 		if (!this.enabled(level)) return;
 		this.logger?.(`[PlayerEventDebug:${this.id}] ${message}`, value);
 	}
+	public bridge(message: string, value?: unknown): void {
+		this.log("debug", message, value);
+	}
 }

@@ -272,7 +272,7 @@ export class PlaybackOrchestrator {
 				await loaded.stream.handle.play();
 				if (s.aborted || !this.session?.owns(x.id)) return;
 				x.markPlaying();
-				this.bus.event({ type: "TRACK_STARTED", session: x.snapshot() });
+				this.bus.event({ type: "TRACK_STARTED", session: x.snapshot(), track: loaded.track });
 				await this.prepareAutoplay(x, s);
 				return;
 			}
@@ -289,7 +289,7 @@ export class PlaybackOrchestrator {
 			this.o.playbackController.play(resource, x, from, loaded.track);
 			if (s.aborted || !this.session?.owns(x.id)) return;
 			x.markPlaying();
-			this.bus.event({ type: "TRACK_STARTED", session: x.snapshot() });
+			this.bus.event({ type: "TRACK_STARTED", session: x.snapshot(), track: loaded.track });
 			await this.prepareAutoplay(x, s);
 		} catch (error) {
 			if (!x.signal.aborted && !s.aborted && this.session?.owns(x.id))

@@ -20,6 +20,7 @@ export class PlayerEventBridge {
 		private readonly player: Player,
 		private readonly manager: PlayerManager,
 		private readonly bus: PlayerBus,
+		private readonly eventDebug: PlayerEventDebug,
 	) {
 		this.previousQueue = player.queueController.snapshot();
 		this.debug("attached", { queueSize: this.previousQueue.length });
@@ -151,6 +152,8 @@ export class PlayerEventBridge {
 
 	private toArgs(event: PlayerEvent): any[] {
 		switch (event.type) {
+			case "TRACK_STARTED":
+				return [event.track];
 			case "TRACK_ERROR":
 				return [event.session, event.error];
 			case "STUCK_DETECTED":
@@ -225,8 +228,8 @@ export class PlayerEventBridge {
 		});
 	}
 
-	private debug(message: string, value?: unknown): void {
-		this.player.debug(`[PlayerEventBridge:${this.player.guildId}] ${message}`, value);
+	public debug(message: string, value?: unknown): void {
+		this.eventDebug.bridge(message, value);
 	}
 
 	public dispose(): void {

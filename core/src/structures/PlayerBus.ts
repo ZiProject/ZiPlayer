@@ -78,7 +78,7 @@ export type PlayerLifecycleEvents = { type: "initialized" } | { type: "ready" } 
 export type PlayerPlaybackEvents =
 	| { type: "TRACK_LOADING"; session: PlaybackSessionSnapshot }
 	| { type: "TRACK_LOADED"; session: PlaybackSessionSnapshot }
-	| { type: "TRACK_STARTED"; session: PlaybackSessionSnapshot }
+	| { type: "TRACK_STARTED"; session: PlaybackSessionSnapshot; track: Track }
 	| { type: "TRACK_ERROR"; session: PlaybackSessionSnapshot; error: Error }
 	| { type: "TRACK_END"; session: PlaybackSessionSnapshot }
 	| { type: "STREAM_ABORTED"; session: PlaybackSessionSnapshot }

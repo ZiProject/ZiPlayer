@@ -143,7 +143,7 @@ export class Player extends EventEmitter {
 			pluginManager: this.runtime.pluginManager,
 			debug: this.debug.bind(this),
 		});
-		this.eventBridge = new PlayerEventBridge(this, manager, this.runtime.bus);
+		this.eventBridge = new PlayerEventBridge(this, manager, this.runtime.bus, this.runtime.debugTracer);
 		this.queue = this.runtime.queue;
 		this.audioPlayer = this.runtime.audioPlayer;
 		this.streamManager = this.runtime.streamManager;
