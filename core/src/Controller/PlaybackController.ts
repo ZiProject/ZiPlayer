@@ -28,6 +28,11 @@ export class PlaybackController {
 		this.onStateChange = (a, b) => {
 			this.bus?.publish("stateChanged", a, b);
 			if (b.status === AudioPlayerStatus.Idle && a.status !== AudioPlayerStatus.Idle) {
+				// Discord's AudioPlayer can emit a late Idle transition for the
+				// resource that was replaced by a newer session. Never let that
+				// stale transition terminate the current session.
+				const previousResource = "resource" in a ? a.resource : undefined;
+				if (previousResource && this.activeResource && previousResource !== this.activeResource) return;
 				const session = this.activeSession;
 				if (session?.isActive()) this.bus?.event({ type: "TRACK_END", session: session.snapshot() });
 				this.activeSession = null;
@@ -77,6 +82,7 @@ export class PlaybackController {
 			this.activeResource = newResource;
 			const start = Date.now();
 			this.fadeTimer = setInterval(() => {
+				if (session && !session.isActive()) { this.cancelFade(); return; }
 				const p = Math.min(1, (Date.now() - start) / Math.max(1, plan.durationMs));
 				this.volume?.applyLoudness(newResource, track, p);
 				if (p >= 1) this.cancelFade();
@@ -101,5 +107,5 @@ export class PlaybackController {
 	public get volumeValue(): number { return this.volume?.value ?? 100; }
 	public get state(): AudioPlayerState { return this.audioPlayer.state; }
 	public get status(): AudioPlayerStatus { return this.audioPlayer.state.status; }
-	public dispose(): void { this.detachAction?.(); this.cancelTransition(); this.activeSession = null; this.audioPlayer.removeListener("stateChange", this.onStateChange); this.audioPlayer.stop(true); this.activeResource = null; }
+	public dispose(): void { this.detachAction?.(); this.cancelTransition(); this.activeSession?.destroy(); this.activeSession = null; this.audioPlayer.removeListener("stateChange", this.onStateChange); this.audioPlayer.stop(true); this.activeResource = null; }
 }
