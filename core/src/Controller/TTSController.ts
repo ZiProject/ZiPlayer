@@ -13,6 +13,10 @@ export interface TTSControllerOptions {
 	debug?: (...args: any[]) => void;
 	onStart?: (track: Track) => void;
 	onEnd?: () => void;
+	/** Maximum amount of time a TTS playback may remain active. */
+	maxTimeTts?: number;
+	/** TTS output volume, expressed as a percentage (0-100). */
+	volume?: number;
 }
 
 /** Owns TTS stream resolution and the independent interrupt playback lifecycle. */
@@ -25,6 +29,8 @@ export class TTSController {
 	private readonly audioPlayer?: AudioPlayer;
 	private readonly onStart?: (track: Track) => void;
 	private readonly onEnd?: () => void;
+	private readonly maxTimeTts: number;
+	private readonly volume: number;
 	private activeResource: AudioResource | null = null;
 	private running: Promise<void> | null = null;
 
@@ -36,6 +42,8 @@ export class TTSController {
 		this.debug = options.debug ?? (() => undefined);
 		this.onStart = options.onStart;
 		this.onEnd = options.onEnd;
+		this.maxTimeTts = Number.isFinite(options.maxTimeTts) && (options.maxTimeTts as number) > 0 ? options.maxTimeTts as number : 60_000;
+		this.volume = Number.isFinite(options.volume) ? Math.max(0, Math.min(100, options.volume as number)) : 100;
 		this.ttsPlayer = new AudioPlayer();
 	}
 
@@ -85,8 +93,9 @@ export class TTSController {
 		try {
 			const streamInfo = await this.resolve(track);
 			const stream = streamInfo.stream as Readable;
-			const resource = createAudioResource(stream as any, { metadata: track });
+			const resource = createAudioResource(stream as any, { metadata: track, inlineVolume: true });
 			this.activeResource = resource;
+			resource.volume?.setVolume(this.volume / 100);
 
 			if (wasPlaying) this.audioPlayer?.pause(true);
 			connection.subscribe(this.ttsPlayer);
@@ -98,7 +107,7 @@ export class TTSController {
 
 			await this.waitForPlayingOrIdle();
 			if (this.ttsPlayer.state.status === AudioPlayerStatus.Playing) {
-				await this.waitForIdle();
+				await this.waitForIdle(track);
 			}
 		} finally {
 			this.activeResource = null;
@@ -131,16 +140,33 @@ export class TTSController {
 		});
 	}
 
-	private waitForIdle(): Promise<void> {
+	private waitForIdle(track: Track): Promise<void> {
 		if (this.ttsPlayer.state.status === AudioPlayerStatus.Idle) return Promise.resolve();
+
+		const declaredMs = Number.isFinite(track.duration) && track.duration > 0 ? track.duration : undefined;
+		const idleTimeout = declaredMs
+			? Math.min(this.maxTimeTts, Math.max(1_000, declaredMs + 1_500))
+			: this.maxTimeTts;
+
 		return new Promise((resolve) => {
+			let timer: ReturnType<typeof setTimeout> | null = null;
+			const cleanup = () => {
+				this.ttsPlayer.removeListener("stateChange", onState);
+				if (timer) clearTimeout(timer);
+			};
 			const onState = (_oldState: AudioPlayerState, newState: AudioPlayerState) => {
 				if (newState.status === AudioPlayerStatus.Idle) {
-					this.ttsPlayer.removeListener("stateChange", onState);
+					cleanup();
 					resolve();
 				}
 			};
 			this.ttsPlayer.on("stateChange", onState);
+			timer = setTimeout(() => {
+				cleanup();
+				this.debug(`[TTSController] idle timeout after ${idleTimeout}ms for: ${track.title}`);
+				this.ttsPlayer.stop(true);
+				resolve();
+			}, idleTimeout);
 		});
 	}
 
