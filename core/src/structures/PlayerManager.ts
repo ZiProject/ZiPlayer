@@ -12,6 +12,7 @@ import {
 	PlayerStats,
 	type PlaybackMirrorOptions,
 	type TrackMiddleware,
+	type PlayerDebugLevel,
 	normalizeTrackMiddleware,
 } from "../types";
 import type { BaseExtension } from "../extensions";
@@ -131,6 +132,7 @@ export class PlayerManager extends EventEmitter {
 	private cleanupTimeout: number = 60000; // 1 minute
 	private enableSearchCache: boolean = true;
 	private trackMiddlewareFromOptions: TrackMiddleware[] = [];
+	private debugLevel: PlayerDebugLevel = "info";
 
 	private debug(message?: any, ...optionalParams: any[]): void {
 		if (this.listenerCount("debug") > 0) {
@@ -173,7 +175,7 @@ export class PlayerManager extends EventEmitter {
 		this.cleanupTimeout = options.cleanupInterval ?? 60000;
 		this.enableSearchCache = options.enableSearchCache ?? true;
 		this.trackMiddlewareFromOptions = normalizeTrackMiddleware(options.trackMiddleware);
-
+		this.debugLevel = options.debugLevel ?? "info";
 		// Setup auto cleanup
 		if (this.autoCleanup) {
 			this.startAutoCleanup();

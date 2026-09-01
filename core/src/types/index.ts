@@ -362,6 +362,9 @@ export interface PlayerOptions {
 	maxStreamStore?: number;
 }
 
+export type PlayerDebugLevel = "off" | "error" | "warn" | "info" | "debug" | "verbose";
+export type PlayerEventDebugLogger = (message: string, value?: unknown) => void;
+
 export interface PlayerManagerOptions {
 	plugins?: SourcePluginLike[];
 	extensions?: any[];
@@ -374,6 +377,7 @@ export interface PlayerManagerOptions {
 	 * Global track middleware for every {@link Player} created from this manager (before per-player middleware).
 	 */
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
+	debugLevel?: PlayerDebugLevel | "info";
 }
 
 /**

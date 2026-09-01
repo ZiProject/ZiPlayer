@@ -51,8 +51,12 @@ export class PlaybackOrchestrator {
 		);
 	}
 
-	get currentSession() { return this.session; }
-	get transitionPolicy() { return this.o.transitionController; }
+	get currentSession() {
+		return this.session;
+	}
+	get transitionPolicy() {
+		return this.o.transitionController;
+	}
 
 	dispose() {
 		this.detachAction();
@@ -167,13 +171,18 @@ export class PlaybackOrchestrator {
 			if (this.o.preloadController) await this.requestPreload(next, s);
 		} catch (error) {
 			if (!s.aborted && this.session?.owns(session.id)) {
-				this.bus.event({ type: "TRACK_ERROR", session: session.snapshot(), error: error instanceof Error ? error : new Error(String(error)) });
+				this.bus.event({
+					type: "TRACK_ERROR",
+					session: session.snapshot(),
+					error: error instanceof Error ? error : new Error(String(error)),
+				});
 			}
 		}
 	}
 
 	private async advanceAfterTrackEnd(snapshot: ReturnType<PlaybackSession["snapshot"]>) {
-		if (!this.session || this.session.id !== snapshot.id || this.session.status === "ended" || this.session.status === "stopped") return;
+		if (!this.session || this.session.id !== snapshot.id || this.session.status === "ended" || this.session.status === "stopped")
+			return;
 		const from = this.session.track;
 		const endedSession = this.session;
 		endedSession.markEnded();
@@ -213,7 +222,11 @@ export class PlaybackOrchestrator {
 			if (!this.session?.owns(sessionId)) return;
 		} catch (error) {
 			if (!s.aborted && this.session?.owns(sessionId))
-				this.bus.event({ type: "TRACK_ERROR", session: x.snapshot(), error: error instanceof Error ? error : new Error(String(error)) });
+				this.bus.event({
+					type: "TRACK_ERROR",
+					session: x.snapshot(),
+					error: error instanceof Error ? error : new Error(String(error)),
+				});
 		}
 	}
 
@@ -280,7 +293,11 @@ export class PlaybackOrchestrator {
 			await this.prepareAutoplay(x, s);
 		} catch (error) {
 			if (!x.signal.aborted && !s.aborted && this.session?.owns(x.id))
-				this.bus.event({ type: "TRACK_ERROR", session: x.snapshot(), error: error instanceof Error ? error : new Error(String(error)) });
+				this.bus.event({
+					type: "TRACK_ERROR",
+					session: x.snapshot(),
+					error: error instanceof Error ? error : new Error(String(error)),
+				});
 		}
 	}
 

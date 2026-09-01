@@ -1,7 +1,9 @@
 import { PlaybackMode, type Track } from "../types";
 import type { Player } from "../structures/Player";
 
-export interface ForwardControllerOptions { debug?: (...args: any[]) => void; }
+export interface ForwardControllerOptions {
+	debug?: (...args: any[]) => void;
+}
 
 /** Owns leader/follower voice-subscription state for forward playback. */
 export class ForwardController {
@@ -11,15 +13,28 @@ export class ForwardController {
 	private disposed = false;
 	private readonly debug: (...args: any[]) => void;
 
-	constructor(private readonly player: Player, options: ForwardControllerOptions = {}) {
+	constructor(
+		private readonly player: Player,
+		options: ForwardControllerOptions = {},
+	) {
 		this.debug = options.debug ?? (() => undefined);
 	}
 
-	get playbackMode(): PlaybackMode { return this.mode; }
-	get forwardLeader(): Player | null { return this.leader; }
-	get forwardFollowers(): ReadonlySet<Player> { return this.followers; }
-	get isFollower(): boolean { return this.leader !== null; }
-	get isLeader(): boolean { return this.followers.size > 0; }
+	get playbackMode(): PlaybackMode {
+		return this.mode;
+	}
+	get forwardLeader(): Player | null {
+		return this.leader;
+	}
+	get forwardFollowers(): ReadonlySet<Player> {
+		return this.followers;
+	}
+	get isFollower(): boolean {
+		return this.leader !== null;
+	}
+	get isLeader(): boolean {
+		return this.followers.size > 0;
+	}
 
 	subscribeTo(leader: Player, options?: { forwardMode?: boolean }): boolean {
 		if (this.disposed || !leader || leader === this.player || leader.destroyed || this.player.destroyed) return false;
@@ -37,7 +52,7 @@ export class ForwardController {
 			this.followers.clear();
 			const track = leader.currentTrack as Track | null | undefined;
 			if (track) this.player.queue.setCurrentTrack(track);
-			this.mode = options?.forwardMode ?? true ? PlaybackMode.FORWARD : PlaybackMode.NATIVE;
+			this.mode = (options?.forwardMode ?? true) ? PlaybackMode.FORWARD : PlaybackMode.NATIVE;
 			if (this.mode === PlaybackMode.FORWARD) this.player.connection.subscribe(leader.audioPlayer);
 			this.player.volume = leader.volume;
 			this.player.emit("forwardModeStart", leader);
@@ -58,15 +73,24 @@ export class ForwardController {
 		leaderForward?.followers.delete(this.player);
 		this.leader = null;
 		this.mode = PlaybackMode.NATIVE;
-		try { this.player.connection?.subscribe(this.player.audioPlayer); } catch {}
+		try {
+			this.player.connection?.subscribe(this.player.audioPlayer);
+		} catch {}
 		this.player.queue.clear();
 		this.player.emit("forwardModeEnd", leader, reason);
 		return true;
 	}
 
-	addFollower(follower: Player): void { if (!this.disposed && follower !== this.player) this.followers.add(follower); }
-	removeFollower(follower: Player): void { this.followers.delete(follower); }
-	clearFollowers(reason = "leader destroyed"): void { for (const follower of [...this.followers]) follower.unsubscribeForward(reason); this.followers.clear(); }
+	addFollower(follower: Player): void {
+		if (!this.disposed && follower !== this.player) this.followers.add(follower);
+	}
+	removeFollower(follower: Player): void {
+		this.followers.delete(follower);
+	}
+	clearFollowers(reason = "leader destroyed"): void {
+		for (const follower of [...this.followers]) follower.unsubscribeForward(reason);
+		this.followers.clear();
+	}
 
 	dispose(): void {
 		if (this.disposed) return;

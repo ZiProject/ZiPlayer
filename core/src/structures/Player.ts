@@ -374,11 +374,9 @@ export class Player extends EventEmitter {
 	public async insert(query: string | Track | Track[], index = 0, requestedBy?: string): Promise<boolean> {
 		try {
 			const tracks =
-				typeof query === "string"
-					? (await this.search(query, requestedBy || "Unknown")).tracks
-					: Array.isArray(query)
-						? query
-						: [query];
+				typeof query === "string" ? (await this.search(query, requestedBy || "Unknown")).tracks
+				: Array.isArray(query) ? query
+				: [query];
 			if (tracks.length === 0) return false;
 			for (let i = 0; i < tracks.length; i++) this.queueController.insert(tracks[i], index + i);
 			return true;

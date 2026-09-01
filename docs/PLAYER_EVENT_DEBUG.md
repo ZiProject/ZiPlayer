@@ -12,7 +12,8 @@ Controller / Orchestrator
   -> PlayerEventBridge: MANAGER EMIT
 ```
 
-Every bridge event should include the guild/player id and, when available, request/session ids. Event producers should also log action/query lifecycle at the Bus boundary so a complete sequence can be reconstructed from logs.
+Every bridge event should include the guild/player id and, when available, request/session ids. Event producers should also log
+action/query lifecycle at the Bus boundary so a complete sequence can be reconstructed from logs.
 
 ## Expected diagnostic sequence
 
@@ -37,4 +38,5 @@ Every bridge event should include the guild/player id and, when available, reque
 - Stale sessions do not emit Player or Manager events after cancellation.
 - Connection, playback, queue, preload and recovery events can be followed in one log stream.
 
-Keep the tracing verbose while validating the refactor; it can later be guarded behind the project's debug/verbose logger setting once the event contract is stable.
+Keep the tracing verbose while validating the refactor; it can later be guarded behind the project's debug/verbose logger setting
+once the event contract is stable.

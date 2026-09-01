@@ -23,9 +23,10 @@ export class StreamController {
 	constructor(options: StreamControllerOptions = {}) {
 		this.streamManager = options.streamManager;
 		this.bus = options.bus;
-		if (this.bus) this.detachAction = this.bus.onAction((action: PlayerAction, context) => {
-			if (!context.signal.aborted && action.type === "STOP") this.abortCurrent();
-		});
+		if (this.bus)
+			this.detachAction = this.bus.onAction((action: PlayerAction, context) => {
+				if (!context.signal.aborted && action.type === "STOP") this.abortCurrent();
+			});
 	}
 	get current() {
 		return this.active;

@@ -42,7 +42,8 @@ export class TTSController {
 		this.debug = options.debug ?? (() => undefined);
 		this.onStart = options.onStart;
 		this.onEnd = options.onEnd;
-		this.maxTimeTts = Number.isFinite(options.maxTimeTts) && (options.maxTimeTts as number) > 0 ? options.maxTimeTts as number : 60_000;
+		this.maxTimeTts =
+			Number.isFinite(options.maxTimeTts) && (options.maxTimeTts as number) > 0 ? (options.maxTimeTts as number) : 60_000;
 		this.volume = Number.isFinite(options.volume) ? Math.max(0, Math.min(100, options.volume as number)) : 100;
 		this.ttsPlayer = new AudioPlayer();
 	}
@@ -144,9 +145,7 @@ export class TTSController {
 		if (this.ttsPlayer.state.status === AudioPlayerStatus.Idle) return Promise.resolve();
 
 		const declaredMs = Number.isFinite(track.duration) && track.duration > 0 ? track.duration : undefined;
-		const idleTimeout = declaredMs
-			? Math.min(this.maxTimeTts, Math.max(1_000, declaredMs + 1_500))
-			: this.maxTimeTts;
+		const idleTimeout = declaredMs ? Math.min(this.maxTimeTts, Math.max(1_000, declaredMs + 1_500)) : this.maxTimeTts;
 
 		return new Promise((resolve) => {
 			let timer: ReturnType<typeof setTimeout> | null = null;

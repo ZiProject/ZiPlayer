@@ -1,8 +1,6 @@
 import type { PlayerBus, PlayerEvent, PlayerAction, PlayerEventType } from "../structures/PlayerBus";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
-
-export type PlayerDebugLevel = "off" | "error" | "warn" | "info" | "debug" | "verbose";
-export type PlayerEventDebugLogger = (message: string, value?: unknown) => void;
+import type { PlayerDebugLevel, PlayerEventDebugLogger } from "../types";
 
 const DEBUG_PRIORITY: Record<PlayerDebugLevel, number> = {
 	off: 0,
@@ -23,14 +21,31 @@ export class PlayerEventDebug {
 		private readonly bus: PlayerBus,
 		private readonly id = "unknown",
 		private readonly logger?: PlayerEventDebugLogger,
-		level: PlayerDebugLevel = "verbose",
+		level: PlayerDebugLevel = "info",
 	) {
 		this.level = level;
 		const eventTypes: PlayerEventType[] = [
-			"initialized", "ready", "destroyed", "TRACK_LOADING", "TRACK_LOADED", "TRACK_STARTED",
-			"TRACK_ERROR", "TRACK_END", "STREAM_ABORTED", "playbackStateChanged", "playbackSessionCreated",
-			"trackRequested", "stateChanged", "STUCK_DETECTED", "RECOVERY_STARTED", "RECOVERY_FAILED",
-			"preloadStateChanged", "preloadPromoted", "preloadCancelled", "queueChanged", "volumeRequested",
+			"initialized",
+			"ready",
+			"destroyed",
+			"TRACK_LOADING",
+			"TRACK_LOADED",
+			"TRACK_STARTED",
+			"TRACK_ERROR",
+			"TRACK_END",
+			"STREAM_ABORTED",
+			"playbackStateChanged",
+			"playbackSessionCreated",
+			"trackRequested",
+			"stateChanged",
+			"STUCK_DETECTED",
+			"RECOVERY_STARTED",
+			"RECOVERY_FAILED",
+			"preloadStateChanged",
+			"preloadPromoted",
+			"preloadCancelled",
+			"queueChanged",
+			"volumeRequested",
 		];
 		for (const type of eventTypes) this.detach.push(this.bus.subscribe(type, (event) => this.event(event)));
 		this.detach.push(this.bus.onAction((action, context) => this.action(action, context)));

@@ -610,7 +610,7 @@ export class PluginManager {
 
 	//#endregion
 
-	//#region Stream methods (giữ nguyên)
+	//#region Stream methods
 
 	private getStreamCacheKey(track: Track): string {
 		return `${track.source}:${track.url}:${track.id || track.title}`;
