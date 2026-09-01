@@ -137,7 +137,10 @@ export class PlayerEventBridge {
 			else if (added.length > 1) this.player.emit("queueAddList", added);
 		} else if (next.length < previous.length) {
 			const removed = previous.filter((track) => !next.some((current) => current?.id === track?.id));
-			for (const track of removed) this.player.emit("queueRemove", track);
+			for (const track of removed) {
+				const index = previous.indexOf(track);
+				this.player.emit("queueRemove", track, index);
+			}
 		}
 	}
 
