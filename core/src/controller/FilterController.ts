@@ -6,10 +6,10 @@ import ffmpegStaticPath from "ffmpeg-static";
 import type { PlayerBus, PlayerAction } from "../structures/PlayerBus";
 import { StreamType } from "@discordjs/voice";
 
-type DebugFn = (message?: any, ...optionalParams: any[]) => void;
+ type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 
 export interface FilterControllerOptions {
-	/** Explicit FFmpeg executable path. Falls back to ffmpeg-static when omitted. */
+	/** Explicit FFmpeg executable path. Falls back to FFMPEG_PATH, ffmpeg-static, then PATH. */
 	ffmpegPath?: string | null;
 }
 
@@ -126,8 +126,7 @@ export class FilterController {
 			return result;
 		}
 
-		const executable = this.options.ffmpegPath || ffmpegStaticPath;
-		if (!executable) throw new Error("FFmpeg binary not found; configure PlayerOptions.ffmpegPath");
+		const executable = this.options.ffmpegPath || process.env.FFMPEG_PATH || ffmpegStaticPath || "ffmpeg";
 		this.debug(`Using FFmpeg: ${executable}`);
 
 		const args = ["-hide_banner", "-loglevel", "error"];
