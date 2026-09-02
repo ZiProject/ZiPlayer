@@ -67,12 +67,15 @@ export class StreamController {
 		session.signal.addEventListener("abort", () => this.abort(active), { once: true });
 		return active;
 	}
+	/** Creates a silent resource; PlaybackController applies the target gain before playback. */
 	createResource(stream: Readable, track?: Track, inputType?: StreamType): AudioResource {
-		return createAudioResource(stream, {
-			metadata: { ...track, inlineVolume: true },
+		const resource = createAudioResource(stream, {
+			metadata: track,
 			inlineVolume: true,
 			...(inputType ? { inputType } : {}),
 		});
+		resource.volume?.setVolume(0);
+		return resource;
 	}
 	abortCurrent() {
 		if (this.active) this.abort(this.active);
