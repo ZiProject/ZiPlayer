@@ -1,16 +1,5 @@
 import type { AudioResource } from "@discordjs/voice";
-import type { Track } from "../types";
-
-export type PlaybackSessionStatus = "idle" | "loading" | "playing" | "paused" | "stopped" | "ended" | "destroyed";
-
-export interface PlaybackSessionSnapshot {
-	id: number;
-	track: Track | null;
-	resource: AudioResource | null;
-	status: PlaybackSessionStatus;
-	position: number | null;
-	startedAt: number | null;
-}
+import type { Track, PlaybackSessionStatus, PlaybackSessionSnapshot } from "../types";
 
 /**
  * Owns the lifecycle state of one active playback operation.

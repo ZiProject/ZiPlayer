@@ -1,20 +1,10 @@
 import { createAudioResource, type AudioResource } from "@discordjs/voice";
-import type { StreamInfo, Track } from "../types";
+import type { StreamInfo, Track, ActiveStream, StreamControllerOptions, PlayerAction } from "../types";
 import type { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
-import type { PlayerBus, PlayerAction } from "../structures/PlayerBus";
-export interface ActiveStream {
-	sessionId: number;
-	session: PlaybackSession;
-	track: Track;
-	stream: Readable;
-	streamId: string | null;
-}
-export interface StreamControllerOptions {
-	streamManager?: StreamManager;
-	bus?: PlayerBus;
-}
+import type { PlayerBus } from "../structures/PlayerBus";
+
 export class StreamController {
 	private active: ActiveStream | null = null;
 	private readonly streamManager?: StreamManager;

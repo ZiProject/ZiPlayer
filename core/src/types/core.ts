@@ -1,7 +1,7 @@
 import { Readable } from "stream";
 import { Player } from "../structures/Player";
 import type { PlayerManager } from "../structures/PlayerManager";
-import type { AudioFilter } from "./fillter";
+import type { AudioFilter } from "./filter";
 import type { SourcePluginLike } from "./plugin";
 import type { AudioResource } from "@discordjs/voice";
 
@@ -631,7 +631,3 @@ export interface PlayerEvents {
 	forwardModeStart: [leader: Player];
 	forwardModeEnd: [leader: Player, reason: string | undefined];
 }
-
-export * from "./fillter";
-export * from "./plugin";
-export * from "./extension";

@@ -1,9 +1,5 @@
-import { PlaybackMode, type Track } from "../types";
+import { PlaybackMode, type Track, type ForwardControllerOptions } from "../types";
 import type { Player } from "../structures/Player";
-
-export interface ForwardControllerOptions {
-	debug?: (...args: any[]) => void;
-}
 
 /** Owns leader/follower voice-subscription state for forward playback. */
 export class ForwardController {

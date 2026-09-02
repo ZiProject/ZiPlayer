@@ -1,0 +1,92 @@
+import type { Track, PlayerOptions } from ".";
+import type { AudioResource, AudioPlayer } from "@discordjs/voice";
+import type { Readable } from "stream";
+import type { PlaybackSession } from "../structures/PlaybackSession";
+import type { StreamManager } from "../structures/StreamManager";
+import type { PlayerBus } from "../structures/PlayerBus";
+import type { VolumeController } from "../controller/VolumeController";
+import type { TransitionController } from "../controller/TransitionController";
+
+export interface ConnectionControllerOptions {
+	guildId: string;
+	bus: PlayerBus;
+	options?: Pick<PlayerOptions, "selfDeaf" | "selfMute">;
+	debug?: (message: string) => void;
+	readyTimeoutMs?: number;
+}
+export interface LifecycleControllerOptions {
+	bus: PlayerBus;
+	options: Pick<PlayerOptions, "leaveOnEnd" | "leaveOnEmpty" | "leaveTimeout">;
+	debug?: (...args: any[]) => void;
+}
+export interface ForwardControllerOptions {
+	debug?: (...args: any[]) => void;
+}
+export interface PlaybackControllerOptions {
+	audioPlayer: AudioPlayer;
+	bus?: PlayerBus;
+	volumeController?: VolumeController;
+	transitionController?: TransitionController;
+}
+
+export interface ActiveStream {
+	sessionId: number;
+	session: PlaybackSession;
+	track: Track;
+	stream: Readable;
+	streamId: string | null;
+}
+export interface StreamControllerOptions {
+	streamManager?: StreamManager;
+	bus?: PlayerBus;
+}
+export type FilterControllerStreamType = "webm/opus" | "ogg/opus" | "arbitrary" | "mp3";
+
+export interface FilterControllerResourcePort {
+	refreshPlayerResource(position?: number): Promise<boolean>;
+}
+
+export interface StreamManagerOptions {
+	maxConcurrentStreams?: number;
+	streamTimeout?: number;
+	maxListenersPerStream?: number;
+	cleanupInterval?: number;
+	enableMetrics?: boolean;
+	autoDestroy?: boolean;
+}
+
+export interface ManagedStream {
+	id: string;
+	stream: Readable;
+	track: Track;
+	createdAt: number;
+	lastAccessed: number;
+	playStream?: Readable;
+	metadata: {
+		source: string;
+		isPreload: boolean;
+		isRemote: boolean;
+		priority: number;
+	};
+	listeners: {
+		error: (err: Error) => void;
+		close: () => void;
+		end: () => void;
+		drain?: () => void;
+		pause?: () => void;
+		resume?: () => void;
+	};
+	status: "active" | "paused" | "ended" | "error" | "destroyed";
+	byteCount: number;
+}
+
+export interface PlaybackSessionSnapshot {
+	id: number;
+	track: Track | null;
+	resource: AudioResource | null;
+	status: PlaybackSessionStatus;
+	position: number | null;
+	startedAt: number | null;
+}
+
+export type PlaybackSessionStatus = "idle" | "loading" | "playing" | "paused" | "stopped" | "ended" | "destroyed";

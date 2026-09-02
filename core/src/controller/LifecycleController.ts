@@ -1,12 +1,8 @@
 import { AudioPlayerStatus } from "@discordjs/voice";
 import { createPlayerRequestId, type PlayerBus } from "../structures/PlayerBus";
-import type { PlayerOptions } from "../types";
+import type { LifecycleControllerOptions } from "../types";
 
-export interface LifecycleControllerOptions {
-	bus: PlayerBus;
-	options: Pick<PlayerOptions, "leaveOnEnd" | "leaveOnEmpty" | "leaveTimeout">;
-	debug?: (...args: any[]) => void;
-}
+
 
 /** Owns idle/leave policy and lifecycle cleanup outside the Player facade. */
 export class LifecycleController {

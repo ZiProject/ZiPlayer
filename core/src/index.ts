@@ -23,11 +23,9 @@ export type {
 	PlayerQuery,
 	PlayerQueryMap,
 } from "./structures/PlayerBus";
+
 export type { TrackLoadResult, TrackLoaderContext, TrackLoaderOptions, TrackStreamResolver } from "./structures/TrackLoader";
-export type { ActiveStream, StreamControllerOptions } from "./controller/StreamController";
 export type { PlaybackOrchestratorOptions } from "./structures/PlaybackOrchestrator";
-export type { PlaybackSessionSnapshot, PlaybackSessionStatus } from "./structures/PlaybackSession";
-export type { PlaybackControllerOptions } from "./controller/PlaybackController";
 export type { QueueControllerOptions } from "./controller/QueueController";
 export type {
 	AntiStuckControllerOptions,

@@ -1,14 +1,6 @@
 import { VoiceConnection, VoiceConnectionStatus, entersState, joinVoiceChannel, getVoiceConnection } from "@discordjs/voice";
-import type { PlayerOptions, VoiceChannel, PlayerConnectionInput } from "../types";
+import type { PlayerOptions, VoiceChannel, PlayerConnectionInput, ConnectionControllerOptions } from "../types";
 import { PlayerBus, createPlayerSessionId, type PlayerRequestId, type PlayerSessionId } from "../structures/PlayerBus";
-
-export interface ConnectionControllerOptions {
-	guildId: string;
-	bus: PlayerBus;
-	options?: Pick<PlayerOptions, "selfDeaf" | "selfMute">;
-	debug?: (message: string) => void;
-	readyTimeoutMs?: number;
-}
 
 /** Owns Discord voice connection state and lifecycle behind PlayerBus. */
 export class ConnectionController {

@@ -2,16 +2,9 @@ import { AudioPlayer, AudioPlayerState, AudioPlayerStatus, AudioResource, create
 import { Readable } from "stream";
 import type { PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
-import type { Track } from "../types";
+import type { Track, PlaybackControllerOptions } from "../types";
 import type { VolumeController } from "./VolumeController";
 import type { TransitionController } from "./TransitionController";
-
-export interface PlaybackControllerOptions {
-	audioPlayer: AudioPlayer;
-	bus?: PlayerBus;
-	volumeController?: VolumeController;
-	transitionController?: TransitionController;
-}
 
 export class PlaybackController {
 	public readonly audioPlayer: AudioPlayer;

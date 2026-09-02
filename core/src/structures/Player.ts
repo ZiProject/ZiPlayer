@@ -40,12 +40,6 @@ import { ExtensionManager } from "../extensions";
 import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 
-/**
- * The player is the composition root and the single owner of runtime state.
- * Controllers own individual responsibilities; this class owns their lifetime
- * and exposes the public facade. There is intentionally no separate runtime
- * wrapper object.
- */
 export class Player extends EventEmitter {
 	public readonly bus = new PlayerBus();
 	public readonly actionExecutor = new PlayerAction(this.bus);

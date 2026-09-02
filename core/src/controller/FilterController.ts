@@ -1,14 +1,11 @@
-import type { AudioFilter, StreamInfo } from "../types";
+import type { AudioFilter, StreamInfo, FilterControllerResourcePort, FilterControllerStreamType } from "../types";
 import { PREDEFINED_FILTERS } from "../types";
 import type { Readable } from "stream";
 import { spawn, type ChildProcess } from "child_process";
 import ffmpegPath from "ffmpeg-static";
 import type { PlayerBus, PlayerAction } from "../structures/PlayerBus";
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
-export type FilterControllerStreamType = "webm/opus" | "ogg/opus" | "arbitrary" | "mp3";
-export interface FilterControllerResourcePort {
-	refreshPlayerResource(position?: number): Promise<boolean>;
-}
+
 export class FilterController {
 	private activeFilters: AudioFilter[] = [];
 	private ffmpegOutput: Readable | null = null;

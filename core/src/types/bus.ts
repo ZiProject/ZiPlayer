@@ -1,6 +1,7 @@
 import type { AudioPlayerState, VoiceConnection } from "@discordjs/voice";
-import type { Track, StreamInfo, VoiceChannel } from "./core";
-import type { PlaybackSessionSnapshot } from "./controller";
+import type { Track, StreamInfo, VoiceChannel, PlaybackSessionSnapshot } from ".";
+
+export type { PlayerBus } from "../structures/PlayerBus";
 
 export type PlayerRequestId = string;
 export type PlayerSessionId = string;
@@ -30,12 +31,12 @@ export type PlayerAction =
 	| { type: "QUEUE_SET_CURRENT"; track: Track | null; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| { type: "FILTER_SET_SOURCE_TYPE"; streamType: string; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| {
-		type: "FILTER_APPLY_AND_SEEK";
-		streamInfo: StreamInfo;
-		position?: number;
-		priority?: PlayerActionPriority;
-		requestId?: PlayerRequestId;
-	};
+			type: "FILTER_APPLY_AND_SEEK";
+			streamInfo: StreamInfo;
+			position?: number;
+			priority?: PlayerActionPriority;
+			requestId?: PlayerRequestId;
+	  };
 export type PlayerActionType = PlayerAction["type"];
 
 export type PlayerConnectionInput =
@@ -55,20 +56,20 @@ export type PlayerInput = PlayerConnectionInput | PlayerPreloadInput | PlayerRec
 export type PlayerConnectionOutput =
 	| { type: "[Connection]->[Player]:connecting"; requestId: PlayerRequestId; sessionId: PlayerSessionId; channel: VoiceChannel }
 	| {
-		type: "[Connection]->[Player]:connected";
-		requestId: PlayerRequestId;
-		sessionId: PlayerSessionId;
-		channel: VoiceChannel;
-		connection: VoiceConnection;
-	}
+			type: "[Connection]->[Player]:connected";
+			requestId: PlayerRequestId;
+			sessionId: PlayerSessionId;
+			channel: VoiceChannel;
+			connection: VoiceConnection;
+	  }
 	| { type: "[Connection]->[Player]:disconnected"; requestId?: PlayerRequestId; sessionId: PlayerSessionId; reason?: string }
 	| {
-		type: "[Connection]->[Player]:error";
-		requestId: PlayerRequestId;
-		sessionId?: PlayerSessionId;
-		operation: "connect" | "disconnect" | "reconnect";
-		error: Error;
-	};
+			type: "[Connection]->[Player]:error";
+			requestId: PlayerRequestId;
+			sessionId?: PlayerSessionId;
+			operation: "connect" | "disconnect" | "reconnect";
+			error: Error;
+	  };
 export type PlayerPreloadOutput =
 	| { type: "[Preload]->[Player]:loading"; requestId: PlayerRequestId; track: Track }
 	| { type: "[Preload]->[Player]:ready"; requestId: PlayerRequestId; track: Track }
@@ -130,7 +131,8 @@ export type PlayerEventArgsMap = {
 		| "playbackSessionCreated"
 		| "RECOVERY_STARTED"
 		| "RECOVERY_FAILED"
-	) ? [PlaybackSessionSnapshot]
+	) ?
+		[PlaybackSessionSnapshot]
 	: K extends "TRACK_ERROR" ? [PlaybackSessionSnapshot, Error]
 	: K extends "STUCK_DETECTED" ? [PlaybackSessionSnapshot, string]
 	: K extends "trackRequested" ? [Track, PlaybackSessionSnapshot]
@@ -168,7 +170,8 @@ export interface PlayerRequestReplyMap {
 }
 export type PlayerRequestInputType = keyof PlayerRequestReplyMap;
 export type PlayerRequestReply<K extends PlayerRequestInputType> = PlayerRequestReplyMap[K];
-export type PlayerRequestProgress<K extends PlayerRequestInputType> = PlayerRequestReply<K> extends { progress: infer P } ? P : never;
+export type PlayerRequestProgress<K extends PlayerRequestInputType> =
+	PlayerRequestReply<K> extends { progress: infer P } ? P : never;
 export interface PlayerRequestOptions<K extends PlayerRequestInputType = PlayerRequestInputType> {
 	timeoutMs?: number;
 	signal?: AbortSignal;
