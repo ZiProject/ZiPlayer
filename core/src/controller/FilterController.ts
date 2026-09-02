@@ -2,10 +2,16 @@ import type { AudioFilter, StreamInfo, FilterControllerResourcePort, FilterContr
 import { PREDEFINED_FILTERS } from "../types";
 import type { Readable } from "stream";
 import { spawn, type ChildProcess } from "child_process";
-import ffmpegPath from "ffmpeg-static";
+import ffmpegStaticPath from "ffmpeg-static";
 import type { PlayerBus, PlayerAction } from "../structures/PlayerBus";
 import { StreamType } from "@discordjs/voice";
+
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
+
+export interface FilterControllerOptions {
+	/** Explicit FFmpeg executable path. Falls back to ffmpeg-static when omitted. */
+	ffmpegPath?: string | null;
+}
 
 export class FilterController {
 	private activeFilters: AudioFilter[] = [];
@@ -18,13 +24,20 @@ export class FilterController {
 	private readonly detachAction?: () => void;
 	private readonly detachQuery?: () => void;
 	public StreamType: FilterControllerStreamType = "arbitrary";
-	constructor(private readonly resourcePort: FilterControllerResourcePort, private readonly debug: DebugFn = () => {}, bus?: PlayerBus) {
+
+	constructor(
+		private readonly resourcePort: FilterControllerResourcePort,
+		private readonly debug: DebugFn = () => {},
+		bus?: PlayerBus,
+		private readonly options: FilterControllerOptions = {},
+	) {
 		if (bus) {
 			this.detachAction = bus.onAction((action, context) => this.handleAction(action, context.signal));
 			this.detachQuery = bus.registerQuery("filterString", () => this.getFilterString());
 			bus.registerQuery("filteredStream", () => this.lastFilteredStream);
 		}
 	}
+
 	private async handleAction(action: PlayerAction, signal: AbortSignal): Promise<void> {
 		if (signal.aborted) return;
 		switch (action.type) {
@@ -32,13 +45,16 @@ export class FilterController {
 			case "FILTER_APPLY_AND_SEEK": this.lastFilteredStream = await this.applyFiltersAndSeek(action.streamInfo, action.position ?? -1); return;
 		}
 	}
+
 	public setSourceStreamType(type: string): void {
 		this.StreamType = type === "webm/opus" || type === "ogg/opus" || type === "mp3" ? type : "arbitrary";
 		this.debug(`Source stream type set to: ${this.StreamType}`);
 	}
+
 	public destroy(): void {
 		this.detachAction?.(); this.detachQuery?.(); this.activeFilters = []; this.teardownFFmpeg(); this.currentInputStream = null; this.lastFilteredStream = null;
 	}
+
 	private teardownFFmpeg(): void {
 		this.ffmpegGeneration++; this.ffmpegAbortController?.abort(); this.ffmpegAbortController = null;
 		const output = this.ffmpegOutput; this.ffmpegOutput = null;
@@ -49,18 +65,21 @@ export class FilterController {
 			try { if (process.exitCode === null && process.signalCode === null) process.kill("SIGKILL"); } catch {}
 		}
 	}
+
 	public getFilterString(): string { return this.activeFilters.map((filter) => filter.ffmpegFilter).join(","); }
 	public getActiveFilters(): AudioFilter[] { return [...this.activeFilters]; }
 	public hasFilter(filterName: string): boolean { return this.activeFilters.some((filter) => filter.name === filterName); }
 	public getAvailableFilters(): AudioFilter[] { return Object.values(PREDEFINED_FILTERS); }
 	public getFiltersByCategory(category: string): AudioFilter[] { return Object.values(PREDEFINED_FILTERS).filter((filter) => filter.category === category); }
 	private resolveFilter(filter: string | AudioFilter): AudioFilter | undefined { return typeof filter === "string" ? PREDEFINED_FILTERS[filter] : filter; }
+
 	public async applyFilter(filter?: string | AudioFilter): Promise<boolean> {
 		if (!filter) return false;
 		const audioFilter = this.resolveFilter(filter);
 		if (!audioFilter || this.hasFilter(audioFilter.name)) return false;
 		this.activeFilters.push(audioFilter); this.debug(`Applied filter: ${audioFilter.name} - ${audioFilter.description}`); return this.resourcePort.refreshPlayerResource();
 	}
+
 	public async applyFilters(filters: (string | AudioFilter)[]): Promise<boolean> {
 		let changed = false, allApplied = true;
 		for (const filter of filters) {
@@ -72,14 +91,17 @@ export class FilterController {
 		if (!changed) return allApplied;
 		return allApplied && (await this.resourcePort.refreshPlayerResource());
 	}
+
 	public async removeFilter(filterName: string): Promise<boolean> {
 		const index = this.activeFilters.findIndex((filter) => filter.name === filterName);
 		if (index === -1) return false;
 		this.activeFilters.splice(index, 1); this.debug(`Removed filter: ${filterName}`); return this.resourcePort.refreshPlayerResource();
 	}
+
 	public async clearAll(): Promise<boolean> {
 		const count = this.activeFilters.length; this.activeFilters = []; this.debug(`Cleared ${count} filters`); return this.resourcePort.refreshPlayerResource();
 	}
+
 	public async applyFiltersAndSeek(streamInfo: StreamInfo, position = -1): Promise<StreamInfo & { wasRecreated?: boolean }> {
 		this.teardownFFmpeg();
 		const generation = ++this.ffmpegGeneration;
@@ -103,7 +125,11 @@ export class FilterController {
 			this.lastFilteredStream = result;
 			return result;
 		}
-		if (!ffmpegPath) throw new Error("FFmpeg binary not found");
+
+		const executable = this.options.ffmpegPath || ffmpegStaticPath;
+		if (!executable) throw new Error("FFmpeg binary not found; configure PlayerOptions.ffmpegPath");
+		this.debug(`Using FFmpeg: ${executable}`);
+
 		const args = ["-hide_banner", "-loglevel", "error"];
 		if (typeof sourceStream === "string") {
 			if (ffmpegSeekSeconds !== null) args.push("-ss", ffmpegSeekSeconds);
@@ -117,12 +143,10 @@ export class FilterController {
 		if (hasSeek) args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
 		else args.push("-c:a", "libopus", "-f", "opus", "-ar", "48000", "-ac", "2", "pipe:1");
 		const controller = new AbortController(); this.ffmpegAbortController = controller;
-		const proc = spawn(ffmpegPath, args, { stdio: ["pipe", "pipe", "ignore"], windowsHide: true }); this.ffmpegProcess = proc;
+		const proc = spawn(executable, args, { stdio: ["pipe", "pipe", "ignore"], windowsHide: true }); this.ffmpegProcess = proc;
 		const output = proc.stdout;
 		if (!output) throw new Error("FFmpeg stdout unavailable");
 		this.ffmpegOutput = output;
-		// Keep the actual byte format attached to the stream as a local capability for
-		// resource creation paths that receive only the Readable (e.g. refresh).
 		(output as Readable & { inputType?: StreamType }).inputType = inputType;
 		const cleanup = () => {
 			if (this.ffmpegProcess === proc) this.ffmpegProcess = null;
