@@ -13,11 +13,18 @@ export interface VolumeControllerOptions {
 	};
 }
 
+type ActiveResourceState = {
+	resource: AudioResource | null;
+	track?: Track | null;
+	gain?: number;
+};
+
 /** Owns player volume state and resource-level volume application. */
 export class VolumeController {
 	private volume: number;
 	private readonly loudness: Required<NonNullable<VolumeControllerOptions["loudness"]>>;
 	private disposed = false;
+	private activeResourceResolver: (() => ActiveResourceState) | null = null;
 
 	constructor(
 		private readonly bus: PlayerBus,
@@ -41,9 +48,20 @@ export class VolumeController {
 		return this.loudness;
 	}
 
+	/** Bind the currently active playback resource so volume changes take effect immediately. */
+	bindActiveResourceResolver(resolver: (() => ActiveResourceState) | null): void {
+		this.activeResourceResolver = resolver;
+	}
+
 	setVolume(value: number): number {
 		if (this.disposed) return this.volume;
 		this.volume = this.clamp(value);
+
+		const active = this.activeResourceResolver?.();
+		if (active?.resource) {
+			this.applyLoudness(active.resource, active.track, active.gain ?? 1);
+		}
+
 		return this.volume;
 	}
 
@@ -75,6 +93,7 @@ export class VolumeController {
 
 	dispose(): void {
 		this.disposed = true;
+		this.activeResourceResolver = null;
 	}
 
 	private clamp(value: number): number {
