@@ -1,5 +1,4 @@
 import { PlayerManager, getGlobalManager } from "./structures/PlayerManager";
-import "./structures/PlayerFacadeMethods";
 
 export { Player } from "./structures/Player";
 export { Queue } from "./structures/Queue";
@@ -9,38 +8,36 @@ export { PlayerAction } from "./structures/PlayerAction";
 export { PlaybackOrchestrator } from "./structures/PlaybackOrchestrator";
 export { PlaybackSession } from "./structures/PlaybackSession";
 export { TrackLoader } from "./structures/TrackLoader";
-export { PlaybackController } from "./Controller/PlaybackController";
-export { StreamController } from "./Controller/StreamController";
-export { QueueController } from "./Controller/QueueController";
-export { AntiStuckController } from "./Controller/AntiStuckController";
-export { TransitionController } from "./Controller/TransitionController";
-export { PreloadController } from "./Controller/PreloadController";
+export { PlaybackController } from "./controller/PlaybackController";
+export { StreamController } from "./controller/StreamController";
+export { QueueController } from "./controller/QueueController";
+export { AntiStuckController } from "./controller/AntiStuckController";
+export { TransitionController } from "./controller/TransitionController";
+export { PreloadController } from "./controller/PreloadController";
 
 export type {
 	PlayerAction as PlayerActionMessage,
-	PlayerActionType,
 	PlayerEvent,
 	PlayerEventType,
 	PlayerBusEvents,
-	PlayerLifecycleEvents,
 	PlayerQuery,
 	PlayerQueryMap,
 } from "./structures/PlayerBus";
 export type { TrackLoadResult, TrackLoaderContext, TrackLoaderOptions, TrackStreamResolver } from "./structures/TrackLoader";
-export type { ActiveStream, StreamControllerOptions } from "./Controller/StreamController";
+export type { ActiveStream, StreamControllerOptions } from "./controller/StreamController";
 export type { PlaybackOrchestratorOptions } from "./structures/PlaybackOrchestrator";
 export type { PlaybackSessionSnapshot, PlaybackSessionStatus } from "./structures/PlaybackSession";
-export type { PlaybackControllerOptions } from "./Controller/PlaybackController";
-export type { QueueControllerOptions } from "./Controller/QueueController";
+export type { PlaybackControllerOptions } from "./controller/PlaybackController";
+export type { QueueControllerOptions } from "./controller/QueueController";
 export type {
 	AntiStuckControllerOptions,
 	AntiStuckRetryContext,
 	AntiStuckRetryHandlers,
 	LegacyAntiStuckRetryContext,
 	LegacyAntiStuckRetryHandlers,
-} from "./Controller/AntiStuckController";
-export type { TransitionControllerOptions, TransitionPlan } from "./Controller/TransitionController";
-export type { PreloadControllerOptions } from "./Controller/PreloadController";
+} from "./controller/AntiStuckController";
+export type { TransitionControllerOptions, TransitionPlan } from "./controller/TransitionController";
+export type { PreloadControllerOptions } from "./controller/PreloadController";
 export { PreloadManager } from "./structures/PreloadManager";
 export * from "./types";
 export * from "./plugins";

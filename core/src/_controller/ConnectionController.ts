@@ -1,12 +1,6 @@
 import { VoiceConnection, VoiceConnectionStatus, entersState, joinVoiceChannel, getVoiceConnection } from "@discordjs/voice";
-import type { PlayerOptions, VoiceChannel } from "../types";
-import {
-	PlayerBus,
-	createPlayerSessionId,
-	type PlayerConnectionInput,
-	type PlayerRequestId,
-	type PlayerSessionId,
-} from "../structures/PlayerBus";
+import type { PlayerOptions, VoiceChannel, PlayerConnectionInput } from "../types";
+import { PlayerBus, createPlayerSessionId, type PlayerRequestId, type PlayerSessionId } from "../structures/PlayerBus";
 
 export interface ConnectionControllerOptions {
 	guildId: string;

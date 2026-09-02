@@ -3,12 +3,12 @@ import { PlaybackSession } from "./PlaybackSession";
 import { createPlayerRequestId } from "./PlayerBus";
 import type { Track } from "../types";
 import type { TrackLoader } from "./TrackLoader";
-import type { StreamController } from "../Controller/StreamController";
-import type { FilterController } from "../Controller/FilterController";
-import type { PlaybackController } from "../Controller/PlaybackController";
-import type { QueueController } from "../Controller/QueueController";
-import type { TransitionController } from "../Controller/TransitionController";
-import type { PreloadController } from "../Controller/PreloadController";
+import type { StreamController } from "../controller/StreamController";
+import type { FilterController } from "../controller/FilterController";
+import type { PlaybackController } from "../controller/PlaybackController";
+import type { QueueController } from "../controller/QueueController";
+import type { TransitionController } from "../controller/TransitionController";
+import type { PreloadController } from "../controller/PreloadController";
 
 export interface PlaybackOrchestratorOptions {
 	trackLoader?: TrackLoader;

@@ -5,7 +5,7 @@ Enable verbose event tracing while diagnosing the Player decomposition.
 The intended trace is:
 
 ```text
-Controller / Orchestrator
+controller / Orchestrator
   -> PlayerBus producer
   -> PlayerEventBridge: BUS EVENT
   -> PlayerEventBridge: PLAYER EMIT

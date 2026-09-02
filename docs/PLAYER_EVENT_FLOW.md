@@ -8,7 +8,7 @@
 The public event boundary is:
 
 ```text
-Controller
+controller
    │
    ▼
 PlayerBus.event()
