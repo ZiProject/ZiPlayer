@@ -7,7 +7,6 @@
 		"discord",
 		"music",
 		"player",
-		"voice",
 		"@ziplayer/plugin"
 	],
 	"homepage": "https://player.ziji.best",
@@ -20,9 +19,12 @@
 	},
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
+	"files": [
+		"dist"
+	],
 	"scripts": {
-		"build": "tsc",
-		"dev": "tsc --watch",
+		"build": "tsup",
+		"dev": "tsup --watch",
 		"prepare": "npm run build"
 	},
 	"dependencies": {
@@ -36,6 +38,7 @@
 	},
 	"devDependencies": {
 		"@types/node": "^20.0.0",
+		"tsup": "^8.5.0",
 		"typescript": "^5.0.0"
 	}
 }

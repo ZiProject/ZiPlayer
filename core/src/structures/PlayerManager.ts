@@ -12,6 +12,7 @@ import {
 	PlayerStats,
 	type PlaybackMirrorOptions,
 	type TrackMiddleware,
+	type PlayerDebugLevel,
 	normalizeTrackMiddleware,
 } from "../types";
 import type { BaseExtension } from "../extensions";
@@ -90,6 +91,7 @@ interface ManagerCacheEntry<T> {
  * }
  */
 export class PlayerManager extends EventEmitter {
+	public debugLevel: PlayerDebugLevel = "info";
 	private static instance: PlayerManager | null = null;
 	private players: Map<string, Player> = new Map();
 	private pendingPlayers: Map<string, Promise<Player>> = new Map();
@@ -173,7 +175,7 @@ export class PlayerManager extends EventEmitter {
 		this.cleanupTimeout = options.cleanupInterval ?? 60000;
 		this.enableSearchCache = options.enableSearchCache ?? true;
 		this.trackMiddlewareFromOptions = normalizeTrackMiddleware(options.trackMiddleware);
-
+		this.debugLevel = options.debugLevel ?? "info";
 		// Setup auto cleanup
 		if (this.autoCleanup) {
 			this.startAutoCleanup();
@@ -486,9 +488,9 @@ export class PlayerManager extends EventEmitter {
 			this.debug(`Player destroyed for guildId: ${guildId}`);
 		});
 
-		player.on("debug", (...args) => {
+		player.on("debug", (message: string, ...rest: any[]) => {
 			if (this.listenerCount("debug") > 0) {
-				this.emit("debug", ...args);
+				this.emit("debug", message, ...rest);
 			}
 		});
 	}

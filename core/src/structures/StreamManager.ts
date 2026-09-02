@@ -1,40 +1,6 @@
 import { Readable } from "stream";
 import { EventEmitter } from "events";
-import type { Track } from "../types";
-
-export interface ManagedStream {
-	id: string;
-	stream: Readable;
-	track: Track;
-	createdAt: number;
-	lastAccessed: number;
-	playStream?: Readable;
-	metadata: {
-		source: string;
-		isPreload: boolean;
-		isRemote: boolean;
-		priority: number;
-	};
-	listeners: {
-		error: (err: Error) => void;
-		close: () => void;
-		end: () => void;
-		drain?: () => void;
-		pause?: () => void;
-		resume?: () => void;
-	};
-	status: "active" | "paused" | "ended" | "error" | "destroyed";
-	byteCount: number;
-}
-
-export interface StreamManagerOptions {
-	maxConcurrentStreams?: number;
-	streamTimeout?: number;
-	maxListenersPerStream?: number;
-	cleanupInterval?: number;
-	enableMetrics?: boolean;
-	autoDestroy?: boolean;
-}
+import type { Track, ManagedStream, StreamManagerOptions } from "../types";
 
 export class StreamManager extends EventEmitter {
 	private streams = new Map<string, ManagedStream>();

@@ -452,18 +452,18 @@ export class YouTubePlugin extends BasePlugin {
 		if (!id) throw new Error("Invalid track id");
 
 		try {
-			this.debug("🚀 Attempting youtubei.js download with BotGuard");
-			return await this.downloadWithYoutubei(track, id, signal);
-		} catch (youtubeError: any) {
+			this.debug("🚀 Attempting SABR download");
+			return await this.downloadWithSabr(track, id, signal);
+		} catch (sabrError: any) {
 			if (signal?.aborted) {
 				throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 			}
 
-			this.debug("⚠️ youtubei.js WebPO direct stream failed, trying SABR:", youtubeError);
+			this.debug("⚠️ SABR stream failed, trying outubei.js download with BotGuard:", sabrError);
 
 			try {
-				return await this.downloadWithSabr(track, id, signal);
-			} catch (sabrError: any) {
+				return await this.downloadWithYoutubei(track, id, signal);
+			} catch (youtubeError: any) {
 				if (signal?.aborted) {
 					throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 				}
@@ -481,7 +481,7 @@ export class YouTubePlugin extends BasePlugin {
 					}
 				}
 
-				throw sabrError;
+				throw youtubeError;
 			}
 		}
 	}
