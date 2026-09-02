@@ -82,6 +82,7 @@ export class PreloadManager {
 			inlineVolume: true,
 			metadata: { ...track, preloaded: true },
 		});
+		currentSlot.resource.volume?.setVolume(0);
 		currentSlot.track = track;
 		currentSlot.streamId = promoted.streamId;
 		currentSlot.abortController = null;
@@ -208,6 +209,7 @@ export class PreloadManager {
 				inlineVolume: true,
 				metadata: { ...track, preloaded: true },
 			});
+			resource.volume?.setVolume(0);
 			if (abortController.signal.aborted || this.isDestroyed()) {
 				try {
 					resource.playStream?.destroy?.();
