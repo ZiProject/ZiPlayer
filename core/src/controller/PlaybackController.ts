@@ -23,6 +23,11 @@ export class PlaybackController {
 		this.bus = o.bus;
 		this.volume = o.volumeController;
 		this.transitions = o.transitionController;
+		this.volume?.bindActiveResourceResolver(() => ({
+			resource: this.activeResource,
+			track: this.activeSession?.track ?? (this.activeResource?.metadata as Track | undefined),
+			gain: this.fadeGain ?? 1,
+		}));
 		this.onStateChange = (a, b) => {
 			this.bus?.publish("stateChanged", a, b);
 			if (b.status === AudioPlayerStatus.Idle && a.status !== AudioPlayerStatus.Idle) {
@@ -51,14 +56,10 @@ export class PlaybackController {
 		this.cancelTransition();
 		const track = session?.track ?? to ?? (resource.metadata as Track | undefined);
 		const plan = from && to ? this.transitions?.plan(from, to) : undefined;
-
-		// The resource must enter the AudioPlayer at zero gain for a transition.
-		// For a normal start, apply the target volume before playback begins.
 		if (plan?.enabled && this.activeResource && this.audioPlayer.state.status !== AudioPlayerStatus.Idle) {
 			this.crossfade(this.activeResource, resource, plan, session, track);
 			return;
 		}
-
 		this.fadeGain = null;
 		this.volume?.applyLoudness(resource, track, 1);
 		if (session) session.setResource(resource);
@@ -74,9 +75,6 @@ export class PlaybackController {
 		session?: PlaybackSession,
 		track?: Track,
 	): void {
-		// Discord's AudioPlayer has one active resource, so this transition is
-		// implemented as a zero-volume fade-in of the incoming resource. The old
-		// resource remains active until the incoming resource is attached.
 		void oldResource;
 		this.fadeGain = 0;
 		this.volume?.applyLoudness(newResource, track, 0);
@@ -93,7 +91,6 @@ export class PlaybackController {
 			if (session) session.setResource(newResource);
 			this.activeSession = session ?? null;
 			this.activeResource = newResource;
-
 			const start = Date.now();
 			this.fadeTimer = setInterval(() => {
 				if (session && !session.isActive()) {
@@ -106,7 +103,6 @@ export class PlaybackController {
 				if (p >= 1) this.cancelFade();
 			}, 25);
 		};
-
 		if (wait > 0) this.transitionTimer = setTimeout(begin, wait);
 		else begin();
 	}
@@ -135,7 +131,6 @@ export class PlaybackController {
 		this.activeResource = null;
 		return this.audioPlayer.stop(true);
 	}
-	/** Legacy seek-by-playStream is intentionally disabled; seek is implemented by resource refresh. */
 	public seek(_position: number, _session?: PlaybackSession): boolean { return false; }
 	public setVolume(value: number): number {
 		const v = this.volume?.setVolume(value) ?? value;
@@ -150,6 +145,7 @@ export class PlaybackController {
 	public get status(): AudioPlayerStatus { return this.audioPlayer.state.status; }
 	public dispose(): void {
 		this.cancelTransition();
+		this.volume?.bindActiveResourceResolver(null);
 		this.activeSession?.destroy();
 		this.activeSession = null;
 		this.audioPlayer.removeListener("stateChange", this.onStateChange);
