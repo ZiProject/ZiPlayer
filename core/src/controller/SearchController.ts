@@ -12,7 +12,7 @@ export interface SearchControllerOptions {
 /** Owns search orchestration and its cache so Player remains a facade. */
 export class SearchController {
 	private static readonly CACHE_TTL = 2 * 60 * 1000;
-	private readonly cache: LRUCache<string, SearchResult>;
+	public readonly cache: LRUCache<string, SearchResult>;
 
 	public constructor(private readonly options: SearchControllerOptions) {
 		this.cache = new LRUCache<string, SearchResult>({
@@ -81,7 +81,7 @@ export class SearchController {
 	private key(query: string): string {
 		return query.toLowerCase().trim();
 	}
-	private cacheResult(query: string, result: SearchResult): void {
+	public cacheResult(query: string, result: SearchResult): void {
 		this.cache.set(this.key(query), result);
 		this.options.debug(`[SearchCache] Cached search result for: ${query} (${result.tracks.length} tracks)`);
 	}

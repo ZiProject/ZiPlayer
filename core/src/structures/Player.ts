@@ -1,7 +1,16 @@
 import { EventEmitter } from "events";
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
 import type { AudioPlayer, PlayerSubscription, VoiceConnection } from "@discordjs/voice";
-import type { PlayerOptions, TrackMiddleware, StreamInfo, Track, VoiceChannel, SearchResult, ProgressBarOptions } from "../types";
+import type {
+	PlayerOptions,
+	TrackMiddleware,
+	StreamInfo,
+	Track,
+	VoiceChannel,
+	SearchResult,
+	ProgressBarOptions,
+	TrackLoadResult,
+} from "../types";
 import type { PlayerManager } from "./PlayerManager";
 import {
 	PlayerBus,
@@ -39,6 +48,9 @@ import { PluginManager } from "../plugins";
 import { ExtensionManager } from "../extensions";
 import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
+import type { AudioResource } from "@discordjs/voice";
+import type { PlaybackSession } from "./PlaybackSession";
+import { Stream } from "stream";
 
 export class Player extends EventEmitter {
 	public readonly bus = new PlayerBus();
@@ -179,7 +191,7 @@ export class Player extends EventEmitter {
 			genreDurations: this.options.smartTransition?.genreDurations,
 		});
 		this.volumeController = new VolumeController(this.bus, {
-			initialVolume: (this.options as any).volume ?? 100,
+			initialVolume: this.options?.volume ?? 100,
 			loudness: this.options.loudnessNormalization,
 		});
 		this.playbackController = new PlaybackController({
@@ -289,7 +301,7 @@ export class Player extends EventEmitter {
 	public get previousTracks(): Track[] {
 		return this.queue?.previousTracks ?? [];
 	}
-	public get availablePlugins(): any[] {
+	public get availablePlugins(): BasePlugin[] {
 		return this.pluginManager?.getAll?.() ?? [];
 	}
 	public get relatedTracks(): Track[] | null {
@@ -372,10 +384,10 @@ export class Player extends EventEmitter {
 	}
 
 	public getCachedSearchResult(query: string): SearchResult | null {
-		return (this.searchController as any).cache?.get?.(query.toLowerCase().trim()) ?? null;
+		return this.searchController.cache?.get?.(query.toLowerCase().trim()) ?? null;
 	}
 	public cacheSearchResult(query: string, result: SearchResult): void {
-		(this.searchController as any).cacheResult?.(query, result);
+		this.searchController.cacheResult(query, result);
 	}
 	public clearExpiredSearchCache(): void {
 		this.searchController.purgeStale();
@@ -405,7 +417,7 @@ export class Player extends EventEmitter {
 		this.streamController.abortCurrent();
 	}
 
-	public async fadeResourceVolume(resource: any, from: number, to: number, durationMs: number): Promise<void> {
+	public async fadeResourceVolume(resource: AudioResource, from: number, to: number, durationMs: number): Promise<void> {
 		if (!resource?.volume) return;
 		const duration = Math.max(0, durationMs);
 		if (duration === 0) {
@@ -420,7 +432,7 @@ export class Player extends EventEmitter {
 			await new Promise<void>((resolve) => setTimeout(resolve, 25));
 		}
 	}
-	public async applyCrossfadeIn(resource: any, track: Track): Promise<void> {
+	public async applyCrossfadeIn(resource: AudioResource, track: Track): Promise<void> {
 		if (!resource?.volume) return;
 		const target = this.getTrackTargetVolume(track);
 		resource.volume.setVolume(0);
@@ -438,7 +450,7 @@ export class Player extends EventEmitter {
 		this.playbackController.stop();
 	}
 	public getTrackMetadataValue(track: Track, key: string): any {
-		return (track as any)?.metadata?.[key];
+		return track?.metadata?.[key];
 	}
 	public resolveSmartTransitionDuration(track: Track): number {
 		return this.transitionController.plan(this.currentTrack, track).durationMs;
@@ -449,18 +461,18 @@ export class Player extends EventEmitter {
 	}
 	public getTrackTargetVolume(track: Track): number {
 		const settings = this.volumeController.settings;
-		const lufs = Number((track as any)?.metadata?.lufs);
+		const lufs = Number(track?.metadata?.lufs);
 		if (!settings.enabled || !Number.isFinite(lufs)) return this.volume / 100;
 		const correctionDb = Math.max(-settings.maxCutDb, Math.min(settings.maxBoostDb, settings.targetLUFS - lufs));
 		const gain = Math.pow(10, correctionDb / 20);
 		const ceiling = Math.pow(10, settings.limiterCeiling / 20);
 		return Math.min((this.volume / 100) * gain, ceiling);
 	}
-	public attemptTrackRecovery(track: Track, session?: any): Promise<any> {
+	public attemptTrackRecovery(track: Track, session?: PlaybackSession): Promise<TrackLoadResult> {
 		if (!session) return Promise.reject(new Error("attemptTrackRecovery requires an active PlaybackSession"));
 		return this.trackLoader.loadWithRecovery(track, session);
 	}
-	public promotePreloadToCurrent(track: Track): any {
+	public promotePreloadToCurrent(track: Track): AudioResource | null {
 		const session = this.orchestrator.currentSession;
 		if (!session) return null;
 		return this.preloadController.promote(track, {
@@ -475,7 +487,7 @@ export class Player extends EventEmitter {
 		} as any);
 	}
 
-	public createResource(stream: any, track: Track): any {
+	public createResource(stream: Stream.Readable, track: Track): AudioResource {
 		return this.playbackController.createResource(stream, track);
 	}
 	public mergeTrackPreserveRef(target: Track, source: Track): Track {
@@ -483,7 +495,7 @@ export class Player extends EventEmitter {
 		return target;
 	}
 	public async applyTrackMiddleware(track: Track): Promise<Track> {
-		const middleware: any = (this.options as any).trackMiddleware;
+		const middleware: PlayerOptions["trackMiddleware"] = this.options.trackMiddleware;
 		if (!Array.isArray(middleware)) return track;
 		for (const fn of middleware) {
 			const result = await fn(track, { player: this, manager: this.manager });
@@ -491,11 +503,11 @@ export class Player extends EventEmitter {
 		}
 		return track;
 	}
-	public async getStream(track: Track): Promise<any> {
+	public async getStream(track: Track): Promise<StreamInfo | TrackLoadResult | null> {
 		const session = this.orchestrator.currentSession;
 		if (session) return this.trackLoader.load(track, session);
-		const extensionStream = await (this.extensionManager as any)?.provideStream?.(track);
-		return extensionStream ?? (this.pluginManager as any)?.getStream?.(track);
+		const extensionStream = await this.extensionManager?.provideStream?.(track);
+		return extensionStream ?? this.pluginManager?.getStream?.(track);
 	}
 	public isUnrecoverableStreamError(error: unknown): boolean {
 		const name = error instanceof Error ? error.name : "";
@@ -503,12 +515,12 @@ export class Player extends EventEmitter {
 		return name === "AbortError" || /unrecoverable|unsupported|not found|invalid source/.test(message);
 	}
 	public startTrack(track: Track, ..._args: any[]): Promise<void> {
-		return this.action({ type: "PLAY", track } as any);
+		return this.action({ type: "PLAY", track });
 	}
 	public startFromPreload(track: Track, ..._args: any[]): Promise<void> {
-		return this.action({ type: "PLAY", track } as any);
+		return this.action({ type: "PLAY", track });
 	}
-	public loadFreshStream(track: Track, session?: any): Promise<any> {
+	public loadFreshStream(track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
 		return this.trackLoader.load(track, session ?? this.orchestrator.currentSession);
 	}
 	public async playRemote(_track: Track, stream: any, ..._args: any[]): Promise<boolean> {
@@ -522,14 +534,14 @@ export class Player extends EventEmitter {
 		return this.play(track);
 	}
 
-	public previous(): any {
+	public previous(): Track | null {
 		return this.queueController.previous();
 	}
 	public async save(track: Track, options?: any): Promise<any> {
-		const extensionResult = await (this.extensionManager as any)?.save?.(track, options);
-		if (extensionResult) return extensionResult;
-		const pluginSave = (this.pluginManager as any)?.save;
-		if (typeof pluginSave === "function") return pluginSave.call(this.pluginManager, track, options);
+		// const extensionResult = await this.extensionManager?.save?.(track, options);
+		// if (extensionResult) return extensionResult;
+		// const pluginSave = this.pluginManager?.save;
+		// if (typeof pluginSave === "function") return pluginSave.call(this.pluginManager, track, options);
 		throw new Error("No save provider is available for this track");
 	}
 	public loop(mode?: any): any {
@@ -567,10 +579,10 @@ export class Player extends EventEmitter {
 		return this.queueController.remove(index);
 	}
 	public scheduleLeave(): void {
-		(this.lifecycleController as any).scheduleLeave?.();
+		this.lifecycleController.scheduleLeave?.();
 	}
 	public clearLeaveTimeout(): void {
-		(this.lifecycleController as any).clearLeaveTimeout?.();
+		this.lifecycleController.clearLeaveTimeout?.();
 	}
 	public refreshPlayerResource(position = 0): Promise<boolean> {
 		return this.bus
@@ -579,7 +591,7 @@ export class Player extends EventEmitter {
 			.catch(() => false);
 	}
 	public getExtensions(): any[] {
-		return (this.extensionManager as any)?.getAll?.() ?? [];
+		return this.extensionManager?.getAll?.() ?? [];
 	}
 	public setupEventListeners(): void {}
 	public saveSession(options?: any): any {
@@ -606,7 +618,7 @@ export class Player extends EventEmitter {
 		const isLive = Boolean(track?.isLive);
 		if (isLive) return { current: 0, total: 0, format: "LIVE", formatted: { current: "LIVE", total: "LIVE" } };
 		if (!track || !resource) return { current: 0, total: 0, format: "00:00", formatted: { current: "00:00", total: "00:00" } };
-		const total = Math.floor(track.duration > 1000 ? track.duration : track.duration * 1000) | 0;
+		const total = Math.floor(track.duration) | 0;
 		const seekOffset = Number((this as any).seekOffset ?? 0);
 		const current = Math.floor(Number(resource.playbackDuration ?? 0) + seekOffset) | 0;
 		return {
@@ -627,7 +639,7 @@ export class Player extends EventEmitter {
 		} = options;
 		const track = this.currentTrack;
 		const resource = this.playbackController.activeResource ?? this.currentResource;
-		const isLive = Boolean((track as any)?.isLive);
+		const isLive = Boolean(track?.isLive);
 		if (isLive || !track || !resource) return isLive ? "🔴 LIVE" : "";
 		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
 		const current = Number(resource.playbackDuration ?? 0);
@@ -636,7 +648,7 @@ export class Player extends EventEmitter {
 		const progress = Math.round(ratio * size);
 		const filled = barChar.repeat(progress);
 		const empty = barChar.repeat(Math.max(0, size - progress));
-		const bar = progressChar === "none" || (options as any).hideProgressChar ? filled + empty : filled + progressChar + empty;
+		const bar = progressChar === "none" || options.hideProgressChar ? filled + empty : filled + progressChar + empty;
 		const formatTimeFn = timeFormat === "compact" ? this.formatTimeCompact.bind(this) : this.formatTime.bind(this);
 		let result = showTime ? `${formatTimeFn(current)} ${bar} ${formatTimeFn(total)}` : bar;
 		if (showPercentage) result += ` (${Math.round(ratio * 100)}%)`;
