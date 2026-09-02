@@ -98,8 +98,10 @@ export interface PlayerOptions {
 	selfDeaf?: boolean;
 	selfMute?: boolean;
 	group?: string;
-	extractorTimeout?: number;
+	exttractorTimeout?: number;
 	userdata?: Record<string, any>;
+	/** Explicit FFmpeg executable path used by seek/filter processing. */
+	ffmpegPath?: string | null;
 	tts?: {
 		createPlayer?: boolean;
 		interrupt?: boolean;
