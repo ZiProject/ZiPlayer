@@ -98,7 +98,7 @@ export interface PlayerOptions {
 	selfDeaf?: boolean;
 	selfMute?: boolean;
 	group?: string;
-	exttractorTimeout?: number;
+	extractorTimeout?: number;
 	userdata?: Record<string, any>;
 	/** Explicit FFmpeg executable path used by seek/filter processing. */
 	ffmpegPath?: string | null;

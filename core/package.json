@@ -40,5 +40,8 @@
 		"@types/node": "^20.0.0",
 		"tsup": "^8.5.0",
 		"typescript": "^5.0.0"
+	},
+	"allowScripts": {
+		"ffmpeg-static": true
 	}
 }
