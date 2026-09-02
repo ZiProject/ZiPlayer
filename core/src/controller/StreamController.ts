@@ -70,7 +70,7 @@ export class StreamController {
 	/** Creates a silent resource; PlaybackController applies the target gain before playback. */
 	createResource(stream: Readable, track?: Track, inputType?: StreamType): AudioResource {
 		const resource = createAudioResource(stream, {
-			metadata: track,
+			metadata: track ?? null,
 			inlineVolume: true,
 			...(inputType ? { inputType } : {}),
 		});

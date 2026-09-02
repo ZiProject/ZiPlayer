@@ -77,7 +77,6 @@ export class Player extends EventEmitter {
 	public destroyed = false;
 	public forwardFollowers = new Set<Player>();
 	public forwardLeader: Player | null = null;
-	public currentResource: any;
 
 	private disposed = false;
 	private readonly detachResourceRefresh: () => void;
@@ -296,7 +295,9 @@ export class Player extends EventEmitter {
 	public get relatedTracks(): Track[] | null {
 		return this.queueController?.relatedTracks ?? null;
 	}
-
+	public get currentResource() {
+		return this.playbackController.activeResource ?? null;
+	}
 	public search(query: string, requestedBy: string): Promise<SearchResult> {
 		return this.searchController.search(query, requestedBy);
 	}
@@ -752,7 +753,7 @@ export class Player extends EventEmitter {
 			const resource = this.playbackController.createResource(active.stream, session.track);
 			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed before resource activation");
 			session.setResource(resource);
-			this.currentResource = resource;
+			this.playbackController.activeResource = resource;
 			this.playbackController.play(resource, session);
 			session.markPlaying(Math.max(0, position));
 			this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
