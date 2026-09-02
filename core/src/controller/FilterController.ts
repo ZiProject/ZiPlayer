@@ -4,6 +4,7 @@ import type { Readable } from "stream";
 import { spawn, type ChildProcess } from "child_process";
 import ffmpegPath from "ffmpeg-static";
 import type { PlayerBus, PlayerAction } from "../structures/PlayerBus";
+import { StreamType } from "@discordjs/voice";
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 
 export class FilterController {
@@ -75,21 +76,11 @@ export class FilterController {
 	public getFilterString(): string {
 		return this.activeFilters.map((filter) => filter.ffmpegFilter).join(",");
 	}
-	public getActiveFilters(): AudioFilter[] {
-		return [...this.activeFilters];
-	}
-	public hasFilter(filterName: string): boolean {
-		return this.activeFilters.some((filter) => filter.name === filterName);
-	}
-	public getAvailableFilters(): AudioFilter[] {
-		return Object.values(PREDEFINED_FILTERS);
-	}
-	public getFiltersByCategory(category: string): AudioFilter[] {
-		return Object.values(PREDEFINED_FILTERS).filter((filter) => filter.category === category);
-	}
-	private resolveFilter(filter: string | AudioFilter): AudioFilter | undefined {
-		return typeof filter === "string" ? PREDEFINED_FILTERS[filter] : filter;
-	}
+	public getActiveFilters(): AudioFilter[] { return [...this.activeFilters]; }
+	public hasFilter(filterName: string): boolean { return this.activeFilters.some((filter) => filter.name === filterName); }
+	public getAvailableFilters(): AudioFilter[] { return Object.values(PREDEFINED_FILTERS); }
+	public getFiltersByCategory(category: string): AudioFilter[] { return Object.values(PREDEFINED_FILTERS).filter((filter) => filter.category === category); }
+	private resolveFilter(filter: string | AudioFilter): AudioFilter | undefined { return typeof filter === "string" ? PREDEFINED_FILTERS[filter] : filter; }
 	public async applyFilter(filter?: string | AudioFilter): Promise<boolean> {
 		if (!filter) return false;
 		const audioFilter = this.resolveFilter(filter);
@@ -103,10 +94,7 @@ export class FilterController {
 		let allApplied = true;
 		for (const filter of filters) {
 			const audioFilter = this.resolveFilter(filter);
-			if (!audioFilter) {
-				allApplied = false;
-				continue;
-			}
+			if (!audioFilter) { allApplied = false; continue; }
 			if (this.hasFilter(audioFilter.name)) continue;
 			this.activeFilters.push(audioFilter);
 			changed = true;
@@ -143,6 +131,7 @@ export class FilterController {
 		this.currentInputStream = sourceStream;
 		const filterString = this.getFilterString();
 		const hasSeek = position >= 0;
+		const ffmpegSeekSeconds = hasSeek && !wasRecreated ? (position / 1000).toFixed(3) : null;
 		if (!hasSeek && !filterString) {
 			const result = { ...streamInfo, stream: typeof sourceStream === "string" ? undefined : sourceStream, wasRecreated };
 			this.lastFilteredStream = result;
@@ -150,15 +139,15 @@ export class FilterController {
 		}
 		if (!ffmpegPath) throw new Error("FFmpeg binary not found");
 		const args = ["-hide_banner", "-loglevel", "error"];
-		const seekSeconds = hasSeek ? (position / 1000).toFixed(3) : null;
 		if (typeof sourceStream === "string") {
-			if (seekSeconds !== null) args.push("-ss", seekSeconds);
+			if (ffmpegSeekSeconds !== null) args.push("-ss", ffmpegSeekSeconds);
 			args.push("-i", sourceStream);
 		} else {
 			args.push("-i", "pipe:0");
-			if (seekSeconds !== null) args.push("-ss", seekSeconds);
+			if (ffmpegSeekSeconds !== null) args.push("-ss", ffmpegSeekSeconds);
 		}
 		if (filterString) args.push("-af", filterString);
+		const inputType = hasSeek ? StreamType.Raw : StreamType.OggOpus;
 		if (hasSeek) args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
 		else args.push("-c:a", "libopus", "-f", "opus", "-ar", "48000", "-ac", "2", "pipe:1");
 		const controller = new AbortController();
@@ -175,32 +164,16 @@ export class FilterController {
 		};
 		const abort = () => {
 			cleanup();
-			try {
-				proc.stdin?.destroy();
-			} catch {}
-			try {
-				proc.kill("SIGKILL");
-			} catch {}
+			try { proc.stdin?.destroy(); } catch {}
+			try { proc.kill("SIGKILL"); } catch {}
 		};
 		controller.signal.addEventListener("abort", abort, { once: true });
-		proc.once("error", (error) => {
-			this.debug(`FFmpeg process error: ${error.message}`);
-			cleanup();
-		});
+		proc.once("error", (error) => { this.debug(`FFmpeg process error: ${error.message}`); cleanup(); });
 		proc.once("close", cleanup);
-		output.once("close", () => {
-			if (this.ffmpegProcess === proc)
-				try {
-					proc.kill("SIGKILL");
-				} catch {}
-			cleanup();
-		});
-		output.once("error", (error: Error) => {
-			this.debug(`FFmpeg stdout error: ${error.message}`);
-			abort();
-		});
+		output.once("close", () => { if (this.ffmpegProcess === proc) try { proc.kill("SIGKILL"); } catch {} cleanup(); });
+		output.once("error", (error: Error) => { this.debug(`FFmpeg stdout error: ${error.message}`); abort(); });
 		if (typeof sourceStream !== "string") sourceStream.pipe(proc.stdin!);
-		const result = { ...streamInfo, stream: output, wasRecreated };
+		const result = { ...streamInfo, stream: output, inputType, wasRecreated };
 		this.lastFilteredStream = result;
 		return result;
 	}
