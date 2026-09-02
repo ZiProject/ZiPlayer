@@ -37,10 +37,11 @@ export class PlaybackController {
 	}
 
 	public createResource(stream: Readable, track: Track, inputType?: StreamType): AudioResource {
+		const resolvedInputType = inputType ?? (stream as Readable & { inputType?: StreamType }).inputType;
 		const resource = createAudioResource(stream, {
 			metadata: track,
 			inlineVolume: true,
-			...(inputType ? { inputType } : {}),
+			...(resolvedInputType ? { inputType: resolvedInputType } : {}),
 		});
 		this.volume?.applyLoudness(resource, track);
 		return resource;
@@ -80,20 +81,15 @@ export class PlaybackController {
 				if (p >= 1) this.cancelFade();
 			}, 25);
 		};
-		if (wait > 0) this.transitionTimer = setTimeout(begin, wait);
-		else begin();
+		if (wait > 0) this.transitionTimer = setTimeout(begin, wait); else begin();
 	}
-
 	private cancelFade() { if (this.fadeTimer) { clearInterval(this.fadeTimer); this.fadeTimer = null; } }
 	private cancelTransition() { if (this.transitionTimer) { clearTimeout(this.transitionTimer); this.transitionTimer = null; } this.cancelFade(); }
 	public pause(): boolean { return this.audioPlayer.pause(true); }
 	public resume(): boolean { return this.audioPlayer.unpause(); }
 	public stop(): boolean { this.cancelTransition(); this.activeSession = null; this.activeResource = null; return this.audioPlayer.stop(true); }
-	public seek(position: number, session?: PlaybackSession): boolean {
-		void position;
-		void session;
-		return false;
-	}
+	/** Legacy seek-by-playStream is intentionally disabled; seek is implemented by resource refresh. */
+	public seek(_position: number, _session?: PlaybackSession): boolean { return false; }
 	public setVolume(value: number): number {
 		const v = this.volume?.setVolume(value) ?? value;
 		if (this.activeResource) {
