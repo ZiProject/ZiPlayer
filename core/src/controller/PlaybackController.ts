@@ -15,6 +15,7 @@ export class PlaybackController {
 	private readonly transitions?: TransitionController;
 	private transitionTimer: ReturnType<typeof setTimeout> | null = null;
 	private fadeTimer: ReturnType<typeof setInterval> | null = null;
+	private fadeGain: number | null = null;
 	private readonly onStateChange: (oldState: AudioPlayerState, newState: AudioPlayerState) => void;
 
 	constructor(o: PlaybackControllerOptions) {
@@ -58,6 +59,7 @@ export class PlaybackController {
 			return;
 		}
 
+		this.fadeGain = null;
 		this.volume?.applyLoudness(resource, track, 1);
 		if (session) session.setResource(resource);
 		this.activeSession = session ?? null;
@@ -76,11 +78,16 @@ export class PlaybackController {
 		// implemented as a zero-volume fade-in of the incoming resource. The old
 		// resource remains active until the incoming resource is attached.
 		void oldResource;
+		this.fadeGain = 0;
 		this.volume?.applyLoudness(newResource, track, 0);
 		const wait = this.transitions?.beatWaitMs(session?.track ?? null, session?.position ?? 0) ?? 0;
 		const begin = () => {
 			this.transitionTimer = null;
-			if (session && !session.isActive()) return;
+			if (session && !session.isActive()) {
+				this.fadeGain = null;
+				return;
+			}
+			this.fadeGain = 0;
 			this.volume?.applyLoudness(newResource, track, 0);
 			this.audioPlayer.play(newResource);
 			if (session) session.setResource(newResource);
@@ -94,6 +101,7 @@ export class PlaybackController {
 					return;
 				}
 				const p = Math.min(1, (Date.now() - start) / Math.max(1, plan.durationMs));
+				this.fadeGain = p;
 				this.volume?.applyLoudness(newResource, track, p);
 				if (p >= 1) this.cancelFade();
 			}, 25);
@@ -108,6 +116,7 @@ export class PlaybackController {
 			clearInterval(this.fadeTimer);
 			this.fadeTimer = null;
 		}
+		this.fadeGain = null;
 	}
 
 	private cancelTransition() {
@@ -132,7 +141,7 @@ export class PlaybackController {
 		const v = this.volume?.setVolume(value) ?? value;
 		if (this.activeResource) {
 			const track = this.activeSession?.track ?? (this.activeResource.metadata as Track | undefined);
-			this.volume?.applyLoudness(this.activeResource, track);
+			this.volume?.applyLoudness(this.activeResource, track, this.fadeGain ?? 1);
 		}
 		return v;
 	}
