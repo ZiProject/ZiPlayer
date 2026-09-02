@@ -3,7 +3,7 @@ import { Player } from "../structures/Player";
 import type { PlayerManager } from "../structures/PlayerManager";
 import type { AudioFilter } from "./filter";
 import type { SourcePluginLike } from "./plugin";
-import type { AudioResource } from "@discordjs/voice";
+import type { AudioResource, StreamType } from "@discordjs/voice";
 
 export enum PlaybackMode {
 	NATIVE = "native",
@@ -12,50 +12,6 @@ export enum PlaybackMode {
 }
 /**
  * Represents a music track with metadata and streaming information.
- *
- * @example
- * // Basic track from YouTube
- * const track: Track = {
- *   id: "dQw4w9WgXcQ",
- *   title: "Never Gonna Give You Up",
- *   url: "https://youtube.com/watch?v=dQw4w9WgXcQ",
- *   duration: 212000,
- *   thumbnail: "https://img.youtube.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
- *   requestedBy: "123456789",
- *   source: "youtube",
- *   metadata: {
- *     artist: "Rick Astley",
- *     album: "Whenever You Need Somebody"
- *   }
- * };
- *
- * // Track from SoundCloud
- * const soundcloudTrack: Track = {
- *   id: "soundcloud-track-123",
- *   title: "Electronic Song",
- *   url: "https://soundcloud.com/artist/electronic-song",
- *   duration: 180000,
- *   requestedBy: "user456",
- *   source: "soundcloud",
- *   metadata: {
- *     artist: "Electronic Artist",
- *     genre: "Electronic"
- *   }
- * };
- *
- * // TTS track
- * const ttsTrack: Track = {
- *   id: "tts-" + Date.now(),
- *   title: "TTS: Hello everyone!",
- *   url: "tts: Hello everyone!",
- *   duration: 5000,
- *   requestedBy: "user789",
- *   source: "tts",
- *   metadata: {
- *     text: "Hello everyone!",
- *     language: "en"
- *   }
- * };
  */
 export interface Track {
 	id: string;
@@ -70,28 +26,6 @@ export interface Track {
 	author?: string;
 }
 
-/**
- * Contains search results from plugins, including tracks and optional playlist information.
- *
- * @example
- * const result: SearchResult = {
- *   tracks: [
- *     {
- *       id: "track1",
- *       title: "Song 1",
- *       url: "https://example.com/track1",
- *       duration: 180000,
- *       requestedBy: "user123",
- *       source: "youtube"
- *     }
- *   ],
- *   playlist: {
- *     name: "My Playlist",
- *     url: "https://example.com/playlist",
- *     thumbnail: "https://example.com/thumb.jpg"
- *   }
- * };
- */
 export interface SearchResult {
 	tracks: Track[];
 	playlist?: {
@@ -105,28 +39,23 @@ export interface SearchResult {
 }
 
 export interface SearchScore {
-	score: number; // 0-100
-	reason: string; // Lý do đạt điểm
+	score: number;
+	reason: string;
 	matchedBy: "url" | "title" | "partial" | "none" | "playlist";
 	exactMatch: boolean;
 }
+
 /**
  * Contains streaming information for audio playback.
- *
- * @example
- * const streamInfo: StreamInfo = {
- *   stream: audioStream,
- *   type: "webm/opus",
- *   metadata: {
- *     bitrate: 128000,
- *     sampleRate: 48000
- *   }
- * };
+ * `inputType` describes the actual bytes exposed by `stream`, which is
+ * especially important for raw PCM produced by filter/seek operations.
  */
 export interface StreamInfo {
 	stream?: Readable;
 	url?: string;
 	type: "webm/opus" | "ogg/opus" | "arbitrary" | "url" | string;
+	/** Actual @discordjs/voice input type for the returned stream. */
+	inputType?: StreamType;
 	metadata?: Record<string, any>;
 	position?: number;
 	recreate?: (position: number) => Promise<Readable>;
@@ -142,28 +71,16 @@ export interface StreamInfo {
 	};
 }
 
-/** Passed to each {@link TrackMiddleware} run (before stream resolution). */
 export interface TrackMiddlewareContext {
 	player: Player;
 	manager: PlayerManager;
 }
 
-/**
- * Runs immediately before stream extraction (`Player.getStream`): after enqueue, before extension `provideStream` and plugins.
- * Prefer mutating `track` in place (especially `metadata`). If you return another object, its fields are merged into the original
- * `track` reference so queue/current-track pointers stay valid.
- */
 export type TrackMiddleware = (track: Track, context: TrackMiddlewareContext) => void | Track | Promise<void | Track>;
 
-/** Options for {@link PlayerManager.subscribeForwardMirror}. */
 export interface PlaybackMirrorOptions {
 	leaderGuildId: string;
 	followerGuildIds: string[];
-	/**
-	 * When enabled, follower connections subscribe directly
-	 * to leader.audioPlayer
-	 * Default: true
-	 */
 	forwardMode?: boolean;
 }
 
@@ -172,27 +89,6 @@ export function normalizeTrackMiddleware(input?: TrackMiddleware | TrackMiddlewa
 	return Array.isArray(input) ? input : [input];
 }
 
-/**
- * Configuration options for creating a new player instance.
- *
- * @example
- * const options: PlayerOptions = {
- *   leaveOnEnd: true,
- *   leaveOnEmpty: true,
- *   leaveTimeout: 30000,
- *   volume: 0.5,
- *   quality: "high",
- *   selfDeaf: false,
- *   selfMute: false,
- *   extractorTimeout: 10000,
- *   tts: {
- *     createPlayer: true,
- *     interrupt: true,
- *     volume: 1.0,
- *     maxTimeTts: 30000
- *   }
- * };
- */
 export interface PlayerOptions {
 	leaveOnEnd?: boolean;
 	leaveOnEmpty?: boolean;
@@ -202,163 +98,45 @@ export interface PlayerOptions {
 	selfDeaf?: boolean;
 	selfMute?: boolean;
 	group?: string;
-	/**
-	 * Timeout in milliseconds for plugin operations (search, streaming, etc.)
-	 * to prevent long-running tasks from blocking the player.
-	 */
 	extractorTimeout?: number;
 	userdata?: Record<string, any>;
-	/**
-	 * Text-to-Speech settings. When enabled, the player can create a
-	 * dedicated AudioPlayer to play TTS while pausing the music player
-	 * then resume the music after TTS finishes.
-	 */
 	tts?: {
-		/** Create a dedicated tts AudioPlayer at construction time */
 		createPlayer?: boolean;
-		/** Pause music and swap subscription to play TTS */
 		interrupt?: boolean;
-		/** Default TTS volume multiplier 1 => 100% */
 		volume?: number;
-		/** Max time tts playback Duration */
 		maxTimeTts?: number;
 	};
-	/**
-	 * Optional per-player extension selection. When provided, only these
-	 * extensions will be activated for the created player.
-	 * - Provide instances or constructors to use them explicitly
-	 * - Or provide names (string) to select from manager-registered extensions
-	 */
 	extensions?: any[] | string[];
-	/**
-	 * Audio filters configuration. When provided, these filters will be
-	 * applied to all audio streams played by this player.
-	 * - Provide filter names (string) to use predefined filters
-	 * - Or provide AudioFilter objects for custom filters
-	 * - Multiple filters can be combined
-	 */
 	filters?: (string | AudioFilter)[];
-	/**
-	 * Enable low performance mode.
-	 * When enabled, heavy features such as preload and crossfade can be auto-disabled.
-	 */
 	lowPerformance?: boolean;
-	/**
-	 * Preload behavior configuration.
-	 */
-	preload?: {
-		/**
-		 * Enable/disable preload explicitly.
-		 * Default: true
-		 */
-		enabled?: boolean;
-		/**
-		 * Auto disable preload when lowPerformance is enabled.
-		 * Default: true
-		 */
-		autoDisableInLowPerformance?: boolean;
-	};
-	/**
-	 * Crossfade behavior configuration.
-	 */
-	crossfade?: {
-		/**
-		 * Enable/disable crossfade explicitly.
-		 * If omitted and autoEnable=true, ZiPlayer may enable it automatically.
-		 */
-		enabled?: boolean;
-		/**
-		 * Auto enable crossfade if runtime profile allows.
-		 * Default: true
-		 */
-		autoEnable?: boolean;
-		/**
-		 * Auto disable crossfade when lowPerformance is enabled.
-		 * Default: true
-		 */
-		autoDisableInLowPerformance?: boolean;
-		/**
-		 * Target crossfade duration in milliseconds.
-		 * Default: 500
-		 */
-		durationMs?: number;
-	};
-	/**
-	 * Smart transition engine settings.
-	 */
+	preload?: { enabled?: boolean; autoDisableInLowPerformance?: boolean };
+	crossfade?: { enabled?: boolean; autoEnable?: boolean; autoDisableInLowPerformance?: boolean; durationMs?: number };
 	smartTransition?: {
 		enabled?: boolean;
-		/**
-		 * Prefer genre-aware fade duration when metadata.genre is available.
-		 */
 		genreAware?: boolean;
-		/**
-		 * Try to align transition with beat boundary using metadata.bpm.
-		 */
 		beatAlign?: boolean;
-		/**
-		 * Base duration in milliseconds when no specific profile matched.
-		 */
 		baseDurationMs?: number;
 		minDurationMs?: number;
 		maxDurationMs?: number;
-		/**
-		 * Genre profiles in milliseconds (e.g. chill, edm, pop, rock).
-		 */
 		genreDurations?: Record<string, number>;
-		/**
-		 * Max wait time while trying to align to beat boundary.
-		 */
 		beatAlignMaxWaitMs?: number;
 	};
-	/**
-	 * Recovery strategy for stream/player failures.
-	 */
 	antiStuck?: {
 		enabled?: boolean;
 		maxRetries?: number;
 		retryDelayMs?: number;
-		/**
-		 * Reuse preload/current cached stream before hard retries.
-		 */
 		reusePreloadFirst?: boolean;
-		/**
-		 * Temporarily force low quality during retry attempts.
-		 */
 		reduceQualityOnRetry?: boolean;
-		/**
-		 * If consecutive failures exceed this threshold, allow skipping track.
-		 */
 		controlledSkipThreshold?: number;
 	};
-	/**
-	 * Loudness normalization and limiter.
-	 */
 	loudnessNormalization?: {
 		enabled?: boolean;
-		/**
-		 * Target LUFS (integrated). Track metadata.lufs is used if available.
-		 */
 		targetLUFS?: number;
-		/**
-		 * Cap gain boost to avoid over-amplification.
-		 */
 		maxBoostDb?: number;
-		/**
-		 * Cap attenuation.
-		 */
 		maxCutDb?: number;
-		/**
-		 * Output ceiling multiplier (<= 1.0), acts as soft limiter ceiling.
-		 */
 		limiterCeiling?: number;
 	};
-	/**
-	 * Chain of middleware applied to every track immediately before stream extraction (after queueing).
-	 * Merged after {@link PlayerManagerOptions.trackMiddleware} from the manager.
-	 */
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
-
 	maxStreamStore?: number;
 }
 
@@ -369,59 +147,30 @@ export interface PlayerManagerOptions {
 	plugins?: SourcePluginLike[];
 	extensions?: any[];
 	extractorTimeout?: number;
-	autoCleanup?: boolean; // Auto cleanup inactive players
-	cleanupInterval?: number; // Cleanup interval in ms
-	enableSearchCache?: boolean; // Enable search result caching
-	enableStatsCollection?: boolean; // Enable stats collection events
-	/**
-	 * Global track middleware for every {@link Player} created from this manager (before per-player middleware).
-	 */
+	autoCleanup?: boolean;
+	cleanupInterval?: number;
+	enableSearchCache?: boolean;
+	enableStatsCollection?: boolean;
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
 	debugLevel?: PlayerDebugLevel | "info";
 }
 
-/**
- * Options for the progress bar
- *
- * @example
- * const options: ProgressBarOptions = {
- *   size: 10,
- *   barChar: "=",
- *   progressChar: ">"
- * };
- */
 export interface ProgressBarOptions {
-	size?: number; // Bar length (default: 20)
-	barChar?: string; // Character for empty bar (default: "▬")
-	progressChar?: string; // Character for progress pointer (default: "🔘")
-	timeFormat?: "compact" | "full"; // Time format style (default: "compact")
-	showPercentage?: boolean; // Show percentage at end (default: false)
-	showTime?: boolean; // Show time labels (default: true)
-	hideProgressChar?: boolean; // Hide progress character (default: false)
+	size?: number;
+	barChar?: string;
+	progressChar?: string;
+	timeFormat?: "compact" | "full";
+	showPercentage?: boolean;
+	showTime?: boolean;
+	hideProgressChar?: boolean;
 }
 
-/**
- * Options for saving tracks
- *
- * @example
- * const options: SaveOptions = {
- *   filename: "my-song.mp3",
- *   quality: "high",
- *   timeout: 30000
- * };
- */
 export interface SaveOptions {
-	/** Optional filename for the saved file */
 	filename?: string;
-	/** Quality of the saved audio ("high" | "low") */
 	quality?: "high" | "low";
-	/** Timeout in milliseconds for the save operation */
 	timeout?: number;
-	/** Additional metadata to include */
 	metadata?: Record<string, any>;
-	/** Filter */
 	filter?: AudioFilter[];
-	/** Seek position in milliseconds to start saving from */
 	seek?: number;
 }
 
@@ -490,78 +239,8 @@ export interface VoiceChannel {
 	guildId: string;
 	type: any;
 	guild: any;
-	// Placeholder for VoiceConnection properties and methods
 }
 
-/**
- * Event types emitted by Player instances.
- *
- * @example
- *
- * manager.on("willPlay", (player, track) => {
- *   console.log(`Up next: ${track.title}`);
- * });
- *
- * manager.on("trackEnd", (player, track) => {
- *   console.log(`Now playing: ${track.title}`);
- * });
- *
- * manager.on("queueAdd", (player, track) => {
- *   console.log(`Queue added: ${track.title}`);
- * });
- *
- * manager.on("queueAddList", (player, tracks) => {
- *   console.log(`Queue added: ${tracks.length} tracks`);
- * });
- *
- * manager.on("queueRemove", (player, track, index) => {
- *   console.log(`Queue removed: ${track.title} at index ${index}`);
- * });
- *
- * manager.on("playerPause", (player, track) => {
- *   console.log(`Player paused: ${track.title}`);
- * });
- *
- * manager.on("playerResume", (player, track) => {
- *   console.log(`Player resumed: ${track.title}`);
- * });
- *
- * manager.on("playerStop", (player) => {
- *   console.log("Player stopped");
- * });
- *
- * manager.on("playerDestroy", (player) => {
- *   console.log("Player destroyed");
- * });
- *
- * manager.on("ttsStart", (player, payload) => {
- *   console.log(`TTS started: ${payload.text}`);
- * });
- *
- * manager.on("ttsEnd", (player) => {
- *   console.log("TTS ended");
- * });
- *
- * manager.on("playerError", (player, error, track) => {
- *   console.log(`Player error: ${error.message}`);
- * });
- *
- * manager.on("connectionError", (player, error) => {
- *   console.log(`Connection error: ${error.message}`);
- * });
- * manager.on("trackStart", (player, track) => {
- *   console.log(`Track started: ${track.title}`);
- * });
- *
- * manager.on("volumeChange", (player, oldVolume, newVolume) => {
- *   console.log(`Volume changed: ${oldVolume} -> ${newVolume}`);
- * });
- *
- * manager.on("queueEnd", (player) => {
- *   console.log("Queue finished");
- * });
- *
- */
 export interface ManagerEvents {
 	debug: [message: string, ...args: any[]];
 	willPlay: [player: Player, track: Track, upcomingTracks: Track[]];
@@ -580,22 +259,18 @@ export interface ManagerEvents {
 	playerDestroy: [player: Player];
 	ttsStart: [player: Player, payload: { text?: string; track?: Track }];
 	ttsEnd: [player: Player];
-	/** Emitted when audio filter is applied */
 	filterApplied: [player: Player, filter: AudioFilter];
-	/** Emitted when audio filter is removed */
 	filterRemoved: [player: Player, filter: AudioFilter];
-	/** Emitted when all filters are cleared */
 	filtersCleared: [player: Player];
-	//extension events
 	lyricsCreate: [player: Player, track: Track, lyrics: any];
 	lyricsChange: [player: Player, track: Track, lyrics: any];
 	voiceCreate: [player: Player, evt: any];
 	stats: [stats: PlayerStats];
 	streamError: [player: Player, error: Error, track: Track | null];
-
 	forwardModeStart: [player: Player, leader: Player];
 	forwardModeEnd: [player: Player, leader: Player, reason: string | undefined];
 }
+
 export interface PlayerEvents {
 	debug: [message: string, ...args: any[]];
 	willPlay: [track: Track, upcomingTracks: Track[]];
@@ -612,21 +287,14 @@ export interface PlayerEvents {
 	playerResume: [track: Track];
 	playerStop: [];
 	playerDestroy: [];
-	/** Emitted when seeking to a position in current track */
 	seek: [payload: { track: Track; position: number }];
-	/** Emitted when TTS starts playing (interruption mode) */
 	ttsStart: [payload: { text?: string; track?: Track }];
-	/** Emitted when TTS finished (interruption mode) */
 	ttsEnd: [];
-	/** Emitted when audio filter is applied */
 	filterApplied: [filter: AudioFilter];
-	/** Emitted when audio filter is removed */
 	filterRemoved: [filter: AudioFilter];
-	/** Emitted when all filters are cleared */
 	filtersCleared: [];
 	trackStuck: [track: Track | null];
 	streamError: [error: Error, track: Track | null];
-	/** Emitted when player stats are updated (if enabled) */
 	stats: [stats: PlayerStats];
 	forwardModeStart: [leader: Player];
 	forwardModeEnd: [leader: Player, reason: string | undefined];
