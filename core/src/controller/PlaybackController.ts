@@ -1,4 +1,4 @@
-import { AudioPlayer, AudioPlayerState, AudioPlayerStatus, AudioResource, createAudioResource } from "@discordjs/voice";
+import { AudioPlayer, AudioPlayerState, AudioPlayerStatus, AudioResource, createAudioResource, type StreamType } from "@discordjs/voice";
 import { Readable } from "stream";
 import type { PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
@@ -25,8 +25,6 @@ export class PlaybackController {
 		this.onStateChange = (a, b) => {
 			this.bus?.publish("stateChanged", a, b);
 			if (b.status === AudioPlayerStatus.Idle && a.status !== AudioPlayerStatus.Idle) {
-				// A replaced resource can emit a late Idle transition. Only the
-				// resource owned by the active session may end that session.
 				const previousResource = "resource" in a ? a.resource : undefined;
 				if (previousResource && this.activeResource && previousResource !== this.activeResource) return;
 				const session = this.activeSession;
@@ -38,8 +36,12 @@ export class PlaybackController {
 		this.audioPlayer.on("stateChange", this.onStateChange);
 	}
 
-	public createResource(stream: Readable, track: Track): AudioResource {
-		const resource = createAudioResource(stream, { metadata: track, inlineVolume: true });
+	public createResource(stream: Readable, track: Track, inputType?: StreamType): AudioResource {
+		const resource = createAudioResource(stream, {
+			metadata: track,
+			inlineVolume: true,
+			...(inputType ? { inputType } : {}),
+		});
 		this.volume?.applyLoudness(resource, track);
 		return resource;
 	}
@@ -60,13 +62,7 @@ export class PlaybackController {
 		this.audioPlayer.play(resource);
 	}
 
-	private crossfade(
-		oldResource: AudioResource,
-		newResource: AudioResource,
-		plan: { enabled: boolean; durationMs: number },
-		session?: PlaybackSession,
-		track?: Track,
-	): void {
+	private crossfade(oldResource: AudioResource, newResource: AudioResource, plan: { enabled: boolean; durationMs: number }, session?: PlaybackSession, track?: Track): void {
 		void oldResource;
 		this.volume?.applyLoudness(newResource, track, 0);
 		const wait = this.transitions?.beatWaitMs(session?.track ?? null, session?.position ?? 0) ?? 0;
@@ -78,10 +74,7 @@ export class PlaybackController {
 			this.activeResource = newResource;
 			const start = Date.now();
 			this.fadeTimer = setInterval(() => {
-				if (session && !session.isActive()) {
-					this.cancelFade();
-					return;
-				}
+				if (session && !session.isActive()) { this.cancelFade(); return; }
 				const p = Math.min(1, (Date.now() - start) / Math.max(1, plan.durationMs));
 				this.volume?.applyLoudness(newResource, track, p);
 				if (p >= 1) this.cancelFade();
@@ -91,47 +84,14 @@ export class PlaybackController {
 		else begin();
 	}
 
-	private cancelFade() {
-		if (this.fadeTimer) {
-			clearInterval(this.fadeTimer);
-			this.fadeTimer = null;
-		}
-	}
-	private cancelTransition() {
-		if (this.transitionTimer) {
-			clearTimeout(this.transitionTimer);
-			this.transitionTimer = null;
-		}
-		this.cancelFade();
-	}
-	public pause(): boolean {
-		return this.audioPlayer.pause(true);
-	}
-	public resume(): boolean {
-		return this.audioPlayer.unpause();
-	}
-	public stop(): boolean {
-		this.cancelTransition();
-		this.activeSession = null;
-		this.activeResource = null;
-		return this.audioPlayer.stop(true);
-	}
+	private cancelFade() { if (this.fadeTimer) { clearInterval(this.fadeTimer); this.fadeTimer = null; } }
+	private cancelTransition() { if (this.transitionTimer) { clearTimeout(this.transitionTimer); this.transitionTimer = null; } this.cancelFade(); }
+	public pause(): boolean { return this.audioPlayer.pause(true); }
+	public resume(): boolean { return this.audioPlayer.unpause(); }
+	public stop(): boolean { this.cancelTransition(); this.activeSession = null; this.activeResource = null; return this.audioPlayer.stop(true); }
 	public seek(position: number, session?: PlaybackSession): boolean {
-		if (!session?.isActive()) return false;
-		const resource =
-			this.audioPlayer.state.status === AudioPlayerStatus.Playing || this.audioPlayer.state.status === AudioPlayerStatus.Paused ?
-				this.audioPlayer.state.resource
-			:	null;
-		if (!resource) return false;
-		const target = Math.max(0, position);
-		const stream: any = (resource as any).playStream;
-		if (stream && typeof stream.seek === "function") {
-			try {
-				stream.seek(target);
-				session.updatePosition(target);
-				return true;
-			} catch {}
-		}
+		void position;
+		void session;
 		return false;
 	}
 	public setVolume(value: number): number {
@@ -142,15 +102,9 @@ export class PlaybackController {
 		}
 		return v;
 	}
-	public get volumeValue(): number {
-		return this.volume?.value ?? 100;
-	}
-	public get state(): AudioPlayerState {
-		return this.audioPlayer.state;
-	}
-	public get status(): AudioPlayerStatus {
-		return this.audioPlayer.state.status;
-	}
+	public get volumeValue(): number { return this.volume?.value ?? 100; }
+	public get state(): AudioPlayerState { return this.audioPlayer.state; }
+	public get status(): AudioPlayerStatus { return this.audioPlayer.state.status; }
 	public dispose(): void {
 		this.cancelTransition();
 		this.activeSession?.destroy();
