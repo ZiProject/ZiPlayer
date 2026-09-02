@@ -591,6 +591,8 @@ export interface ManagerEvents {
 
 	forwardModeStart: [player: Player, leader: Player];
 	forwardModeEnd: [player: Player, leader: Player, reason: string | undefined];
+	/** Emitted when seeking to a position in current track */
+	seek: [player: Player, payload: { track: Track; position: number }];
 }
 export interface PlayerEvents {
 	debug: [message: string, ...args: any[]];

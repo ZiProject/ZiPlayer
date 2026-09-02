@@ -5,6 +5,7 @@ import type { PlayerManager } from "./PlayerManager";
 import type { Readable } from "stream";
 import { spawn, type ChildProcess } from "child_process";
 import ffmpegPath from "ffmpeg-static";
+import fs from "fs";
 
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 
@@ -146,11 +147,40 @@ export class FilterManager {
 		return this.player.refreshPlayerResource();
 	}
 
+	private static customFFmpegPath: string | null = null;
+
+	public static setFFmpegPath(path: string | null): void {
+		FilterManager.customFFmpegPath = path;
+	}
+
+	public getFFmpegPath(): string | null {
+		if (FilterManager.customFFmpegPath && fs.existsSync(FilterManager.customFFmpegPath)) {
+			return FilterManager.customFFmpegPath;
+		}
+		if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
+			return process.env.FFMPEG_PATH;
+		}
+		if (ffmpegPath && fs.existsSync(ffmpegPath)) {
+			return ffmpegPath;
+		}
+		return "ffmpeg";
+	}
+
 	public async clearAll(): Promise<boolean> {
 		const count = this.activeFilters.length;
 		this.activeFilters = [];
 		this.debug(`Cleared ${count} filters`);
 		return this.player.refreshPlayerResource();
+	}
+
+	/**
+	 * Seek to a specific position in the current track.
+	 *
+	 * @param {number} position - Position in milliseconds to seek to
+	 * @returns {Promise<boolean>} True if seek was successful
+	 */
+	public async seek(position: number): Promise<boolean> {
+		return this.player.seek(position);
 	}
 
 	public async applyFiltersAndSeek(
@@ -165,9 +195,24 @@ export class FilterManager {
 
 		let wasRecreated = false;
 		if (position >= 0 && streamInfo.recreate) {
+			const originalStream = streamInfo.stream;
 			sourceStream = await streamInfo.recreate(position);
 			wasRecreated = true;
 			if (!sourceStream) throw new Error("Stream recreation returned no stream");
+			if (originalStream && originalStream !== sourceStream) {
+				try {
+					originalStream.destroy();
+				} catch {}
+			}
+			position = -1;
+			const filterString = this.getFilterString();
+			if (!filterString) {
+				return {
+					...streamInfo,
+					stream: typeof sourceStream === "string" ? undefined : sourceStream,
+					wasRecreated: true,
+				};
+			}
 		}
 
 		if (generation !== this.ffmpegGeneration) throw new Error("FFmpeg generation outdated");
@@ -190,7 +235,8 @@ export class FilterManager {
 			};
 		}
 
-		if (!ffmpegPath) throw new Error("FFmpeg binary not found");
+		const ffmpegBin = this.getFFmpegPath();
+		if (!ffmpegBin) throw new Error("FFmpeg binary not found");
 
 		const args: string[] = ["-hide_banner", "-loglevel", "error"];
 		const seekSeconds = hasSeek ? (position / 1000).toFixed(3) : null;
@@ -209,7 +255,7 @@ export class FilterManager {
 
 		if (hasSeek) {
 			// Seek output is raw PCM and Player.createResource marks it as Raw.
-			args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
+			args.push("-c:a", "pcm_s16le", "-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
 		} else {
 			// Keep filter-only output as Opus so existing AudioResource input-type
 			// handling remains compatible with filtered playback.
@@ -219,7 +265,7 @@ export class FilterManager {
 		const controller = new AbortController();
 		this.ffmpegAbortController = controller;
 
-		const proc = spawn(ffmpegPath, args, {
+		const proc = spawn(ffmpegBin, args, {
 			stdio: ["pipe", "pipe", "ignore"],
 			windowsHide: true,
 		});
@@ -266,6 +312,9 @@ export class FilterManager {
 		proc.once("error", (error) => {
 			this.debug(`FFmpeg process error: ${error.message}`);
 			cleanup();
+			if (!output.destroyed) {
+				output.destroy(error);
+			}
 		});
 		proc.once("close", () => cleanup());
 		proc.stdin?.on("error", (error: Error) => {
@@ -284,7 +333,12 @@ export class FilterManager {
 			abort();
 		});
 
-		if (typeof sourceStream !== "string") sourceStream.pipe(proc.stdin!);
+		if (typeof sourceStream !== "string") {
+			sourceStream.on("error", (err: Error) => {
+				this.debug(`Source stream error: ${err.message}`);
+			});
+			sourceStream.pipe(proc.stdin!);
+		}
 
 		return {
 			...streamInfo,

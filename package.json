@@ -16,5 +16,9 @@
 		"@ziplayer/plugin": "file:plugins",
 		"isomorphic-unfetch": "^4.0.2",
 		"spotify-url-info": "^3.3.0"
+	},
+	"allowScripts": {
+		"ffmpeg-static@5.3.0": true,
+		"file:../../plugins": true
 	}
 }

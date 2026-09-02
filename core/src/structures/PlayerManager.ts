@@ -445,6 +445,7 @@ export class PlayerManager extends EventEmitter {
 			streamError: "streamError",
 			forwardModeStart: "forwardModeStart",
 			forwardModeEnd: "forwardModeEnd",
+			seek: "seek",
 		} as const satisfies Record<string, keyof ManagerEvents>;
 
 		for (const [sourceEvent, targetEvent] of Object.entries(forwardEvents) as [

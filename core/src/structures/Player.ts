@@ -990,13 +990,13 @@ export class Player extends EventEmitter {
 			const resource = createAudioResource(processedStream.stream || processedStream.url!, {
 				metadata: track,
 				inputType:
-					processedStream.wasRecreated && !filterString ? StreamType.Arbitrary
+					processedStream.wasRecreated ? StreamType.Arbitrary
 					: hasSeek ? StreamType.Raw
 					: StreamType.Arbitrary,
 				inlineVolume: true,
 			});
 
-			return { resource, processedStream: processedStream.stream! };
+			return { resource, processedStream: processedStream.stream ?? null };
 		}
 
 		const resource = createAudioResource(streamInfo.stream || streamInfo.url!, {
@@ -1986,7 +1986,7 @@ export class Player extends EventEmitter {
 		}
 
 		const totalDuration = track.duration > 1000 ? track.duration : track.duration * 1000;
-		if (position < 0 || position > totalDuration) {
+		if (position < 0 || (totalDuration > 0 && position > totalDuration)) {
 			this.debug(`[Player] Invalid seek position: ${position}ms (track duration: ${totalDuration}ms)`);
 			return false;
 		}
@@ -1996,6 +1996,7 @@ export class Player extends EventEmitter {
 			this.debug(`[Player] Seek failed at position: ${position}ms`);
 			return false;
 		}
+		this.emit("seek", { track, position });
 		return true;
 	}
 
@@ -2140,7 +2141,7 @@ export class Player extends EventEmitter {
 			// Apply filters if any are active
 			let finalStream = streamInfo;
 
-			if (saveOptions.filter || saveOptions.seek) {
+			if (saveOptions.filter || saveOptions.seek !== undefined) {
 				try {
 					this.filter.clearAll();
 					this.filter.applyFilters(saveOptions.filter || []);
@@ -2149,7 +2150,8 @@ export class Player extends EventEmitter {
 				}
 
 				this.debug(`[Player] Applying filters to save stream: ${this.filter.getFilterString() || "none"}`);
-				finalStream = await this.filter.applyFiltersAndSeek(streamInfo, saveOptions.seek || 0).catch((err) => {
+				const seekArg = typeof saveOptions.seek === "number" && saveOptions.seek >= 0 ? saveOptions.seek : -1;
+				finalStream = await this.filter.applyFiltersAndSeek(streamInfo, seekArg).catch((err) => {
 					this.debug(`[Player] Error applying filters to save stream:`, err);
 					return streamInfo; // Fallback to original stream
 				});
@@ -2904,13 +2906,14 @@ export class Player extends EventEmitter {
 				// Track started
 				this.clearLeaveTimeout();
 
+				const isSeek = this.seekInProgress;
 				if (this.seekInProgress) {
 					this.debug(`[Player] Seek complete — audio output started`);
 					this.seekInProgress = false;
 				}
 
 				const track = this.queue.currentTrack;
-				if (track) {
+				if (track && !isSeek) {
 					this.debug(`[Player] Track started: ${track.title}`);
 					this.emit("trackStart", track);
 
