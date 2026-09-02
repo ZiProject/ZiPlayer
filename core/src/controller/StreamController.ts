@@ -1,4 +1,4 @@
-import { createAudioResource, type AudioResource } from "@discordjs/voice";
+import { createAudioResource, type AudioResource, type StreamType } from "@discordjs/voice";
 import type { StreamInfo, Track, ActiveStream, StreamControllerOptions, PlayerAction } from "../types";
 import type { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
@@ -47,7 +47,14 @@ export class StreamController {
 			isRemote: info.remote ?? false,
 			priority: 10,
 		});
-		const active: ActiveStream = { sessionId: session.id, session, track: session.track!, stream, streamId: streamId ?? null };
+		const active: ActiveStream = {
+			sessionId: session.id,
+			session,
+			track: session.track!,
+			stream,
+			streamId: streamId ?? null,
+			inputType: info.inputType,
+		};
 		this.active = active;
 		const cleanup = () => {
 			if (this.active?.sessionId !== session.id || this.active.stream !== stream) return;
@@ -60,8 +67,12 @@ export class StreamController {
 		session.signal.addEventListener("abort", () => this.abort(active), { once: true });
 		return active;
 	}
-	createResource(stream: Readable, track?: Track): AudioResource {
-		return createAudioResource(stream, { metadata: { ...track, inlineVolume: true }, inlineVolume: true });
+	createResource(stream: Readable, track?: Track, inputType?: StreamType): AudioResource {
+		return createAudioResource(stream, {
+			metadata: { ...track, inlineVolume: true },
+			inlineVolume: true,
+			...(inputType ? { inputType } : {}),
+		});
 	}
 	abortCurrent() {
 		if (this.active) this.abort(this.active);
