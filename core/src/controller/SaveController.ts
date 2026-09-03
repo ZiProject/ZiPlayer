@@ -49,9 +49,8 @@ export class SaveController {
 
 		if (!saveOptions.filter?.length && saveOptions.seek === undefined) return streamInfo.stream;
 
-		// Never mutate the player's active FilterController. Saving is an
-		// independent export operation and therefore gets an isolated FFmpeg
-		// filter pipeline.
+		// Saving must not mutate the player's active FilterController. Use an
+		// isolated FFmpeg controller for this export operation.
 		const filterController = new FilterController(
 			{ refreshPlayerResource: async () => true },
 			this.debug,
@@ -59,18 +58,15 @@ export class SaveController {
 			{ ffmpegPath: this.ffmpegPath },
 		);
 
-		try {
-			const filters: AudioFilter[] = saveOptions.filter ?? [];
-			if (filters.length) await filterController.applyFilters(filters);
-			const seek = typeof saveOptions.seek === "number" && saveOptions.seek >= 0 ? saveOptions.seek : -1;
-			this.debug(`[SaveController] Applying filters to save stream: ${filterController.getFilterString() || "none"}`);
-			return (await filterController.applyFiltersAndSeek(streamInfo, seek)).stream!;
-		} finally {
-			// FFmpeg resources are intentionally kept alive by the returned
-			// readable stream; destroy() only tears down the controller-owned
-			// process when it is still active.
-			filterController.destroy();
-		}
+		const filters: AudioFilter[] = saveOptions.filter ?? [];
+		if (filters.length) await filterController.applyFilters(filters);
+		const seek = typeof saveOptions.seek === "number" && saveOptions.seek >= 0 ? saveOptions.seek : -1;
+		this.debug(`[SaveController] Applying filters to save stream: ${filterController.getFilterString() || "none"}`);
+
+		// Do not destroy filterController here: it owns the returned FFmpeg
+		// process/output until that Readable closes. The controller becomes
+		// unreachable after the stream finishes and its listeners clean up.
+		return (await filterController.applyFiltersAndSeek(streamInfo, seek)).stream!;
 	}
 
 	private async applyMiddleware(track: Track): Promise<void> {
