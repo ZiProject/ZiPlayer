@@ -1,7 +1,6 @@
 import type { Readable } from "stream";
 import type { SaveOptions, Track } from "../types";
 import { Player } from "../structures/Player";
-import type { VideoResolveOptions } from "./VideoPluginFacade";
 
 export type SaveVideoOptions = Pick<SaveOptions, "filename" | "quality">;
 
@@ -34,10 +33,7 @@ export function installSaveVideoFacade(): void {
 		try {
 			await this.applyTrackMiddleware(track);
 
-			const streamInfo = await this.pluginManager.getVideo(track, {
-				quality: saveOptions.quality,
-			});
-
+			const streamInfo = await this.pluginManager.getVideo(track);
 			if (!streamInfo?.stream) {
 				throw new Error(`No video stream available for track: ${track.title}`);
 			}
