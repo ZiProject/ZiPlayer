@@ -16,6 +16,8 @@ export interface SourcePlugin {
 	canHandle(query: string): boolean;
 	search(query: string, requestedBy: string): Promise<SearchResult>;
 	getStream(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
+	/** Optional direct video resolver. Plugins that only expose audio can omit it. */
+	getVideo?(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
 	getRelatedTracks?(track: Track, opts?: { limit?: number; offset?: number }): Promise<Track[]>;
 	validate?(url: string): boolean;
 	extractPlaylist?(url: string, requestedBy: string): Promise<Track[]>;
