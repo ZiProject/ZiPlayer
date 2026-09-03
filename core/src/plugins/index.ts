@@ -1,6 +1,6 @@
 import { BasePlugin } from "./BasePlugin";
 import { withTimeout } from "../utils/timeout";
-import type { Track, StreamInfo, SearchResult, SearchScore } from "../types";
+import type { Track, StreamInfo, SearchResult, VideoResolveOptions } from "../types";
 import type { PlayerManager } from "../structures/PlayerManager";
 import type { Player } from "../structures/Player";
 import { StreamManager } from "../structures/StreamManager";
@@ -967,7 +967,50 @@ export class PluginManager {
 		this.debug(`[RelatedTracks] Found ${ranked.length} related tracks`);
 		return ranked;
 	}
+	async getVideo(track: Track, options: VideoResolveOptions = {}): Promise<StreamInfo | null> {
+		if (!track) return null;
 
+		let primary = this.get(track.source);
+		if (!primary) {
+			primary = this.findPlugin(track.url);
+		}
+		if (!primary) {
+			this.debug(`[getStream] No plugin found for track: ${track.title}`);
+			return null;
+		}
+
+		const candidates = [
+			primary,
+			...this.getAll()
+				.filter((plugin) => plugin !== primary && typeof plugin.getVideo === "function")
+				.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)),
+		].filter((plugin, index, list) => list.indexOf(plugin) === index && typeof plugin.getVideo === "function");
+
+		for (const plugin of candidates) {
+			const controller = new AbortController();
+			const onAbort = () => controller.abort(options.signal?.reason);
+			options.signal?.addEventListener("abort", onAbort, { once: true });
+
+			try {
+				if (plugin.validate && !plugin.validate(track.url ?? "")) continue;
+
+				this.debug(`[Video] ${plugin.name} resolving video: ${track.title}`);
+				const result = await withTimeout(plugin.getVideo!(track, controller.signal), 50000, `${plugin.name} getVideo timeout`);
+
+				if (result?.stream) {
+					this.debug(`[Video] ${plugin.name} video stream ready: ${track.title}`);
+					return result;
+				}
+			} catch (error) {
+				this.debug(`[Video] ${plugin.name} getVideo failed:`, error instanceof Error ? error.message : error);
+			} finally {
+				options.signal?.removeEventListener("abort", onAbort);
+			}
+		}
+
+		this.debug(`[Video] All plugins failed for: ${track.title}`);
+		return null;
+	}
 	//#endregion
 
 	//#region Utility methods

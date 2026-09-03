@@ -1,7 +1,4 @@
 import { PlayerManager, getGlobalManager } from "./structures/PlayerManager";
-import "./controller/SavePlayerFacade";
-import "./controller/VideoPluginFacade";
-import "./controller/SaveVideoPlayerFacade";
 
 export { Player } from "./structures/Player";
 export { Queue } from "./structures/Queue";
@@ -18,11 +15,6 @@ export { AntiStuckController } from "./controller/AntiStuckController";
 export { TransitionController } from "./controller/TransitionController";
 export { PreloadController } from "./controller/PreloadController";
 export { SaveController } from "./controller/SaveController";
-export { installSaveFacade } from "./controller/SavePlayerFacade";
-export { installVideoPluginFacade } from "./controller/VideoPluginFacade";
-export { installSaveVideoFacade } from "./controller/SaveVideoPlayerFacade";
-export type { VideoResolveOptions } from "./controller/VideoPluginFacade";
-export type { SaveVideoOptions } from "./controller/SaveVideoPlayerFacade";
 
 export type {
 	PlayerAction as PlayerActionMessage,

@@ -60,3 +60,7 @@ export type SourcePluginLike = SourcePlugin | SourcePluginCtor;
  *   extractorTimeout: 10000
  * };
  */
+
+export type VideoResolveOptions = {
+	signal?: AbortSignal;
+};

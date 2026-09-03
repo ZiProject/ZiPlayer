@@ -10,6 +10,8 @@ import type {
 	SearchResult,
 	ProgressBarOptions,
 	TrackLoadResult,
+	SaveOptions,
+	SaveVideoOptions,
 } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 import {
@@ -51,6 +53,7 @@ import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { PlaybackSession } from "./PlaybackSession";
 import { Stream } from "stream";
+import { SaveController } from "../controller/SaveController";
 
 export class Player extends EventEmitter {
 	public readonly bus = new PlayerBus();
@@ -71,6 +74,7 @@ export class Player extends EventEmitter {
 	public readonly trackLoader: TrackLoader;
 	public readonly playbackController: PlaybackController;
 	public readonly streamController: StreamController;
+	public readonly saveController: SaveController;
 	public readonly filterController: FilterController;
 	public readonly antiStuckController: AntiStuckController;
 	public readonly transitionController: TransitionController;
@@ -201,6 +205,13 @@ export class Player extends EventEmitter {
 			transitionController: this.transitionController,
 		});
 		this.streamController = new StreamController({ streamManager: this.streamManager, bus: this.bus });
+		this.saveController = new SaveController({
+			middleware: [async (track) => this.applyTrackMiddleware(track)],
+			middlewareContext: { player: this, manager: this.manager },
+			resolveStream: (track) => this.pluginManager.getStream(track),
+			resolveVideoStream: (track) => this.pluginManager.getVideo(track),
+			debug,
+		});
 		this.antiStuckController = new AntiStuckController({ ...this.options.antiStuck, bus: this.bus });
 		this.preloadController = new PreloadController({ loader: this.trackLoader, manager: this.preloadManager, bus: this.bus });
 		this.filterController = new FilterController(
@@ -537,13 +548,28 @@ export class Player extends EventEmitter {
 	public previous(): Track | null {
 		return this.queueController.previous();
 	}
-	public async save(track: Track, options?: any): Promise<any> {
-		// const extensionResult = await this.extensionManager?.save?.(track, options);
-		// if (extensionResult) return extensionResult;
-		// const pluginSave = this.pluginManager?.save;
-		// if (typeof pluginSave === "function") return pluginSave.call(this.pluginManager, track, options);
-		throw new Error("No save provider is available for this track");
+	async save(track: Track, options?: SaveOptions | string): Promise<Stream.Readable> {
+		try {
+			return await this.saveController.save(track, options);
+		} catch (error) {
+			this.debug("[Player] save error:", error);
+			this.emit("playerError", error as Error, track);
+			throw error;
+		}
 	}
+	
+	async saveVideo(track: Track, options?: SaveVideoOptions | string): Promise<Stream.Readable> {
+		if (!track) throw new TypeError("A track is required to save video");
+
+		try {
+			return await this.saveController.saveVideo(track, options);
+		} catch (error) {
+			this.debug("[Player] saveVideo error:", error);
+			this.emit("playerError", error as Error, track);
+			throw error;
+		}
+	}
+
 	public loop(mode?: any): any {
 		return mode === undefined ? this.queueController.loop : this.queueController.setLoop(mode);
 	}
