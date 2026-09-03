@@ -27,33 +27,12 @@ export class PlayerEventBridge {
 		this.debug("attached", { queueSize: this.previousQueue.length });
 
 		const events: PlayerEventType[] = [
-			"initialized",
-			"ready",
-			"destroyed",
-			"TRACK_LOADING",
-			"TRACK_LOADED",
-			"TRACK_STARTED",
-			"TRACK_ERROR",
-			"TRACK_END",
-			"STREAM_ABORTED",
-			"playbackStateChanged",
-			"playbackSessionCreated",
-			"trackRequested",
-			"stateChanged",
-			"STUCK_DETECTED",
-			"RECOVERY_STARTED",
-			"RECOVERY_FAILED",
-			"preloadStateChanged",
-			"preloadPromoted",
-			"preloadCancelled",
-			"queueChanged",
-			"volumeRequested",
+			"initialized", "ready", "destroyed", "TRACK_LOADING", "TRACK_LOADED", "TRACK_STARTED", "TRACK_ERROR", "TRACK_END",
+			"STREAM_ABORTED", "playbackStateChanged", "playbackSessionCreated", "trackRequested", "stateChanged", "STUCK_DETECTED",
+			"RECOVERY_STARTED", "RECOVERY_FAILED", "preloadStateChanged", "preloadPromoted", "preloadCancelled", "queueChanged", "volumeRequested",
 		];
 		for (const type of events) this.detach.push(this.bus.subscribe(type, (event) => this.forward(event)));
 
-		// Public-only events (seek/filter/tts/queue compatibility/forward/stats/etc.)
-		// are forwarded from the Player emitter so there is exactly one bridge into
-		// PlayerManager regardless of where the Player event originated.
 		this.attachManagerForwarders();
 
 		this.detach.push(
@@ -66,32 +45,10 @@ export class PlayerEventBridge {
 
 	private attachManagerForwarders(): void {
 		const events: Array<keyof PlayerEvents> = [
-			"debug",
-			"willPlay",
-			"trackStart",
-			"trackEnd",
-			"queueEnd",
-			"playerError",
-			"connectionError",
-			"volumeChange",
-			"queueAdd",
-			"queueAddList",
-			"queueRemove",
-			"playerPause",
-			"playerResume",
-			"playerStop",
-			"playerDestroy",
-			"seek",
-			"ttsStart",
-			"ttsEnd",
-			"filterApplied",
-			"filterRemoved",
-			"filtersCleared",
-			"trackStuck",
-			"streamError",
-			"stats",
-			"forwardModeStart",
-			"forwardModeEnd",
+			"debug", "willPlay", "trackStart", "trackEnd", "queueEnd", "playerError", "connectionError", "volumeChange",
+			"queueAdd", "queueAddList", "queueRemove", "playerPause", "playerResume", "playerStop", "playerDestroy", "seek",
+			"ttsStart", "ttsEnd", "filterApplied", "filterRemoved", "filtersCleared", "trackStuck", "streamError", "stats",
+			"forwardModeStart", "forwardModeEnd",
 		];
 
 		for (const event of events) {
@@ -102,7 +59,9 @@ export class PlayerEventBridge {
 	}
 
 	private forwardPlayerEvent<K extends keyof PlayerEvents>(event: K, args: PlayerEvents[K]): void {
-		if (this.disposed || this.player.destroyed) return;
+		// playerDestroy is intentionally allowed through after Player marks itself
+		// destroyed; all other public events stop at the destroyed boundary.
+		if (this.disposed || (this.player.destroyed && event !== "playerDestroy")) return;
 
 		try {
 			switch (event) {
@@ -213,7 +172,6 @@ export class PlayerEventBridge {
 
 	private emitQueueCompatibilityEvents(event: PlayerEvent): void {
 		if (event.type !== "queueChanged") return;
-
 		const next = event.queue;
 		const previous = this.previousQueue;
 		this.previousQueue = [...next];
@@ -224,10 +182,7 @@ export class PlayerEventBridge {
 			else if (added.length > 1) this.player.emit("queueAddList", added);
 		} else if (next.length < previous.length) {
 			const removed = previous.filter((track) => !next.some((current) => current?.id === track?.id));
-			for (const track of removed) {
-				const index = previous.indexOf(track);
-				this.player.emit("queueRemove", track, index);
-			}
+			for (const track of removed) this.player.emit("queueRemove", track, previous.indexOf(track));
 		}
 	}
 
