@@ -239,10 +239,6 @@ export async function createSabrStream(
 	}
 }
 
-/**
- * Creates a single downloadable video stream containing both SABR video and audio.
- * SABR exposes the tracks separately, so ffmpeg is used here only to mux them.
- */
 export async function createSabrVideoStream(
 	videoId: string,
 	innertube: Innertube,
@@ -287,7 +283,6 @@ export async function createSabrVideoStream(
 					makePlayerRequest(innertube, videoId, ctx),
 					generatePoToken(videoId, signal),
 				]);
-				throwIfAborted();
 				const newUrl =
 					reloaded.streaming_data?.server_abr_streaming_url ?
 						await innertube.session.player?.decipher(reloaded.streaming_data.server_abr_streaming_url)
@@ -306,94 +301,41 @@ export async function createSabrVideoStream(
 			}
 		};
 		sabr.on("reloadPlayerResponse", reloadHandler);
-		const result = await sabr.start({
-			...options,
-			enabledTrackTypes: EnabledTrackTypes.VIDEO_AND_AUDIO,
-			preferWebM: options?.preferWebM ?? false,
-			preferOpus: options?.preferOpus ?? false,
-		});
+		const result = await sabr.start({ ...options, enabledTrackTypes: EnabledTrackTypes.VIDEO_ONLY });
 		throwIfAborted();
 		if (!result.videoStream) throw new Error("SABR did not return a video stream");
-		if (!result.audioStream) throw new Error("SABR did not return an audio stream");
 		const videoFormat = result.selectedFormats?.videoFormat;
-		const audioFormat = result.selectedFormats?.audioFormat;
 		if (!videoFormat) throw new Error("SABR did not select a video format");
-		if (!audioFormat) throw new Error("SABR did not select an audio format");
-
-		const { spawn } = await import("node:child_process");
-		const ffmpegPath = process.env.FFMPEG_PATH ?? "ffmpeg";
-		const videoMime = String(videoFormat.mimeType ?? "video/mp4").toLowerCase().split(";")[0];
-		const audioMime = String(audioFormat.mimeType ?? "audio/mp4").toLowerCase().split(";")[0];
-		const inputFormat = (mimeType: string) => mimeType === "video/webm" || mimeType === "audio/webm" ? "webm" : "mp4";
-		const videoInputFormat = inputFormat(videoMime);
-		const audioInputFormat = inputFormat(audioMime);
-		const mp4Compatible =
-			/^(video\/mp4|video\/quicktime)$/.test(videoMime) && audioMime === "audio/mp4";
-		const outputFormat = mp4Compatible ? "mp4" : videoMime === "video/webm" && audioMime === "audio/webm" ? "webm" : "matroska";
-		const outputMimeType = outputFormat === "mp4" ? "video/mp4" : outputFormat === "webm" ? "video/webm" : "video/x-matroska";
-		const outputArgs =
-			outputFormat === "mp4"
-				? ["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-movflags", "+frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
-			: ["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-f", outputFormat, "pipe:1"];
-		const ffmpeg = spawn(
-			ffmpegPath,
-			["-hide_banner", "-loglevel", "error", "-f", videoInputFormat, "-i", "pipe:3", "-f", audioInputFormat, "-i", "pipe:4", ...outputArgs],
-			{ stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"] },
-		);
-		const videoInput = ffmpeg.stdio[3] as NodeJS.WritableStream;
-		const audioInput = ffmpeg.stdio[4] as NodeJS.WritableStream;
-		if (!ffmpeg.stdout || !videoInput || !audioInput) throw new Error("Could not create ffmpeg pipes");
-
-		const videoSource = Readable.fromWeb(result.videoStream as any);
-		const audioSource = Readable.fromWeb(result.audioStream as any);
-		const cleanup = () => {
-			try { videoSource.destroy(); } catch {}
-			try { audioSource.destroy(); } catch {}
-			try { videoInput.destroy(); } catch {}
-			try { audioInput.destroy(); } catch {}
-			if (ffmpeg.exitCode === null) {
-				try { ffmpeg.kill("SIGKILL"); } catch {}
-			}
-			safeAbortSabr(sabrSession);
-			if (reloadHandler) sabrSession.off("reloadPlayerResponse", reloadHandler);
-		};
+		const reader = result.videoStream.getReader();
 		const sabrSession = sabr;
-		let ffmpegError: Error | undefined;
-		ffmpeg.once("error", (error) => {
-			ffmpegError = error;
-		});
-		videoSource.on("error", (error) => ffmpeg.stdin?.destroy(error));
-		audioSource.on("error", (error) => ffmpeg.stdin?.destroy(error));
-		videoSource.pipe(videoInput as any);
-		audioSource.pipe(audioInput as any);
-		videoSource.once("end", () => videoInput.end());
-		audioSource.once("end", () => audioInput.end());
-
 		const nodeStream = Readable.from(
 			(async function* () {
 				try {
-					for await (const chunk of ffmpeg.stdout!) {
+					while (true) {
 						throwIfAborted();
-						yield Buffer.from(chunk);
+						const { done, value } = await reader.read();
+						if (done) break;
+						yield Buffer.from(value);
 					}
-					await new Promise<void>((resolve, reject) => {
-						if (ffmpegError) return reject(ffmpegError);
-						if (ffmpeg.exitCode !== null) return ffmpeg.exitCode === 0 ? resolve() : reject(new Error(`ffmpeg exited with code ${ffmpeg.exitCode}`));
-						ffmpeg.once("close", (code) => code === 0 ? resolve() : reject(ffmpegError ?? new Error(`ffmpeg exited with code ${code}`)));
-					});
 				} finally {
-					cleanup();
+					try {
+						await reader.cancel();
+					} catch {}
+					try {
+						reader.releaseLock();
+					} catch {}
+					safeAbortSabr(sabrSession);
+					if (reloadHandler) sabrSession.off("reloadPlayerResponse", reloadHandler);
 				}
 			})(),
 		);
-		nodeStream.on("close", cleanup);
 		return {
 			title,
 			stream: nodeStream,
 			format: {
-				mimeType: outputMimeType,
+				mimeType: videoFormat.mimeType ?? "video/mp4",
 				itag: Number(videoFormat.itag ?? 0),
-				contentLength: Number(videoFormat.contentLength ?? 0) + Number(audioFormat.contentLength ?? 0),
+				contentLength: Number(videoFormat.contentLength ?? 0),
 			},
 		};
 	} catch (error) {
