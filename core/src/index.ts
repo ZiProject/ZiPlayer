@@ -1,4 +1,5 @@
 import { PlayerManager, getGlobalManager } from "./structures/PlayerManager";
+import "./controller/SavePlayerFacade";
 
 export { Player } from "./structures/Player";
 export { Queue } from "./structures/Queue";
@@ -14,6 +15,8 @@ export { QueueController } from "./controller/QueueController";
 export { AntiStuckController } from "./controller/AntiStuckController";
 export { TransitionController } from "./controller/TransitionController";
 export { PreloadController } from "./controller/PreloadController";
+export { SaveController } from "./controller/SaveController";
+export { installSaveFacade } from "./controller/SavePlayerFacade";
 
 export type {
 	PlayerAction as PlayerActionMessage,
