@@ -106,7 +106,10 @@ export class PlaybackOrchestrator {
 		const from = this.session.track;
 		const endedSession = this.session;
 		endedSession.markEnded();
-		this.stopPlayback(endedSession.signal);
+		// Do not stop the audio player here. A TRACK_END can be followed by a
+		// transition-aware start, and PlaybackController must still be able to
+		// see the previous resource when deciding whether to transition.
+		this.o.trackLoader?.cancelPreload();
 		let next = await this.nextThroughBus(false, endedSession.signal);
 		if (next) { await this.start(next, new AbortController().signal, from); return; }
 		if (this.o.queueController?.autoPlay) {
@@ -118,6 +121,7 @@ export class PlaybackOrchestrator {
 				if (queuedNext) { await this.start(queuedNext, new AbortController().signal, from); return; }
 			}
 		}
+		this.stopPlayback(new AbortController().signal);
 		this.publishState();
 	}
 	private async seek(position: number, s: AbortSignal) {
@@ -137,16 +141,20 @@ export class PlaybackOrchestrator {
 		if (s.aborted) return;
 		const from = this.session?.track ?? null;
 		const oldSession = this.session;
-		this.stopPlayback(s);
+		const next = await this.nextThroughBus(true, s);
 		if (oldSession?.isActive()) { oldSession.markEnded(); this.bus.event({ type: "TRACK_END", session: oldSession.snapshot() }); }
 		this.o.trackLoader?.cancelPreload();
-		const next = await this.nextThroughBus(true, s);
 		if (next) await this.start(next, s, from);
+		else this.stopPlayback(s);
 	}
 	private async start(track: Track, s: AbortSignal, from: Track | null = null) {
 		if (s.aborted) return;
 		const previous = this.session;
-		this.stopPlayback(s);
+		const transition = from && this.o.transitionController?.plan(from, track);
+		// Keep the current AudioPlayer/resource alive until the new resource is
+		// handed to PlaybackController when a transition is actually requested.
+		// The old implementation stopped first, which made crossfade unreachable.
+		if (!transition?.enabled) this.stopPlayback(s);
 		previous?.markStopped();
 		this.o.trackLoader?.resetRecovery(previous?.track ?? undefined);
 		const hasPreload = this.o.trackLoader?.hasPreload(track) ?? false;
