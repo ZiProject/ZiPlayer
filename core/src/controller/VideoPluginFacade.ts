@@ -4,7 +4,6 @@ import { withTimeout } from "../utils/timeout";
 
 export type VideoResolveOptions = {
 	signal?: AbortSignal;
-	quality?: "high" | "low" | string;
 };
 
 declare module "../plugins" {
@@ -14,9 +13,10 @@ declare module "../plugins" {
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
-	if (signal?.aborted) {
-		throw signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted", "AbortError");
-	}
+	if (!signal?.aborted) return;
+	const error = signal.reason instanceof Error ? signal.reason : new Error("The operation was aborted");
+	error.name = "AbortError";
+	throw error;
 }
 
 function getPrimary(manager: PluginManager, track: Track) {
@@ -46,7 +46,6 @@ export function installVideoPluginFacade(): void {
 			return null;
 		}
 
-		const timeoutMs = this["options"]?.extractorTimeout ?? 50000;
 		const candidates = [
 			primary,
 			...this
@@ -68,7 +67,7 @@ export function installVideoPluginFacade(): void {
 				this.debug(`[Video] ${plugin.name} resolving video: ${track.title}`);
 				const result = await withTimeout(
 					plugin.getVideo!(track, controller.signal),
-					timeoutMs,
+					50000,
 					`${plugin.name} getVideo timeout`,
 				);
 
