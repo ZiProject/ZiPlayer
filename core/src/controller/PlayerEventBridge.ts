@@ -153,9 +153,10 @@ export class PlayerEventBridge {
 	private toArgs(event: PlayerEvent): any[] {
 		switch (event.type) {
 			case "TRACK_STARTED": return [event.track];
-			case "TRACK_ERROR": return [event.session, event.error];
-			case "STUCK_DETECTED": return [event.session, event.reason];
-			case "RECOVERY_FAILED": return [event.session];
+			case "TRACK_ERROR": return [event.error, event.session.track ?? undefined];
+			case "TRACK_END": return event.session.track ? [event.session.track] : [];
+			case "STUCK_DETECTED": return [event.session.track ?? null];
+			case "RECOVERY_FAILED": return [];
 			case "trackRequested": return [event.track, event.session];
 			case "stateChanged": return [event.oldState, event.newState];
 			case "queueChanged": return [event.queue];
