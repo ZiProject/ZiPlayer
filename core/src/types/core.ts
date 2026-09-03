@@ -273,6 +273,8 @@ export interface ManagerEvents {
 	streamError: [player: Player, error: Error, track: Track | null];
 	forwardModeStart: [player: Player, leader: Player];
 	forwardModeEnd: [player: Player, leader: Player, reason: string | undefined];
+	seek: [player: Player, payload: { track: Track; position: number }];
+	trackStuck: [player: Player, track: Track | null];
 }
 
 export interface PlayerEvents {

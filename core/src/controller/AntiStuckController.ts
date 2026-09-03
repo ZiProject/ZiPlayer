@@ -1,35 +1,12 @@
-import type { PlayerBus, PlayerAction } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
-import type { Track } from "../types";
-
-export interface AntiStuckControllerOptions {
-	enabled?: boolean;
-	maxRetries?: number;
-	retryDelayMs?: number;
-	reusePreloadFirst?: boolean;
-	reduceQualityOnRetry?: boolean;
-	controlledSkipThreshold?: number;
-	bus?: PlayerBus;
-}
-export interface AntiStuckRetryContext {
-	session: PlaybackSession;
-	track: Track;
-	retry: number;
-	reason?: string;
-}
-export interface AntiStuckRetryHandlers {
-	retry: (context: AntiStuckRetryContext) => Promise<boolean>;
-	skip: (context: AntiStuckRetryContext) => Promise<void> | void;
-}
-export interface LegacyAntiStuckRetryContext {
-	track: Track;
-	retry: number;
-	reason?: unknown;
-	signal: AbortSignal;
-}
-export interface LegacyAntiStuckRetryHandlers {
-	retry: (context: LegacyAntiStuckRetryContext) => Promise<boolean>;
-}
+import type {
+	PlayerBus,
+	PlayerAction,
+	Track,
+	AntiStuckControllerOptions,
+	AntiStuckRetryHandlers,
+	LegacyAntiStuckRetryHandlers,
+} from "../types";
 
 export class AntiStuckController {
 	private readonly enabled: boolean;
