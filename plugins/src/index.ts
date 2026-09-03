@@ -34,6 +34,7 @@
  * const result = await youtubePlugin.search("Never Gonna Give You Up", "user123");
  */
 export * from "./YouTubePlugin.js";
+export * from "./YouTubeVideo.js";
 
 /**
  * SoundCloud plugin for handling SoundCloud tracks, playlists, and search.
