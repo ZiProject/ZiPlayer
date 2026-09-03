@@ -1,17 +1,18 @@
 import type { Player } from "../structures/Player";
 import type { PlayerManager } from "../structures/PlayerManager";
 import type { PlayerEventType, PlayerBus, PlayerEvent } from "../structures/PlayerBus";
+import type { PlayerEvents } from "../types";
 
 import { PlayerEventDebug } from "./PlayerEventDebug";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
 
-/** Bridges canonical PlayerBus events to the public Player event API.
- *
- * PlayerManager is intentionally the single owner of Player -> Manager forwarding.
- * Keeping manager emission out of this bridge prevents duplicate notifications.
+/** Bridges canonical PlayerBus events to the public Player event API and
+ * forwards every public PlayerEvent to PlayerManager with the Player prefix
+ * required by ManagerEvents.
  */
 export class PlayerEventBridge {
 	private readonly detach: Array<() => void> = [];
+	private readonly playerEventListeners: Array<{ event: keyof PlayerEvents; listener: (...args: any[]) => void }> = [];
 	private disposed = false;
 	private readonly recent = new Map<string, number>();
 	private previousQueue: any[];
@@ -50,14 +51,76 @@ export class PlayerEventBridge {
 		];
 		for (const type of events) this.detach.push(this.bus.subscribe(type, (event) => this.forward(event)));
 
-		// Connection errors are canonical bus outputs, not PlayerEvents. Bridge them
-		// into the legacy public Player event so existing Manager forwarding keeps working.
+		// Public-only events (seek/filter/tts/queue compatibility/forward/stats/etc.)
+		// are forwarded from the Player emitter so there is exactly one bridge into
+		// PlayerManager regardless of where the Player event originated.
+		this.attachManagerForwarders();
+
 		this.detach.push(
 			this.bus.onOutput("[Connection]->[Player]:error", (event) => {
 				if (this.disposed || this.player.destroyed) return;
-				this.player.emit("connectionError", event.error, event.operation, event.sessionId);
+				this.player.emit("connectionError", event.error);
 			}),
 		);
+	}
+
+	private attachManagerForwarders(): void {
+		const events: Array<keyof PlayerEvents> = [
+			"debug",
+			"willPlay",
+			"trackStart",
+			"trackEnd",
+			"queueEnd",
+			"playerError",
+			"connectionError",
+			"volumeChange",
+			"queueAdd",
+			"queueAddList",
+			"queueRemove",
+			"playerPause",
+			"playerResume",
+			"playerStop",
+			"playerDestroy",
+			"seek",
+			"ttsStart",
+			"ttsEnd",
+			"filterApplied",
+			"filterRemoved",
+			"filtersCleared",
+			"trackStuck",
+			"streamError",
+			"stats",
+			"forwardModeStart",
+			"forwardModeEnd",
+		];
+
+		for (const event of events) {
+			const listener = (...args: any[]) => this.forwardPlayerEvent(event, args);
+			this.playerEventListeners.push({ event, listener });
+			this.player.on(event as string, listener);
+		}
+	}
+
+	private forwardPlayerEvent<K extends keyof PlayerEvents>(event: K, args: PlayerEvents[K]): void {
+		if (this.disposed || this.player.destroyed) return;
+
+		try {
+			switch (event) {
+				case "debug":
+					this.manager.emit("debug", ...(args as PlayerEvents["debug"]));
+					return;
+				case "stats":
+					this.manager.emit("stats", ...(args as PlayerEvents["stats"]));
+					return;
+				case "seek":
+					this.manager.emit("seek", this.player, ...(args as PlayerEvents["seek"]));
+					return;
+				default:
+					this.manager.emit(event as any, this.player, ...(args as any));
+			}
+		} catch (error) {
+			this.debug("MANAGER EMIT ERROR", { event, error });
+		}
 	}
 
 	private forward(event: PlayerEvent): void {
@@ -103,87 +166,51 @@ export class PlayerEventBridge {
 
 	private toPublicEventName(type: PlayerEventType): string | null {
 		switch (type) {
-			case "initialized":
-				return "initialized";
-			case "ready":
-				return "ready";
-			case "destroyed":
-				return "destroyed";
-			case "TRACK_LOADING":
-				return "trackLoading";
-			case "TRACK_LOADED":
-				return "trackLoaded";
-			case "TRACK_STARTED":
-				return "trackStart";
-			case "TRACK_ERROR":
-				return "playerError";
-			case "TRACK_END":
-				return "trackEnd";
-			case "STREAM_ABORTED":
-				return "streamAborted";
-			case "STUCK_DETECTED":
-				return "trackStuck";
-			case "RECOVERY_STARTED":
-				return "recoveryStart";
-			case "RECOVERY_FAILED":
-				return "recoveryFailed";
-			case "preloadStateChanged":
-				return "preloadStateChanged";
-			case "preloadPromoted":
-				return "preloadPromoted";
-			case "preloadCancelled":
-				return "preloadCancelled";
-			case "queueChanged":
-				return "queueChange";
-			case "volumeRequested":
-				return "volumeChange";
-			case "playbackStateChanged":
-				return "playbackStateChanged";
-			case "playbackSessionCreated":
-				return "playbackSessionCreated";
-			case "trackRequested":
-				return "trackRequested";
-			case "stateChanged":
-				return "stateChanged";
-			default:
-				return null;
+			case "initialized": return "initialized";
+			case "ready": return "ready";
+			case "destroyed": return "destroyed";
+			case "TRACK_LOADING": return "trackLoading";
+			case "TRACK_LOADED": return "trackLoaded";
+			case "TRACK_STARTED": return "trackStart";
+			case "TRACK_ERROR": return "playerError";
+			case "TRACK_END": return "trackEnd";
+			case "STREAM_ABORTED": return "streamAborted";
+			case "STUCK_DETECTED": return "trackStuck";
+			case "RECOVERY_STARTED": return "recoveryStart";
+			case "RECOVERY_FAILED": return "recoveryFailed";
+			case "preloadStateChanged": return "preloadStateChanged";
+			case "preloadPromoted": return "preloadPromoted";
+			case "preloadCancelled": return "preloadCancelled";
+			case "queueChanged": return "queueChange";
+			case "volumeRequested": return "volumeChange";
+			case "playbackStateChanged": return "playbackStateChanged";
+			case "playbackSessionCreated": return "playbackSessionCreated";
+			case "trackRequested": return "trackRequested";
+			case "stateChanged": return "stateChanged";
+			default: return null;
 		}
 	}
 
 	private toArgs(event: PlayerEvent): any[] {
 		switch (event.type) {
-			case "TRACK_STARTED":
-				return [event.track];
-			case "TRACK_ERROR":
-				return [event.session, event.error];
-			case "STUCK_DETECTED":
-				return [event.session, event.reason];
-			case "RECOVERY_FAILED":
-				return [event.session];
-			case "trackRequested":
-				return [event.track, event.session];
-			case "stateChanged":
-				return [event.oldState, event.newState];
-			case "queueChanged":
-				return [event.queue];
-			case "volumeRequested":
-				return [event.volume];
-			case "preloadStateChanged":
-				return [event.state];
-			case "preloadPromoted":
-				return [event.track];
-			case "preloadCancelled":
-				return [];
+			case "TRACK_STARTED": return [event.track];
+			case "TRACK_ERROR": return [event.session, event.error];
+			case "STUCK_DETECTED": return [event.session, event.reason];
+			case "RECOVERY_FAILED": return [event.session];
+			case "trackRequested": return [event.track, event.session];
+			case "stateChanged": return [event.oldState, event.newState];
+			case "queueChanged": return [event.queue];
+			case "volumeRequested": return [event.volume];
+			case "preloadStateChanged": return [event.state];
+			case "preloadPromoted": return [event.track];
+			case "preloadCancelled": return [];
 			case "initialized":
 			case "ready":
-			case "destroyed":
-				return [];
-			default:
-				return event.session ? [event.session] : [];
+			case "destroyed": return [];
+			default: return event.session ? [event.session] : [];
 		}
 	}
 
-	/** Restores legacy queue notifications from the canonical queueChanged event. */
 	private emitQueueCompatibilityEvents(event: PlayerEvent): void {
 		if (event.type !== "queueChanged") return;
 
@@ -207,24 +234,11 @@ export class PlayerEventBridge {
 	private describeArgs(event: PlayerEvent, args: any[]): unknown[] {
 		return args.map((arg) => {
 			if (!arg || typeof arg !== "object") return arg;
-			if (event.type === "queueChanged")
-				return {
-					kind: "queue",
-					size: Array.isArray(arg) ? arg.length : undefined,
-					trackIds: Array.isArray(arg) ? arg.map((t: any) => t?.id) : undefined,
-				};
+			if (event.type === "queueChanged") return { kind: "queue", size: Array.isArray(arg) ? arg.length : undefined, trackIds: Array.isArray(arg) ? arg.map((t: any) => t?.id) : undefined };
 			if (event.type === "stateChanged") return { kind: "state", status: arg.status, state: arg.state };
-			if (event.type === "preloadStateChanged")
-				return { kind: "preload", requestedTrackId: arg.requestedTrack?.id, valid: arg.valid };
+			if (event.type === "preloadStateChanged") return { kind: "preload", requestedTrackId: arg.requestedTrack?.id, valid: arg.valid };
 			const value = arg as any;
-			return {
-				kind: "object",
-				id: value.id,
-				title: value.title,
-				status: value.status,
-				trackId: value.track?.id,
-				track: value.track?.title,
-			};
+			return { kind: "object", id: value.id, title: value.title, status: value.status, trackId: value.track?.id, track: value.track?.title };
 		});
 	}
 
@@ -237,5 +251,6 @@ export class PlayerEventBridge {
 		this.disposed = true;
 		this.debug("disposing");
 		for (const detach of this.detach.splice(0)) detach();
+		for (const { event, listener } of this.playerEventListeners.splice(0)) this.player.removeListener(event as string, listener);
 	}
 }
