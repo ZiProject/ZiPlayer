@@ -1,7 +1,8 @@
 import { BasePlugin, Track, SearchResult, StreamInfo, Player } from "ziplayer";
+import { EnabledTrackTypes } from "googlevideo/utils";
 
 import { Innertube, Log, UniversalCache, Platform, type Types } from "youtubei.js";
-import { createSabrStream, DEFAULT_SABR_OPTIONS } from "./utils/sabr-stream-factory.js";
+import { createSabrStream, createSabrVideoStream } from "./utils/sabr-stream-factory.js";
 import { webStreamToNodeStream } from "./utils/stream-converter.js";
 import { mintYouTubePoToken } from "./utils/youtube-botguard.js";
 import { Readable } from "stream";
@@ -614,7 +615,13 @@ export class YouTubePlugin extends BasePlugin {
 		this.debug(`Expected: "${expectedTitle}"`);
 		this.debug(`Actual: "${actualTitle}"`);
 
-		const sabrOptions = { ...DEFAULT_SABR_OPTIONS };
+		const sabrOptions = {
+			preferWebM: true,
+			preferOpus: true,
+			audioQuality: "medium",
+			enabledTrackTypes: EnabledTrackTypes.AUDIO_ONLY,
+		};
+
 		const { stream, title, format } = await createSabrStream(id, this.client, sabrOptions, signal);
 
 		this.debug("✅ Sabr download successful, stream ready");
@@ -738,6 +745,32 @@ export class YouTubePlugin extends BasePlugin {
 		} catch (e: any) {
 			throw new Error(`YouTube fallback search failed: ${e?.message || e}`);
 		}
+	}
+
+	async getVideo(track: Track, signal?: AbortSignal): Promise<StreamInfo> {
+		if (!track?.url && !track?.id) throw new Error("Track must have a URL or ID");
+		const plugin = this as any;
+		plugin.throwIfAborted?.(signal);
+		await plugin.ready;
+		plugin.throwIfAborted?.(signal);
+		const id = track.id || plugin.extractVideoId(track.url);
+		if (!id) throw new Error("Invalid YouTube video id");
+		plugin.debug("🎬 Resolving YouTube video through SABR:", id);
+		const result = await createSabrVideoStream(id, plugin.client, undefined, signal);
+		plugin.throwIfAborted?.(signal);
+		plugin.debug("✅ YouTube SABR video stream ready:", result.format);
+		return {
+			stream: result.stream,
+			type: "arbitrary",
+			metadata: {
+				...track.metadata,
+				title: result.title,
+				itag: result.format.itag,
+				mime: result.format.mimeType,
+				contentLength: result.format.contentLength,
+				mediaType: "video",
+			},
+		};
 	}
 
 	private extractVideoId(input: string): string | null {
