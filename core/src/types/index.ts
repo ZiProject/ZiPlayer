@@ -5,4 +5,3 @@ export * from "./filter";
 export * from "./controller";
 export * from "./bus";
 export * from "./trackLoader";
-export * from "./manager-events";

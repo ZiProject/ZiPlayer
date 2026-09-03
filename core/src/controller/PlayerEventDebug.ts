@@ -93,11 +93,11 @@ export class PlayerEventDebug {
 		return DEBUG_PRIORITY[this.level] >= DEBUG_PRIORITY[level];
 	}
 
-	private log(level: PlayerDebugLevel, message: string, value?: unknown) {
+	private log(level: PlayerDebugLevel, message: string, ...value: any[]) {
 		if (!this.enabled(level)) return;
 		this.logger?.(`[PlayerEventDebug:${this.id}] ${message}`, value);
 	}
-	public bridge(message: string, value?: unknown): void {
-		this.log("debug", message, value);
+	public bridge(message: string, ...value: any[]): void {
+		this.log("verbose", message, value);
 	}
 }

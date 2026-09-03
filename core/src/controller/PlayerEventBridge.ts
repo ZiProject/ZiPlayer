@@ -96,49 +96,85 @@ export class PlayerEventBridge {
 
 	private toPublicEventName(type: PlayerEventType): string | null {
 		switch (type) {
-			case "initialized": return "initialized";
-			case "ready": return "ready";
-			case "destroyed": return "destroyed";
-			case "TRACK_LOADING": return "trackLoading";
-			case "TRACK_LOADED": return "trackLoaded";
-			case "TRACK_STARTED": return "trackStart";
-			case "TRACK_ERROR": return "playerError";
-			case "TRACK_END": return "trackEnd";
-			case "STREAM_ABORTED": return "streamAborted";
-			case "STUCK_DETECTED": return "trackStuck";
-			case "RECOVERY_STARTED": return "recoveryStart";
-			case "RECOVERY_FAILED": return "recoveryFailed";
-			case "preloadStateChanged": return "preloadStateChanged";
-			case "preloadPromoted": return "preloadPromoted";
-			case "preloadCancelled": return "preloadCancelled";
-			case "queueChanged": return "queueChange";
-			case "volumeRequested": return "volumeChange";
-			case "playbackStateChanged": return "playbackStateChanged";
-			case "playbackSessionCreated": return "playbackSessionCreated";
-			case "trackRequested": return "trackRequested";
-			case "stateChanged": return "stateChanged";
-			default: return null;
+			case "initialized":
+				return "initialized";
+			case "ready":
+				return "ready";
+			case "destroyed":
+				return "destroyed";
+			case "TRACK_LOADING":
+				return "trackLoading";
+			case "TRACK_LOADED":
+				return "trackLoaded";
+			case "TRACK_STARTED":
+				return "trackStart";
+			case "TRACK_ERROR":
+				return "playerError";
+			case "TRACK_END":
+				return "trackEnd";
+			case "STREAM_ABORTED":
+				return "streamAborted";
+			case "STUCK_DETECTED":
+				return "trackStuck";
+			case "RECOVERY_STARTED":
+				return "recoveryStart";
+			case "RECOVERY_FAILED":
+				return "recoveryFailed";
+			case "preloadStateChanged":
+				return "preloadStateChanged";
+			case "preloadPromoted":
+				return "preloadPromoted";
+			case "preloadCancelled":
+				return "preloadCancelled";
+			case "queueChanged":
+				return "queueChange";
+			case "volumeRequested":
+				return "volumeChange";
+			case "playbackStateChanged":
+				return "playbackStateChanged";
+			case "playbackSessionCreated":
+				return "playbackSessionCreated";
+			case "trackRequested":
+				return "trackRequested";
+			case "stateChanged":
+				return "stateChanged";
+			default:
+				return null;
 		}
 	}
 
 	private toArgs(event: PlayerEvent): any[] {
 		switch (event.type) {
-			case "TRACK_STARTED": return [event.track];
-			case "TRACK_ERROR": return [event.error, event.session.track ?? undefined];
-			case "TRACK_END": return event.session.track ? [event.session.track] : [];
-			case "STUCK_DETECTED": return [event.session.track ?? null];
-			case "RECOVERY_FAILED": return [];
-			case "trackRequested": return [event.track, event.session];
-			case "stateChanged": return [event.oldState, event.newState];
-			case "queueChanged": return [event.queue];
-			case "volumeRequested": return [event.volume];
-			case "preloadStateChanged": return [event.state];
-			case "preloadPromoted": return [event.track];
-			case "preloadCancelled": return [];
+			case "TRACK_STARTED":
+				return [event.track];
+			case "TRACK_ERROR":
+				return [event.error, event.session.track ?? undefined];
+			case "TRACK_END":
+				return event.session.track ? [event.session.track] : [];
+			case "STUCK_DETECTED":
+				return [event.session.track ?? null];
+			case "RECOVERY_FAILED":
+				return [];
+			case "trackRequested":
+				return [event.track, event.session];
+			case "stateChanged":
+				return [event.oldState, event.newState];
+			case "queueChanged":
+				return [event.queue];
+			case "volumeRequested":
+				return [event.volume];
+			case "preloadStateChanged":
+				return [event.state];
+			case "preloadPromoted":
+				return [event.track];
+			case "preloadCancelled":
+				return [];
 			case "initialized":
 			case "ready":
-			case "destroyed": return [];
-			default: return event.session ? [event.session] : [];
+			case "destroyed":
+				return [];
+			default:
+				return event.session ? [event.session] : [];
 		}
 	}
 
@@ -168,7 +204,7 @@ export class PlayerEventBridge {
 
 	private debug(message: string, ...args: any[]): void {
 		try {
-			this.eventDebug.emit("debug", `[PlayerEventBridge:${this.player.guildId}] ${message}`, ...args);
+			this.eventDebug.bridge("debug", `[PlayerEventBridge:${this.player.guildId}] ${message}`, ...args);
 		} catch {
 			// Debugging must never affect playback/event propagation.
 		}
@@ -178,7 +214,11 @@ export class PlayerEventBridge {
 		if (this.disposed) return;
 		this.disposed = true;
 		for (const unsubscribe of this.detach.splice(0)) {
-			try { unsubscribe(); } catch { /* noop */ }
+			try {
+				unsubscribe();
+			} catch {
+				/* noop */
+			}
 		}
 		this.recent.clear();
 	}

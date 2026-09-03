@@ -27,13 +27,6 @@ export type {
 
 export type { PlaybackOrchestratorOptions } from "./structures/PlaybackOrchestrator";
 export type { QueueControllerOptions } from "./controller/QueueController";
-export type {
-	AntiStuckControllerOptions,
-	AntiStuckRetryContext,
-	AntiStuckRetryHandlers,
-	LegacyAntiStuckRetryContext,
-	LegacyAntiStuckRetryHandlers,
-} from "./controller/AntiStuckController";
 export type { TransitionControllerOptions, TransitionPlan } from "./controller/TransitionController";
 export type { PreloadControllerOptions } from "./controller/PreloadController";
 export { PreloadManager } from "./structures/PreloadManager";
