@@ -115,7 +115,6 @@ export class PlayerBus {
 		});
 	}
 
-	/** Request/reply RPC for operations that return data but are not Player input/output events. */
 	public requestRpc<TRequest, TResponse>(type: string, request: TRequest, options: PlayerBusRpcOptions = {}): Promise<TResponse> {
 		if (this.disposed) return Promise.reject(new PlayerBusRequestError("disposed", type, `PlayerBus is disposed; cannot request RPC "${type}"`));
 		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
@@ -124,8 +123,21 @@ export class PlayerBus {
 		const requestId = createPlayerRequestId();
 		const context: PlayerBusRpcContext = { requestId, signal: options.signal ?? new AbortController().signal, timestamp: Date.now() };
 		const operation = Promise.resolve().then(() => handler(request, context));
-		const timeout = options.timeoutMs === undefined ? undefined : new Promise<never>((_, reject) => setTimeout(() => reject(new PlayerBusRequestError("timeout", type, `Timed out after ${options.timeoutMs}ms awaiting RPC "${type}"`)), options.timeoutMs));
-		return timeout ? Promise.race([operation, timeout]) : operation;
+		if (options.timeoutMs === undefined) return operation;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new PlayerBusRequestError("timeout", type, `Timed out after ${options.timeoutMs}ms awaiting RPC "${type}"`)), options.timeoutMs); });
+		return Promise.race([operation, timeout]).finally(() => { if (timer) clearTimeout(timer); });
+	}
+
+	/** Invoke a synchronous RPC handler without exposing its owner through Player. */
+	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest): TResponse {
+		if (this.disposed) throw new PlayerBusRequestError("disposed", type, `PlayerBus is disposed; cannot request RPC "${type}"`);
+		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
+		if (!handler) throw new PlayerBusRequestError("unhandled", type, `No RPC handler registered for "${type}"`);
+		const context: PlayerBusRpcContext = { requestId: createPlayerRequestId(), signal: new AbortController().signal, timestamp: Date.now() };
+		const value = handler(request, context);
+		if (value && typeof (value as any).then === "function") throw new Error(`RPC "${type}" is asynchronous; use requestRpc() instead`);
+		return value as TResponse;
 	}
 
 	public registerRpc<TRequest, TResponse>(type: string, handler: RpcHandler<TRequest, TResponse>): () => void {
@@ -145,7 +157,6 @@ export class PlayerBus {
 	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void { return this.addListener(this.eventListeners, type, listener as any); }
 	public registerQuery<K extends PlayerQuery>(query: K, handler: PlayerQueryHandler<K>): () => void { let handlers = this.queryHandlers.get(query); if (!handlers) { handlers = new Set(); this.queryHandlers.set(query, handlers); } handlers.add(handler); return () => handlers?.delete(handler); }
 	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> { if (this.disposed) return Promise.resolve(undefined as any); const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined; return Promise.resolve(handler ? handler() : (undefined as any)); }
-	/** Synchronous state query for facade getters. Handler MUST be synchronous. */
 	public querySync<K extends PlayerQuery>(query: K): PlayerQueryMap[K] { if (this.disposed) return undefined as any; const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined; if (!handler) return undefined as any; const value = handler(); if (value && typeof (value as any).then === "function") throw new Error(`Query "${query}" is asynchronous; use query() instead`); return value as PlayerQueryMap[K]; }
 	public clear(): void { for (const cancel of [...this.pendingRequests]) cancel(); this.inputListeners.clear(); this.outputListeners.clear(); this.eventListeners.clear(); this.actionListeners.clear(); this.queryHandlers.clear(); this.rpcHandlers.clear(); }
 	public dispose(): void { if (this.disposed) return; this.disposed = true; this.clear(); }
