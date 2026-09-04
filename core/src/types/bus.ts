@@ -129,6 +129,9 @@ export interface PlayerQueryMap {
 	queueCurrent: Track | null;
 	playerState: PlaybackSessionSnapshot["status"] | "idle";
 	queue: Track[];
+	previousTracks: Track[];
+	previousTrack: Track | null;
+	willNext: Track | null;
 	relatedTracks: Track[] | null;
 	playbackSession: PlaybackSessionSnapshot | null;
 	currentResource: unknown | null;
@@ -136,6 +139,9 @@ export interface PlayerQueryMap {
 	volume: number;
 	isPlaying: boolean;
 	isPaused: boolean;
+	isLive: boolean;
+	isIdle: boolean;
+	isBuffering: boolean;
 	filterString: string;
 	filteredStream: StreamInfo | null;
 	transitionSettings: Record<string, unknown>;
