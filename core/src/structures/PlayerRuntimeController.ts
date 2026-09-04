@@ -4,12 +4,12 @@ import type { PlayerBus } from "./PlayerBus";
  * Runtime composition/lifecycle owner for a Player.
  *
  * Player is the public communication facade; this object owns the runtime
- * graph and is the only place that is responsible for shutting it down.
- * Controllers should never be reached from Player business methods.
+ * graph and is the only place responsible for shutting it down.
  */
 export class PlayerRuntimeController {
 	private disposed = false;
 	private readonly disposables = new Map<string, () => void | Promise<void>>();
+	private readonly errors: Array<{ name: string; error: unknown }> = [];
 
 	public constructor(public readonly bus: PlayerBus) {}
 
@@ -30,10 +30,7 @@ export class PlayerRuntimeController {
 		this.disposables.set(name, cleanup);
 	}
 
-	/**
-	 * Dispose in reverse registration order so dependencies are torn down after
-	 * the workflows that use them.
-	 */
+	/** Teardown in reverse dependency/registration order. */
 	public async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
@@ -44,22 +41,16 @@ export class PlayerRuntimeController {
 			try {
 				await cleanup();
 			} catch (error) {
-				// Runtime teardown must be best-effort: one broken controller must
-				// not prevent the remaining graph from being destroyed.
-				this.bus.event({
-					type: "TRACK_ERROR",
-					session: {
-						id: -1,
-						track: null,
-						resource: null,
-						status: "destroyed",
-						position: null,
-						startedAt: null,
-						} as any,
-					error: error instanceof Error ? error : new Error(`${name} dispose failed: ${String(error)}`),
-				});
+				// Teardown is best-effort. Do not fabricate a playback event for a
+				// lifecycle failure because there may be no active PlaybackSession.
+				this.errors.push({ name, error });
 			}
 		}
+	}
+
+	/** Snapshot teardown failures for diagnostics after dispose. */
+	public get disposalErrors(): ReadonlyArray<{ name: string; error: unknown }> {
+		return this.errors;
 	}
 
 	private resolveDispose(controller: unknown): (() => void | Promise<void>) | null {
