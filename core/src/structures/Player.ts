@@ -29,6 +29,11 @@ import type { PlaybackController } from "../controller/PlaybackController";
 import type { StreamController } from "../controller/StreamController";
 import type { FilterController } from "../controller/FilterController";
 import type { QueueController } from "../controller/QueueController";
+import type { AntiStuckController } from "../controller/AntiStuckController";
+import type { TransitionController } from "../controller/TransitionController";
+import type { VolumeController } from "../controller/VolumeController";
+import type { PreloadController } from "../controller/PreloadController";
+import type { ConnectionController } from "../controller/ConnectionController";
 import type { LifecycleController } from "../controller/LifecycleController";
 import type { ForwardController } from "../controller/ForwardController";
 import type { TTSController } from "../controller/TTSController";
@@ -155,38 +160,22 @@ export class Player extends EventEmitter {
 			this.connection = null;
 			debug(`[Player] AudioPlayer unsubscribed guild=${guildId} reason=${event.reason ?? "unknown"}`);
 		});
-		this.detachResourceRefresh = this.bus.onInput("[Player]->[Resource]:refresh", (event) => {
-			void this.handleResourceRefresh(event);
-		});
+		this.detachResourceRefresh = this.bus.onInput("[Player]->[Resource]:refresh", (event) => { void this.handleResourceRefresh(event); });
 		this.bus.subscribe("volumeRequested", ({ volume }) => this.volumeController.setVolume(volume));
 		if (Array.isArray(this.options.filters) && this.options.filters.length > 0)
-			void this.filterController
-				.applyFilters(this.options.filters)
-				.catch((error) => debug("[FilterController] Initial filter error:", error));
+			void this.filterController.applyFilters(this.options.filters).catch((error) => debug("[FilterController] Initial filter error:", error));
 		this.bus.publish("initialized");
 		this.bus.publish("ready");
 	}
 
-	public debug(message?: any, ...optionalParams: any[]): void {
-		if (this.manager.listenerCount("debug") > 0 || this.manager.debugEnabled)
-			this.manager.emit("debug", `[Player:${this.guildId}] ${message}`, ...optionalParams);
-	}
+	public debug(message?: any, ...optionalParams: any[]): void { if (this.manager.listenerCount("debug") > 0 || this.manager.debugEnabled) this.manager.emit("debug", `[Player:${this.guildId}] ${message}`, ...optionalParams); }
 	public get currentTrack(): Track | null { return this.queueController.current ?? null; }
 	public get queueSize(): number { return this.queueController.snapshot().length; }
 	public get isPlaying(): boolean { return this.playbackController.status === "playing"; }
 	public get isPaused(): boolean { return this.playbackController.status === "paused"; }
-	public get isLive(): boolean {
-		if (this.playbackMode === "FORWARD") return this.forwardLeader?.isLive ?? false;
-		return Boolean(this.currentTrack?.isLive);
-	}
-	public get isIdle(): boolean {
-		if (this.playbackMode === "FORWARD") return this.forwardLeader?.isIdle ?? true;
-		return this.playbackController.status === "idle";
-	}
-	public get isBuffering(): boolean {
-		if (this.playbackMode === "FORWARD") return this.forwardLeader?.isBuffering ?? false;
-		return this.playbackController.status === "buffering";
-	}
+	public get isLive(): boolean { if (this.playbackMode === "FORWARD") return this.forwardLeader?.isLive ?? false; return Boolean(this.currentTrack?.isLive); }
+	public get isIdle(): boolean { if (this.playbackMode === "FORWARD") return this.forwardLeader?.isIdle ?? true; return this.playbackController.status === "idle"; }
+	public get isBuffering(): boolean { if (this.playbackMode === "FORWARD") return this.forwardLeader?.isBuffering ?? false; return this.playbackController.status === "buffering"; }
 	public get volume(): number { return this.volumeController.value; }
 	public set volume(value: number) { this.volumeController.setVolume(value); }
 	public get previousTrack(): Track | null { return this.queue?.previousTracks?.at?.(-1) ?? null; }
@@ -200,19 +189,7 @@ export class Player extends EventEmitter {
 	public debugSearchQuery(query: string): ReturnType<SearchController["debug"]> { return this.searchController.debug(query); }
 	public async connect(channel: VoiceChannel): Promise<VoiceConnection> { return this.bus.request({ type: "[Player]->[Connection]:connect", requestId: createPlayerRequestId(), channel }).then((e) => e.connection); }
 	public async disconnect(): Promise<void> { return this.bus.request({ type: "[Player]->[Connection]:disconnect", requestId: createPlayerRequestId() }).then(() => undefined); }
-	public async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
-		if (this.destroyed) return false;
-		if (query === null) return this.isPlaying || this.isPaused ? true : this.playNext();
-		let tracks: Track[];
-		try {
-			tracks = typeof query === "string" ? (await this.search(query, requestedBy || "Unknown")).tracks : "tracks" in query ? query.tracks : [query];
-		} catch (error) { this.debug("[Player] Play search error:", error); this.emit("playerError", error as Error); return false; }
-		if (tracks.length === 0) return false;
-		if (tracks.length === 1 && this.options.tts?.interrupt !== false && this.ttsController.isTTS(tracks[0])) { await this.ttsController.play(tracks[0]); return true; }
-		this.queueController.addMultiple(tracks);
-		if (this.isPlaying || this.isPaused) { void this.preloadController.preload().catch((error) => this.debug("[Player] Preload after queue add error:", error)); return true; }
-		return this.playNext();
-	}
+	public async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> { if (this.destroyed) return false; if (query === null) return this.isPlaying || this.isPaused ? true : this.playNext(); let tracks: Track[]; try { tracks = typeof query === "string" ? (await this.search(query, requestedBy || "Unknown")).tracks : "tracks" in query ? query.tracks : [query]; } catch (error) { this.debug("[Player] Play search error:", error); this.emit("playerError", error as Error); return false; } if (tracks.length === 0) return false; if (tracks.length === 1 && this.options.tts?.interrupt !== false && this.ttsController.isTTS(tracks[0])) { await this.ttsController.play(tracks[0]); return true; } this.queueController.addMultiple(tracks); if (this.isPlaying || this.isPaused) { void this.preloadController.preload().catch((error) => this.debug("[Player] Preload after queue add error:", error)); return true; } return this.playNext(); }
 	public async playNext(): Promise<boolean> { if (this.destroyed) return false; return this.action({ type: "SKIP" }).then(() => this.isPlaying || this.currentTrack !== null).catch(() => false); }
 	public pause(): boolean { void this.action({ type: "PAUSE" }); return true; }
 	public resume(): boolean { void this.action({ type: "RESUME" }); return true; }
@@ -229,13 +206,7 @@ export class Player extends EventEmitter {
 	public preloadNext(): Promise<void> { return this.preloadController.preload(); }
 	public cancelPreload(): void { this.preloadController.cancel(); }
 	public clearSlot(): void { this.preloadController.clear(); this.streamController.abortCurrent(); }
-	public async fadeResourceVolume(resource: AudioResource, from: number, to: number, durationMs: number): Promise<void> {
-		if (!resource?.volume) return;
-		const duration = Math.max(0, durationMs);
-		if (duration === 0) { resource.volume.setVolume(to); return; }
-		const start = Date.now();
-		while (true) { const progress = Math.min(1, (Date.now() - start) / duration); resource.volume.setVolume(from + (to - from) * progress); if (progress >= 1) return; await new Promise<void>((resolve) => setTimeout(resolve, 25)); }
-	}
+	public async fadeResourceVolume(resource: AudioResource, from: number, to: number, durationMs: number): Promise<void> { if (!resource?.volume) return; const duration = Math.max(0, durationMs); if (duration === 0) { resource.volume.setVolume(to); return; } const start = Date.now(); while (true) { const progress = Math.min(1, (Date.now() - start) / duration); resource.volume.setVolume(from + (to - from) * progress); if (progress >= 1) return; await new Promise<void>((resolve) => setTimeout(resolve, 25)); } }
 	public async applyCrossfadeIn(resource: AudioResource, track: Track): Promise<void> { if (!resource?.volume) return; const target = this.getTrackTargetVolume(track); resource.volume.setVolume(0); this.volumeController.applyLoudness(resource, track, 0); await this.fadeResourceVolume(resource, 0, target, this.resolveSmartTransitionDuration(track)); }
 	public async applyCrossfadeOutCurrent(): Promise<void> { const resource = this.currentResource ?? this.playbackController.activeResource; if (!resource?.volume) return; const current = Number(resource.volume.volume ?? this.getTrackTargetVolume(this.currentTrack as Track)); await this.fadeResourceVolume(resource, current, 0, this.resolveSmartTransitionDuration(this.currentTrack as Track)); }
 	public async crossfadeSkipAndStop(): Promise<void> { await this.applyCrossfadeOutCurrent(); this.playbackController.stop(); }
@@ -291,49 +262,8 @@ export class Player extends EventEmitter {
 	public unsubscribeForward(reason?: string): boolean { return this.forwardController.unsubscribeForward(reason); }
 	public getForwardHealthStatus() { const role: "leader" | "follower" | "none" = this.forwardController.isLeader ? "leader" : this.forwardController.isFollower ? "follower" : "none"; const issues: string[] = []; if (role === "leader") { for (const follower of this.forwardController.forwardFollowers) { if (follower.destroyed || !follower.connection) issues.push(follower.guildId); } } else if (role === "follower" && (!this.forwardController.forwardLeader || this.forwardController.forwardLeader.destroyed)) issues.push("missing leader"); return { guildId: this.guildId, healthy: role === "leader" ? true : issues.length === 0, role, issues, details: { leaderId: this.forwardController.forwardLeader?.guildId, followerCount: this.forwardController.forwardFollowers.size, connectionState: this.connection?.state?.status, audioPlayerState: this.playbackController.status } }; }
 	private isCurrentSession(sessionId: number): boolean { const session = this.orchestrator.currentSession; return !!session && session.owns(sessionId); }
-	private async handleResourceRefresh(event: Extract<PlayerInput, { type: "[Player]->[Resource]:refresh" }>): Promise<void> {
-		try {
-			const session = this.orchestrator.currentSession;
-			if (!session?.track || !session.isActive()) throw new Error("No active playback session");
-			const sessionId = session.id;
-			const position = event.position ?? session.position ?? 0;
-			const info = await this.resolveFreshStream(session.track);
-			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed during resource refresh");
-			if (!info?.stream && !info?.url) throw new Error("No stream available for resource refresh");
-			if (info.remote) throw new Error("Cannot refresh a remote playback resource");
-			await this.bus.action({ type: "FILTER_SET_SOURCE_TYPE", streamType: info.type ?? "arbitrary", requestId: createPlayerRequestId() });
-			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after filter source update");
-			await this.bus.action({ type: "FILTER_APPLY_AND_SEEK", streamInfo: info, position: Math.max(0, position), requestId: createPlayerRequestId() });
-			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after filter seek");
-			const processed = await this.bus.query("filteredStream");
-			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed while reading filtered stream");
-			if (!processed) throw new Error("Filter controller did not produce a stream");
-			const active = await this.streamController.replace(processed, session);
-			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after stream replacement");
-			const resource = this.playbackController.createResource(active.stream, session.track);
-			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed before resource activation");
-			session.setResource(resource);
-			this.playbackController.activeResource = resource;
-			this.playbackController.play(resource, session);
-			session.markPlaying(Math.max(0, position));
-			this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
-			this.bus.emitOutput({ type: "[Resource]->[Player]:refreshed", requestId: event.requestId, session: session.snapshot() });
-		} catch (error) {
-			this.bus.emitOutput({ type: "[Resource]->[Player]:error", requestId: event.requestId, error: error instanceof Error ? error : new Error(String(error)) });
-		}
-	}
+	private async handleResourceRefresh(event: Extract<PlayerInput, { type: "[Player]->[Resource]:refresh" }>): Promise<void> { try { const session = this.orchestrator.currentSession; if (!session?.track || !session.isActive()) throw new Error("No active playback session"); const sessionId = session.id; const position = event.position ?? session.position ?? 0; const info = await this.resolveFreshStream(session.track); if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed during resource refresh"); if (!info?.stream && !info?.url) throw new Error("No stream available for resource refresh"); if (info.remote) throw new Error("Cannot refresh a remote playback resource"); await this.bus.action({ type: "FILTER_SET_SOURCE_TYPE", streamType: info.type ?? "arbitrary", requestId: createPlayerRequestId() }); if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after filter source update"); await this.bus.action({ type: "FILTER_APPLY_AND_SEEK", streamInfo: info, position: Math.max(0, position), requestId: createPlayerRequestId() }); if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after filter seek"); const processed = await this.bus.query("filteredStream"); if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed while reading filtered stream"); if (!processed) throw new Error("Filter controller did not produce a stream"); const active = await this.streamController.replace(processed, session); if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after stream replacement"); const resource = this.playbackController.createResource(active.stream, session.track); if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed before resource activation"); session.setResource(resource); this.playbackController.activeResource = resource; this.playbackController.play(resource, session); session.markPlaying(Math.max(0, position)); this.bus.event({ type: "playbackStateChanged", session: session.snapshot() }); this.bus.emitOutput({ type: "[Resource]->[Player]:refreshed", requestId: event.requestId, session: session.snapshot() }); } catch (error) { this.bus.emitOutput({ type: "[Resource]->[Player]:error", requestId: event.requestId, error: error instanceof Error ? error : new Error(String(error)) }); } }
 	private async resolveFreshStream(track: Track): Promise<StreamInfo | null> { let stream = await this.extensionManager.provideStream(track); if (stream?.remote && stream.handle) return stream; if (stream?.stream) return stream; stream = await this.pluginManager.getStream(track); if (stream?.stream || stream?.remote) return stream; throw new Error(`No stream available for track: ${track.title}`); }
 	public destroy(): void { if (this.destroyed) return; this.destroyed = true; this.dispose(); this.emit("playerDestroy"); this.removeAllListeners(); }
-	public dispose(): void {
-		if (this.disposed) return;
-		this.disposed = true;
-		this.detachConnectionSubscription();
-		this.audioPlayerSubscription?.unsubscribe();
-		this.connection = null;
-		this.detachResourceRefresh();
-		this.actionExecutor.dispose();
-		void this.runtime.dispose();
-		this.bus.publish("destroyed");
-		this.bus.clear();
-	}
+	public dispose(): void { if (this.disposed) return; this.disposed = true; this.detachConnectionSubscription(); this.audioPlayerSubscription?.unsubscribe(); this.connection = null; this.detachResourceRefresh(); this.actionExecutor.dispose(); void this.runtime.dispose(); this.bus.publish("destroyed"); this.bus.clear(); }
 }
