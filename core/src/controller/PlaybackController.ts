@@ -28,6 +28,14 @@ export class PlaybackController {
 		if (this.bus) {
 			this.detachQueries.push(
 				this.bus.registerQuery("currentResource", () => this.activeResource),
+				this.bus.registerQuery("playbackSession", () => this.activeSession?.snapshot() ?? null),
+				this.bus.registerQuery("playerState", () => this.status),
+				this.bus.registerQuery("isPlaying", () => this.status === AudioPlayerStatus.Playing),
+				this.bus.registerQuery("isPaused", () => this.status === AudioPlayerStatus.Paused),
+				this.bus.registerQuery("isIdle", () => this.status === AudioPlayerStatus.Idle),
+				this.bus.registerQuery("isBuffering", () => this.status === AudioPlayerStatus.Buffering),
+				this.bus.registerQuery("isLive", () => Boolean((this.activeSession?.track as Track | undefined)?.isLive)),
+				this.bus.registerQuery("position", () => this.activeSession?.position ?? null),
 			);
 		}
 		this.onStateChange = (a, b) => {
