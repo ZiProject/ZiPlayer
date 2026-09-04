@@ -13,7 +13,6 @@ export enum PlayerActionPriority {
 	CRITICAL = 100,
 }
 
-/** Correlation and cancellation context shared by every action execution. */
 export interface PlayerMessageContext {
 	readonly requestId: PlayerRequestId;
 	readonly sessionId?: PlayerSessionId;
@@ -128,12 +127,16 @@ export interface PlayerQueryMap {
 	queueCurrent: Track | null;
 	playerState: PlaybackSessionSnapshot["status"] | "idle";
 	queue: Track[];
+	relatedTracks: Track[] | null;
 	playbackSession: PlaybackSessionSnapshot | null;
+	currentResource: unknown | null;
 	position: number | null;
 	volume: number;
 	isPlaying: boolean;
 	isPaused: boolean;
 	filterString: string;
 	filteredStream: StreamInfo | null;
+	transitionSettings: Record<string, unknown>;
+	retryPolicy: Record<string, unknown>;
 }
 export type PlayerQueryHandler<K extends PlayerQuery> = () => PlayerQueryMap[K] | Promise<PlayerQueryMap[K]>;
