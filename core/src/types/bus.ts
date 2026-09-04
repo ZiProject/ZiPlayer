@@ -1,5 +1,5 @@
 import type { AudioPlayerState, VoiceConnection } from "@discordjs/voice";
-import type { Track, StreamInfo, VoiceChannel, PlaybackSessionSnapshot } from ".";
+import type { Track, StreamInfo, VoiceChannel, PlaybackSessionSnapshot, SearchResult } from ".";
 
 export type { PlayerBus } from "../structures/PlayerBus";
 import type { BasePlugin } from "../plugins/BasePlugin";
@@ -188,6 +188,12 @@ export interface PlayerRpcOptions {
 	signal?: AbortSignal;
 	source?: string;
 	priority?: PlayerActionPriority;
+}
+export interface PlayerRpcMap {
+	play: {
+		request: { query: string | Track | SearchResult | null; requestedBy?: string };
+		response: boolean;
+	};
 }
 export type PlayerRpcHandler<TRequest, TResponse> = (
 	request: TRequest,

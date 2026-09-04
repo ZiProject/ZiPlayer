@@ -181,6 +181,7 @@ export class PlayerRuntimeController {
 			this.bus,
 		);
 		const orchestrator = new PlaybackOrchestrator(this.bus, {
+			player,
 			trackLoader,
 			streamController,
 			filterController,

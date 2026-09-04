@@ -277,30 +277,7 @@ export class Player extends EventEmitter {
 			.then(() => undefined);
 	}
 	public async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
-		if (this.destroyed) return false;
-		if (query === null) return this.isPlaying || this.isPaused ? true : this.playNext();
-		let tracks: Track[];
-		try {
-			tracks =
-				typeof query === "string" ? (await this.search(query, requestedBy || "Unknown")).tracks
-				: "tracks" in query ? query.tracks
-				: [query];
-		} catch (error) {
-			this.debug("[Player] Play search error:", error);
-			this.emit("playerError", error as Error);
-			return false;
-		}
-		if (tracks.length === 0) return false;
-		if (tracks.length === 1 && this.options.tts?.interrupt !== false && this.ttsController.isTTS(tracks[0])) {
-			await this.ttsController.play(tracks[0]);
-			return true;
-		}
-		this.queueController.addMultiple(tracks);
-		if (this.isPlaying || this.isPaused) {
-			void this.preloadController.preload().catch((error) => this.debug("[Player] Preload after queue add error:", error));
-			return true;
-		}
-		return this.playNext();
+		return this.bus.requestRpc("play", { query, requestedBy });
 	}
 	public async playNext(): Promise<boolean> {
 		if (this.destroyed) return false;
