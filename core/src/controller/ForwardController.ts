@@ -1,4 +1,4 @@
-import { PlaybackMode, type Track, type ForwardControllerOptions } from "../types";
+import { PlaybackMode, type Track, type ForwardControllerOptions, type ForwardHealthStatus } from "../types";
 import type { Player } from "../structures/Player";
 
 /** Owns leader/follower voice-subscription state for forward playback. */
@@ -8,12 +8,38 @@ export class ForwardController {
 	private mode: PlaybackMode = PlaybackMode.NATIVE;
 	private disposed = false;
 	private readonly debug: (...args: any[]) => void;
+	private readonly detachRpcs: Array<() => void> = [];
 
 	constructor(
 		private readonly player: Player,
 		options: ForwardControllerOptions = {},
 	) {
 		this.debug = options.debug ?? (() => undefined);
+		if (options.bus)
+			this.detachRpcs.push(options.bus.registerRpc<void, ForwardHealthStatus>("forward.health", () => this.healthStatus()));
+	}
+
+	healthStatus(): ForwardHealthStatus {
+		const role: ForwardHealthStatus["role"] =
+			this.isLeader ? "leader"
+			: this.isFollower ? "follower"
+			: "none";
+		const issues: string[] = [];
+		if (role === "leader") {
+			for (const follower of this.followers) if (follower.destroyed || !follower.connection) issues.push(follower.guildId);
+		} else if (role === "follower" && (!this.leader || this.leader.destroyed)) issues.push("missing leader");
+		return {
+			guildId: this.player.guildId,
+			healthy: role === "leader" ? true : issues.length === 0,
+			role,
+			issues,
+			details: {
+				leaderId: this.leader?.guildId,
+				followerCount: this.followers.size,
+				connectionState: this.player.connection?.state?.status,
+				audioPlayerState: this.player.playbackController.status,
+			},
+		};
 	}
 
 	get playbackMode(): PlaybackMode {
@@ -91,6 +117,7 @@ export class ForwardController {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		for (const detach of this.detachRpcs.splice(0)) detach();
 		this.clearFollowers();
 		this.unsubscribeForward("controller disposed");
 		this.mode = PlaybackMode.NATIVE;

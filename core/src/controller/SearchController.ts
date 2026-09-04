@@ -31,13 +31,13 @@ export class SearchController {
 				options.bus.registerRpc<SearchRequest, SearchResult>("search", (request, context) =>
 					this.search(request.query, request.requestedBy, context.signal),
 				),
-				options.bus.registerRpc<string, SearchResult | null>("search.cache.get", (query) => this.getCached(query)),
+				options.bus.registerRpc<{ query: string }, SearchResult | null>("search.cache.get", ({ query }) => this.getCached(query)),
 				options.bus.registerRpc<{ query: string; result: SearchResult }, void>("search.cache.set", ({ query, result }) =>
 					this.cacheResult(query, result),
 				),
 				options.bus.registerRpc<void, void>("search.cache.clear", () => this.clear()),
 				options.bus.registerRpc<void, void>("search.cache.purge", () => this.purgeStale()),
-				options.bus.registerRpc<string, SearchDebugResult>("search.debug", (query) => this.debug(query)),
+				options.bus.registerRpc<{ query: string }, SearchDebugResult>("search.debug", ({ query }) => this.debug(query)),
 			);
 		}
 	}

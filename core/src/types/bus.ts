@@ -1,9 +1,21 @@
 import type { AudioPlayerState, VoiceConnection } from "@discordjs/voice";
-import type { Track, StreamInfo, VoiceChannel, PlaybackSessionSnapshot, SearchResult, LoopMode } from ".";
+import type {
+	Track,
+	StreamInfo,
+	VoiceChannel,
+	PlaybackSessionSnapshot,
+	SearchResult,
+	SearchDebugResult,
+	ForwardHealthStatus,
+	LoopMode,
+	TrackLoadResult,
+} from ".";
 
 export type { PlayerBus } from "../structures/PlayerBus";
 import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
+import type { AudioResource } from "@discordjs/voice";
+import type { Readable } from "stream";
 
 export type PlayerRequestId = string;
 export type PlayerSessionId = string;
@@ -195,6 +207,53 @@ export interface PlayerRpcMap {
 		request: { query: string | Track | SearchResult | null; requestedBy?: string };
 		response: boolean;
 	};
+	"volume.set": { request: { value: number }; response: number };
+	search: { request: { query: string; requestedBy: string }; response: SearchResult };
+	"search.cache.get": { request: { query: string }; response: SearchResult | null };
+	"search.cache.set": { request: { query: string; result: SearchResult }; response: void };
+	"search.cache.clear": { request: Record<string, never>; response: void };
+	"search.cache.purge": { request: Record<string, never>; response: void };
+	"search.debug": { request: { query: string }; response: SearchDebugResult };
+	"queue.previous": { request: undefined; response: Track | null };
+	"queue.shuffle": { request: undefined; response: void };
+	"queue.clear": { request: undefined; response: void };
+	"queue.addMultiple": { request: { tracks: Track[] }; response: number };
+	"queue.insert": {
+		request: { query: string | Track | Track[]; index?: number; requestedBy?: string };
+		response: boolean;
+	};
+	"queue.remove": { request: { index: number }; response: Track | null };
+	"queue.loop": { request: { mode: LoopMode }; response: LoopMode };
+	"queue.autoPlay": { request: { enabled: boolean }; response: boolean };
+	"playback.destroyCurrentStream": { request: undefined; response: void };
+	"playback.recover": { request: { track: Track; session: unknown }; response: TrackLoadResult };
+	"playback.loadFresh": { request: { track: Track; session: unknown }; response: TrackLoadResult };
+	"playback.remote": { request: { track: Track; stream: unknown }; response: boolean };
+	"playback.refreshResource": { request: { position: number }; response: PlaybackSessionSnapshot };
+	"playback.loadFreshCurrent": { request: { track: Track }; response: TrackLoadResult | null };
+	"playback.promotePreload": { request: { track: Track }; response: AudioResource | null };
+	"forward.health": { request: undefined; response: ForwardHealthStatus };
+	"transition.fade": {
+		request: { resource: AudioResource; from: number; to: number; durationMs: number };
+		response: void;
+	};
+	"transition.fadeIn": { request: { resource: AudioResource; track: Track }; response: void };
+	"transition.fadeOutCurrent": { request: undefined; response: void };
+	"transition.skipAndStop": { request: undefined; response: void };
+	"transition.duration": { request: { from: Track | null; to: Track | null }; response: number };
+	"transition.beatWait": { request: { track: Track | null; positionMs: number }; response: number };
+	"transition.targetVolume": { request: { track: Track | null }; response: number };
+	"resource.create": {
+		request: { stream: Readable; track: Track; inputType?: string };
+		response: AudioResource;
+	};
+	"track.middleware": { request: { track: Track }; response: Track };
+	"stream.resolve": { request: { track: Track }; response: StreamInfo | null };
+	"preload.next": { request: undefined; response: void };
+	"preload.cancel": { request: undefined; response: void };
+	"preload.cancelSafe": { request: undefined; response: void };
+	"preload.clear": { request: undefined; response: void };
+	"preload.promote": { request: { track: Track }; response: AudioResource | null };
 }
 export type PlayerRpcHandler<TRequest, TResponse> = (
 	request: TRequest,

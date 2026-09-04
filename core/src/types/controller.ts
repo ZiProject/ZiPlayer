@@ -20,6 +20,7 @@ export interface LifecycleControllerOptions {
 	debug?: (...args: any[]) => void;
 }
 export interface ForwardControllerOptions {
+	bus?: PlayerBus;
 	debug?: (...args: any[]) => void;
 }
 export interface PlaybackControllerOptions {

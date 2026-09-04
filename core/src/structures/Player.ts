@@ -164,7 +164,6 @@ export class Player extends EventEmitter {
 		this.detachResourceRefresh = this.bus.onInput("[Player]->[Resource]:refresh", (event) => {
 			void this.handleResourceRefresh(event);
 		});
-		this.bus.subscribe("volumeRequested", ({ volume }) => this.volumeController.setVolume(volume));
 		if (Array.isArray(this.options.filters) && this.options.filters.length > 0)
 			void this.filterController
 				.applyFilters(this.options.filters)
@@ -245,7 +244,6 @@ export class Player extends EventEmitter {
 		return this.bus.requestRpc("search", { query, requestedBy });
 	}
 
-	/* Parameterized search/cache operations are RPC because they carry input. */
 	public getCachedSearchResult(query: string): Promise<SearchResult | null> {
 		return this.bus.requestRpc("search.cache.get", { query });
 	}
@@ -360,9 +358,7 @@ export class Player extends EventEmitter {
 		return this.bus.requestRpc("playback.recover", { track, session });
 	}
 	public promotePreloadToCurrent(track: Track): AudioResource | null {
-		const session = this.orchestrator.currentSession;
-		if (!session) return null;
-		return this.bus.requestRpcSync<{ track: Track }, AudioResource | null>("preload.promote", { track });
+		return this.bus.requestRpcSync("playback.promotePreload", { track });
 	}
 	public createResource(stream: Stream.Readable, track: Track): AudioResource {
 		return this.bus.requestRpcSync("resource.create", { stream, track });
@@ -375,8 +371,7 @@ export class Player extends EventEmitter {
 		return this.bus.requestRpc("track.middleware", { track });
 	}
 	public async getStream(track: Track): Promise<StreamInfo | TrackLoadResult | null> {
-		const session = this.orchestrator.currentSession;
-		if (session) return this.bus.requestRpc("playback.loadFresh", { track, session });
+		if (this.bus.querySync("playbackSession")) return this.bus.requestRpc("playback.loadFreshCurrent", { track });
 		return this.bus.requestRpc("stream.resolve", { track });
 	}
 	public isUnrecoverableStreamError(error: unknown): boolean {
@@ -391,7 +386,7 @@ export class Player extends EventEmitter {
 		return this.action({ type: "PLAY", track });
 	}
 	public loadFreshStream(track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
-		return this.bus.requestRpc("playback.loadFresh", { track, session: session ?? this.orchestrator.currentSession });
+		return this.bus.requestRpc("playback.loadFresh", { track, session });
 	}
 	public async playRemote(_track: Track, stream: any, ..._args: any[]): Promise<boolean> {
 		return this.bus.requestRpc("playback.remote", { track: _track, stream });
@@ -431,7 +426,7 @@ export class Player extends EventEmitter {
 		return enabled === undefined ? this.bus.querySync("queueAutoPlay") : this.bus.requestRpcSync("queue.autoPlay", { enabled });
 	}
 	public setVolume(value: number): number {
-		return this.volumeController.setVolume(value);
+		return this.bus.requestRpcSync("volume.set", { value });
 	}
 	public shuffle(): void {
 		this.bus.requestRpcSync<void, void>("queue.shuffle", undefined);
@@ -466,7 +461,6 @@ export class Player extends EventEmitter {
 	public getExtensions(): any[] {
 		return this.bus.querySync("extensions") ?? [];
 	}
-	public setupEventListeners(): void {}
 	public saveSession(_options?: any): any {
 		return this.getSerializableState();
 	}
@@ -574,72 +568,12 @@ export class Player extends EventEmitter {
 		return this.forwardController.unsubscribeForward(reason);
 	}
 	public getForwardHealthStatus() {
-		const role: "leader" | "follower" | "none" =
-			this.forwardController.isLeader ? "leader"
-			: this.forwardController.isFollower ? "follower"
-			: "none";
-		const issues: string[] = [];
-		if (role === "leader") {
-			for (const follower of this.forwardController.forwardFollowers) {
-				if (follower.destroyed || !follower.connection) issues.push(follower.guildId);
-			}
-		} else if (role === "follower" && (!this.forwardController.forwardLeader || this.forwardController.forwardLeader.destroyed))
-			issues.push("missing leader");
-		return {
-			guildId: this.guildId,
-			healthy: role === "leader" ? true : issues.length === 0,
-			role,
-			issues,
-			details: {
-				leaderId: this.forwardController.forwardLeader?.guildId,
-				followerCount: this.forwardController.forwardFollowers.size,
-				connectionState: this.connection?.state?.status,
-				audioPlayerState: this.playbackController.status,
-			},
-		};
-	}
-	private isCurrentSession(sessionId: number): boolean {
-		const session = this.orchestrator.currentSession;
-		return !!session && session.owns(sessionId);
+		return this.bus.requestRpcSync("forward.health", undefined);
 	}
 	private async handleResourceRefresh(event: Extract<PlayerInput, { type: "[Player]->[Resource]:refresh" }>): Promise<void> {
 		try {
-			const session = this.orchestrator.currentSession;
-			if (!session?.track || !session.isActive()) throw new Error("No active playback session");
-			const sessionId = session.id;
-			const position = event.position ?? session.position ?? 0;
-			const info = await this.bus.requestRpc<{ track: Track }, StreamInfo | null>("stream.resolve", { track: session.track });
-			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed during resource refresh");
-			if (!info?.stream && !info?.url) throw new Error("No stream available for resource refresh");
-			if (info.remote) throw new Error("Cannot refresh a remote playback resource");
-			await this.bus.action({
-				type: "FILTER_SET_SOURCE_TYPE",
-				streamType: info.type ?? "arbitrary",
-				requestId: createPlayerRequestId(),
-			});
-			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after filter source update");
-			await this.bus.action({
-				type: "FILTER_APPLY_AND_SEEK",
-				streamInfo: info,
-				position: Math.max(0, position),
-				requestId: createPlayerRequestId(),
-			});
-			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after filter seek");
-			const processed = await this.bus.query("filteredStream");
-			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed while reading filtered stream");
-			if (!processed) throw new Error("Filter controller did not produce a stream");
-			const active = await this.streamController.replace(processed, session);
-			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after stream replacement");
-			const resource = this.bus.requestRpcSync<{ stream: Stream.Readable; track: Track }, AudioResource>("resource.create", {
-				stream: active.stream,
-				track: session.track,
-			});
-			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed before resource activation");
-			session.setResource(resource);
-			this.playbackController.play(resource, session);
-			session.markPlaying(Math.max(0, position));
-			this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
-			this.bus.emitOutput({ type: "[Resource]->[Player]:refreshed", requestId: event.requestId, session: session.snapshot() });
+			const session = await this.bus.requestRpc("playback.refreshResource", { position: event.position ?? 0 });
+			this.bus.emitOutput({ type: "[Resource]->[Player]:refreshed", requestId: event.requestId, session });
 		} catch (error) {
 			this.bus.emitOutput({
 				type: "[Resource]->[Player]:error",

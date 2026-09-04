@@ -88,7 +88,7 @@ export class PlayerRuntimeController {
 		];
 		const connectionController = new ConnectionController({ guildId, bus: this.bus, options, debug });
 		const lifecycleController = new LifecycleController({ bus: this.bus, options, debug });
-		const forwardController = new ForwardController(player, { debug });
+		const forwardController = new ForwardController(player, { bus: this.bus, debug });
 		const queue = new Queue();
 		const audioPlayer = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: 100 } });
 		const streamManager = new StreamManager({

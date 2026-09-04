@@ -2,7 +2,8 @@ import type { PlayerBus, PlayerAction, PlayerBusRpcContext } from "./PlayerBus";
 import { PlaybackSession } from "./PlaybackSession";
 import { createPlayerRequestId } from "./PlayerBus";
 import { PlayerActionPriority } from "../types";
-import type { PlayerMessageContext, SearchResult, Track } from "../types";
+import type { AudioResource } from "@discordjs/voice";
+import type { PlayerMessageContext, PlaybackSessionSnapshot, SearchResult, StreamInfo, Track, TrackLoadResult } from "../types";
 import type { Player } from "./Player";
 import type { TrackLoader } from "./TrackLoader";
 import type { StreamController } from "../controller/StreamController";
@@ -61,6 +62,17 @@ export class PlaybackOrchestrator {
 					return true;
 				},
 			),
+			bus.registerRpc<{ position: number }, PlaybackSessionSnapshot>("playback.refreshResource", ({ position }, context) =>
+				this.refreshResource(position, context),
+			),
+			bus.registerRpc<{ track: Track }, TrackLoadResult | null>("playback.loadFreshCurrent", ({ track }) => {
+				if (!this.session) return null;
+				return this.o.trackLoader?.load(track, this.session) ?? null;
+			}),
+			bus.registerRpc<{ track: Track }, AudioResource | null>("playback.promotePreload", ({ track }) => {
+				if (!this.session) return null;
+				return this.bus.requestRpcSync<{ track: Track }, AudioResource | null>("preload.promote", { track });
+			}),
 		);
 		this.detachQueries.push(
 			bus.registerQuery("playerState", () => this.session?.status ?? "idle"),
@@ -75,6 +87,56 @@ export class PlaybackOrchestrator {
 	}
 	get transitionPolicy() {
 		return this.o.transitionController;
+	}
+	private isCurrentSession(sessionId: number): boolean {
+		return !!this.session && this.session.owns(sessionId);
+	}
+	private async refreshResource(position: number, rpcContext: PlayerBusRpcContext): Promise<PlaybackSessionSnapshot> {
+		const session = this.session;
+		if (!session?.track || !session.isActive()) throw new Error("No active playback session");
+		const sessionId = session.id;
+		const info = await this.bus.requestRpc<{ track: Track }, StreamInfo | null>(
+			"stream.resolve",
+			{ track: session.track },
+			{
+				signal: rpcContext.signal,
+			},
+		);
+		if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed during resource refresh");
+		if (!info?.stream && !info?.url) throw new Error("No stream available for resource refresh");
+		if (info.remote) throw new Error("Cannot refresh a remote playback resource");
+		await this.bus.action(
+			{ type: "FILTER_SET_SOURCE_TYPE", streamType: info.type ?? "arbitrary" },
+			{
+				signal: rpcContext.signal,
+			},
+		);
+		if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after filter source update");
+		await this.bus.action(
+			{
+				type: "FILTER_APPLY_AND_SEEK",
+				streamInfo: info,
+				position: Math.max(0, position),
+			},
+			{ signal: rpcContext.signal },
+		);
+		if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after filter seek");
+		const processed = await this.bus.query("filteredStream");
+		if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed while reading filtered stream");
+		if (!processed || !this.o.streamController || !this.o.playbackController)
+			throw new Error("Playback resource controllers are unavailable");
+		const active = await this.o.streamController.replace(processed, session);
+		if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after stream replacement");
+		const resource = this.bus.requestRpcSync<
+			{ stream: import("stream").Readable; track: Track },
+			import("@discordjs/voice").AudioResource
+		>("resource.create", { stream: active.stream, track: session.track });
+		if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed before resource activation");
+		session.setResource(resource);
+		this.o.playbackController.play(resource, session);
+		session.markPlaying(Math.max(0, position));
+		this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
+		return session.snapshot();
 	}
 	dispose() {
 		this.detachAction();
@@ -126,7 +188,7 @@ export class PlaybackOrchestrator {
 			await player.ttsController.play(tracks[0]);
 			return true;
 		}
-		this.o.queueController?.addMultiple(tracks);
+		await this.bus.requestRpc("queue.addMultiple", { tracks }, { signal: rpcContext.signal });
 		if (this.session?.status === "playing" || this.session?.status === "paused") {
 			void this.o.preloadController?.preload().catch((error) => player.debug("[Player] Preload after queue add error:", error));
 			return true;

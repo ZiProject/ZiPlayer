@@ -35,6 +35,7 @@ export class QueueController {
 				this.bus.registerRpc<void, Track | null>("queue.previous", () => this.previous()),
 				this.bus.registerRpc<void, void>("queue.shuffle", () => this.shuffle()),
 				this.bus.registerRpc<void, void>("queue.clear", () => this.clear()),
+				this.bus.registerRpc<{ tracks: Track[] }, number>("queue.addMultiple", ({ tracks }) => this.addMultiple(tracks)),
 				this.bus.registerRpc<QueueInsertRequest, boolean>("queue.insert", (request, context) =>
 					this.insertRequest(request, context.signal),
 				),

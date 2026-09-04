@@ -11,6 +11,7 @@ import type {
 	PlayerQuery,
 	PlayerQueryHandler,
 	PlayerQueryMap,
+	PlayerRpcMap,
 	PlayerRequestId,
 	PlayerRequestInputType,
 	PlayerRequestOptions,
@@ -34,6 +35,7 @@ export type {
 	PlayerQuery,
 	PlayerQueryHandler,
 	PlayerQueryMap,
+	PlayerRpcMap,
 	PlayerRequestId,
 	PlayerRequestInputType,
 	PlayerRequestOptions,
@@ -213,6 +215,12 @@ export class PlayerBus {
 		});
 	}
 
+	public requestRpc<K extends keyof PlayerRpcMap>(
+		type: K,
+		request: PlayerRpcMap[K]["request"],
+		options?: PlayerBusRpcOptions,
+	): Promise<PlayerRpcMap[K]["response"]>;
+	public requestRpc<TRequest, TResponse>(type: string, request: TRequest, options?: PlayerBusRpcOptions): Promise<TResponse>;
 	public requestRpc<TRequest, TResponse>(type: string, request: TRequest, options: PlayerBusRpcOptions = {}): Promise<TResponse> {
 		if (this.disposed)
 			return Promise.reject(new PlayerBusRequestError("disposed", type, `PlayerBus is disposed; cannot request RPC "${type}"`));
@@ -240,6 +248,8 @@ export class PlayerBus {
 	}
 
 	/** Invoke a synchronous RPC handler without exposing its owner through Player. */
+	public requestRpcSync<K extends keyof PlayerRpcMap>(type: K, request: PlayerRpcMap[K]["request"]): PlayerRpcMap[K]["response"];
+	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest): TResponse;
 	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest): TResponse {
 		if (this.disposed) throw new PlayerBusRequestError("disposed", type, `PlayerBus is disposed; cannot request RPC "${type}"`);
 		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
