@@ -98,8 +98,6 @@ export class Player extends EventEmitter {
 	private readonly detachResourceRefresh: () => void;
 	private readonly detachConnectionSubscription: () => void;
 	private audioPlayerSubscription: PlayerSubscription | null = null;
-	
-	private readonly volumeControllerSetVolumeViaBus!: (value: number) => void;
 
 	public constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
 		super();
@@ -216,7 +214,7 @@ export class Player extends EventEmitter {
 	}
 
 	public set volume(value: number) {
-		this.volumeControllerSetVolumeViaBus(value);
+		this.bus.requestRpcSync<{ value: number }, number>("volume.set", { value });
 	}
 
 	public get previousTrack(): Track | null {
