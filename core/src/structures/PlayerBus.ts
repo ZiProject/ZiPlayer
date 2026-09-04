@@ -91,12 +91,8 @@ export class PlayerBus {
 
 	public emitInput(event: PlayerInput): void { if (!this.disposed) this.dispatch(this.inputListeners, event.type, event); }
 	public emitOutput(event: PlayerOutput): void { if (!this.disposed) this.dispatch(this.outputListeners, event.type, event); }
-	public onInput<K extends PlayerInput["type"]>(type: K, handler: (event: Extract<PlayerInput, { type: K }>) => void | Promise<void>): () => void {
-		return this.addListener(this.inputListeners, type, handler as any);
-	}
-	public onOutput<K extends PlayerOutput["type"]>(type: K, handler: (event: Extract<PlayerOutput, { type: K }>) => void): () => void {
-		return this.addListener(this.outputListeners, type, handler as any);
-	}
+	public onInput<K extends PlayerInput["type"]>(type: K, handler: (event: Extract<PlayerInput, { type: K }>) => void | Promise<void>): () => void { return this.addListener(this.inputListeners, type, handler as any); }
+	public onOutput<K extends PlayerOutput["type"]>(type: K, handler: (event: Extract<PlayerOutput, { type: K }>) => void): () => void { return this.addListener(this.outputListeners, type, handler as any); }
 
 	public request<K extends PlayerRequestInputType>(input: Extract<PlayerInput, { type: K }>, options: PlayerRequestOptions<K> = {}): Promise<PlayerRequestReply<K>["success"]> {
 		if (this.disposed) return Promise.reject(new PlayerBusRequestError("disposed", input.type, `PlayerBus is disposed; cannot request "${input.type}"`));
@@ -106,30 +102,14 @@ export class PlayerBus {
 		return new Promise((resolve, reject) => {
 			let settled = false;
 			const cleanups: Array<() => void> = [];
-			const settle = (fn: () => void) => {
-				if (settled) return;
-				settled = true;
-				for (const cleanup of cleanups.splice(0)) cleanup();
-				this.pendingRequests.delete(cancel);
-				fn();
-			};
+			const settle = (fn: () => void) => { if (settled) return; settled = true; for (const cleanup of cleanups.splice(0)) cleanup(); this.pendingRequests.delete(cancel); fn(); };
 			const cancel = () => settle(() => reject(new PlayerBusRequestError("disposed", input.type, `PlayerBus was disposed while awaiting reply to "${input.type}"`)));
 			this.pendingRequests.add(cancel);
 			cleanups.push(() => this.pendingRequests.delete(cancel));
-			if (options.timeoutMs !== undefined) {
-				const timer = setTimeout(() => settle(() => reject(new PlayerBusRequestError("timeout", input.type, `Timed out after ${options.timeoutMs}ms awaiting reply to "${input.type}"`))), options.timeoutMs);
-				cleanups.push(() => clearTimeout(timer));
-			}
-			if (options.signal) {
-				if (options.signal.aborted) { settle(() => reject(new PlayerBusRequestError("aborted", input.type, `Request "${input.type}" was aborted`))); return; }
-				const abort = () => settle(() => reject(new PlayerBusRequestError("aborted", input.type, `Request "${input.type}" was aborted`)));
-				options.signal.addEventListener("abort", abort, { once: true });
-				cleanups.push(() => options.signal?.removeEventListener("abort", abort));
-			}
+			if (options.timeoutMs !== undefined) { const timer = setTimeout(() => settle(() => reject(new PlayerBusRequestError("timeout", input.type, `Timed out after ${options.timeoutMs}ms awaiting reply to "${input.type}"`))), options.timeoutMs); cleanups.push(() => clearTimeout(timer)); }
+			if (options.signal) { if (options.signal.aborted) { settle(() => reject(new PlayerBusRequestError("aborted", input.type, `Request "${input.type}" was aborted`))); return; } const abort = () => settle(() => reject(new PlayerBusRequestError("aborted", input.type, `Request "${input.type}" was aborted`))); options.signal.addEventListener("abort", abort, { once: true }); cleanups.push(() => options.signal?.removeEventListener("abort", abort)); }
 			cleanups.push(this.onOutput(contract.success, (event) => { if (event.requestId === requestId) settle(() => resolve(event as PlayerRequestReply<K>["success"])); }));
-			cleanups.push(this.onOutput(contract.error, (event: any) => {
-				if (event.requestId === requestId) settle(() => reject(event.error instanceof Error ? event.error : new PlayerBusRequestError("unhandled", input.type, String(event.error ?? "request failed"))));
-			}));
+			cleanups.push(this.onOutput(contract.error, (event: any) => { if (event.requestId === requestId) settle(() => reject(event.error instanceof Error ? event.error : new PlayerBusRequestError("unhandled", input.type, String(event.error ?? "request failed")))); }));
 			if (contract.progress && options.onProgress) cleanups.push(this.onOutput(contract.progress, (event) => { if (event.requestId === requestId && !settled) options.onProgress!(event as PlayerRequestProgress<K>); }));
 			this.emitInput(input);
 		});
@@ -141,60 +121,32 @@ export class PlayerBus {
 		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
 		if (!handler) return Promise.reject(new PlayerBusRequestError("unhandled", type, `No RPC handler registered for "${type}"`));
 		if (options.signal?.aborted) return Promise.reject(new PlayerBusRequestError("aborted", type, `RPC "${type}" was aborted`));
-
 		const requestId = createPlayerRequestId();
-		const context: PlayerBusRpcContext = {
-			requestId,
-			signal: options.signal ?? new AbortController().signal,
-			timestamp: Date.now(),
-		};
+		const context: PlayerBusRpcContext = { requestId, signal: options.signal ?? new AbortController().signal, timestamp: Date.now() };
 		const operation = Promise.resolve().then(() => handler(request, context));
-		const timeout = options.timeoutMs === undefined
-			? undefined
-			: new Promise<never>((_, reject) => setTimeout(() => reject(new PlayerBusRequestError("timeout", type, `Timed out after ${options.timeoutMs}ms awaiting RPC "${type}"`)), options.timeoutMs));
-
+		const timeout = options.timeoutMs === undefined ? undefined : new Promise<never>((_, reject) => setTimeout(() => reject(new PlayerBusRequestError("timeout", type, `Timed out after ${options.timeoutMs}ms awaiting RPC "${type}"`)), options.timeoutMs));
 		return timeout ? Promise.race([operation, timeout]) : operation;
 	}
 
 	public registerRpc<TRequest, TResponse>(type: string, handler: RpcHandler<TRequest, TResponse>): () => void {
 		if (this.disposed) return () => undefined;
 		this.rpcHandlers.set(type, handler);
-		return () => {
-			if (this.rpcHandlers.get(type) === handler) this.rpcHandlers.delete(type);
-		};
+		return () => { if (this.rpcHandlers.get(type) === handler) this.rpcHandlers.delete(type); };
 	}
 
-	/** Execute an action with one immutable, correlation-aware context. */
 	public action(action: PlayerAction, context?: Partial<PlayerActionExecutionContext>): Promise<void> {
 		if (this.disposed) return Promise.resolve();
-		const execution: PlayerActionExecutionContext = {
-			signal: context?.signal ?? new AbortController().signal,
-			priority: context?.priority ?? action.priority ?? PlayerActionPriority.NORMAL,
-			requestId: context?.requestId ?? action.requestId ?? createPlayerRequestId(),
-			sessionId: context?.sessionId,
-			source: context?.source,
-			timestamp: context?.timestamp ?? Date.now(),
-		};
+		const execution: PlayerActionExecutionContext = { signal: context?.signal ?? new AbortController().signal, priority: context?.priority ?? action.priority ?? PlayerActionPriority.NORMAL, requestId: context?.requestId ?? action.requestId ?? createPlayerRequestId(), sessionId: context?.sessionId, source: context?.source, timestamp: context?.timestamp ?? Date.now() };
 		return Promise.all([...this.actionListeners].map((handler) => handler(action, execution))).then(() => undefined);
 	}
-	public onAction(handler: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>): () => void {
-		this.actionListeners.add(handler);
-		return () => this.actionListeners.delete(handler);
-	}
+	public onAction(handler: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>): () => void { this.actionListeners.add(handler); return () => this.actionListeners.delete(handler); }
 	public event<K extends PlayerEventType>(event: Extract<PlayerEvent, { type: K }>): void { if (!this.disposed) this.dispatch(this.eventListeners, event.type, event); }
 	public publish<K extends PlayerEventType>(type: K, ...args: PlayerEventArgsMap[K]): void { this.event(this.toEvent(type, args)); }
 	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void { return this.addListener(this.eventListeners, type, listener as any); }
-	public registerQuery<K extends PlayerQuery>(query: K, handler: PlayerQueryHandler<K>): () => void {
-		let handlers = this.queryHandlers.get(query);
-		if (!handlers) { handlers = new Set(); this.queryHandlers.set(query, handlers); }
-		handlers.add(handler);
-		return () => handlers?.delete(handler);
-	}
-	public async query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> {
-		if (this.disposed) return undefined as any;
-		const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined;
-		return handler ? handler() : (undefined as any);
-	}
+	public registerQuery<K extends PlayerQuery>(query: K, handler: PlayerQueryHandler<K>): () => void { let handlers = this.queryHandlers.get(query); if (!handlers) { handlers = new Set(); this.queryHandlers.set(query, handlers); } handlers.add(handler); return () => handlers?.delete(handler); }
+	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> { if (this.disposed) return Promise.resolve(undefined as any); const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined; return Promise.resolve(handler ? handler() : (undefined as any)); }
+	/** Synchronous state query for facade getters. Handler MUST be synchronous. */
+	public querySync<K extends PlayerQuery>(query: K): PlayerQueryMap[K] { if (this.disposed) return undefined as any; const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined; if (!handler) return undefined as any; const value = handler(); if (value && typeof (value as any).then === "function") throw new Error(`Query "${query}" is asynchronous; use query() instead`); return value as PlayerQueryMap[K]; }
 	public clear(): void { for (const cancel of [...this.pendingRequests]) cancel(); this.inputListeners.clear(); this.outputListeners.clear(); this.eventListeners.clear(); this.actionListeners.clear(); this.queryHandlers.clear(); this.rpcHandlers.clear(); }
 	public dispose(): void { if (this.disposed) return; this.disposed = true; this.clear(); }
 
@@ -212,9 +164,7 @@ export class PlayerBus {
 			case "preloadPromoted": return { type, track: args[0] } as any;
 		}
 	}
-	private addListener<T extends string, E>(map: Map<T, Set<(event: E) => any>>, type: T, handler: (event: E) => any): () => void {
-		let listeners = map.get(type); if (!listeners) { listeners = new Set(); map.set(type, listeners); } listeners.add(handler); return () => listeners?.delete(handler);
-	}
+	private addListener<T extends string, E>(map: Map<T, Set<(event: E) => any>>, type: T, handler: (event: E) => any): () => void { let listeners = map.get(type); if (!listeners) { listeners = new Set(); map.set(type, listeners); } listeners.add(handler); return () => listeners?.delete(handler); }
 	private dispatch<T extends string, E>(map: Map<T, Set<(event: E) => any>>, type: T, event: E): void { for (const listener of map.get(type) ?? []) void listener(event); }
 }
 
