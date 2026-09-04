@@ -1,5 +1,5 @@
 import type { AudioResource } from "@discordjs/voice";
-import type { PlayerBus } from "../structures/PlayerBus";
+import type { PlayerBus, PlayerAction, PlayerActionExecutionContext } from "../structures/PlayerBus";
 import type { Track } from "../types";
 
 export interface VolumeControllerOptions {
@@ -25,6 +25,8 @@ export class VolumeController {
 	private readonly loudness: Required<NonNullable<VolumeControllerOptions["loudness"]>>;
 	private disposed = false;
 	private activeResourceResolver: (() => ActiveResourceState) | null = null;
+	private readonly detachAction: () => void;
+	private readonly detachQuery: () => void;
 
 	constructor(
 		private readonly bus: PlayerBus,
@@ -38,6 +40,13 @@ export class VolumeController {
 			maxCutDb: Math.max(0, options.loudness?.maxCutDb ?? 12),
 			limiterCeiling: Math.min(1, Math.max(0, options.loudness?.limiterCeiling ?? 1)),
 		};
+		this.detachAction = bus.onAction((action, context) => this.handleAction(action, context));
+		this.detachQuery = bus.registerQuery("volume", () => this.value);
+	}
+
+	private handleAction(action: PlayerAction, context: PlayerActionExecutionContext): void {
+		if (context.signal.aborted || action.type !== "SET_VOLUME") return;
+		this.setVolume(action.volume);
 	}
 
 	get value(): number {
@@ -94,6 +103,8 @@ export class VolumeController {
 	dispose(): void {
 		this.disposed = true;
 		this.activeResourceResolver = null;
+		this.detachAction();
+		this.detachQuery();
 	}
 
 	private clamp(value: number): number {
