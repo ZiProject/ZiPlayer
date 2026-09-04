@@ -2,17 +2,25 @@ import { LRUCache } from "lru-cache";
 import type { SearchResult } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
+import type { PlayerBus } from "../structures/PlayerBus";
 
 export interface SearchControllerOptions {
 	extensionManager: ExtensionManager;
 	pluginManager: PluginManager;
 	debug: (...args: any[]) => void;
+	bus?: PlayerBus;
+}
+
+export interface SearchRequest {
+	query: string;
+	requestedBy: string;
 }
 
 /** Owns search orchestration and its cache so Player remains a facade. */
 export class SearchController {
 	private static readonly CACHE_TTL = 2 * 60 * 1000;
 	public readonly cache: LRUCache<string, SearchResult>;
+	private readonly detachSearchRpc?: () => void;
 
 	public constructor(private readonly options: SearchControllerOptions) {
 		this.cache = new LRUCache<string, SearchResult>({
@@ -22,9 +30,16 @@ export class SearchController {
 			updateAgeOnGet: true,
 			dispose: (_value, key, reason) => options.debug(`[SearchCache] Disposed cache entry: ${key}, reason: ${reason}`),
 		});
+
+		if (options.bus) {
+			this.detachSearchRpc = options.bus.registerRpc<SearchRequest, SearchResult>("search", (request, context) =>
+				this.search(request.query, request.requestedBy, context.signal),
+			);
+		}
 	}
 
-	public async search(query: string, requestedBy: string): Promise<SearchResult> {
+	public async search(query: string, requestedBy: string, signal?: AbortSignal): Promise<SearchResult> {
+		this.throwIfAborted(signal);
 		this.options.debug(`[Player] Search called with query: ${query}, requestedBy: ${requestedBy}`);
 		const cached = this.cache.get(this.key(query));
 		if (cached) {
@@ -32,14 +47,18 @@ export class SearchController {
 			return cached;
 		}
 
+		this.throwIfAborted(signal);
 		const extensionResult = await this.options.extensionManager.provideSearch(query, requestedBy);
+		this.throwIfAborted(signal);
 		if (extensionResult?.tracks?.length) {
 			this.options.debug(`[Player] Extension handled search for query: ${query}`);
 			this.cacheResult(query, extensionResult);
 			return extensionResult;
 		}
 
+		this.throwIfAborted(signal);
 		const pluginResult = await this.options.pluginManager.search(query, requestedBy);
+		this.throwIfAborted(signal);
 		if (pluginResult?.tracks?.length) {
 			this.options.debug(
 				`[Player] Plugin search returned ${pluginResult.tracks.length} tracks (score: ${pluginResult.score?.score}%)`,
@@ -78,11 +97,21 @@ export class SearchController {
 		return { isCached, cacheAge: undefined, pluginCount: plugins.length, ttsFiltered: allPlugins.length > plugins.length };
 	}
 
-	private key(query: string): string {
-		return query.toLowerCase().trim();
-	}
 	public cacheResult(query: string, result: SearchResult): void {
 		this.cache.set(this.key(query), result);
 		this.options.debug(`[SearchCache] Cached search result for: ${query} (${result.tracks.length} tracks)`);
+	}
+
+	public dispose(): void {
+		this.detachSearchRpc?.();
+		this.cache.clear();
+	}
+
+	private throwIfAborted(signal?: AbortSignal): void {
+		if (signal?.aborted) throw new Error("Search request was aborted");
+	}
+
+	private key(query: string): string {
+		return query.toLowerCase().trim();
 	}
 }
