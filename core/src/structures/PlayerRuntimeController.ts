@@ -63,7 +63,7 @@ export class PlayerRuntimeController {
 		const preloadController = new PreloadController({ loader: trackLoader, manager: preloadManager, bus: this.bus });
 		const filterController = new FilterController({ refreshPlayerResource: (position) => player.refreshPlayerResource(position) }, debug, this.bus);
 		const orchestrator = new PlaybackOrchestrator(this.bus, { trackLoader, streamController, filterController, playbackController, queueController, transitionController, preloadController, relatedTrackResolver: (track) => pluginManager.getRelatedTracks(track) });
-		const searchController = new SearchController({ extensionManager, pluginManager, debug });
+		const searchController = new SearchController({ extensionManager, pluginManager, debug, bus: this.bus });
 		const debugTracer = new PlayerEventDebug(this.bus, guildId, debug, manager.debugLevel ?? "info");
 		const eventBridge = new PlayerEventBridge(player, manager, this.bus, debugTracer);
 		const graph: PlayerRuntimeGraph = { connectionController, lifecycleController, forwardController, queue, audioPlayer, streamManager, preloadManager, pluginManager, extensionManager, queueController, trackLoader, playbackController, streamController, saveController, filterController, antiStuckController, transitionController, volumeController, preloadController, orchestrator, ttsController, debugTracer, searchController, eventBridge };
