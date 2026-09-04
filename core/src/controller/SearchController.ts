@@ -16,6 +16,13 @@ export interface SearchRequest {
 	requestedBy: string;
 }
 
+export interface SearchDebugResult {
+	isCached: boolean;
+	cacheAge?: number;
+	pluginCount: number;
+	ttsFiltered: boolean;
+}
+
 /** Owns search orchestration and its cache so Player remains a facade. */
 export class SearchController {
 	private static readonly CACHE_TTL = 2 * 60 * 1000;
@@ -40,7 +47,7 @@ export class SearchController {
 
 	public async search(query: string, requestedBy: string, signal?: AbortSignal): Promise<SearchResult> {
 		this.throwIfAborted(signal);
-		this.options.debug(`[Player] Search called with query: ${query}, requestedBy: ${requestedBy}`);
+		this.options.debug(`[SearchController] Search called with query: ${query}, requestedBy: ${requestedBy}`);
 		const cached = this.cache.get(this.key(query));
 		if (cached) {
 			this.options.debug(`[SearchCache] Using cached search result for: ${query}`);
@@ -51,7 +58,7 @@ export class SearchController {
 		const extensionResult = await this.options.extensionManager.provideSearch(query, requestedBy);
 		this.throwIfAborted(signal);
 		if (extensionResult?.tracks?.length) {
-			this.options.debug(`[Player] Extension handled search for query: ${query}`);
+			this.options.debug(`[SearchController] Extension handled search for query: ${query}`);
 			this.cacheResult(query, extensionResult);
 			return extensionResult;
 		}
@@ -61,14 +68,14 @@ export class SearchController {
 		this.throwIfAborted(signal);
 		if (pluginResult?.tracks?.length) {
 			this.options.debug(
-				`[Player] Plugin search returned ${pluginResult.tracks.length} tracks (score: ${pluginResult.score?.score}%)`,
+				`[SearchController] Plugin search returned ${pluginResult.tracks.length} tracks (score: ${pluginResult.score?.score}%)`,
 			);
-			if (pluginResult.score) this.options.debug(`[Player] Search evaluation - ${pluginResult.score.reason}`);
+			if (pluginResult.score) this.options.debug(`[SearchController] Search evaluation - ${pluginResult.score.reason}`);
 			this.cacheResult(query, pluginResult);
 			return pluginResult;
 		}
 
-		this.options.debug(`[Player] No search results for query: ${query}`);
+		this.options.debug(`[SearchController] No search results for query: ${query}`);
 		throw new Error(`No results found for: ${query}`);
 	}
 
@@ -83,18 +90,17 @@ export class SearchController {
 		this.options.debug(`[SearchCache] Purged stale search cache entries`);
 	}
 
-	public debug(query: string): {
-		isCached: boolean;
-		cacheAge?: number;
-		pluginCount: number;
-		ttsFiltered: boolean;
-	} {
+	public debug(query: string): SearchDebugResult {
 		const isCached = this.cache.has(this.key(query));
 		const allPlugins = this.options.pluginManager.getAll();
 		const plugins = allPlugins.filter(
 			(plugin) => !(plugin.name.toLowerCase() === "tts" && !query.toLowerCase().startsWith("tts:")),
 		);
 		return { isCached, cacheAge: undefined, pluginCount: plugins.length, ttsFiltered: allPlugins.length > plugins.length };
+	}
+
+	public getCached(query: string): SearchResult | null {
+		return this.cache.get(this.key(query)) ?? null;
 	}
 
 	public cacheResult(query: string, result: SearchResult): void {
