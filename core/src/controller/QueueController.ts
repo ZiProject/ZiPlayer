@@ -18,6 +18,9 @@ export class QueueController {
 				this.bus.registerQuery("currentTrack", () => this.current),
 				this.bus.registerQuery("queueCurrent", () => this.current),
 				this.bus.registerQuery("queue", () => this.snapshot()),
+				this.bus.registerQuery("previousTracks", () => this.queue.previousTracks ?? []),
+				this.bus.registerQuery("previousTrack", () => this.queue.previousTracks?.at?.(-1) ?? null),
+				this.bus.registerQuery("willNext", () => this.willNext),
 				this.bus.registerQuery("relatedTracks", () => this.relatedTracks),
 			);
 		}
