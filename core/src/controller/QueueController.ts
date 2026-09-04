@@ -11,10 +11,18 @@ export class QueueController {
 	public readonly queue: Queue;
 	private readonly bus?: PlayerBus;
 	private readonly detachAction?: () => void;
+	private readonly detachQueries: Array<() => void> = [];
 	public constructor(options: QueueControllerOptions = {}) {
 		this.queue = options.queue ?? new Queue();
 		this.bus = options.bus;
-		if (this.bus) this.detachAction = this.bus.onAction((action, context) => this.handleAction(action, context));
+		if (this.bus) {
+			this.detachAction = this.bus.onAction((action, context) => this.handleAction(action, context));
+			this.detachQueries.push(
+				this.bus.registerQuery("currentTrack", () => this.current),
+				this.bus.registerQuery("queueCurrent", () => this.current),
+				this.bus.registerQuery("queue", () => this.snapshot()),
+			);
+		}
 	}
 	private async handleAction(action: PlayerAction, context: PlayerActionExecutionContext): Promise<void> {
 		if (context.signal.aborted) return;
@@ -114,6 +122,7 @@ export class QueueController {
 	}
 	public dispose(): void {
 		this.detachAction?.();
+		for (const detach of this.detachQueries.splice(0)) detach();
 		this.queue.reset();
 	}
 	private publishChanged(): void {
