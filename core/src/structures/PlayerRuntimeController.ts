@@ -58,6 +58,7 @@ export class PlayerRuntimeController {
 		const volumeController = new VolumeController(this.bus, { initialVolume: options.volume ?? 100, loudness: options.loudnessNormalization });
 		const detachVolumeSetRpc = this.bus.registerRpc<{ value: number }, number>("volume.set", ({ value }) => volumeController.setVolume(value));
 		this.monitorCleanup("volume.set.rpc", detachVolumeSetRpc);
+		(player as any).volumeControllerSetVolumeViaBus = (value: number) => this.bus.requestRpcSync<{ value: number }, number>("volume.set", { value });
 		const detachAvailablePluginsQuery = this.bus.registerQuery("availablePlugins", () => pluginManager.getAll());
 		this.monitorCleanup("availablePlugins.query", detachAvailablePluginsQuery);
 		const playbackController = new PlaybackController({ audioPlayer, bus: this.bus, volumeController, transitionController });
