@@ -1,5 +1,5 @@
 import type { Track, PlayerOptions } from ".";
-import type { AudioResource, AudioPlayer, StreamType } from "@discordjs/voice";
+import type { AudioResource, AudioPlayer, StreamType, AudioPlayerStatus } from "@discordjs/voice";
 import type { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
@@ -80,7 +80,17 @@ export interface PlaybackSessionSnapshot {
 	position: number | null;
 	startedAt: number | null;
 }
-export type PlaybackSessionStatus = "idle" | "loading" | "playing" | "paused" | "stopped" | "ended" | "destroyed"| "buffering";
+
+export type PlaybackSessionStatus =
+	| AudioPlayerStatus
+	| "idle"
+	| "loading"
+	| "playing"
+	| "paused"
+	| "stopped"
+	| "ended"
+	| "destroyed"
+	| "buffering";
 export interface AntiStuckControllerOptions {
 	enabled?: boolean;
 	maxRetries?: number;

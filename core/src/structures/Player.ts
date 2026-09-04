@@ -307,118 +307,77 @@ export class Player extends EventEmitter {
 		return true;
 	}
 	public destroyCurrentStream(): void {
-		this.streamController.abortCurrent();
-		this.playbackController.stop();
+		void this.bus.action({ type: "STOP" });
 	}
 	public generateWillNext(): Track | null {
-		return this.queueController.willNext;
+		return this.bus.querySync("willNext");
 	}
 	public preloadNextTrack(): Promise<void> {
-		return this.trackLoader.preloadNext();
+		return this.bus.requestRpc("preload.next", undefined);
 	}
 	public safeCancelPreload(): Promise<void> {
-		return this.preloadController.cancelSafely();
+		return this.bus.requestRpc("preload.cancelSafe", undefined);
 	}
 	public preloadNext(): Promise<void> {
-		return this.preloadController.preload();
+		return this.bus.requestRpc("preload.next", undefined);
 	}
 	public cancelPreload(): void {
-		this.preloadController.cancel();
+		this.bus.requestRpcSync<void, void>("preload.cancel", undefined);
 	}
 	public clearSlot(): void {
-		this.preloadController.clear();
-		this.streamController.abortCurrent();
+		this.bus.requestRpcSync<void, void>("preload.clear", undefined);
 	}
 	public async fadeResourceVolume(resource: AudioResource, from: number, to: number, durationMs: number): Promise<void> {
-		if (!resource?.volume) return;
-		const duration = Math.max(0, durationMs);
-		if (duration === 0) {
-			resource.volume.setVolume(to);
-			return;
-		}
-		const start = Date.now();
-		while (true) {
-			const progress = Math.min(1, (Date.now() - start) / duration);
-			resource.volume.setVolume(from + (to - from) * progress);
-			if (progress >= 1) return;
-			await new Promise<void>((resolve) => setTimeout(resolve, 25));
-		}
+		return this.bus.requestRpc("transition.fade", { resource, from, to, durationMs });
 	}
 	public async applyCrossfadeIn(resource: AudioResource, track: Track): Promise<void> {
-		if (!resource?.volume) return;
-		const target = this.getTrackTargetVolume(track);
-		resource.volume.setVolume(0);
-		this.volumeController.applyLoudness(resource, track, 0);
-		await this.fadeResourceVolume(resource, 0, target, this.resolveSmartTransitionDuration(track));
+		return this.bus.requestRpc("transition.fadeIn", { resource, track });
 	}
 	public async applyCrossfadeOutCurrent(): Promise<void> {
-		const resource = this.currentResource ?? this.playbackController.activeResource;
-		if (!resource?.volume) return;
-		const current = Number(resource.volume.volume ?? this.getTrackTargetVolume(this.currentTrack as Track));
-		await this.fadeResourceVolume(resource, current, 0, this.resolveSmartTransitionDuration(this.currentTrack as Track));
+		return this.bus.requestRpc("transition.fadeOutCurrent", undefined);
 	}
 	public async crossfadeSkipAndStop(): Promise<void> {
-		await this.applyCrossfadeOutCurrent();
-		this.playbackController.stop();
+		return this.bus.requestRpc("transition.skipAndStop", undefined);
 	}
 	public getTrackMetadataValue(track: Track, key: string): any {
 		return track?.metadata?.[key];
 	}
 	public resolveSmartTransitionDuration(track: Track): number {
-		return this.transitionController.plan(this.currentTrack, track).durationMs;
+		return this.bus.requestRpcSync("transition.duration", { from: this.currentTrack, to: track });
 	}
 	public async maybeAlignToBeatBoundary(track?: Track): Promise<void> {
-		const wait = this.transitionController.beatWaitMs(track ?? this.currentTrack, this.getTime().current);
+		const wait = this.bus.requestRpcSync<{ track: Track | null; positionMs: number }, number>("transition.beatWait", {
+			track: track ?? this.currentTrack,
+			positionMs: this.getTime().current,
+		});
 		if (wait > 0) await new Promise<void>((resolve) => setTimeout(resolve, wait));
 	}
 	public getTrackTargetVolume(track: Track): number {
-		const settings = this.volumeController.settings;
-		const lufs = Number(track?.metadata?.lufs);
-		if (!settings.enabled || !Number.isFinite(lufs)) return this.volume / 100;
-		const correctionDb = Math.max(-settings.maxCutDb, Math.min(settings.maxBoostDb, settings.targetLUFS - lufs));
-		const gain = Math.pow(10, correctionDb / 20);
-		const ceiling = Math.pow(10, settings.limiterCeiling / 20);
-		return Math.min((this.volume / 100) * gain, ceiling);
+		return this.bus.requestRpcSync<{ track: Track | null }, number>("transition.targetVolume", { track });
 	}
 	public attemptTrackRecovery(track: Track, session?: PlaybackSession): Promise<TrackLoadResult> {
 		if (!session) return Promise.reject(new Error("attemptTrackRecovery requires an active PlaybackSession"));
-		return this.trackLoader.loadWithRecovery(track, session);
+		return this.bus.requestRpc("playback.recover", { track, session });
 	}
 	public promotePreloadToCurrent(track: Track): AudioResource | null {
 		const session = this.orchestrator.currentSession;
 		if (!session) return null;
-		return this.preloadController.promote(track, {
-			resource: null,
-			track: null,
-			streamId: null,
-			processedStreamId: null,
-			abortController: null,
-			isValid: false,
-			isLoading: false,
-			loadPromise: null,
-		} as any);
+		return this.bus.requestRpcSync<{ track: Track }, AudioResource | null>("preload.promote", { track });
 	}
 	public createResource(stream: Stream.Readable, track: Track): AudioResource {
-		return this.playbackController.createResource(stream, track);
+		return this.bus.requestRpcSync("resource.create", { stream, track });
 	}
 	public mergeTrackPreserveRef(target: Track, source: Track): Track {
 		Object.assign(target, source);
 		return target;
 	}
 	public async applyTrackMiddleware(track: Track): Promise<Track> {
-		const middleware: PlayerOptions["trackMiddleware"] = this.options.trackMiddleware;
-		if (!Array.isArray(middleware)) return track;
-		for (const fn of middleware) {
-			const result = await fn(track, { player: this, manager: this.manager });
-			if (result && result !== track) Object.assign(track, result);
-		}
-		return track;
+		return this.bus.requestRpc("track.middleware", { track });
 	}
 	public async getStream(track: Track): Promise<StreamInfo | TrackLoadResult | null> {
 		const session = this.orchestrator.currentSession;
-		if (session) return this.trackLoader.load(track, session);
-		const extensionStream = await this.extensionManager?.provideStream?.(track);
-		return extensionStream ?? this.pluginManager?.getStream?.(track);
+		if (session) return this.bus.requestRpc("playback.loadFresh", { track, session });
+		return this.bus.requestRpc("stream.resolve", { track });
 	}
 	public isUnrecoverableStreamError(error: unknown): boolean {
 		const name = error instanceof Error ? error.name : "";
@@ -432,11 +391,10 @@ export class Player extends EventEmitter {
 		return this.action({ type: "PLAY", track });
 	}
 	public loadFreshStream(track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
-		return this.trackLoader.load(track, session ?? this.orchestrator.currentSession);
+		return this.bus.requestRpc("playback.loadFresh", { track, session: session ?? this.orchestrator.currentSession });
 	}
 	public async playRemote(_track: Track, stream: any, ..._args: any[]): Promise<boolean> {
-		if (stream?.handle?.play) await stream.handle.play();
-		return true;
+		return this.bus.requestRpc("playback.remote", { track: _track, stream });
 	}
 	public ensureTTSPlayer(): boolean {
 		return !!this.ttsController?.ttsPlayer;
@@ -445,11 +403,11 @@ export class Player extends EventEmitter {
 		return this.play(track);
 	}
 	public previous(): Track | null {
-		return this.queueController.previous();
+		return this.bus.requestRpcSync<void, Track | null>("queue.previous", undefined);
 	}
 	async save(track: Track, options?: SaveOptions | string): Promise<Stream.Readable> {
 		try {
-			return await this.saveController.save(track, options);
+			return await this.bus.requestRpc("save", { track, options });
 		} catch (error) {
 			this.debug("[Player] save error:", error);
 			this.emit("playerError", error as Error, track);
@@ -459,7 +417,7 @@ export class Player extends EventEmitter {
 	async saveVideo(track: Track, options?: SaveVideoOptions | string): Promise<Stream.Readable> {
 		if (!track) throw new TypeError("A track is required to save video");
 		try {
-			return await this.saveController.saveVideo(track, options);
+			return await this.bus.requestRpc("save.video", { track, options });
 		} catch (error) {
 			this.debug("[Player] saveVideo error:", error);
 			this.emit("playerError", error as Error, track);
@@ -467,38 +425,31 @@ export class Player extends EventEmitter {
 		}
 	}
 	public loop(mode?: any): any {
-		return mode === undefined ? this.queueController.loop : this.queueController.setLoop(mode);
+		return mode === undefined ? this.bus.querySync("queueLoop") : this.bus.requestRpcSync("queue.loop", { mode });
 	}
 	public autoPlay(enabled?: boolean): boolean {
-		return enabled === undefined ? this.queueController.autoPlay : this.queueController.setAutoPlay(enabled);
+		return enabled === undefined ? this.bus.querySync("queueAutoPlay") : this.bus.requestRpcSync("queue.autoPlay", { enabled });
 	}
 	public setVolume(value: number): number {
 		return this.volumeController.setVolume(value);
 	}
 	public shuffle(): void {
-		this.queue.shuffle();
-		this.bus.publish("queueChanged", this.queueController.snapshot());
+		this.bus.requestRpcSync<void, void>("queue.shuffle", undefined);
 	}
 	public clearQueue(): void {
-		this.queueController.clear();
+		this.bus.requestRpcSync<void, void>("queue.clear", undefined);
 	}
 	public async insert(query: string | Track | Track[], index = 0, requestedBy?: string): Promise<boolean> {
-		try {
-			const tracks =
-				typeof query === "string" ? (await this.search(query, requestedBy || "Unknown")).tracks
-				: Array.isArray(query) ? query
-				: [query];
-			if (tracks.length === 0) return false;
-			for (let i = 0; i < tracks.length; i++) this.queueController.insert(tracks[i], index + i);
-			return true;
-		} catch (error) {
-			this.debug("[Player] Insert error:", error);
-			this.emit("playerError", error as Error);
-			return false;
-		}
+		return this.bus
+			.requestRpc<{ query: string | Track | Track[]; index: number; requestedBy?: string }, boolean>("queue.insert", {
+				query,
+				index,
+				requestedBy,
+			})
+			.catch(() => false);
 	}
 	public remove(index: number): Track | null {
-		return this.queueController.remove(index);
+		return this.bus.requestRpcSync<{ index: number }, Track | null>("queue.remove", { index });
 	}
 	public scheduleLeave(): void {
 		this.lifecycleController.scheduleLeave?.();
@@ -513,7 +464,7 @@ export class Player extends EventEmitter {
 			.catch(() => false);
 	}
 	public getExtensions(): any[] {
-		return this.extensionManager?.getAll?.() ?? [];
+		return this.bus.querySync("extensions") ?? [];
 	}
 	public setupEventListeners(): void {}
 	public saveSession(_options?: any): any {
@@ -534,14 +485,13 @@ export class Player extends EventEmitter {
 		return this.streamManager?.getStats?.() ?? {};
 	}
 	public getTime() {
-		const track = this.currentTrack;
-		const resource = this.currentResource ?? this.playbackController.activeResource;
+		const session = this.bus.querySync("playbackSession");
+		const track = session?.track ?? this.currentTrack;
 		const isLive = Boolean(track?.isLive);
 		if (isLive) return { current: 0, total: 0, format: "LIVE", formatted: { current: "LIVE", total: "LIVE" } };
-		if (!track || !resource) return { current: 0, total: 0, format: "00:00", formatted: { current: "00:00", total: "00:00" } };
-		const total = Math.floor(track.duration) | 0;
-		const seekOffset = Number((this as any).seekOffset ?? 0);
-		const current = Math.floor(Number(resource.playbackDuration ?? 0) + seekOffset) | 0;
+		if (!track) return { current: 0, total: 0, format: "00:00", formatted: { current: "00:00", total: "00:00" } };
+		const total = Math.floor(track.duration > 1000 ? track.duration : track.duration * 1000) | 0;
+		const current = Math.max(0, Math.floor(this.bus.querySync("position") ?? session?.position ?? 0)) | 0;
 		return {
 			current,
 			total,
@@ -558,12 +508,12 @@ export class Player extends EventEmitter {
 			showPercentage = false,
 			showTime = true,
 		} = options;
-		const track = this.currentTrack;
-		const resource = this.playbackController.activeResource ?? this.currentResource;
+		const session = this.bus.querySync("playbackSession");
+		const track = session?.track ?? this.currentTrack;
 		const isLive = Boolean(track?.isLive);
-		if (isLive || !track || !resource) return isLive ? "🔴 LIVE" : "";
+		if (isLive || !track) return isLive ? "🔴 LIVE" : "";
 		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
-		const current = Number(resource.playbackDuration ?? 0);
+		const current = Math.max(0, Number(this.bus.querySync("position") ?? session?.position ?? 0));
 		if (!total) return this.formatTimeCompact(current);
 		const ratio = Math.min(Math.max(current / total, 0), 1);
 		const progress = Math.round(ratio * size);
@@ -606,16 +556,16 @@ export class Player extends EventEmitter {
 		return this.bus.subscribe(type, listener);
 	}
 	public addPlugin(plugin: BasePlugin): void {
-		this.pluginManager.register(plugin);
+		this.bus.requestRpcSync<{ plugin: BasePlugin }, void>("plugin.add", { plugin });
 	}
 	public removePlugin(name: string): boolean {
-		return this.pluginManager.unregister(name);
+		return this.bus.requestRpcSync<{ name: string }, boolean>("plugin.remove", { name });
 	}
 	public attachExtension(extension: BaseExtension): void {
-		this.extensionManager.register(extension);
+		this.bus.requestRpcSync<{ extension: BaseExtension }, void>("extension.add", { extension });
 	}
 	public detachExtension(extension: BaseExtension): boolean {
-		return this.extensionManager.unregister(extension);
+		return this.bus.requestRpcSync<{ extension: BaseExtension }, boolean>("extension.remove", { extension });
 	}
 	public subscribeTo(leader: Player, options?: { forwardMode?: boolean }): boolean {
 		return this.forwardController.subscribeTo(leader, options);
@@ -658,7 +608,7 @@ export class Player extends EventEmitter {
 			if (!session?.track || !session.isActive()) throw new Error("No active playback session");
 			const sessionId = session.id;
 			const position = event.position ?? session.position ?? 0;
-			const info = await this.resolveFreshStream(session.track);
+			const info = await this.bus.requestRpc<{ track: Track }, StreamInfo | null>("stream.resolve", { track: session.track });
 			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed during resource refresh");
 			if (!info?.stream && !info?.url) throw new Error("No stream available for resource refresh");
 			if (info.remote) throw new Error("Cannot refresh a remote playback resource");
@@ -680,10 +630,12 @@ export class Player extends EventEmitter {
 			if (!processed) throw new Error("Filter controller did not produce a stream");
 			const active = await this.streamController.replace(processed, session);
 			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after stream replacement");
-			const resource = this.playbackController.createResource(active.stream, session.track);
+			const resource = this.bus.requestRpcSync<{ stream: Stream.Readable; track: Track }, AudioResource>("resource.create", {
+				stream: active.stream,
+				track: session.track,
+			});
 			if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed before resource activation");
 			session.setResource(resource);
-			this.playbackController.activeResource = resource;
 			this.playbackController.play(resource, session);
 			session.markPlaying(Math.max(0, position));
 			this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
@@ -695,14 +647,6 @@ export class Player extends EventEmitter {
 				error: error instanceof Error ? error : new Error(String(error)),
 			});
 		}
-	}
-	private async resolveFreshStream(track: Track): Promise<StreamInfo | null> {
-		let stream = await this.extensionManager.provideStream(track);
-		if (stream?.remote && stream.handle) return stream;
-		if (stream?.stream) return stream;
-		stream = await this.pluginManager.getStream(track);
-		if (stream?.stream || stream?.remote) return stream;
-		throw new Error(`No stream available for track: ${track.title}`);
 	}
 	public destroy(): void {
 		if (this.destroyed) return;

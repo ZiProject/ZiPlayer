@@ -17,6 +17,7 @@ export class PreloadController {
 	private readonly manager: PreloadManager;
 	private readonly bus?: PlayerBus;
 	private readonly unsubscribe?: () => void;
+	private readonly detachRpcs: Array<() => void> = [];
 
 	public constructor(options: PreloadControllerOptions) {
 		this.loader = options.loader;
@@ -26,6 +27,15 @@ export class PreloadController {
 			this.unsubscribe = this.bus.onInput("[Player]->[Preload]:request", (event) => {
 				void this.handleRequest(event);
 			});
+			this.detachRpcs.push(
+				this.bus.registerRpc<void, void>("preload.next", () => this.preload()),
+				this.bus.registerRpc<void, void>("preload.cancel", () => this.cancel()),
+				this.bus.registerRpc<void, void>("preload.cancelSafe", () => this.cancelSafely()),
+				this.bus.registerRpc<void, void>("preload.clear", () => this.clear()),
+				this.bus.registerRpc<{ track: Track }, AudioResource | null>("preload.promote", ({ track }) =>
+					this.promoteToCurrent(track),
+				),
+			);
 		}
 	}
 
@@ -72,6 +82,18 @@ export class PreloadController {
 		if (resource) this.bus?.publish("preloadPromoted", track);
 		return resource;
 	}
+	public promoteToCurrent(track: Track): AudioResource | null {
+		return this.promote(track, {
+			resource: null,
+			track: null,
+			streamId: null,
+			processedStreamId: null,
+			abortController: null,
+			isValid: false,
+			isLoading: false,
+			loadPromise: null,
+		} as StreamSlot);
+	}
 	public cancel(): void {
 		this.loader.cancelPreload();
 		this.bus?.publish("preloadCancelled");
@@ -85,6 +107,7 @@ export class PreloadController {
 	}
 	public dispose(): void {
 		this.unsubscribe?.();
+		for (const detach of this.detachRpcs.splice(0)) detach();
 		this.loader.cancelPreload();
 	}
 }

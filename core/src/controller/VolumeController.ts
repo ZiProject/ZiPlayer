@@ -100,6 +100,17 @@ export class VolumeController {
 		this.apply(resource, limitedCorrection * transitionGain);
 	}
 
+	getTargetVolume(track?: Track | null): number {
+		if (!this.loudness.enabled || !track) return this.volume / 100;
+		const measuredLUFS = Number(track.metadata?.lufs);
+		if (!Number.isFinite(measuredLUFS)) return this.volume / 100;
+		let correctionDb = this.loudness.targetLUFS - measuredLUFS;
+		correctionDb = Math.min(this.loudness.maxBoostDb, Math.max(-this.loudness.maxCutDb, correctionDb));
+		const correction = Math.pow(10, correctionDb / 20);
+		const limitedCorrection = Math.min(correction, this.loudness.limiterCeiling);
+		return (this.volume / 100) * limitedCorrection;
+	}
+
 	dispose(): void {
 		this.disposed = true;
 		this.activeResourceResolver = null;

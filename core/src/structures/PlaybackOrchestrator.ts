@@ -47,6 +47,20 @@ export class PlaybackOrchestrator {
 				"play",
 				(request, context) => this.play(request.query, request.requestedBy, context),
 			),
+			bus.registerRpc<void, void>("playback.destroyCurrentStream", () => this.stopPlayback(new AbortController().signal)),
+			bus.registerRpc<{ track: Track; session: PlaybackSession }, unknown>("playback.recover", ({ track, session }) =>
+				this.o.trackLoader?.loadWithRecovery(track, session),
+			),
+			bus.registerRpc<{ track: Track; session: PlaybackSession }, unknown>("playback.loadFresh", ({ track, session }) =>
+				this.o.trackLoader?.load(track, session),
+			),
+			bus.registerRpc<{ track: Track; stream: { handle?: { play?: () => void | Promise<void> } } }, boolean>(
+				"playback.remote",
+				async ({ stream }) => {
+					if (stream?.handle?.play) await stream.handle.play();
+					return true;
+				},
+			),
 		);
 		this.detachQueries.push(
 			bus.registerQuery("playerState", () => this.session?.status ?? "idle"),
@@ -93,7 +107,13 @@ export class PlaybackOrchestrator {
 		let tracks: Track[];
 		try {
 			tracks =
-				typeof query === "string" ? (await this.bus.requestRpc("search", { query, requestedBy: requestedBy || "Unknown" })).tracks
+				typeof query === "string" ?
+					(
+						await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>("search", {
+							query,
+							requestedBy: requestedBy || "Unknown",
+						})
+					).tracks
 				: "tracks" in query ? query.tracks
 				: [query];
 		} catch (error) {

@@ -1,8 +1,9 @@
 import type { AudioPlayerState, VoiceConnection } from "@discordjs/voice";
-import type { Track, StreamInfo, VoiceChannel, PlaybackSessionSnapshot, SearchResult } from ".";
+import type { Track, StreamInfo, VoiceChannel, PlaybackSessionSnapshot, SearchResult, LoopMode } from ".";
 
 export type { PlayerBus } from "../structures/PlayerBus";
 import type { BasePlugin } from "../plugins/BasePlugin";
+import type { BaseExtension } from "../extensions/BaseExtension";
 
 export type PlayerRequestId = string;
 export type PlayerSessionId = string;
@@ -18,8 +19,8 @@ export interface PlayerMessageContext {
 	readonly requestId: PlayerRequestId;
 	readonly sessionId?: PlayerSessionId;
 	readonly source?: string;
+	readonly timestamp?: number;
 	readonly signal: AbortSignal;
-	readonly timestamp: number;
 	readonly priority: PlayerActionPriority;
 }
 
@@ -209,6 +210,8 @@ export interface PlayerQueryMap {
 	previousTracks: Track[];
 	previousTrack: Track | null;
 	willNext: Track | null;
+	queueLoop: LoopMode;
+	queueAutoPlay: boolean;
 	relatedTracks: Track[] | null;
 	playbackSession: PlaybackSessionSnapshot | null;
 	currentResource: unknown | null;
@@ -224,6 +227,7 @@ export interface PlayerQueryMap {
 	transitionSettings: Record<string, unknown>;
 	retryPolicy: Record<string, unknown>;
 	availablePlugins: BasePlugin[];
+	extensions: BaseExtension[];
 }
 export type PlayerQueryHandler<K extends PlayerQuery> = () => PlayerQueryMap[K] | Promise<PlayerQueryMap[K]>;
 

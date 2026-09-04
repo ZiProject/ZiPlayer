@@ -90,6 +90,13 @@ export class TrackLoader {
 	async preloadNext(): Promise<void> {
 		if (this.preloadManager) await this.preloadManager.preloadNextTrack();
 	}
+	async applyMiddleware(track: Track): Promise<Track> {
+		for (const middleware of this.middleware) {
+			const result = await middleware(track, this.context);
+			if (result && result !== track) Object.assign(track, result);
+		}
+		return track;
+	}
 	hasPreload(track: Track): boolean {
 		return this.preloadManager?.hasValidPreload(track) ?? false;
 	}
@@ -111,11 +118,8 @@ export class TrackLoader {
 	}
 	private async resolve(track: Track, session: PlaybackSession): Promise<StreamInfo> {
 		this.assertActive(session);
-		for (const middleware of this.middleware) {
-			this.assertActive(session);
-			const result = await middleware(track, this.context);
-			if (result && result !== track) Object.assign(track, result);
-		}
+		await this.applyMiddleware(track);
+		this.assertActive(session);
 		this.assertActive(session);
 		for (const resolver of this.resolvers) {
 			this.assertActive(session);

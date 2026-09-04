@@ -1,6 +1,6 @@
 import type { AudioPlayer } from "@discordjs/voice";
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
-import type { PlayerOptions, TrackMiddleware } from "../types";
+import type { PlayerOptions, TrackMiddleware, StreamInfo } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 import type { Player } from "./Player";
 import { PlayerBus } from "./PlayerBus";
@@ -28,6 +28,10 @@ import { PluginManager } from "../plugins";
 import { ExtensionManager } from "../extensions";
 import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { SaveController } from "../controller/SaveController";
+import type { Readable } from "stream";
+import type { BaseExtension } from "../extensions/BaseExtension";
+import type { BasePlugin } from "../plugins/BasePlugin";
+import type { SaveOptions, SaveVideoOptions, Track } from "../types";
 
 export interface PlayerRuntimeGraph {
 	connectionController: ConnectionController;
@@ -107,12 +111,12 @@ export class PlayerRuntimeController {
 			onEnd: () => player.emit("ttsEnd"),
 		});
 		const queueController = new QueueController({ queue, bus: this.bus });
-		const resolver = new TrackResolver(streamManager);
+		const resolver = new TrackResolver({ streamManager, pluginManager, extensionManager });
 		const preloadManager = new PreloadManager({
 			streamManager,
 			debug,
 			getNextTrack: () => (queue.loop() === "track" ? queue.currentTrack : queue.nextTrack),
-			getStream: (track) => resolver.resolve(player, track),
+			getStream: (track) => resolver.resolve(track, () => player.destroyed),
 			removeTrackFromQueue: (track) => {
 				const next = queue.nextTrack;
 				return (
@@ -129,7 +133,7 @@ export class PlayerRuntimeController {
 		const trackLoader = new TrackLoader({
 			middleware,
 			context: { player, manager },
-			resolvers: [(track) => resolver.resolve(player, track)],
+			resolvers: [(track) => resolver.resolve(track, () => player.destroyed)],
 			recovery: options.antiStuck,
 			preloadManager,
 			qualityController: {
@@ -167,12 +171,58 @@ export class PlayerRuntimeController {
 		const playbackController = new PlaybackController({ audioPlayer, bus: this.bus, volumeController, transitionController });
 		const streamController = new StreamController({ streamManager, bus: this.bus });
 		const saveController = new SaveController({
-			middleware: [async (track) => player.applyTrackMiddleware(track)],
+			middleware: [async (track) => trackLoader.applyMiddleware(track)],
 			middlewareContext: { player, manager },
 			resolveStream: (track) => pluginManager.getStream(track),
 			resolveVideoStream: (track) => pluginManager.getVideo(track),
 			debug,
 		});
+		this.monitorCleanup(
+			"plugin.add.rpc",
+			this.bus.registerRpc<{ plugin: BasePlugin }, void>("plugin.add", ({ plugin }) => pluginManager.register(plugin)),
+		);
+		this.monitorCleanup(
+			"plugin.remove.rpc",
+			this.bus.registerRpc<{ name: string }, boolean>("plugin.remove", ({ name }) => pluginManager.unregister(name)),
+		);
+		this.monitorCleanup(
+			"extension.add.rpc",
+			this.bus.registerRpc<{ extension: BaseExtension }, void>("extension.add", ({ extension }) =>
+				extensionManager.register(extension),
+			),
+		);
+		this.monitorCleanup(
+			"extension.remove.rpc",
+			this.bus.registerRpc<{ extension: BaseExtension }, boolean>("extension.remove", ({ extension }) =>
+				extensionManager.unregister(extension),
+			),
+		);
+		this.monitorCleanup(
+			"extensions.query",
+			this.bus.registerQuery("extensions", () => extensionManager.getAll()),
+		);
+		this.monitorCleanup(
+			"save.rpc",
+			this.bus.registerRpc<{ track: Track; options?: SaveOptions | string }, Readable>("save", ({ track, options }) =>
+				saveController.save(track, options),
+			),
+		);
+		this.monitorCleanup(
+			"save.video.rpc",
+			this.bus.registerRpc<{ track: Track; options?: SaveVideoOptions | string }, Readable>("save.video", ({ track, options }) =>
+				saveController.saveVideo(track, options),
+			),
+		);
+		this.monitorCleanup(
+			"track.middleware.rpc",
+			this.bus.registerRpc<{ track: Track }, Track>("track.middleware", ({ track }) => trackLoader.applyMiddleware(track)),
+		);
+		this.monitorCleanup(
+			"stream.resolve.rpc",
+			this.bus.registerRpc<{ track: Track }, StreamInfo | null>("stream.resolve", ({ track }) =>
+				resolver.resolve(track, () => player.destroyed),
+			),
+		);
 		const antiStuckController = new AntiStuckController({ ...options.antiStuck, bus: this.bus });
 		const preloadController = new PreloadController({ loader: trackLoader, manager: preloadManager, bus: this.bus });
 		const filterController = new FilterController(
