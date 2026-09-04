@@ -1,5 +1,6 @@
 import type { AudioResource } from "@discordjs/voice";
-import type { Track, PlaybackSessionStatus, PlaybackSessionSnapshot } from "../types";
+import type { Track, PlaybackSessionStatus, PlaybackSessionSnapshot, PlayerSessionId } from "../types";
+import { createPlayerSessionId } from "./PlayerBus";
 
 /**
  * Owns the lifecycle state of one active playback operation.
@@ -12,6 +13,8 @@ export class PlaybackSession {
 	private static nextId = 0;
 
 	public readonly id = ++PlaybackSession.nextId;
+	/** Correlation identity shared with PlayerMessageContext. */
+	public readonly sessionId: PlayerSessionId = createPlayerSessionId();
 	public readonly abortController = new AbortController();
 	public track: Track | null = null;
 	public resource: AudioResource | null = null;
@@ -29,6 +32,12 @@ export class PlaybackSession {
 
 	public owns(operationSessionId: number): boolean {
 		return this.id === operationSessionId && this.isActive();
+	}
+
+	public ownsContext(sessionId?: PlayerSessionId, signal?: AbortSignal): boolean {
+		return this.isActive()
+			&& (!sessionId || this.sessionId === sessionId)
+			&& (!signal || this.signal === signal);
 	}
 
 	public begin(track: Track): void {
