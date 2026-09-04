@@ -66,12 +66,26 @@ export class PlayerBusRequestError extends Error {
 	}
 }
 
+export interface PlayerBusRpcContext {
+	readonly requestId: PlayerRequestId;
+	readonly signal: AbortSignal;
+	readonly timestamp: number;
+}
+
+export interface PlayerBusRpcOptions {
+	timeoutMs?: number;
+	signal?: AbortSignal;
+}
+
+type RpcHandler<TRequest, TResponse> = (request: TRequest, context: PlayerBusRpcContext) => TResponse | Promise<TResponse>;
+
 export class PlayerBus {
 	private readonly inputListeners = new Map<PlayerInput["type"], Set<(event: PlayerInput) => void | Promise<void>>>();
 	private readonly outputListeners = new Map<PlayerOutput["type"], Set<(event: PlayerOutput) => void>>();
 	private readonly eventListeners = new Map<PlayerEventType, Set<(event: PlayerEvent) => void>>();
 	private readonly actionListeners = new Set<(action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>>();
 	private readonly queryHandlers = new Map<PlayerQuery, Set<PlayerQueryHandler<any>>>();
+	private readonly rpcHandlers = new Map<string, RpcHandler<any, any>>();
 	private readonly pendingRequests = new Set<() => void>();
 	private disposed = false;
 
@@ -121,6 +135,35 @@ export class PlayerBus {
 		});
 	}
 
+	/** Request/reply RPC for operations that return data but are not Player input/output events. */
+	public requestRpc<TRequest, TResponse>(type: string, request: TRequest, options: PlayerBusRpcOptions = {}): Promise<TResponse> {
+		if (this.disposed) return Promise.reject(new PlayerBusRequestError("disposed", type, `PlayerBus is disposed; cannot request RPC "${type}"`));
+		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
+		if (!handler) return Promise.reject(new PlayerBusRequestError("unhandled", type, `No RPC handler registered for "${type}"`));
+		if (options.signal?.aborted) return Promise.reject(new PlayerBusRequestError("aborted", type, `RPC "${type}" was aborted`));
+
+		const requestId = createPlayerRequestId();
+		const context: PlayerBusRpcContext = {
+			requestId,
+			signal: options.signal ?? new AbortController().signal,
+			timestamp: Date.now(),
+		};
+		const operation = Promise.resolve().then(() => handler(request, context));
+		const timeout = options.timeoutMs === undefined
+			? undefined
+			: new Promise<never>((_, reject) => setTimeout(() => reject(new PlayerBusRequestError("timeout", type, `Timed out after ${options.timeoutMs}ms awaiting RPC "${type}"`)), options.timeoutMs));
+
+		return timeout ? Promise.race([operation, timeout]) : operation;
+	}
+
+	public registerRpc<TRequest, TResponse>(type: string, handler: RpcHandler<TRequest, TResponse>): () => void {
+		if (this.disposed) return () => undefined;
+		this.rpcHandlers.set(type, handler);
+		return () => {
+			if (this.rpcHandlers.get(type) === handler) this.rpcHandlers.delete(type);
+		};
+	}
+
 	/** Execute an action with one immutable, correlation-aware context. */
 	public action(action: PlayerAction, context?: Partial<PlayerActionExecutionContext>): Promise<void> {
 		if (this.disposed) return Promise.resolve();
@@ -152,7 +195,7 @@ export class PlayerBus {
 		const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined;
 		return handler ? handler() : (undefined as any);
 	}
-	public clear(): void { for (const cancel of [...this.pendingRequests]) cancel(); this.inputListeners.clear(); this.outputListeners.clear(); this.eventListeners.clear(); this.actionListeners.clear(); this.queryHandlers.clear(); }
+	public clear(): void { for (const cancel of [...this.pendingRequests]) cancel(); this.inputListeners.clear(); this.outputListeners.clear(); this.eventListeners.clear(); this.actionListeners.clear(); this.queryHandlers.clear(); this.rpcHandlers.clear(); }
 	public dispose(): void { if (this.disposed) return; this.disposed = true; this.clear(); }
 
 	private toEvent<K extends PlayerEventType>(type: K, args: PlayerEventArgsMap[K]): Extract<PlayerEvent, { type: K }> {
