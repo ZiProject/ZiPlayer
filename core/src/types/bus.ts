@@ -22,7 +22,6 @@ export interface PlayerMessageContext {
 	readonly priority: PlayerActionPriority;
 }
 
-/** @deprecated Use PlayerMessageContext. */
 export type PlayerActionExecutionContext = PlayerMessageContext;
 
 export type PlayerAction =
@@ -120,6 +119,9 @@ export type PlayerRequestReply<K extends PlayerRequestInputType> = PlayerRequest
 export type PlayerRequestProgress<K extends PlayerRequestInputType> = PlayerRequestReply<K> extends { progress: infer P } ? P : never;
 export interface PlayerRequestOptions<K extends PlayerRequestInputType = PlayerRequestInputType> { timeoutMs?: number; signal?: AbortSignal; onProgress?: (event: PlayerRequestProgress<K>) => void; }
 export type PlayerBusRequestErrorReason = "timeout" | "aborted" | "disposed" | "unhandled";
+
+export interface PlayerRpcOptions { timeoutMs?: number; signal?: AbortSignal; source?: string; priority?: PlayerActionPriority; }
+export type PlayerRpcHandler<TRequest, TResponse> = (request: TRequest, context: PlayerMessageContext) => TResponse | Promise<TResponse>;
 
 export type PlayerQuery = keyof PlayerQueryMap;
 export interface PlayerQueryMap {
