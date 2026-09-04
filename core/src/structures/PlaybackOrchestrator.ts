@@ -36,13 +36,9 @@ export class PlaybackOrchestrator {
 			void this.advanceAfterTrackEnd(session);
 		});
 		this.detachQueries.push(
-			bus.registerQuery("currentTrack", () => this.session?.track ?? null),
-			bus.registerQuery("queueCurrent", () => this.o.queueController?.current ?? null),
 			bus.registerQuery("playerState", () => this.session?.status ?? "idle"),
-			bus.registerQuery("queue", () => this.o.queueController?.snapshot() ?? []),
 			bus.registerQuery("playbackSession", () => this.session?.snapshot() ?? null),
 			bus.registerQuery("position", () => this.session?.position ?? null),
-			bus.registerQuery("volume", () => this.o.playbackController?.volumeValue ?? 100),
 			bus.registerQuery("isPlaying", () => this.session?.status === "playing"),
 			bus.registerQuery("isPaused", () => this.session?.status === "paused"),
 		);
@@ -79,7 +75,6 @@ export class PlaybackOrchestrator {
 				this.publishState();
 				break;
 			}
-			case "SET_VOLUME": this.o.playbackController?.setVolume(a.volume); break;
 		}
 	}
 
