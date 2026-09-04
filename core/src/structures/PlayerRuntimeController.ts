@@ -56,6 +56,10 @@ export class PlayerRuntimeController {
 		const trackLoader = new TrackLoader({ middleware, context: { player, manager }, resolvers: [(track) => resolver.resolve(player, track)], recovery: options.antiStuck, preloadManager, qualityController: { get: () => options.quality, set: (quality) => { options.quality = quality; } }, debug });
 		const transitionController = new TransitionController({ enabled: options.crossfade?.enabled ?? true, durationMs: options.crossfade?.durationMs, smartEnabled: options.smartTransition?.enabled ?? true, genreAware: options.smartTransition?.genreAware ?? true, beatAlign: options.smartTransition?.beatAlign ?? true, baseDurationMs: options.smartTransition?.baseDurationMs ?? options.crossfade?.durationMs, minDurationMs: options.smartTransition?.minDurationMs, maxDurationMs: options.smartTransition?.maxDurationMs, beatAlignMaxWaitMs: options.smartTransition?.beatAlignMaxWaitMs, genreDurations: options.smartTransition?.genreDurations, bus: this.bus });
 		const volumeController = new VolumeController(this.bus, { initialVolume: options.volume ?? 100, loudness: options.loudnessNormalization });
+		const detachVolumeSetRpc = this.bus.registerRpc<{ value: number }, number>("volume.set", ({ value }) => volumeController.setVolume(value));
+		this.monitorCleanup("volume.set.rpc", detachVolumeSetRpc);
+		const detachAvailablePluginsQuery = this.bus.registerQuery("availablePlugins", () => pluginManager.getAll());
+		this.monitorCleanup("availablePlugins.query", detachAvailablePluginsQuery);
 		const playbackController = new PlaybackController({ audioPlayer, bus: this.bus, volumeController, transitionController });
 		const streamController = new StreamController({ streamManager, bus: this.bus });
 		const saveController = new SaveController({ middleware: [async (track) => player.applyTrackMiddleware(track)], middlewareContext: { player, manager }, resolveStream: (track) => pluginManager.getStream(track), resolveVideoStream: (track) => pluginManager.getVideo(track), debug });
