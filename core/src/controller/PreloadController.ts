@@ -1,4 +1,4 @@
-import type { Track } from "../types";
+import type { Track, TrackLoadResult } from "../types";
 import type { PlayerBus } from "../structures/PlayerBus";
 import { createPlayerRequestId } from "../structures/PlayerBus";
 import type { TrackLoader } from "../structures/TrackLoader";
@@ -41,6 +41,16 @@ export class PreloadController {
 	public async preload(): Promise<void> {
 		await this.loader.preloadNext();
 		this.bus?.publish("preloadStateChanged", { requestedTrack: null, valid: false });
+	}
+
+	/**
+	 * Compatibility hook for PlaybackOrchestrator's preload fast-path.
+	 * Promotion remains owned by TrackLoader.loadWithRecovery(), which already
+	 * consumes a valid preload before resolving a fresh stream. Returning null
+	 * here avoids consuming the slot before a PlaybackSession exists.
+	 */
+	public peek(_track: Track): TrackLoadResult | null {
+		return null;
 	}
 
 	/** PlayerBus request entry point; keeps preload ownership inside this controller. */
