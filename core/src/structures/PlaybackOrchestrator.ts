@@ -12,6 +12,8 @@ import type { PlaybackController } from "../controller/PlaybackController";
 import type { QueueController } from "../controller/QueueController";
 import type { TransitionController } from "../controller/TransitionController";
 import type { PreloadController } from "../controller/PreloadController";
+import type { TTSController } from "../controller/TTSController";
+import type { PromotedPreload } from "./PreloadManager";
 
 export interface PlaybackOrchestratorOptions {
 	player?: Player;
@@ -22,6 +24,7 @@ export interface PlaybackOrchestratorOptions {
 	queueController?: QueueController;
 	transitionController?: TransitionController;
 	preloadController?: PreloadController;
+	ttsController?: TTSController;
 	relatedTrackResolver?: (track: Track) => Promise<Track[] | null | undefined>;
 }
 
@@ -70,8 +73,19 @@ export class PlaybackOrchestrator {
 				return this.o.trackLoader?.load(track, this.session) ?? null;
 			}),
 			bus.registerRpc<{ track: Track }, AudioResource | null>("playback.promotePreload", ({ track }) => {
-				if (!this.session) return null;
-				return this.bus.requestRpcSync<{ track: Track }, AudioResource | null>("preload.promote", { track });
+				const session = this.session;
+				if (!session) return null;
+				const promoted = this.bus.requestRpcSync<{ track: Track }, PromotedPreload | null>("preload.promote", { track });
+				if (!promoted) return null;
+				const resource = this.bus.requestRpcSync("resource.create", {
+					stream: promoted.stream as import("stream").Readable,
+					track: promoted.track,
+				});
+				session.setResource(resource);
+				this.o.playbackController?.play(resource, session);
+				session.markPlaying(0);
+				this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
+				return resource;
 			}),
 		);
 		this.detachQueries.push(
@@ -184,8 +198,8 @@ export class PlaybackOrchestrator {
 			return false;
 		}
 		if (tracks.length === 0 || rpcContext.signal.aborted) return false;
-		if (tracks.length === 1 && player.options.tts?.interrupt !== false && player.ttsController.isTTS(tracks[0])) {
-			await player.ttsController.play(tracks[0]);
+		if (tracks.length === 1 && player.options.tts?.interrupt !== false && this.o.ttsController?.isTTS(tracks[0])) {
+			await this.o.ttsController.play(tracks[0]);
 			return true;
 		}
 		await this.bus.requestRpc("queue.addMultiple", { tracks }, { signal: rpcContext.signal });

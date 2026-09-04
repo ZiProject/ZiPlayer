@@ -1,4 +1,4 @@
-import { createAudioResource, AudioResource } from "@discordjs/voice";
+import { createAudioResource } from "@discordjs/voice";
 import type { Track, StreamInfo, StreamSlot } from "../types";
 import type { StreamManager } from "./StreamManager";
 interface PreloadManagerDeps {
@@ -74,22 +74,6 @@ export class PreloadManager {
 		this.preloadSlot.isLoading = false;
 		this.preloadSlot.loadPromise = null;
 		return { track, stream, streamId };
-	}
-	public promoteToCurrent(track: Track, currentSlot: StreamSlot): AudioResource | null {
-		const promoted = this.takePreloaded(track);
-		if (!promoted) return null;
-		currentSlot.resource = createAudioResource(promoted.stream as any, {
-			inlineVolume: true,
-			metadata: { ...track, preloaded: true },
-		});
-		currentSlot.resource.volume?.setVolume(0);
-		currentSlot.track = track;
-		currentSlot.streamId = promoted.streamId;
-		currentSlot.abortController = null;
-		currentSlot.isValid = true;
-		currentSlot.isLoading = false;
-		currentSlot.loadPromise = null;
-		return currentSlot.resource;
 	}
 	public async preloadNextTrack(): Promise<void> {
 		if (this.isDestroyed()) return;

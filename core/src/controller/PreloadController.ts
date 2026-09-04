@@ -1,9 +1,8 @@
-import type { AudioResource } from "@discordjs/voice";
-import type { Track, StreamSlot } from "../types";
+import type { Track } from "../types";
 import type { PlayerBus } from "../structures/PlayerBus";
 import { createPlayerRequestId } from "../structures/PlayerBus";
 import type { TrackLoader } from "../structures/TrackLoader";
-import { PreloadManager } from "../structures/PreloadManager";
+import { PreloadManager, type PromotedPreload } from "../structures/PreloadManager";
 
 export interface PreloadControllerOptions {
 	loader: TrackLoader;
@@ -32,8 +31,8 @@ export class PreloadController {
 				this.bus.registerRpc<void, void>("preload.cancel", () => this.cancel()),
 				this.bus.registerRpc<void, void>("preload.cancelSafe", () => this.cancelSafely()),
 				this.bus.registerRpc<void, void>("preload.clear", () => this.clear()),
-				this.bus.registerRpc<{ track: Track }, AudioResource | null>("preload.promote", ({ track }) =>
-					this.promoteToCurrent(track),
+				this.bus.registerRpc<{ track: Track }, PromotedPreload | null>("preload.promote", ({ track }) =>
+					this.takePreloaded(track),
 				),
 			);
 		}
@@ -77,22 +76,10 @@ export class PreloadController {
 	public has(track: Track): boolean {
 		return this.loader.hasPreload(track);
 	}
-	public promote(track: Track, currentSlot: StreamSlot): AudioResource | null {
-		const resource = this.manager.promoteToCurrent(track, currentSlot);
-		if (resource) this.bus?.publish("preloadPromoted", track);
-		return resource;
-	}
-	public promoteToCurrent(track: Track): AudioResource | null {
-		return this.promote(track, {
-			resource: null,
-			track: null,
-			streamId: null,
-			processedStreamId: null,
-			abortController: null,
-			isValid: false,
-			isLoading: false,
-			loadPromise: null,
-		} as StreamSlot);
+	public takePreloaded(track: Track): PromotedPreload | null {
+		const promoted = this.manager.takePreloaded(track);
+		if (promoted) this.bus?.publish("preloadPromoted", track);
+		return promoted;
 	}
 	public cancel(): void {
 		this.loader.cancelPreload();

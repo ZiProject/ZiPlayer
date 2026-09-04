@@ -17,7 +17,7 @@ export class PlayerEventBridge {
 		private readonly bus: PlayerBus,
 		private readonly eventDebug: PlayerEventDebug,
 	) {
-		this.previousQueue = player.queueController.snapshot();
+		this.previousQueue = player.runtime.getQueueSnapshot();
 		this.debug("attached", { queueSize: this.previousQueue.length });
 
 		const events: PlayerEventType[] = [

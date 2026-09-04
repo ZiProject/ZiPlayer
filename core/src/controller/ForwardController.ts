@@ -1,5 +1,6 @@
 import { PlaybackMode, type Track, type ForwardControllerOptions, type ForwardHealthStatus } from "../types";
 import type { Player } from "../structures/Player";
+import { AudioPlayerStatus } from "@discordjs/voice";
 
 /** Owns leader/follower voice-subscription state for forward playback. */
 export class ForwardController {
@@ -15,8 +16,18 @@ export class ForwardController {
 		options: ForwardControllerOptions = {},
 	) {
 		this.debug = options.debug ?? (() => undefined);
-		if (options.bus)
-			this.detachRpcs.push(options.bus.registerRpc<void, ForwardHealthStatus>("forward.health", () => this.healthStatus()));
+		if (options.bus) {
+			this.detachRpcs.push(
+				options.bus.registerRpc<void, ForwardHealthStatus>("forward.health", () => this.healthStatus()),
+				options.bus.registerRpc<{ leader: unknown; options?: { forwardMode?: boolean } }, boolean>(
+					"forward.subscribe",
+					({ leader, options: forwardOptions }) => this.subscribeTo(leader as Player, forwardOptions),
+				),
+				options.bus.registerRpc<{ reason?: string }, boolean>("forward.unsubscribe", ({ reason }) =>
+					this.unsubscribeForward(reason),
+				),
+			);
+		}
 	}
 
 	healthStatus(): ForwardHealthStatus {
@@ -37,7 +48,10 @@ export class ForwardController {
 				leaderId: this.leader?.guildId,
 				followerCount: this.followers.size,
 				connectionState: this.player.connection?.state?.status,
-				audioPlayerState: this.player.playbackController.status,
+				audioPlayerState:
+					this.player.isPlaying ? AudioPlayerStatus.Playing
+					: this.player.isPaused ? AudioPlayerStatus.Paused
+					: AudioPlayerStatus.Idle,
 			},
 		};
 	}
@@ -65,6 +79,9 @@ export class ForwardController {
 		if (!this.player.connection || !leader.connection) return false;
 
 		this.unsubscribeForward(`replaced by ${leader.guildId}`);
+		const leaderAudioPlayer = leader.runtime.getAudioPlayer();
+		const playerAudioPlayer = this.player.runtime.getAudioPlayer();
+		if (!leaderAudioPlayer || !playerAudioPlayer) return false;
 		this.leader = leader;
 		leaderForward?.followers.add(this.player);
 
@@ -73,9 +90,9 @@ export class ForwardController {
 			for (const fp of [...this.followers]) fp.unsubscribeForward(`leader changed to ${leader.guildId}`);
 			this.followers.clear();
 			const track = leader.currentTrack as Track | null | undefined;
-			if (track) this.player.queue.setCurrentTrack(track);
+			if (track) leader.runtime.setCurrentTrack(track);
 			this.mode = (options?.forwardMode ?? true) ? PlaybackMode.FORWARD : PlaybackMode.NATIVE;
-			if (this.mode === PlaybackMode.FORWARD) this.player.connection.subscribe(leader.audioPlayer);
+			if (this.mode === PlaybackMode.FORWARD) this.player.connection.subscribe(leaderAudioPlayer);
 			this.player.volume = leader.volume;
 			this.player.emit("forwardModeStart", leader);
 			return true;
@@ -96,9 +113,10 @@ export class ForwardController {
 		this.leader = null;
 		this.mode = PlaybackMode.NATIVE;
 		try {
-			this.player.connection?.subscribe(this.player.audioPlayer);
+			const audioPlayer = this.player.runtime.getAudioPlayer();
+			if (audioPlayer) this.player.connection?.subscribe(audioPlayer);
 		} catch {}
-		this.player.queue.clear();
+		this.player.clearQueue();
 		this.player.emit("forwardModeEnd", leader, reason);
 		return true;
 	}

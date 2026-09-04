@@ -30,6 +30,7 @@ interface RunningAction {
 export class PlayerAction {
 	private readonly pending: PendingAction[] = [];
 	private running: RunningAction | null = null;
+	private readonly criticalControllers = new Set<AbortController>();
 	private criticalRunning = 0;
 	private disposed = false;
 	private idleWaiters: Array<() => void> = [];
@@ -64,6 +65,7 @@ export class PlayerAction {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.running?.controller.abort();
+		for (const controller of this.criticalControllers) controller.abort();
 		for (const pending of this.pending.splice(0)) pending.resolve();
 		this.flushIdleWaiters();
 	}
@@ -87,7 +89,9 @@ export class PlayerAction {
 			requestId: action.requestId ?? createPlayerRequestId(),
 		};
 		this.criticalRunning += 1;
+		this.criticalControllers.add(controller);
 		return this.bus.action(action, context).finally(() => {
+			this.criticalControllers.delete(controller);
 			this.criticalRunning -= 1;
 			this.drain();
 			this.flushIdleWaiters();

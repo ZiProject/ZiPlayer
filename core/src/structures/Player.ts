@@ -1,5 +1,7 @@
 import { EventEmitter } from "events";
-import type { AudioPlayer, PlayerSubscription, VoiceConnection } from "@discordjs/voice";
+import { Stream } from "stream";
+import type { VoiceConnection } from "@discordjs/voice";
+import type { PlayerManager } from "./PlayerManager";
 import type {
 	PlayerOptions,
 	StreamInfo,
@@ -12,11 +14,9 @@ import type {
 	SaveVideoOptions,
 	SearchDebugResult,
 } from "../types";
-import type { PlayerManager } from "./PlayerManager";
 import {
 	PlayerBus,
 	createPlayerRequestId,
-	type PlayerInput,
 	type PlayerAction as PlayerActionMessage,
 	type PlayerEvent,
 	type PlayerEventType,
@@ -24,34 +24,10 @@ import {
 	type PlayerQueryMap,
 } from "./PlayerBus";
 import { PlayerAction } from "./PlayerAction";
-import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
-import type { TrackLoader } from "./TrackLoader";
-import type { PlaybackController } from "../controller/PlaybackController";
-import type { StreamController } from "../controller/StreamController";
-import type { FilterController } from "../controller/FilterController";
-import type { QueueController } from "../controller/QueueController";
-import type { AntiStuckController } from "../controller/AntiStuckController";
-import type { TransitionController } from "../controller/TransitionController";
-import type { VolumeController } from "../controller/VolumeController";
-import type { PreloadController } from "../controller/PreloadController";
-import type { ConnectionController } from "../controller/ConnectionController";
-import type { LifecycleController } from "../controller/LifecycleController";
-import type { ForwardController } from "../controller/ForwardController";
-import type { TTSController } from "../controller/TTSController";
-import type { PlayerEventBridge } from "../controller/PlayerEventBridge";
-import type { SearchController } from "../controller/SearchController";
-import type { PlayerEventDebug } from "../controller/PlayerEventDebug";
-import type { Queue } from "./Queue";
-import type { StreamManager } from "./StreamManager";
-import type { PreloadManager } from "./PreloadManager";
-import type { PluginManager } from "../plugins";
-import type { ExtensionManager } from "../extensions";
 import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { PlaybackSession } from "./PlaybackSession";
-import { Stream } from "stream";
-import type { SaveController } from "../controller/SaveController";
 import { PlayerRuntimeController } from "./PlayerRuntimeController";
 
 export class Player extends EventEmitter {
@@ -61,32 +37,8 @@ export class Player extends EventEmitter {
 	public readonly guildId: string;
 	public readonly manager: PlayerManager;
 	public readonly options: PlayerOptions;
-	public readonly connectionController: ConnectionController;
-	public readonly lifecycleController: LifecycleController;
-	public readonly forwardController: ForwardController;
-	public readonly queue: Queue;
-	public readonly audioPlayer: AudioPlayer;
-	public readonly streamManager: StreamManager;
-	public readonly preloadManager: PreloadManager;
-	public readonly pluginManager: PluginManager;
-	public readonly extensionManager: ExtensionManager;
-	public readonly queueController: QueueController;
-	public readonly trackLoader: TrackLoader;
-	public readonly playbackController: PlaybackController;
-	public readonly streamController: StreamController;
-	public readonly saveController: SaveController;
-	public readonly filterController: FilterController;
-	public readonly antiStuckController: AntiStuckController;
-	public readonly transitionController: TransitionController;
-	public readonly volumeController: VolumeController;
-	public readonly preloadController: PreloadController;
-	public readonly orchestrator: PlaybackOrchestrator;
-	public readonly ttsController: TTSController;
-	public readonly debugTracer: PlayerEventDebug;
-	public readonly searchController: SearchController;
-	public readonly eventBridge: PlayerEventBridge;
+
 	public connection: VoiceConnection | null = null;
-	public filter: FilterController;
 	public playbackMode: any;
 	public userdata?: Record<string, any>;
 	public _lastActivity = Date.now();
@@ -95,9 +47,6 @@ export class Player extends EventEmitter {
 	public forwardLeader: Player | null = null;
 
 	private disposed = false;
-	private readonly detachResourceRefresh: () => void;
-	private readonly detachConnectionSubscription: () => void;
-	private audioPlayerSubscription: PlayerSubscription | null = null;
 
 	public constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
 		super();
@@ -120,54 +69,6 @@ export class Player extends EventEmitter {
 
 		this.runtime = new PlayerRuntimeController(this.bus);
 		const graph = this.runtime.initialize(this, manager, this.options, debug);
-		this.connectionController = graph.connectionController;
-		this.lifecycleController = graph.lifecycleController;
-		this.forwardController = graph.forwardController;
-		this.queue = graph.queue;
-		this.audioPlayer = graph.audioPlayer;
-		this.streamManager = graph.streamManager;
-		this.preloadManager = graph.preloadManager;
-		this.pluginManager = graph.pluginManager;
-		this.extensionManager = graph.extensionManager;
-		this.queueController = graph.queueController;
-		this.trackLoader = graph.trackLoader;
-		this.playbackController = graph.playbackController;
-		this.streamController = graph.streamController;
-		this.saveController = graph.saveController;
-		this.filterController = graph.filterController;
-		this.antiStuckController = graph.antiStuckController;
-		this.transitionController = graph.transitionController;
-		this.volumeController = graph.volumeController;
-		this.preloadController = graph.preloadController;
-		this.orchestrator = graph.orchestrator;
-		this.ttsController = graph.ttsController;
-		this.debugTracer = graph.debugTracer;
-		this.searchController = graph.searchController;
-		this.eventBridge = graph.eventBridge;
-		this.filter = this.filterController;
-
-		this.detachConnectionSubscription = this.bus.onOutput("[Connection]->[Player]:connected", (event) => {
-			if (this.connection === event.connection) return;
-			this.audioPlayerSubscription?.unsubscribe();
-			this.audioPlayerSubscription = event.connection.subscribe(this.audioPlayer) ?? null;
-			this.ttsController.setConnection(event.connection);
-			this.connection = event.connection;
-			debug(`[Player] AudioPlayer subscribed guild=${guildId} session=${event.sessionId}`);
-		});
-		this.bus.onOutput("[Connection]->[Player]:disconnected", (event) => {
-			this.audioPlayerSubscription?.unsubscribe();
-			this.audioPlayerSubscription = null;
-			this.ttsController.setConnection(null);
-			this.connection = null;
-			debug(`[Player] AudioPlayer unsubscribed guild=${guildId} reason=${event.reason ?? "unknown"}`);
-		});
-		this.detachResourceRefresh = this.bus.onInput("[Player]->[Resource]:refresh", (event) => {
-			void this.handleResourceRefresh(event);
-		});
-		if (Array.isArray(this.options.filters) && this.options.filters.length > 0)
-			void this.filterController
-				.applyFilters(this.options.filters)
-				.catch((error) => debug("[FilterController] Initial filter error:", error));
 		this.bus.publish("initialized");
 		this.bus.publish("ready");
 	}
@@ -392,7 +293,7 @@ export class Player extends EventEmitter {
 		return this.bus.requestRpc("playback.remote", { track: _track, stream });
 	}
 	public ensureTTSPlayer(): boolean {
-		return !!this.ttsController?.ttsPlayer;
+		return this.runtime.hasTTSPlayer();
 	}
 	public interruptWithTTSTrack(track: Track, ..._args: any[]): Promise<boolean> {
 		return this.play(track);
@@ -447,10 +348,10 @@ export class Player extends EventEmitter {
 		return this.bus.requestRpcSync<{ index: number }, Track | null>("queue.remove", { index });
 	}
 	public scheduleLeave(): void {
-		this.lifecycleController.scheduleLeave?.();
+		this.bus.requestRpcSync("lifecycle.scheduleLeave", {});
 	}
 	public clearLeaveTimeout(): void {
-		this.lifecycleController.clearLeaveTimeout?.();
+		this.bus.requestRpcSync("lifecycle.clearLeaveTimeout", undefined);
 	}
 	public refreshPlayerResource(position = 0): Promise<boolean> {
 		return this.bus
@@ -468,15 +369,15 @@ export class Player extends EventEmitter {
 		this.playbackMode = "NATIVE";
 	}
 	public getSerializableState(): any {
-		return { guildId: this.guildId, queue: this.queue.toJSON?.(), volume: this.volume, playbackMode: this.playbackMode };
+		return { guildId: this.guildId, queue: this.runtime.serializeQueue(), volume: this.volume, playbackMode: this.playbackMode };
 	}
 	public restoreState(state: any): void {
-		if (state?.queue) this.queue.fromJSON?.(state.queue);
+		if (state?.queue) this.runtime.restoreQueue(state.queue);
 		if (typeof state?.volume === "number") this.setVolume(state.volume);
 		if (state?.playbackMode !== undefined) this.playbackMode = state.playbackMode;
 	}
 	public getStreamManagerStats(): any {
-		return this.streamManager?.getStats?.() ?? {};
+		return this.runtime.getStreamManagerStats() ?? {};
 	}
 	public getTime() {
 		const session = this.bus.querySync("playbackSession");
@@ -562,25 +463,13 @@ export class Player extends EventEmitter {
 		return this.bus.requestRpcSync<{ extension: BaseExtension }, boolean>("extension.remove", { extension });
 	}
 	public subscribeTo(leader: Player, options?: { forwardMode?: boolean }): boolean {
-		return this.forwardController.subscribeTo(leader, options);
+		return this.bus.requestRpcSync("forward.subscribe", { leader, options });
 	}
 	public unsubscribeForward(reason?: string): boolean {
-		return this.forwardController.unsubscribeForward(reason);
+		return this.bus.requestRpcSync("forward.unsubscribe", { reason });
 	}
 	public getForwardHealthStatus() {
 		return this.bus.requestRpcSync("forward.health", undefined);
-	}
-	private async handleResourceRefresh(event: Extract<PlayerInput, { type: "[Player]->[Resource]:refresh" }>): Promise<void> {
-		try {
-			const session = await this.bus.requestRpc("playback.refreshResource", { position: event.position ?? 0 });
-			this.bus.emitOutput({ type: "[Resource]->[Player]:refreshed", requestId: event.requestId, session });
-		} catch (error) {
-			this.bus.emitOutput({
-				type: "[Resource]->[Player]:error",
-				requestId: event.requestId,
-				error: error instanceof Error ? error : new Error(String(error)),
-			});
-		}
 	}
 	public destroy(): void {
 		if (this.destroyed) return;
@@ -592,10 +481,6 @@ export class Player extends EventEmitter {
 	public dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.detachConnectionSubscription();
-		this.audioPlayerSubscription?.unsubscribe();
-		this.connection = null;
-		this.detachResourceRefresh();
 		this.actionExecutor.dispose();
 		void this.runtime.dispose();
 		this.bus.publish("destroyed");

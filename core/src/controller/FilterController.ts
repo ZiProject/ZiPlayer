@@ -6,7 +6,7 @@ import ffmpegStaticPath from "ffmpeg-static";
 import type { PlayerBus, PlayerAction } from "../structures/PlayerBus";
 import { StreamType } from "@discordjs/voice";
 
- type DebugFn = (message?: any, ...optionalParams: any[]) => void;
+type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 
 export interface FilterControllerOptions {
 	/** Explicit FFmpeg executable path. Falls back to FFMPEG_PATH, ffmpeg-static, then PATH. */
@@ -26,9 +26,9 @@ export class FilterController {
 	public StreamType: FilterControllerStreamType = "arbitrary";
 
 	constructor(
-		private readonly resourcePort: FilterControllerResourcePort,
+		private readonly resourcePort: FilterControllerResourcePort | undefined,
 		private readonly debug: DebugFn = () => {},
-		bus?: PlayerBus,
+		private readonly bus?: PlayerBus,
 		private readonly options: FilterControllerOptions = {},
 	) {
 		if (bus) {
@@ -41,8 +41,12 @@ export class FilterController {
 	private async handleAction(action: PlayerAction, signal: AbortSignal): Promise<void> {
 		if (signal.aborted) return;
 		switch (action.type) {
-			case "FILTER_SET_SOURCE_TYPE": this.setSourceStreamType(action.streamType); return;
-			case "FILTER_APPLY_AND_SEEK": this.lastFilteredStream = await this.applyFiltersAndSeek(action.streamInfo, action.position ?? -1); return;
+			case "FILTER_SET_SOURCE_TYPE":
+				this.setSourceStreamType(action.streamType);
+				return;
+			case "FILTER_APPLY_AND_SEEK":
+				this.lastFilteredStream = await this.applyFiltersAndSeek(action.streamInfo, action.position ?? -1);
+				return;
 		}
 	}
 
@@ -52,54 +56,103 @@ export class FilterController {
 	}
 
 	public destroy(): void {
-		this.detachAction?.(); this.detachQuery?.(); this.activeFilters = []; this.teardownFFmpeg(); this.currentInputStream = null; this.lastFilteredStream = null;
+		this.detachAction?.();
+		this.detachQuery?.();
+		this.activeFilters = [];
+		this.teardownFFmpeg();
+		this.currentInputStream = null;
+		this.lastFilteredStream = null;
 	}
 
 	private teardownFFmpeg(): void {
-		this.ffmpegGeneration++; this.ffmpegAbortController?.abort(); this.ffmpegAbortController = null;
-		const output = this.ffmpegOutput; this.ffmpegOutput = null;
-		if (output && !output.destroyed) try { output.destroy(); } catch {}
-		const process = this.ffmpegProcess; this.ffmpegProcess = null;
+		this.ffmpegGeneration++;
+		this.ffmpegAbortController?.abort();
+		this.ffmpegAbortController = null;
+		const output = this.ffmpegOutput;
+		this.ffmpegOutput = null;
+		if (output && !output.destroyed)
+			try {
+				output.destroy();
+			} catch {}
+		const process = this.ffmpegProcess;
+		this.ffmpegProcess = null;
 		if (process) {
-			try { if (process.stdin && !process.stdin.destroyed) process.stdin.destroy(); } catch {}
-			try { if (process.exitCode === null && process.signalCode === null) process.kill("SIGKILL"); } catch {}
+			try {
+				if (process.stdin && !process.stdin.destroyed) process.stdin.destroy();
+			} catch {}
+			try {
+				if (process.exitCode === null && process.signalCode === null) process.kill("SIGKILL");
+			} catch {}
 		}
 	}
 
-	public getFilterString(): string { return this.activeFilters.map((filter) => filter.ffmpegFilter).join(","); }
-	public getActiveFilters(): AudioFilter[] { return [...this.activeFilters]; }
-	public hasFilter(filterName: string): boolean { return this.activeFilters.some((filter) => filter.name === filterName); }
-	public getAvailableFilters(): AudioFilter[] { return Object.values(PREDEFINED_FILTERS); }
-	public getFiltersByCategory(category: string): AudioFilter[] { return Object.values(PREDEFINED_FILTERS).filter((filter) => filter.category === category); }
-	private resolveFilter(filter: string | AudioFilter): AudioFilter | undefined { return typeof filter === "string" ? PREDEFINED_FILTERS[filter] : filter; }
+	public getFilterString(): string {
+		return this.activeFilters.map((filter) => filter.ffmpegFilter).join(",");
+	}
+	public getActiveFilters(): AudioFilter[] {
+		return [...this.activeFilters];
+	}
+	public hasFilter(filterName: string): boolean {
+		return this.activeFilters.some((filter) => filter.name === filterName);
+	}
+	public getAvailableFilters(): AudioFilter[] {
+		return Object.values(PREDEFINED_FILTERS);
+	}
+	public getFiltersByCategory(category: string): AudioFilter[] {
+		return Object.values(PREDEFINED_FILTERS).filter((filter) => filter.category === category);
+	}
+	private resolveFilter(filter: string | AudioFilter): AudioFilter | undefined {
+		return typeof filter === "string" ? PREDEFINED_FILTERS[filter] : filter;
+	}
 
 	public async applyFilter(filter?: string | AudioFilter): Promise<boolean> {
 		if (!filter) return false;
 		const audioFilter = this.resolveFilter(filter);
 		if (!audioFilter || this.hasFilter(audioFilter.name)) return false;
-		this.activeFilters.push(audioFilter); this.debug(`Applied filter: ${audioFilter.name} - ${audioFilter.description}`); return this.resourcePort.refreshPlayerResource();
+		this.activeFilters.push(audioFilter);
+		this.debug(`Applied filter: ${audioFilter.name} - ${audioFilter.description}`);
+		return this.refreshPlayerResource();
 	}
 
 	public async applyFilters(filters: (string | AudioFilter)[]): Promise<boolean> {
-		let changed = false, allApplied = true;
+		let changed = false,
+			allApplied = true;
 		for (const filter of filters) {
 			const audioFilter = this.resolveFilter(filter);
-			if (!audioFilter) { allApplied = false; continue; }
+			if (!audioFilter) {
+				allApplied = false;
+				continue;
+			}
 			if (this.hasFilter(audioFilter.name)) continue;
-			this.activeFilters.push(audioFilter); changed = true;
+			this.activeFilters.push(audioFilter);
+			changed = true;
 		}
 		if (!changed) return allApplied;
-		return allApplied && (await this.resourcePort.refreshPlayerResource());
+		return allApplied && (await this.refreshPlayerResource());
 	}
 
 	public async removeFilter(filterName: string): Promise<boolean> {
 		const index = this.activeFilters.findIndex((filter) => filter.name === filterName);
 		if (index === -1) return false;
-		this.activeFilters.splice(index, 1); this.debug(`Removed filter: ${filterName}`); return this.resourcePort.refreshPlayerResource();
+		this.activeFilters.splice(index, 1);
+		this.debug(`Removed filter: ${filterName}`);
+		return this.refreshPlayerResource();
 	}
 
 	public async clearAll(): Promise<boolean> {
-		const count = this.activeFilters.length; this.activeFilters = []; this.debug(`Cleared ${count} filters`); return this.resourcePort.refreshPlayerResource();
+		const count = this.activeFilters.length;
+		this.activeFilters = [];
+		this.debug(`Cleared ${count} filters`);
+		return this.refreshPlayerResource();
+	}
+
+	private refreshPlayerResource(): Promise<boolean> {
+		if (this.bus)
+			return this.bus
+				.requestRpc("playback.refreshResource", { position: 0 })
+				.then(() => true)
+				.catch(() => false);
+		return this.resourcePort?.refreshPlayerResource() ?? Promise.resolve(false);
 	}
 
 	public async applyFiltersAndSeek(streamInfo: StreamInfo, position = -1): Promise<StreamInfo & { wasRecreated?: boolean }> {
@@ -141,8 +194,10 @@ export class FilterController {
 		const inputType = hasSeek ? StreamType.Raw : StreamType.OggOpus;
 		if (hasSeek) args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
 		else args.push("-c:a", "libopus", "-f", "opus", "-ar", "48000", "-ac", "2", "pipe:1");
-		const controller = new AbortController(); this.ffmpegAbortController = controller;
-		const proc = spawn(executable, args, { stdio: ["pipe", "pipe", "ignore"], windowsHide: true }); this.ffmpegProcess = proc;
+		const controller = new AbortController();
+		this.ffmpegAbortController = controller;
+		const proc = spawn(executable, args, { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+		this.ffmpegProcess = proc;
 		const output = proc.stdout;
 		if (!output) throw new Error("FFmpeg stdout unavailable");
 		this.ffmpegOutput = output;
@@ -152,12 +207,32 @@ export class FilterController {
 			if (this.ffmpegOutput === output) this.ffmpegOutput = null;
 			if (this.ffmpegAbortController === controller) this.ffmpegAbortController = null;
 		};
-		const abort = () => { cleanup(); try { proc.stdin?.destroy(); } catch {} try { proc.kill("SIGKILL"); } catch {} };
+		const abort = () => {
+			cleanup();
+			try {
+				proc.stdin?.destroy();
+			} catch {}
+			try {
+				proc.kill("SIGKILL");
+			} catch {}
+		};
 		controller.signal.addEventListener("abort", abort, { once: true });
-		proc.once("error", (error) => { this.debug(`FFmpeg process error: ${error.message}`); cleanup(); });
+		proc.once("error", (error) => {
+			this.debug(`FFmpeg process error: ${error.message}`);
+			cleanup();
+		});
 		proc.once("close", cleanup);
-		output.once("close", () => { if (this.ffmpegProcess === proc) try { proc.kill("SIGKILL"); } catch {} cleanup(); });
-		output.once("error", (error: Error) => { this.debug(`FFmpeg stdout error: ${error.message}`); abort(); });
+		output.once("close", () => {
+			if (this.ffmpegProcess === proc)
+				try {
+					proc.kill("SIGKILL");
+				} catch {}
+			cleanup();
+		});
+		output.once("error", (error: Error) => {
+			this.debug(`FFmpeg stdout error: ${error.message}`);
+			abort();
+		});
 		if (typeof sourceStream !== "string") sourceStream.pipe(proc.stdin!);
 		const result = { ...streamInfo, stream: output, inputType, wasRecreated };
 		this.lastFilteredStream = result;

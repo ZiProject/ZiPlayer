@@ -9,6 +9,8 @@ import type {
 	ForwardHealthStatus,
 	LoopMode,
 	TrackLoadResult,
+	SaveOptions,
+	SaveVideoOptions,
 } from ".";
 
 export type { PlayerBus } from "../structures/PlayerBus";
@@ -233,6 +235,8 @@ export interface PlayerRpcMap {
 	"playback.loadFreshCurrent": { request: { track: Track }; response: TrackLoadResult | null };
 	"playback.promotePreload": { request: { track: Track }; response: AudioResource | null };
 	"forward.health": { request: undefined; response: ForwardHealthStatus };
+	"forward.subscribe": { request: { leader: unknown; options?: { forwardMode?: boolean } }; response: boolean };
+	"forward.unsubscribe": { request: { reason?: string }; response: boolean };
 	"transition.fade": {
 		request: { resource: AudioResource; from: number; to: number; durationMs: number };
 		response: void;
@@ -253,7 +257,18 @@ export interface PlayerRpcMap {
 	"preload.cancel": { request: undefined; response: void };
 	"preload.cancelSafe": { request: undefined; response: void };
 	"preload.clear": { request: undefined; response: void };
-	"preload.promote": { request: { track: Track }; response: AudioResource | null };
+	"preload.promote": {
+		request: { track: Track };
+		response: { track: Track; stream: Readable; streamId: string | null } | null;
+	};
+	"plugin.add": { request: { plugin: BasePlugin }; response: void };
+	"plugin.remove": { request: { name: string }; response: boolean };
+	"extension.add": { request: { extension: BaseExtension }; response: void };
+	"extension.remove": { request: { extension: BaseExtension }; response: boolean };
+	save: { request: { track: Track; options?: SaveOptions | string }; response: Readable };
+	"save.video": { request: { track: Track; options?: SaveVideoOptions | string }; response: Readable };
+	"lifecycle.scheduleLeave": { request: { reason?: "track-end" | "queue-empty" | "manual" }; response: void };
+	"lifecycle.clearLeaveTimeout": { request: undefined; response: void };
 }
 export type PlayerRpcHandler<TRequest, TResponse> = (
 	request: TRequest,

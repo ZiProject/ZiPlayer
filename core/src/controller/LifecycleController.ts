@@ -2,8 +2,6 @@ import { AudioPlayerStatus } from "@discordjs/voice";
 import { createPlayerRequestId, type PlayerBus } from "../structures/PlayerBus";
 import type { LifecycleControllerOptions } from "../types";
 
-
-
 /** Owns idle/leave policy and lifecycle cleanup outside the Player facade. */
 export class LifecycleController {
 	private readonly bus: PlayerBus;
@@ -15,6 +13,7 @@ export class LifecycleController {
 	private disposed = false;
 	private isPlaying = false;
 	private unsubscribe: Array<() => void> = [];
+	private readonly detachRpcs: Array<() => void> = [];
 
 	public constructor(options: LifecycleControllerOptions) {
 		this.bus = options.bus;
@@ -22,6 +21,12 @@ export class LifecycleController {
 		this.leaveOnEmpty = options.options.leaveOnEmpty ?? true;
 		this.leaveTimeout = Math.max(0, options.options.leaveTimeout ?? 100000);
 		this.debug = options.debug;
+		this.detachRpcs.push(
+			this.bus.registerRpc<{ reason?: "track-end" | "queue-empty" | "manual" }, void>("lifecycle.scheduleLeave", ({ reason }) =>
+				this.scheduleLeave(reason),
+			),
+			this.bus.registerRpc<void, void>("lifecycle.clearLeaveTimeout", () => this.clearLeaveTimeout()),
+		);
 
 		this.unsubscribe.push(
 			this.bus.subscribe("TRACK_STARTED", () => {
@@ -96,6 +101,7 @@ export class LifecycleController {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.clearLeaveTimeout();
+		for (const detach of this.detachRpcs.splice(0)) detach();
 		for (const unsubscribe of this.unsubscribe.splice(0)) unsubscribe();
 	}
 

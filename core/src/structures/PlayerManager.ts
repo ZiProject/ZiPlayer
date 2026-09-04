@@ -300,7 +300,7 @@ export class PlayerManager extends EventEmitter {
 
 		for (const [guildId, player] of this.players) {
 			// Clean up players that are not playing and not connected
-			if (!player.isPlaying && !player.connection && player.queue.isEmpty) {
+			if (!player.isPlaying && !player.connection && player.queueSize === 0) {
 				const idleTime = Date.now() - (player as any)._lastActivity || Date.now();
 				if (idleTime > this.cleanupTimeout) {
 					this.debug(`Cleaning up inactive player for guild: ${guildId}`);

@@ -900,7 +900,7 @@ export class PluginManager {
 			return [];
 		}
 
-		const history = this.player?.queue?.previousTracks || [];
+		const history = this.player?.previousTracks || [];
 		const historyUrls = new Set(history.map((t: Track) => t.url));
 		const recentAuthors = new Set(
 			history

@@ -283,7 +283,9 @@ export class PlayerBus {
 			source: context?.source,
 			timestamp: context?.timestamp ?? Date.now(),
 		};
-		return Promise.all([...this.actionListeners].map((handler) => handler(action, execution))).then(() => undefined);
+		return Promise.all([...this.actionListeners].map((handler) => Promise.resolve().then(() => handler(action, execution)))).then(
+			() => undefined,
+		);
 	}
 	public onAction(handler: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>): () => void {
 		this.actionListeners.add(handler);
