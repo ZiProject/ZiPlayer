@@ -31,6 +31,7 @@ export class TransitionController {
 		return waitMs > 0 && waitMs <= this.options.beatAlignMaxWaitMs ? waitMs : 0;
 	}
 	public get settings(): Readonly<typeof this.options> { return this.options; }
+	public get enabled(): boolean { return this.options.enabled; }
 	public dispose(): void { for (const detach of this.detachQueries.splice(0)) detach(); }
 	private genreOf(track: Track): string | null { const metadata = (track as Track & { metadata?: Record<string, unknown> }).metadata; const value = metadata?.genre; return typeof value === "string" ? value.toLowerCase().trim() : null; }
 }
