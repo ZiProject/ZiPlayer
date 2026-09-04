@@ -1,5 +1,5 @@
 import { LRUCache } from "lru-cache";
-import type { SearchResult } from "../types";
+import type { SearchResult, SearchRequest, SearchDebugResult } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
 import type { PlayerBus } from "../structures/PlayerBus";
@@ -9,18 +9,6 @@ export interface SearchControllerOptions {
 	pluginManager: PluginManager;
 	debug: (...args: any[]) => void;
 	bus?: PlayerBus;
-}
-
-export interface SearchRequest {
-	query: string;
-	requestedBy: string;
-}
-
-export interface SearchDebugResult {
-	isCached: boolean;
-	cacheAge?: number;
-	pluginCount: number;
-	ttsFiltered: boolean;
 }
 
 /** Owns search orchestration and its cache so Player remains a facade. */
@@ -44,7 +32,9 @@ export class SearchController {
 					this.search(request.query, request.requestedBy, context.signal),
 				),
 				options.bus.registerRpc<string, SearchResult | null>("search.cache.get", (query) => this.getCached(query)),
-				options.bus.registerRpc<{ query: string; result: SearchResult }, void>("search.cache.set", ({ query, result }) => this.cacheResult(query, result)),
+				options.bus.registerRpc<{ query: string; result: SearchResult }, void>("search.cache.set", ({ query, result }) =>
+					this.cacheResult(query, result),
+				),
 				options.bus.registerRpc<void, void>("search.cache.clear", () => this.clear()),
 				options.bus.registerRpc<void, void>("search.cache.purge", () => this.purgeStale()),
 				options.bus.registerRpc<string, SearchDebugResult>("search.debug", (query) => this.debug(query)),

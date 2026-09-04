@@ -2,6 +2,7 @@ import type { AudioPlayerState, VoiceConnection } from "@discordjs/voice";
 import type { Track, StreamInfo, VoiceChannel, PlaybackSessionSnapshot } from ".";
 
 export type { PlayerBus } from "../structures/PlayerBus";
+import type { BasePlugin } from "../plugins/BasePlugin";
 
 export type PlayerRequestId = string;
 export type PlayerSessionId = string;
@@ -35,7 +36,13 @@ export type PlayerAction =
 	| { type: "QUEUE_NEXT"; ignoreLoop?: boolean; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| { type: "QUEUE_SET_CURRENT"; track: Track | null; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| { type: "FILTER_SET_SOURCE_TYPE"; streamType: string; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "FILTER_APPLY_AND_SEEK"; streamInfo: StreamInfo; position?: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId };
+	| {
+			type: "FILTER_APPLY_AND_SEEK";
+			streamInfo: StreamInfo;
+			position?: number;
+			priority?: PlayerActionPriority;
+			requestId?: PlayerRequestId;
+	  };
 export type PlayerActionType = PlayerAction["type"];
 
 export type PlayerConnectionInput =
@@ -43,15 +50,32 @@ export type PlayerConnectionInput =
 	| { type: "[Player]->[Connection]:disconnect"; requestId: PlayerRequestId; reason?: string }
 	| { type: "[Player]->[Connection]:reconnect"; requestId: PlayerRequestId; channel: VoiceChannel };
 export type PlayerPreloadInput = { type: "[Player]->[Preload]:request"; requestId: PlayerRequestId; track: Track };
-export type PlayerRecoveryInput = { type: "[Player]->[Recovery]:recover"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; reason: string };
+export type PlayerRecoveryInput = {
+	type: "[Player]->[Recovery]:recover";
+	requestId: PlayerRequestId;
+	session: PlaybackSessionSnapshot;
+	reason: string;
+};
 export type PlayerResourceInput = { type: "[Player]->[Resource]:refresh"; requestId: PlayerRequestId; position?: number };
 export type PlayerInput = PlayerConnectionInput | PlayerPreloadInput | PlayerRecoveryInput | PlayerResourceInput;
 
 export type PlayerConnectionOutput =
 	| { type: "[Connection]->[Player]:connecting"; requestId: PlayerRequestId; sessionId: PlayerSessionId; channel: VoiceChannel }
-	| { type: "[Connection]->[Player]:connected"; requestId: PlayerRequestId; sessionId: PlayerSessionId; channel: VoiceChannel; connection: VoiceConnection }
+	| {
+			type: "[Connection]->[Player]:connected";
+			requestId: PlayerRequestId;
+			sessionId: PlayerSessionId;
+			channel: VoiceChannel;
+			connection: VoiceConnection;
+	  }
 	| { type: "[Connection]->[Player]:disconnected"; requestId?: PlayerRequestId; sessionId: PlayerSessionId; reason?: string }
-	| { type: "[Connection]->[Player]:error"; requestId: PlayerRequestId; sessionId?: PlayerSessionId; operation: "connect" | "disconnect" | "reconnect"; error: Error };
+	| {
+			type: "[Connection]->[Player]:error";
+			requestId: PlayerRequestId;
+			sessionId?: PlayerSessionId;
+			operation: "connect" | "disconnect" | "reconnect";
+			error: Error;
+	  };
 export type PlayerPreloadOutput =
 	| { type: "[Preload]->[Player]:loading"; requestId: PlayerRequestId; track: Track }
 	| { type: "[Preload]->[Player]:ready"; requestId: PlayerRequestId; track: Track }
@@ -82,19 +106,39 @@ export type PlayerRecoveryEvents =
 	| { type: "STUCK_DETECTED"; session: PlaybackSessionSnapshot; reason: string }
 	| { type: "RECOVERY_STARTED"; session: PlaybackSessionSnapshot }
 	| { type: "RECOVERY_FAILED"; session: PlaybackSessionSnapshot };
-export interface PlayerPreloadState { requestedTrack: Track | null; valid: boolean; }
+export interface PlayerPreloadState {
+	requestedTrack: Track | null;
+	valid: boolean;
+}
 export type PlayerPreloadEvents =
 	| { type: "preloadStateChanged"; state: PlayerPreloadState }
 	| { type: "preloadPromoted"; track: Track }
 	| { type: "preloadCancelled" };
 export type PlayerQueueEvents = { type: "queueChanged"; queue: Track[] };
 export type PlayerVolumeEvents = { type: "volumeRequested"; volume: number };
-export type PlayerEvent = PlayerLifecycleEvents | PlayerPlaybackEvents | PlayerRecoveryEvents | PlayerPreloadEvents | PlayerQueueEvents | PlayerVolumeEvents;
+export type PlayerEvent =
+	| PlayerLifecycleEvents
+	| PlayerPlaybackEvents
+	| PlayerRecoveryEvents
+	| PlayerPreloadEvents
+	| PlayerQueueEvents
+	| PlayerVolumeEvents;
 export type PlayerEventType = PlayerEvent["type"];
 
 export type PlayerEventArgsMap = {
 	[K in PlayerEventType]: K extends "initialized" | "ready" | "destroyed" | "preloadCancelled" ? []
-	: K extends ("TRACK_LOADING" | "TRACK_LOADED" | "TRACK_STARTED" | "TRACK_END" | "STREAM_ABORTED" | "playbackStateChanged" | "playbackSessionCreated" | "RECOVERY_STARTED" | "RECOVERY_FAILED") ? [PlaybackSessionSnapshot]
+	: K extends (
+		| "TRACK_LOADING"
+		| "TRACK_LOADED"
+		| "TRACK_STARTED"
+		| "TRACK_END"
+		| "STREAM_ABORTED"
+		| "playbackStateChanged"
+		| "playbackSessionCreated"
+		| "RECOVERY_STARTED"
+		| "RECOVERY_FAILED"
+	) ?
+		[PlaybackSessionSnapshot]
 	: K extends "TRACK_ERROR" ? [PlaybackSessionSnapshot, Error]
 	: K extends "STUCK_DETECTED" ? [PlaybackSessionSnapshot, string]
 	: K extends "trackRequested" ? [Track, PlaybackSessionSnapshot]
@@ -107,27 +151,54 @@ export type PlayerEventArgsMap = {
 };
 
 export interface PlayerRequestReplyMap {
-	"[Player]->[Connection]:connect": { success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connected" }>; progress: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connecting" }> };
-	"[Player]->[Connection]:disconnect": { success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:disconnected" }> };
-	"[Player]->[Connection]:reconnect": { success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connected" }>; progress: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connecting" }> };
-	"[Player]->[Preload]:request": { success: Extract<PlayerPreloadOutput, { type: "[Preload]->[Player]:ready" }>; progress: Extract<PlayerPreloadOutput, { type: "[Preload]->[Player]:loading" }> };
-	"[Player]->[Recovery]:recover": { success: Extract<PlayerRecoveryOutput, { type: "[Recovery]->[Player]:recovered" }>; progress: Extract<PlayerRecoveryOutput, { type: "[Recovery]->[Player]:retrying" }> };
+	"[Player]->[Connection]:connect": {
+		success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connected" }>;
+		progress: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connecting" }>;
+	};
+	"[Player]->[Connection]:disconnect": {
+		success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:disconnected" }>;
+	};
+	"[Player]->[Connection]:reconnect": {
+		success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connected" }>;
+		progress: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connecting" }>;
+	};
+	"[Player]->[Preload]:request": {
+		success: Extract<PlayerPreloadOutput, { type: "[Preload]->[Player]:ready" }>;
+		progress: Extract<PlayerPreloadOutput, { type: "[Preload]->[Player]:loading" }>;
+	};
+	"[Player]->[Recovery]:recover": {
+		success: Extract<PlayerRecoveryOutput, { type: "[Recovery]->[Player]:recovered" }>;
+		progress: Extract<PlayerRecoveryOutput, { type: "[Recovery]->[Player]:retrying" }>;
+	};
 	"[Player]->[Resource]:refresh": { success: Extract<PlayerResourceOutput, { type: "[Resource]->[Player]:refreshed" }> };
 }
 export type PlayerRequestInputType = keyof PlayerRequestReplyMap;
 export type PlayerRequestReply<K extends PlayerRequestInputType> = PlayerRequestReplyMap[K];
-export type PlayerRequestProgress<K extends PlayerRequestInputType> = PlayerRequestReply<K> extends { progress: infer P } ? P : never;
-export interface PlayerRequestOptions<K extends PlayerRequestInputType = PlayerRequestInputType> { timeoutMs?: number; signal?: AbortSignal; onProgress?: (event: PlayerRequestProgress<K>) => void; }
+export type PlayerRequestProgress<K extends PlayerRequestInputType> =
+	PlayerRequestReply<K> extends { progress: infer P } ? P : never;
+export interface PlayerRequestOptions<K extends PlayerRequestInputType = PlayerRequestInputType> {
+	timeoutMs?: number;
+	signal?: AbortSignal;
+	onProgress?: (event: PlayerRequestProgress<K>) => void;
+}
 export type PlayerBusRequestErrorReason = "timeout" | "aborted" | "disposed" | "unhandled";
 
-export interface PlayerRpcOptions { timeoutMs?: number; signal?: AbortSignal; source?: string; priority?: PlayerActionPriority; }
-export type PlayerRpcHandler<TRequest, TResponse> = (request: TRequest, context: PlayerMessageContext) => TResponse | Promise<TResponse>;
+export interface PlayerRpcOptions {
+	timeoutMs?: number;
+	signal?: AbortSignal;
+	source?: string;
+	priority?: PlayerActionPriority;
+}
+export type PlayerRpcHandler<TRequest, TResponse> = (
+	request: TRequest,
+	context: PlayerMessageContext,
+) => TResponse | Promise<TResponse>;
 
 export type PlayerQuery = keyof PlayerQueryMap;
 export interface PlayerQueryMap {
 	currentTrack: Track | null;
 	queueCurrent: Track | null;
-	playerState: PlaybackSessionSnapshot["status"] | "idle";
+	playerState: PlaybackSessionSnapshot["status"];
 	queue: Track[];
 	previousTracks: Track[];
 	previousTrack: Track | null;
@@ -146,5 +217,59 @@ export interface PlayerQueryMap {
 	filteredStream: StreamInfo | null;
 	transitionSettings: Record<string, unknown>;
 	retryPolicy: Record<string, unknown>;
+	availablePlugins: BasePlugin[];
 }
 export type PlayerQueryHandler<K extends PlayerQuery> = () => PlayerQueryMap[K] | Promise<PlayerQueryMap[K]>;
+
+export const SEARCH_RPC_TYPES = {
+	search: "search",
+	cacheGet: "search.cache.get",
+	cacheSet: "search.cache.set",
+	cacheClear: "search.cache.clear",
+	cachePurge: "search.cache.purge",
+	debug: "search.debug",
+} as const;
+
+/*
+ * Suggested SearchController constructor registrations:
+ *
+ * detachSearchCacheGet = bus.registerRpc("search.cache.get", ({ query }) =>
+ *   this.getCached(query)
+ * );
+ *
+ * detachSearchCacheSet = bus.registerRpc("search.cache.set", ({ query, result }) =>
+ *   this.cacheResult(query, result)
+ * );
+ *
+ * detachSearchCacheClear = bus.registerRpc("search.cache.clear", () => {
+ *   this.clear();
+ * });
+ *
+ * detachSearchCachePurge = bus.registerRpc("search.cache.purge", () => {
+ *   this.purgeStale();
+ * });
+ *
+ * detachSearchDebug = bus.registerRpc("search.debug", ({ query }) =>
+ *   this.debug(query)
+ * );
+ *
+ * Keep the existing "search" RPC as-is.
+ */
+
+/* -------------------------------------------------------------------------
+ * PLAYER BUS — query keys expected by the Player getters.
+ * ----------------------------------------------------------------------- */
+
+export const REQUIRED_PLAYER_QUERIES = [
+	"currentTrack",
+	"queue",
+	"isPlaying",
+	"isPaused",
+	"playerState",
+	"volume",
+	"previousTrack",
+	"previousTracks",
+	"availablePlugins",
+	"relatedTracks",
+	"currentResource",
+] as const;
