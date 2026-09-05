@@ -27,7 +27,7 @@
 		"build": "tsc",
 		"dev": "tsc --watch",
 		"prepare": "npm run build",
-		"test:sabr-recreate": "npm run build && node dist/scripts/test-sabr-recreate.js"
+		"test:sabr-recreate": "tsx ./test-sabr-recreate.ts"
 	},
 	"dependencies": {
 		"@zibot/scdl": "^0.1.5",
@@ -46,7 +46,7 @@
 	"devDependencies": {
 		"@types/jsdom": "^27.0.0",
 		"@types/mime-types": "^3.0.1",
-		"@types/node": "^20.0.0",
+		"@types/node": "^20.19.43",
 		"typescript": "^5.0.0"
 	},
 	"allowScripts": {
