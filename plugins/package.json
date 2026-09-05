@@ -6,6 +6,7 @@
 		"ZiPlayer",
 		"@ziplayer/plugin",
 		"discord",
+		"music",
 		"player",
 		"voice"
 	],
@@ -33,7 +34,7 @@
 		"@ziplayer/tts": "^1.0.0",
 		"axios": "^1.19.0",
 		"bgutils-js": "^4.0.3",
-		"file-type": "^22.0.0",
+		"file-type": "^22.0.1",
 		"googlevideo": "^4.1.1",
 		"jsdom": "^28.1.0",
 		"mime-types": "^3.0.2",
@@ -44,7 +45,7 @@
 	},
 	"devDependencies": {
 		"@types/jsdom": "^27.0.0",
-		"@types/mime-types": "^3.0.2",
+		"@types/mime-types": "^3.0.1",
 		"@types/node": "^20.0.0",
 		"typescript": "^5.0.0"
 	},
