@@ -163,9 +163,9 @@ export class PlaybackController {
 		session?: PlaybackSession,
 		track?: Track,
 	): void {
-		void oldResource;
 		this.fadeGain = 0;
 		this.volume?.applyLoudness(newResource, track, 0);
+		const oldVolume = oldResource.volume?.volume ?? 0;
 		const wait = this.transitions?.beatWaitMs(session?.track ?? null, session?.position ?? 0) ?? 0;
 		const begin = () => {
 			this.transitionTimer = null;
@@ -187,6 +187,7 @@ export class PlaybackController {
 				}
 				const p = Math.min(1, (Date.now() - start) / Math.max(1, plan.durationMs));
 				this.fadeGain = p;
+				if (oldResource.volume) oldResource.volume.setVolume(oldVolume * (1 - p));
 				this.volume?.applyLoudness(newResource, track, p);
 				if (p >= 1) this.cancelFade();
 			}, 25);
@@ -220,8 +221,20 @@ export class PlaybackController {
 		this.activeResource = null;
 		return this.audioPlayer.stop(true);
 	}
-	public seek(_position: number, _session?: PlaybackSession): boolean {
-		return false;
+	public async seek(position: number, session?: PlaybackSession): Promise<boolean> {
+		if (!Number.isFinite(position) || position < 0) return false;
+		if (session && !session.isActive()) return false;
+		if (!this.bus) {
+			if (!session) return false;
+			session.updatePosition(position);
+			return true;
+		}
+		try {
+			await this.bus.requestRpc("playback.refreshResource", { position });
+			return !session || session.isActive();
+		} catch {
+			return false;
+		}
 	}
 	public setVolume(value: number): number {
 		const v = this.volume?.setVolume(value) ?? value;

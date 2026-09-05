@@ -230,6 +230,7 @@ export class PlaybackOrchestrator {
 				if (session?.isActive() && this.matchesContext(session, context) && this.o.playbackController?.pause()) {
 					session.markPaused();
 					this.publishState();
+					this.o.player?.emit("playerPause", session.track);
 				}
 				break;
 			}
@@ -238,6 +239,7 @@ export class PlaybackOrchestrator {
 				if (session?.isActive() && this.matchesContext(session, context) && this.o.playbackController?.resume()) {
 					session.markPlaying();
 					this.publishState();
+					this.o.player?.emit("playerResume", session.track);
 				}
 				break;
 			}
@@ -247,6 +249,7 @@ export class PlaybackOrchestrator {
 				this.stopPlayback(context.signal);
 				if (session?.isActive()) session.markStopped();
 				this.publishState();
+				this.o.player?.emit("playerStop");
 				break;
 			}
 		}
@@ -267,8 +270,7 @@ export class PlaybackOrchestrator {
 		};
 	}
 
-	private stopPlayback(s: AbortSignal, cancelPreload = true) {
-		if (s.aborted) return;
+	private stopPlayback(_s: AbortSignal, cancelPreload = true) {
 		this.o.playbackController?.stop();
 		if (cancelPreload) this.o.trackLoader?.cancelPreload();
 	}
@@ -380,6 +382,7 @@ export class PlaybackOrchestrator {
 		}
 		this.stopPlayback(context.signal);
 		this.publishState();
+		this.o.player?.emit("queueEnd");
 	}
 
 	private async seek(position: number, context: PlayerMessageContext) {
@@ -393,6 +396,7 @@ export class PlaybackOrchestrator {
 				{ signal: context.signal, timeoutMs: 30000 },
 			);
 			if (context.signal.aborted || !this.matchesContext(x, context)) return;
+			this.o.player?.emit("seek", { track: x.track, position });
 		} catch (error) {
 			if (!context.signal.aborted && this.matchesContext(x, context))
 				this.bus.event({
@@ -412,6 +416,7 @@ export class PlaybackOrchestrator {
 		if (!next) {
 			this.stopPlayback(context.signal);
 			this.publishState();
+			this.o.player?.emit("queueEnd");
 			return;
 		}
 		await this.start(next, context, from);
@@ -426,15 +431,15 @@ export class PlaybackOrchestrator {
 			this.session.destroy();
 		}
 		this.o.trackLoader?.resetRecovery();
-		const preload = this.o.preloadController?.peek(track);
 		this.session = new PlaybackSession();
 		const x = this.session;
 		x.begin(track);
 		const context = this.childContext(parentContext, x.sessionId, x.signal);
 		await this.setCurrentThroughBus(track, context);
 		this.bus.event({ type: "TRACK_LOADING", session: x.snapshot() });
+		this.o.player?.emit("willPlay", track, this.o.queueController?.snapshot() ?? []);
 		try {
-			const loaded = preload ?? (await this.o.trackLoader?.loadWithRecovery(track, x));
+			const loaded = await this.o.trackLoader?.loadWithRecovery(track, x);
 			if (!loaded) throw new Error("Track loader is unavailable");
 			if (context.signal.aborted || !this.matchesContext(x, context)) return;
 			this.bus.event({ type: "TRACK_LOADED", session: x.snapshot() });

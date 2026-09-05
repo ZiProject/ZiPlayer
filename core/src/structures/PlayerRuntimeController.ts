@@ -106,6 +106,7 @@ export class PlayerRuntimeController {
 		});
 		this.streamManager = streamManager;
 		const pluginManager = new PluginManager(player, manager, { extractorTimeout: options.extractorTimeout });
+		pluginManager.setStreamManager(streamManager);
 		const extensionManager = new ExtensionManager(player, manager);
 		const ttsController = new TTSController({
 			pluginManager,
@@ -136,7 +137,8 @@ export class PlayerRuntimeController {
 					:	false;
 			},
 			isDestroyed: () => player.destroyed,
-			isEnabled: () => options.preload?.enabled ?? true,
+			isEnabled: () =>
+				!(options.lowPerformance && options.preload?.autoDisableInLowPerformance) && (options.preload?.enabled ?? true),
 		});
 		const trackLoader = new TrackLoader({
 			middleware,
@@ -153,7 +155,10 @@ export class PlayerRuntimeController {
 			debug,
 		});
 		const transitionController = new TransitionController({
-			enabled: options.crossfade?.enabled ?? true,
+			enabled:
+				options.lowPerformance && options.crossfade?.autoDisableInLowPerformance ?
+					false
+				:	(options.crossfade?.enabled ?? options.crossfade?.autoEnable ?? true),
 			durationMs: options.crossfade?.durationMs,
 			smartEnabled: options.smartTransition?.enabled ?? true,
 			genreAware: options.smartTransition?.genreAware ?? true,
@@ -233,7 +238,16 @@ export class PlayerRuntimeController {
 		);
 		const antiStuckController = new AntiStuckController({ ...options.antiStuck, bus: this.bus });
 		const preloadController = new PreloadController({ loader: trackLoader, manager: preloadManager, bus: this.bus });
-		const filterController = new FilterController(undefined, debug, this.bus);
+		const filterController = new FilterController(undefined, debug, this.bus, {
+			onFilterApplied: (filter) => player.emit("filterApplied", filter),
+			onFilterRemoved: (filter) => player.emit("filterRemoved", filter),
+			onFiltersCleared: () => player.emit("filtersCleared"),
+		});
+		const onStreamError = ({ error }: { error: Error }) => player.emit("streamError", error, player.currentTrack);
+		streamManager.on("streamError", onStreamError);
+		this.monitorCleanup("stream.errors", () => {
+			streamManager.off("streamError", onStreamError);
+		});
 		const orchestrator = new PlaybackOrchestrator(this.bus, {
 			player,
 			trackLoader,

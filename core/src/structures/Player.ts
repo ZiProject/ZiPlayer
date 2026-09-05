@@ -28,7 +28,7 @@ import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { PlaybackSession } from "./PlaybackSession";
-import { PlayerRuntimeController } from "./PlayerRuntimeController";
+import { PlayerRuntimeController, type PlayerRuntimeGraph } from "./PlayerRuntimeController";
 
 export class Player extends EventEmitter {
 	public readonly bus = new PlayerBus();
@@ -39,7 +39,7 @@ export class Player extends EventEmitter {
 	public readonly options: PlayerOptions;
 
 	public connection: VoiceConnection | null = null;
-	public playbackMode: any;
+	public playbackMode: any = "NATIVE";
 	public userdata?: Record<string, any>;
 	public _lastActivity = Date.now();
 	public destroyed = false;
@@ -47,6 +47,8 @@ export class Player extends EventEmitter {
 	public forwardLeader: Player | null = null;
 
 	private disposed = false;
+	private playOperation: Promise<boolean> = Promise.resolve(false);
+	public readonly runtimeGraph: PlayerRuntimeGraph;
 
 	public constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
 		super();
@@ -68,7 +70,7 @@ export class Player extends EventEmitter {
 		const debug = this.debug.bind(this);
 
 		this.runtime = new PlayerRuntimeController(this.bus);
-		const graph = this.runtime.initialize(this, manager, this.options, debug);
+		this.runtimeGraph = this.runtime.initialize(this, manager, this.options, debug);
 		this.bus.publish("initialized");
 		this.bus.publish("ready");
 	}
@@ -80,6 +82,28 @@ export class Player extends EventEmitter {
 
 	public get currentTrack(): Track | null {
 		return this.bus.querySync("currentTrack");
+	}
+
+	public get queue() {
+		return this.runtimeGraph.queueController;
+	}
+	public get pluginManager() {
+		return this.runtimeGraph.pluginManager;
+	}
+	public get extensionManager() {
+		return this.runtimeGraph.extensionManager;
+	}
+	public get streamManager() {
+		return this.runtimeGraph.streamManager;
+	}
+	public get preloadManager() {
+		return this.runtimeGraph.preloadManager;
+	}
+	public get filter() {
+		return this.runtimeGraph.filterController;
+	}
+	public get audioPlayer() {
+		return this.runtimeGraph.audioPlayer;
 	}
 
 	public get queueSize(): number {
@@ -176,7 +200,9 @@ export class Player extends EventEmitter {
 			.then(() => undefined);
 	}
 	public async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
-		return this.bus.requestRpc("play", { query, requestedBy });
+		const operation = this.playOperation.catch(() => false).then(() => this.bus.requestRpc("play", { query, requestedBy }));
+		this.playOperation = operation;
+		return operation;
 	}
 	public async playNext(): Promise<boolean> {
 		if (this.destroyed) return false;

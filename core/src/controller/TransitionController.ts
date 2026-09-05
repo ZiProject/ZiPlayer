@@ -30,11 +30,11 @@ export class TransitionController {
 		const minDurationMs = Math.max(0, options.minDurationMs ?? 120);
 		this.options = {
 			enabled: options.enabled ?? true,
-			durationMs: Math.max(0, options.durationMs ?? 500),
+			durationMs: Math.max(0, options.durationMs ?? 5000),
 			smartEnabled: options.smartEnabled ?? true,
 			genreAware: options.genreAware ?? true,
 			beatAlign: options.beatAlign ?? true,
-			baseDurationMs: Math.max(0, options.baseDurationMs ?? options.durationMs ?? 500),
+			baseDurationMs: Math.max(0, options.baseDurationMs ?? options.durationMs ?? 5000),
 			minDurationMs,
 			maxDurationMs: Math.max(minDurationMs, options.maxDurationMs ?? 8000),
 			beatAlignMaxWaitMs: Math.max(0, options.beatAlignMaxWaitMs ?? 180),

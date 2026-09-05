@@ -11,6 +11,9 @@ type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 export interface FilterControllerOptions {
 	/** Explicit FFmpeg executable path. Falls back to FFMPEG_PATH, ffmpeg-static, then PATH. */
 	ffmpegPath?: string | null;
+	onFilterApplied?: (filter: AudioFilter) => void;
+	onFilterRemoved?: (filter: AudioFilter) => void;
+	onFiltersCleared?: () => void;
 }
 
 export class FilterController {
@@ -22,7 +25,7 @@ export class FilterController {
 	private ffmpegGeneration = 0;
 	private lastFilteredStream: StreamInfo | null = null;
 	private readonly detachAction?: () => void;
-	private readonly detachQuery?: () => void;
+	private readonly detachQueries: Array<() => void> = [];
 	public StreamType: FilterControllerStreamType = "arbitrary";
 
 	constructor(
@@ -33,8 +36,10 @@ export class FilterController {
 	) {
 		if (bus) {
 			this.detachAction = bus.onAction((action, context) => this.handleAction(action, context.signal));
-			this.detachQuery = bus.registerQuery("filterString", () => this.getFilterString());
-			bus.registerQuery("filteredStream", () => this.lastFilteredStream);
+			this.detachQueries.push(
+				bus.registerQuery("filterString", () => this.getFilterString()),
+				bus.registerQuery("filteredStream", () => this.lastFilteredStream),
+			);
 		}
 	}
 
@@ -57,7 +62,7 @@ export class FilterController {
 
 	public destroy(): void {
 		this.detachAction?.();
-		this.detachQuery?.();
+		for (const detach of this.detachQueries.splice(0)) detach();
 		this.activeFilters = [];
 		this.teardownFFmpeg();
 		this.currentInputStream = null;
@@ -110,6 +115,7 @@ export class FilterController {
 		const audioFilter = this.resolveFilter(filter);
 		if (!audioFilter || this.hasFilter(audioFilter.name)) return false;
 		this.activeFilters.push(audioFilter);
+		this.options.onFilterApplied?.(audioFilter);
 		this.debug(`Applied filter: ${audioFilter.name} - ${audioFilter.description}`);
 		return this.refreshPlayerResource();
 	}
@@ -125,6 +131,7 @@ export class FilterController {
 			}
 			if (this.hasFilter(audioFilter.name)) continue;
 			this.activeFilters.push(audioFilter);
+			this.options.onFilterApplied?.(audioFilter);
 			changed = true;
 		}
 		if (!changed) return allApplied;
@@ -134,7 +141,8 @@ export class FilterController {
 	public async removeFilter(filterName: string): Promise<boolean> {
 		const index = this.activeFilters.findIndex((filter) => filter.name === filterName);
 		if (index === -1) return false;
-		this.activeFilters.splice(index, 1);
+		const removed = this.activeFilters.splice(index, 1)[0];
+		this.options.onFilterRemoved?.(removed);
 		this.debug(`Removed filter: ${filterName}`);
 		return this.refreshPlayerResource();
 	}
@@ -142,6 +150,7 @@ export class FilterController {
 	public async clearAll(): Promise<boolean> {
 		const count = this.activeFilters.length;
 		this.activeFilters = [];
+		if (count > 0) this.options.onFiltersCleared?.();
 		this.debug(`Cleared ${count} filters`);
 		return this.refreshPlayerResource();
 	}

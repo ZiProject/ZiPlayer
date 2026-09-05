@@ -158,7 +158,11 @@ export class Queue {
 	indexOf(identifier: string | Track): number {
 		return typeof identifier === "string" ?
 				this.tracks.findIndex((t) => t.id === identifier || t.url === identifier)
-			:	this.tracks.findIndex((t) => t.id === identifier.id);
+			:	this.tracks.findIndex(
+					(t) =>
+						(t.id !== undefined && identifier.id !== undefined && t.id === identifier.id) ||
+						(t.url !== undefined && identifier.url !== undefined && t.url === identifier.url),
+				);
 	}
 	has(identifier: string | Track): boolean {
 		return this.indexOf(identifier) !== -1;
@@ -201,10 +205,13 @@ export class Queue {
 		};
 	}
 	fromJSON(data: { tracks: Track[]; current: Track | null; history: Track[]; loopMode: LoopMode; autoPlay: boolean }): void {
-		this.tracks = [...data.tracks];
-		this.current = data.current;
-		this.history = [...data.history];
-		this._loop = data.loopMode;
-		this._autoPlay = data.autoPlay;
+		if (!data || typeof data !== "object") throw new TypeError("Invalid queue state");
+		const tracks = Array.isArray(data.tracks) ? data.tracks.filter((track) => track && typeof track === "object") : [];
+		const history = Array.isArray(data.history) ? data.history.filter((track) => track && typeof track === "object") : [];
+		this.tracks = tracks.slice(0, this.MAX_QUEUE_SIZE);
+		this.current = data.current && typeof data.current === "object" ? data.current : null;
+		this.history = history.slice(-this.MAX_HISTORY_SIZE);
+		this._loop = data.loopMode === "off" || data.loopMode === "track" || data.loopMode === "queue" ? data.loopMode : "off";
+		this._autoPlay = data.autoPlay === true;
 	}
 }

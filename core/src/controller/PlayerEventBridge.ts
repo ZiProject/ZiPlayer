@@ -185,16 +185,22 @@ export class PlayerEventBridge {
 		this.previousQueue = [...next];
 
 		if (next.length > previous.length) {
-			const added = next.filter((track) => !previous.some((old) => old?.id === track?.id));
+			const added = next.filter((track) => !previous.some((old) => this.trackIdentity(old) === this.trackIdentity(track)));
 			if (added.length === 1) this.player.emit("queueAdd", added[0]);
 			else if (added.length > 1) this.player.emit("queueAddList", added);
 		} else if (next.length < previous.length) {
-			const removed = previous.filter((track) => !next.some((current) => current?.id === track?.id));
+			const removed = previous.filter(
+				(track) => !next.some((current) => this.trackIdentity(current) === this.trackIdentity(track)),
+			);
 			if (removed.length === 1) {
 				const track = removed[0];
 				this.player.emit("queueRemove", track, previous.indexOf(track));
 			}
 		}
+	}
+
+	private trackIdentity(track: any): string | undefined {
+		return track?.id ?? track?.url;
 	}
 
 	private describeArgs(event: PlayerEvent, args: any[]): any {

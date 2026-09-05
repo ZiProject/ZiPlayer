@@ -163,6 +163,8 @@ export class TTSController {
 			timer = setTimeout(() => {
 				cleanup();
 				this.debug(`[TTSController] idle timeout after ${idleTimeout}ms for: ${track.title}`);
+				const stream = this.activeResource?.playStream;
+				if (stream && typeof stream.destroy === "function" && !stream.destroyed) stream.destroy();
 				this.ttsPlayer.stop(true);
 				resolve();
 			}, idleTimeout);

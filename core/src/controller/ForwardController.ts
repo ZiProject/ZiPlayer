@@ -84,6 +84,10 @@ export class ForwardController {
 		if (!leaderAudioPlayer || !playerAudioPlayer) return false;
 		this.leader = leader;
 		leaderForward?.followers.add(this.player);
+		if (leaderForward) leader.forwardFollowers = leaderForward.followers;
+		this.player.forwardLeader = leader;
+		this.player.playbackMode = PlaybackMode.FORWARD;
+		this.player.forwardFollowers = this.followers;
 
 		try {
 			this.player.stop();
@@ -92,6 +96,7 @@ export class ForwardController {
 			const track = leader.currentTrack as Track | null | undefined;
 			if (track) leader.runtime.setCurrentTrack(track);
 			this.mode = (options?.forwardMode ?? true) ? PlaybackMode.FORWARD : PlaybackMode.NATIVE;
+			this.player.playbackMode = this.mode;
 			if (this.mode === PlaybackMode.FORWARD) this.player.connection.subscribe(leaderAudioPlayer);
 			this.player.volume = leader.volume;
 			this.player.emit("forwardModeStart", leader);
@@ -101,6 +106,8 @@ export class ForwardController {
 			leaderForward?.followers.delete(this.player);
 			this.leader = null;
 			this.mode = PlaybackMode.NATIVE;
+			this.player.forwardLeader = null;
+			this.player.playbackMode = PlaybackMode.NATIVE;
 			return false;
 		}
 	}
@@ -110,8 +117,11 @@ export class ForwardController {
 		if (!leader) return false;
 		const leaderForward = (leader as any).forwardController as ForwardController | undefined;
 		leaderForward?.followers.delete(this.player);
+		if (leaderForward) leader.forwardFollowers = leaderForward.followers;
 		this.leader = null;
 		this.mode = PlaybackMode.NATIVE;
+		this.player.forwardLeader = null;
+		this.player.playbackMode = PlaybackMode.NATIVE;
 		try {
 			const audioPlayer = this.player.runtime.getAudioPlayer();
 			if (audioPlayer) this.player.connection?.subscribe(audioPlayer);
@@ -122,14 +132,19 @@ export class ForwardController {
 	}
 
 	addFollower(follower: Player): void {
-		if (!this.disposed && follower !== this.player) this.followers.add(follower);
+		if (!this.disposed && follower !== this.player) {
+			this.followers.add(follower);
+			this.player.forwardFollowers = this.followers;
+		}
 	}
 	removeFollower(follower: Player): void {
 		this.followers.delete(follower);
+		this.player.forwardFollowers = this.followers;
 	}
 	clearFollowers(reason = "leader destroyed"): void {
 		for (const follower of [...this.followers]) follower.unsubscribeForward(reason);
 		this.followers.clear();
+		this.player.forwardFollowers = this.followers;
 	}
 
 	dispose(): void {
@@ -139,5 +154,8 @@ export class ForwardController {
 		this.clearFollowers();
 		this.unsubscribeForward("controller disposed");
 		this.mode = PlaybackMode.NATIVE;
+		this.player.playbackMode = PlaybackMode.NATIVE;
+		this.player.forwardLeader = null;
+		this.player.forwardFollowers = this.followers;
 	}
 }
