@@ -534,6 +534,19 @@ export class StreamManager extends EventEmitter {
 	}
 
 	/**
+	 * Full teardown hook so generic lifecycle owners (e.g. PlayerRuntimeController)
+	 * can dispose this manager via duck-typed `.dispose()`/`.destroy()` detection.
+	 * Without this, `destroyAll()` is never invoked on player destroy because its
+	 * name doesn't match the resolver, leaking every registered stream, the
+	 * cleanup interval, and all listeners attached to this emitter.
+	 */
+	dispose(): void {
+		this.destroyAll(true);
+		this.suppressPrematureCloseErrors.clear();
+		this.removeAllListeners();
+	}
+
+	/**
 	 * Generate unique stream ID
 	 */
 	private generateStreamId(track: Track): string {

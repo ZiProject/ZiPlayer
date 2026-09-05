@@ -162,6 +162,17 @@ export class PreloadManager {
 		this.preloadSlot.isLoading = false;
 		this.preloadSlot.loadPromise = null;
 	}
+	/**
+	 * Full teardown hook so PlayerRuntimeController's generic `.dispose()`/`.destroy()`
+	 * duck-typed resolver can find and call this. Without a method matching that
+	 * exact name, any in-flight or already-buffered preloaded track (a whole
+	 * AudioResource + its underlying ffmpeg/yt-dlp Readable stream) is never
+	 * destroyed when the player is destroyed, leaking that memory indefinitely.
+	 */
+	public dispose(): void {
+		this.cancelPreload();
+		this.clearPreloadSlot();
+	}
 	private async executePreload(track: Track, abortController: AbortController): Promise<void> {
 		if (this.isDestroyed()) throw new Error("PLAYER_DESTROYED");
 		this.debugLog(`[Preload] Starting preload for: ${track.title}`);
