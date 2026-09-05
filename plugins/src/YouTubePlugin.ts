@@ -6,6 +6,7 @@ import { createSabrStream, createSabrVideoStream } from "./utils/sabr-stream-fac
 import { webStreamToNodeStream } from "./utils/stream-converter.js";
 import { mintYouTubePoToken } from "./utils/youtube-botguard.js";
 import { Readable } from "stream";
+import { createSabrSeekStream } from "./utils/sabr-seek.js";
 
 /**
  * YouTube VM shim
@@ -577,6 +578,7 @@ export class YouTubePlugin extends BasePlugin {
 	}
 	private async downloadWithSabr(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
 		const { stream, format } = await this.getSabrDL(track, id, signal);
+		const expectedId = track.id || this.extractVideoId(track.url);
 
 		return {
 			stream,
@@ -586,6 +588,7 @@ export class YouTubePlugin extends BasePlugin {
 				itag: format.itag,
 				mime: format.mimeType,
 			},
+			recreate: async (position: number) => createSabrSeekStream(id, this.client, position, signal),
 		};
 	}
 
