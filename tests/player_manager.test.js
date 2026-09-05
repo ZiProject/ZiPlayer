@@ -107,3 +107,24 @@ test("PlayerManager extension activation by name and ctor", async (t) => {
 	await mgr2.create("g3", { extensions: ["dext"] });
 	assert.equal(activated, 1);
 });
+
+test("PlayerManager clears extension player references on destroy", async (t) => {
+	class CleanupExtension {
+		static name = "cleanup";
+		name = "cleanup";
+		version = "0.0.0";
+		player = null;
+		active() {
+			return true;
+		}
+	}
+
+	const extension = new CleanupExtension();
+	const mgr = new PlayerManager({ extensions: [extension], autoCleanup: false });
+	t.after(() => mgr.destroy());
+	await mgr.create("cleanup-guild", { extensions: ["cleanup"] });
+
+	assert.ok(extension.player);
+	mgr.destroy();
+	assert.equal(extension.player, null);
+});

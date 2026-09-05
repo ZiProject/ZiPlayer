@@ -549,6 +549,7 @@ export class Player extends EventEmitter {
 		this.disposed = true;
 		this.invalidatePlay();
 		this.actionExecutor.dispose();
+		this.runtimeGraph.extensionManager.destroy();
 		void this.runtime.dispose();
 		this.bus.publish("destroyed");
 		this.bus.clear();

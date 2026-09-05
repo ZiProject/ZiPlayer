@@ -31,6 +31,8 @@ export interface PlaybackOrchestratorOptions {
 export class PlaybackOrchestrator {
 	private session: PlaybackSession | null = null;
 	private autoplayPreparation: Promise<void> | null = null;
+	private refreshSequence = 0;
+	private refreshAbortController: AbortController | null = null;
 	private readonly detachAction: () => void;
 	private readonly detachTrackEnd: () => void;
 	private readonly detachRpcs: Array<() => void> = [];
@@ -102,43 +104,50 @@ export class PlaybackOrchestrator {
 		const session = this.session;
 		if (!session?.track || !session.isActive()) throw new Error("No active playback session");
 		const sessionId = session.id;
+		const refreshSequence = ++this.refreshSequence;
+		this.refreshAbortController?.abort();
+		const refreshAbortController = new AbortController();
+		this.refreshAbortController = refreshAbortController;
+		const signal = AbortSignal.any([rpcContext.signal, refreshAbortController.signal]);
+		const isCurrentRefresh = () =>
+			refreshSequence === this.refreshSequence && !signal.aborted && this.isCurrentSession(sessionId);
 		const info = await this.bus.requestRpc<{ track: Track }, StreamInfo | null>(
 			"stream.resolve",
 			{ track: session.track },
 			{
-				signal: rpcContext.signal,
+				signal,
 			},
 		);
-		if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed during resource refresh");
+		if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 		if (!info?.stream && !info?.url) throw new Error("No stream available for resource refresh");
 		if (info.remote) throw new Error("Cannot refresh a remote playback resource");
 		await this.bus.action(
 			{ type: "FILTER_SET_SOURCE_TYPE", streamType: info.type ?? "arbitrary" },
 			{
-				signal: rpcContext.signal,
+				signal,
 			},
 		);
-		if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after filter source update");
+		if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 		await this.bus.action(
 			{
 				type: "FILTER_APPLY_AND_SEEK",
 				streamInfo: info,
 				position: Math.max(0, position),
 			},
-			{ signal: rpcContext.signal },
+			{ signal },
 		);
-		if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after filter seek");
+		if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 		const processed = await this.bus.query("filteredStream");
-		if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed while reading filtered stream");
+		if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 		if (!processed || !this.o.streamController || !this.o.playbackController)
 			throw new Error("Playback resource controllers are unavailable");
 		const active = await this.o.streamController.replace(processed, session);
-		if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed after stream replacement");
+		if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 		const resource = this.bus.requestRpcSync<
 			{ stream: import("stream").Readable; track: Track },
 			import("@discordjs/voice").AudioResource
 		>("resource.create", { stream: active.stream, track: session.track });
-		if (!this.isCurrentSession(sessionId)) throw new Error("Playback session changed before resource activation");
+		if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 		session.setResource(resource);
 		this.o.playbackController.play(resource, session);
 		session.markPlaying(Math.max(0, position));
@@ -146,6 +155,9 @@ export class PlaybackOrchestrator {
 		return session.snapshot();
 	}
 	dispose() {
+		this.refreshSequence++;
+		this.refreshAbortController?.abort();
+		this.refreshAbortController = null;
 		this.detachAction();
 		this.detachTrackEnd();
 		for (const d of this.detachRpcs) d();

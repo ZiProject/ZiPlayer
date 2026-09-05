@@ -52,6 +52,7 @@ export class ExtensionManager {
 	private pendingSearches: Map<string, Promise<SearchResult | null>>;
 	private pendingStreams: Map<string, Promise<StreamInfo | null>>;
 	private cacheCleanupInterval: NodeJS.Timeout | null = null;
+	private destroyed = false;
 
 	constructor(player: Player, manager: PlayerManager) {
 		this.player = player;
@@ -118,12 +119,15 @@ export class ExtensionManager {
 		if (result) {
 			this.extensionMetadata.delete(name);
 			this.invokeExtensionLifecycle(extension, "onDestroy");
+			if (extension.player === this.player) extension.player = null;
 			this.debug(`Unregistered extension: ${name}`);
 		}
 		return result;
 	}
 
 	destroy(): void {
+		if (this.destroyed) return;
+		this.destroyed = true;
 		this.debug(`Destroying all extensions`);
 		if (this.cacheCleanupInterval) {
 			clearInterval(this.cacheCleanupInterval);
@@ -137,6 +141,9 @@ export class ExtensionManager {
 		this.clearAllCaches();
 		this.pendingSearches.clear();
 		this.pendingStreams.clear();
+		this.player = null as unknown as Player;
+		this.manager = null as unknown as PlayerManager;
+		this.extensionContext = null as unknown as ExtensionContext;
 	}
 
 	get(name: string): BaseExtension | undefined {
