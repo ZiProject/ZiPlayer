@@ -111,9 +111,9 @@ export class PlaybackOrchestrator {
 		const signal = AbortSignal.any([rpcContext.signal, refreshAbortController.signal]);
 		const isCurrentRefresh = () =>
 			refreshSequence === this.refreshSequence && !signal.aborted && this.isCurrentSession(sessionId);
-		const info = await this.bus.requestRpc<{ track: Track }, StreamInfo | null>(
+		const info = await this.bus.requestRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>(
 			"stream.resolve",
-			{ track: session.track },
+			{ track: session.track, fresh: true },
 			{
 				signal,
 			},
@@ -144,11 +144,12 @@ export class PlaybackOrchestrator {
 		const active = await this.o.streamController.replace(processed, session);
 		if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 		const resource = this.bus.requestRpcSync<
-			{ stream: import("stream").Readable; track: Track },
+			{ stream: import("stream").Readable; track: Track; inputType?: import("@discordjs/voice").StreamType },
 			import("@discordjs/voice").AudioResource
-		>("resource.create", { stream: active.stream, track: session.track });
+		>("resource.create", { stream: active.stream, track: session.track, inputType: active.inputType });
 		if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 		session.setResource(resource);
+		session.setPlaybackOffset(Math.max(0, position));
 		this.o.playbackController.play(resource, session);
 		session.markPlaying(Math.max(0, position));
 		this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
@@ -470,9 +471,13 @@ export class PlaybackOrchestrator {
 				activeStream = filtered;
 			}
 			const resource = this.bus.requestRpcSync<
-				{ stream: import("stream").Readable; track: Track },
+				{ stream: import("stream").Readable; track: Track; inputType?: import("@discordjs/voice").StreamType },
 				import("@discordjs/voice").AudioResource
-			>("resource.create", { stream: activeStream.stream as import("stream").Readable, track });
+			>("resource.create", {
+				stream: activeStream.stream as import("stream").Readable,
+				track,
+				inputType: activeStream.inputType,
+			});
 			x.setResource(resource);
 			this.o.playbackController?.play(resource, x);
 			x.markPlaying(0);

@@ -240,8 +240,8 @@ export class PlayerRuntimeController {
 		);
 		this.monitorCleanup(
 			"stream.resolve.rpc",
-			this.bus.registerRpc<{ track: Track }, StreamInfo | null>("stream.resolve", ({ track }) =>
-				resolver.resolve(track, () => player.destroyed),
+			this.bus.registerRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>("stream.resolve", ({ track, fresh }) =>
+				resolver.resolve(track, () => player.destroyed, { fresh }),
 			),
 		);
 		const preloadController = new PreloadController({ loader: trackLoader, manager: preloadManager, bus: this.bus });

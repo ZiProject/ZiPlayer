@@ -20,6 +20,7 @@ export class PlaybackSession {
 	public resource: AudioResource | null = null;
 	public status: PlaybackSessionStatus = "idle";
 	public position: number | null = null;
+	private playbackOffset = 0;
 	public startedAt: number | null = null;
 
 	public get signal(): AbortSignal {
@@ -35,9 +36,7 @@ export class PlaybackSession {
 	}
 
 	public ownsContext(sessionId?: PlayerSessionId, signal?: AbortSignal): boolean {
-		return this.isActive()
-			&& (!sessionId || this.sessionId === sessionId)
-			&& (!signal || this.signal === signal);
+		return this.isActive() && (!sessionId || this.sessionId === sessionId) && (!signal || this.signal === signal);
 	}
 
 	public begin(track: Track): void {
@@ -45,6 +44,7 @@ export class PlaybackSession {
 		this.track = track;
 		this.resource = null;
 		this.position = 0;
+		this.playbackOffset = 0;
 		this.startedAt = null;
 		this.status = "loading";
 	}
@@ -52,6 +52,15 @@ export class PlaybackSession {
 	public setResource(resource: AudioResource | null): void {
 		if (!this.isActive()) return;
 		this.resource = resource;
+	}
+
+	public setPlaybackOffset(position: number): void {
+		if (!this.isActive()) return;
+		this.playbackOffset = Math.max(0, position);
+	}
+
+	public getPlaybackOffset(): number {
+		return this.playbackOffset;
 	}
 
 	public markPlaying(position = this.position ?? 0): void {

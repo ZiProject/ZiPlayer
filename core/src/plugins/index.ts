@@ -672,9 +672,9 @@ export class PluginManager {
 		}
 	}
 
-	private async getStreamInternal(track: Track, primary: BasePlugin): Promise<StreamInfo | null> {
+	private async getStreamInternal(track: Track, primary: BasePlugin, fresh = false): Promise<StreamInfo | null> {
 		// Reuse existing stream from StreamManager
-		if (this.streamManager) {
+		if (!fresh && this.streamManager) {
 			const existingStream = this.streamManager.getStreamByTrack(track.id || track.title);
 
 			if (existingStream) {
@@ -690,7 +690,7 @@ export class PluginManager {
 		const timeoutMs = this.options.extractorTimeout ?? 50000;
 
 		// Cache
-		const cached = this.getCachedStream(track);
+		const cached = fresh ? null : this.getCachedStream(track);
 
 		if (cached) {
 			this.debug(`[Stream] Using cached stream for: ${track.title}`);
@@ -859,7 +859,7 @@ export class PluginManager {
 
 		return null;
 	}
-	async getStream(track: Track): Promise<StreamInfo | null> {
+	async getStream(track: Track, options?: { fresh?: boolean }): Promise<StreamInfo | null> {
 		if (!track) {
 			this.debug(`[getStream] No track provided`);
 			return null;
@@ -874,6 +874,7 @@ export class PluginManager {
 			return null;
 		}
 
+		if (options?.fresh) return this.getStreamInternal(track, primary, true);
 		return this.getStreamWithDedupe(track, primary);
 	}
 

@@ -277,7 +277,7 @@ export interface PlayerRpcMap {
 		response: AudioResource;
 	};
 	"track.middleware": { request: { track: Track }; response: Track };
-	"stream.resolve": { request: { track: Track }; response: StreamInfo | null };
+	"stream.resolve": { request: { track: Track; fresh?: boolean }; response: StreamInfo | null };
 	"preload.next": { request: undefined; response: void };
 	"preload.cancel": { request: undefined; response: void };
 	"preload.cancelSafe": { request: undefined; response: void };

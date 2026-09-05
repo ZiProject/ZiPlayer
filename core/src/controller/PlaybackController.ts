@@ -311,7 +311,8 @@ export class PlaybackController {
 		const session = this.activeSession;
 		if (!session) return null;
 		const duration = Number(session.resource?.playbackDuration);
-		if (Number.isFinite(duration) && (duration > 0 || session.position === 0)) session.updatePosition(duration);
+		if (Number.isFinite(duration) && (duration > 0 || session.position === 0))
+			session.updatePosition(session.getPlaybackOffset() + duration);
 		return session.position;
 	}
 	public get state(): AudioPlayerState {
