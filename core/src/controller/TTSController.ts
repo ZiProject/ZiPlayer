@@ -33,6 +33,7 @@ export class TTSController {
 	private readonly volume: number;
 	private activeResource: AudioResource | null = null;
 	private running: Promise<void> | null = null;
+	private readonly onError: (error: Error) => void;
 
 	constructor(options: TTSControllerOptions) {
 		this.pluginManager = options.pluginManager;
@@ -46,6 +47,11 @@ export class TTSController {
 			Number.isFinite(options.maxTimeTts) && (options.maxTimeTts as number) > 0 ? (options.maxTimeTts as number) : 60_000;
 		this.volume = Number.isFinite(options.volume) ? Math.max(0, Math.min(100, options.volume as number)) : 100;
 		this.ttsPlayer = new AudioPlayer();
+		this.onError = (error) => {
+			this.debug("[TTSController] audio player error:", error instanceof Error ? error : new Error(String(error)));
+			this.ttsPlayer.stop(true);
+		};
+		this.ttsPlayer.on("error", this.onError);
 	}
 
 	public setConnection(connection: VoiceConnection | null): void {
@@ -176,6 +182,7 @@ export class TTSController {
 	}
 
 	dispose(): void {
+		this.ttsPlayer.removeListener("error", this.onError);
 		this.ttsPlayer.stop(true);
 		this.activeResource = null;
 		this.connection = null;

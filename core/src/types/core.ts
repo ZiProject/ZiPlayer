@@ -127,6 +127,7 @@ export interface PlayerOptions {
 		enabled?: boolean;
 		maxRetries?: number;
 		retryDelayMs?: number;
+		stuckTimeoutMs?: number;
 		reusePreloadFirst?: boolean;
 		reduceQualityOnRetry?: boolean;
 		controlledSkipThreshold?: number;

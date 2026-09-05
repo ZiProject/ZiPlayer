@@ -181,7 +181,15 @@ export class PlayerRuntimeController {
 
 		const detachAvailablePluginsQuery = this.bus.registerQuery("availablePlugins", () => pluginManager.getAll());
 		this.monitorCleanup("availablePlugins.query", detachAvailablePluginsQuery);
-		const playbackController = new PlaybackController({ audioPlayer, bus: this.bus, volumeController, transitionController });
+		const antiStuckController = new AntiStuckController({ ...options.antiStuck, bus: this.bus });
+		const playbackController = new PlaybackController({
+			audioPlayer,
+			bus: this.bus,
+			volumeController,
+			transitionController,
+			antiStuckController,
+			stuckTimeoutMs: options.antiStuck?.stuckTimeoutMs,
+		});
 		const streamController = new StreamController({ streamManager, bus: this.bus });
 		const saveController = new SaveController({
 			middleware: [async (track) => trackLoader.applyMiddleware(track)],
@@ -236,7 +244,6 @@ export class PlayerRuntimeController {
 				resolver.resolve(track, () => player.destroyed),
 			),
 		);
-		const antiStuckController = new AntiStuckController({ ...options.antiStuck, bus: this.bus });
 		const preloadController = new PreloadController({ loader: trackLoader, manager: preloadManager, bus: this.bus });
 		const filterController = new FilterController(undefined, debug, this.bus, {
 			onFilterApplied: (filter) => this.bus.event({ type: "filterApplied", filter }),

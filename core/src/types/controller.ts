@@ -6,6 +6,7 @@ import type { StreamManager } from "../structures/StreamManager";
 import type { PlayerBus } from "../structures/PlayerBus";
 import type { VolumeController } from "../controller/VolumeController";
 import type { TransitionController } from "../controller/TransitionController";
+import type { AntiStuckController } from "../controller/AntiStuckController";
 
 export interface ConnectionControllerOptions {
 	guildId: string;
@@ -28,6 +29,8 @@ export interface PlaybackControllerOptions {
 	bus?: PlayerBus;
 	volumeController?: VolumeController;
 	transitionController?: TransitionController;
+	antiStuckController?: AntiStuckController;
+	stuckTimeoutMs?: number;
 }
 
 export interface ActiveStream {

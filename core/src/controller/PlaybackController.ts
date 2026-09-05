@@ -12,6 +12,8 @@ import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
 import type { VolumeController } from "./VolumeController";
 import type { TransitionController } from "./TransitionController";
+import type { AntiStuckController } from "./AntiStuckController";
+import type { AntiStuckRetryHandlers } from "../types";
 
 export class PlaybackController {
 	public readonly audioPlayer: AudioPlayer;
@@ -20,17 +22,40 @@ export class PlaybackController {
 	private readonly bus?: PlayerBus;
 	private readonly volume?: VolumeController;
 	private readonly transitions?: TransitionController;
+	private readonly antiStuck?: AntiStuckController;
+	private readonly stuckTimeoutMs: number;
 	private transitionTimer: ReturnType<typeof setTimeout> | null = null;
 	private fadeTimer: ReturnType<typeof setInterval> | null = null;
+	private stuckTimer: ReturnType<typeof setTimeout> | null = null;
+	private readonly recoveryHandlers: AntiStuckRetryHandlers;
 	private fadeGain: number | null = null;
 	private readonly detachQueries: Array<() => void> = [];
 	private readonly onStateChange: (oldState: AudioPlayerState, newState: AudioPlayerState) => void;
+	private readonly onError: (error: Error) => void;
 
 	constructor(o: PlaybackControllerOptions) {
 		this.audioPlayer = o.audioPlayer;
 		this.bus = o.bus;
 		this.volume = o.volumeController;
 		this.transitions = o.transitionController;
+		this.antiStuck = o.antiStuckController;
+		this.stuckTimeoutMs = Math.max(0, o.stuckTimeoutMs ?? 10000);
+		this.recoveryHandlers = {
+			retry: async ({ session }) => {
+				if (!this.bus || !session.isActive()) return false;
+				try {
+					await this.bus.requestRpc(
+						"playback.refreshResource",
+						{ position: session.position },
+						{ signal: session.signal, timeoutMs: 30000 },
+					);
+					return session.isActive();
+				} catch {
+					return false;
+				}
+			},
+			skip: ({ session }) => this.bus?.action({ type: "SKIP" }, { signal: session.signal, sessionId: session.sessionId }),
+		};
 		this.volume?.bindActiveResourceResolver(() => ({
 			resource: this.activeResource,
 			track: this.activeSession?.track ?? (this.activeResource?.metadata as Track | undefined),
@@ -79,6 +104,8 @@ export class PlaybackController {
 		}
 		this.onStateChange = (a, b) => {
 			this.bus?.publish("stateChanged", a, b);
+			if (b.status === AudioPlayerStatus.Buffering) this.armStuckWatchdog();
+			else this.clearStuckWatchdog();
 			if (b.status === AudioPlayerStatus.Idle && a.status !== AudioPlayerStatus.Idle) {
 				const previousResource = "resource" in a ? a.resource : undefined;
 				if (previousResource && this.activeResource && previousResource !== this.activeResource) return;
@@ -88,7 +115,38 @@ export class PlaybackController {
 				this.activeResource = null;
 			}
 		};
+		this.onError = (error) => {
+			const normalized = error instanceof Error ? error : new Error(String(error));
+			const session = this.activeSession;
+			if (session?.isActive()) {
+				this.bus?.event({ type: "TRACK_ERROR", session: session.snapshot(), error: normalized });
+				void this.antiStuck?.reportStuck(session, `audio player error: ${normalized.message}`, this.recoveryHandlers);
+			} else {
+				this.bus?.event({ type: "streamError", error: normalized, track: null });
+			}
+		};
 		this.audioPlayer.on("stateChange", this.onStateChange);
+		this.audioPlayer.on("error", this.onError);
+	}
+	private armStuckWatchdog(): void {
+		this.clearStuckWatchdog();
+		if (!this.antiStuck || this.stuckTimeoutMs <= 0 || !this.activeSession?.isActive()) return;
+		const resource = this.activeResource;
+		const session = this.activeSession;
+		const initialDuration = Number(resource?.playbackDuration ?? session.position);
+		this.stuckTimer = setTimeout(() => {
+			this.stuckTimer = null;
+			if (this.status !== AudioPlayerStatus.Buffering || this.activeResource !== resource || this.activeSession !== session)
+				return;
+			const currentDuration = Number(resource?.playbackDuration ?? session.position);
+			if (currentDuration === initialDuration)
+				void this.antiStuck?.reportStuck(session, `buffering stalled for ${this.stuckTimeoutMs}ms`, this.recoveryHandlers);
+			else this.armStuckWatchdog();
+		}, this.stuckTimeoutMs);
+	}
+	private clearStuckWatchdog(): void {
+		if (this.stuckTimer) clearTimeout(this.stuckTimer);
+		this.stuckTimer = null;
 	}
 
 	public createResource(stream: Readable, track: Track, inputType?: StreamType): AudioResource {
@@ -264,11 +322,13 @@ export class PlaybackController {
 	}
 	public dispose(): void {
 		this.cancelTransition();
+		this.clearStuckWatchdog();
 		this.volume?.bindActiveResourceResolver(null);
 		this.activeSession?.destroy();
 		this.activeSession = null;
 		for (const detach of this.detachQueries.splice(0)) detach();
 		this.audioPlayer.removeListener("stateChange", this.onStateChange);
+		this.audioPlayer.removeListener("error", this.onError);
 		this.audioPlayer.stop(true);
 		this.activeResource = null;
 	}

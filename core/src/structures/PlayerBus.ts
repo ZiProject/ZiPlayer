@@ -364,7 +364,7 @@ export class PlayerBus {
 			case "queueChanged":
 				return { type, queue: args[0] } as any;
 			case "volumeRequested":
-				return { type, volume: args[1], oldVolume: args[0], newVolume: args[1] } as any;
+				return { type, volume: args[0], oldVolume: args[1], newVolume: args[2] } as any;
 			case "stateChanged":
 				return { type, oldState: args[0], newState: args[1] } as any;
 			case "preloadStateChanged":
