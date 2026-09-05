@@ -6,7 +6,6 @@ import { createSabrStream, createSabrVideoStream } from "./utils/sabr-stream-fac
 import { webStreamToNodeStream } from "./utils/stream-converter.js";
 import { mintYouTubePoToken } from "./utils/youtube-botguard.js";
 import { Readable } from "stream";
-import { createSabrSeekStream } from "./utils/sabr-seek.js";
 
 /**
  * YouTube VM shim
@@ -588,7 +587,6 @@ export class YouTubePlugin extends BasePlugin {
 				itag: format.itag,
 				mime: format.mimeType,
 			},
-			recreate: async (position: number) => createSabrSeekStream(id, this.client, position, signal),
 		};
 	}
 

@@ -193,7 +193,7 @@ export class FilterController {
 		// instead of piping the already-open stream into FFmpeg. `-ss` on pipe:0
 		// cannot jump to a timestamp; FFmpeg would have to decode from 0, which is
 		// exactly what caused the 10s startup timeout for long seeks.
-		const source: Readable | string | null = hasSeek ? (streamInfo.url || null) : (streamInfo.stream || streamInfo.url || null);
+		const source: Readable | string | null = hasSeek ? streamInfo.url || null : streamInfo.stream || streamInfo.url || null;
 		if (!source) {
 			if (hasSeek) throw new Error("Cannot seek stream: resolver did not provide a seekable URL or recreate(position)");
 			throw new Error("No source stream or URL available");
@@ -216,18 +216,21 @@ export class FilterController {
 			this.options.ffmpegPath,
 			process.env.FFMPEG_PATH,
 			ffmpegStaticPath,
-			"ffmpeg" // Fallback cuối cùng nếu không tìm thấy file nào
+			"ffmpeg", // Fallback cuối cùng nếu không tìm thấy file nào
 		];
 
 		// 2. Tìm đường dẫn đầu tiên thực sự tồn tại trên ổ đĩa
-		const executable = candidates.find(path => {
-			if (!path) return false;
-			if (path === "ffmpeg") return true; // Bỏ qua kiểm tra file hệ thống cho lệnh global
-			return fs.existsSync(path);
-		}) || "ffmpeg";
+		const executable =
+			candidates.find((path) => {
+				if (!path) return false;
+				if (path === "ffmpeg") return true; // Bỏ qua kiểm tra file hệ thống cho lệnh global
+				return fs.existsSync(path);
+			}) || "ffmpeg";
 
 		this.debug(`Using FFmpeg: ${executable}`);
-		this.debug(`FFmpeg input: ${typeof sourceStream === "string" ? "seekable URL" : "readable stream"}${hasSeek ? `, seek=${ffmpegSeekSeconds}s` : ""}`);
+		this.debug(
+			`FFmpeg input: ${typeof sourceStream === "string" ? "seekable URL" : "readable stream"}${hasSeek ? `, seek=${ffmpegSeekSeconds}s` : ""}`,
+		);
 
 		const args = ["-hide_banner", "-loglevel", "error"];
 		if (typeof sourceStream === "string") {
