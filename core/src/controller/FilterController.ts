@@ -189,22 +189,23 @@ export class FilterController {
 			return result;
 		}
 
-		// A readable stream is not seekable. If a seekable URL is available, use it
-		// instead of piping the already-open stream into FFmpeg. `-ss` on pipe:0
-		// cannot jump to a timestamp; FFmpeg would have to decode from 0, which is
-		// exactly what caused the 10s startup timeout for long seeks.
-		const source: Readable | string | null = hasSeek ? streamInfo.url || null : streamInfo.stream || streamInfo.url || null;
+		// Prefer a seekable URL when one exists. If the resolver only exposes a
+		// Readable, keep the legacy pipe-based seek path for backwards compatibility.
+		// A pipe cannot seek at the input level, so FFmpeg must receive the stream
+		// from the beginning and seek after input processing, as the old implementation did.
+		const source: Readable | string | null = hasSeek
+			? streamInfo.url || streamInfo.stream || null
+			: streamInfo.stream || streamInfo.url || null;
 		if (!source) {
-			if (hasSeek) throw new Error("Cannot seek stream: resolver did not provide a seekable URL or recreate(position)");
+			if (hasSeek) throw new Error("Cannot seek stream: resolver did not provide a stream, seekable URL, or recreate(position)");
 			throw new Error("No source stream or URL available");
 		}
-		let sourceStream: Readable | string = source;
+
+		const sourceStream: Readable | string = source;
 		const wasRecreated = false;
 		if (generation !== this.ffmpegGeneration) throw new Error("FFmpeg generation outdated");
 		this.currentInputStream = sourceStream;
 		const filterString = this.getFilterString();
-		// A seekable URL is already handled directly by FFmpeg. Do not combine a
-		// URL seek with the old live Readable, even when both are present.
 		const ffmpegSeekSeconds = hasSeek ? (position / 1000).toFixed(3) : null;
 		if (!hasSeek && !filterString) {
 			const result = { ...streamInfo, stream: typeof sourceStream === "string" ? undefined : sourceStream, wasRecreated };
@@ -216,14 +217,12 @@ export class FilterController {
 			this.options.ffmpegPath,
 			process.env.FFMPEG_PATH,
 			ffmpegStaticPath,
-			"ffmpeg", // Fallback cuối cùng nếu không tìm thấy file nào
+			"ffmpeg",
 		];
-
-		// 2. Tìm đường dẫn đầu tiên thực sự tồn tại trên ổ đĩa
 		const executable =
 			candidates.find((path) => {
 				if (!path) return false;
-				if (path === "ffmpeg") return true; // Bỏ qua kiểm tra file hệ thống cho lệnh global
+				if (path === "ffmpeg") return true;
 				return fs.existsSync(path);
 			}) || "ffmpeg";
 
@@ -234,10 +233,14 @@ export class FilterController {
 
 		const args = ["-hide_banner", "-loglevel", "error"];
 		if (typeof sourceStream === "string") {
+			// Fast input seek for a real seekable source.
 			if (ffmpegSeekSeconds !== null) args.push("-ss", ffmpegSeekSeconds);
 			args.push("-i", sourceStream);
 		} else {
 			args.push("-i", "pipe:0");
+			// Legacy fallback: the input is a non-seekable pipe, so retain the old
+			// output-side seek instead of rejecting the operation.
+			if (ffmpegSeekSeconds !== null) args.push("-ss", ffmpegSeekSeconds);
 		}
 		if (filterString) args.push("-af", filterString);
 		const inputType = hasSeek ? StreamType.Raw : StreamType.OggOpus;
