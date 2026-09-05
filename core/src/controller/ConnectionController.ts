@@ -100,6 +100,17 @@ export class ConnectionController {
 				selfMute: this.selfMute,
 			});
 			this.connection = connection;
+			connection.on(VoiceConnectionStatus.Disconnected, async () => {
+				if (this.connection !== connection) return;
+				try {
+					await Promise.race([
+						entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+						entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+					]);
+				} catch {
+					if (this.connection === connection) connection.destroy();
+				}
+			});
 			connection.once(VoiceConnectionStatus.Destroyed, () => {
 				if (this.connection !== connection) return;
 				this.connection = null;
