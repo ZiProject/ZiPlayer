@@ -1,6 +1,5 @@
 import { createWriteStream, mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { createSabrSeekStream } from "../src/utils/sabr-seek.js";
 import { Innertube, UniversalCache, Platform, type Types } from "youtubei.js";
@@ -16,19 +15,11 @@ const maxBytes = Number(process.argv[5] ?? String(32 * 1024 * 1024));
 
 if (!videoId) throw new Error("Usage: node dist/scripts/test-sabr-recreate.js <videoId> <positionMs> [output] [maxBytes]");
 if (!Number.isFinite(position) || position < 0) throw new Error("positionMs must be a non-negative number");
+if (!Number.isFinite(maxBytes) || maxBytes <= 0) throw new Error("maxBytes must be a positive number");
 
 function runFfmpeg(file: string): Promise<{ code: number | null; stderr: string }> {
 	return new Promise((resolvePromise) => {
-		let ffmpegPath: string;
-		try {
-			// ffmpeg-static is already a dependency of ZiPlayer core.
-			// eslint-disable-next-line @typescript-eslint/no-require-imports
-			ffmpegPath = require("ffmpeg-static") as string;
-		} catch {
-			ffmpegPath = "ffmpeg";
-		}
-
-		const child = spawn(ffmpegPath, [
+		const child = spawn("ffmpeg", [
 			"-hide_banner",
 			"-loglevel",
 			"error",
@@ -69,27 +60,27 @@ async function main(): Promise<void> {
 	const stream = await createSabrSeekStream(videoId, client, position, controller.signal);
 	console.log("[SABR TEST] recreate() returned stream after", `${Date.now() - startedAt}ms`);
 
+	const outputStream = createWriteStream(output);
 	let bytes = 0;
 	let chunks = 0;
-	const limited = stream.pipe(new (await import("node:stream")).Transform({
-		transform(chunk, _encoding, callback) {
-			const buffer = Buffer.from(chunk);
+
+	try {
+		for await (const chunk of stream) {
+			const buffer = Buffer.from(chunk as Buffer);
 			const remaining = maxBytes - bytes;
-			if (remaining <= 0) {
-				callback();
-				return;
-			}
+			if (remaining <= 0) break;
+
 			const outputChunk = buffer.subarray(0, remaining);
+			outputStream.write(outputChunk);
 			bytes += outputChunk.length;
 			chunks++;
-			callback(null, outputChunk);
-		},
-		flush(callback) {
-			callback();
-		},
-	}));
 
-	await pipeline(limited, createWriteStream(output));
+			if (bytes >= maxBytes) break;
+		}
+	} finally {
+		stream.destroy();
+		await new Promise<void>((resolvePromise) => outputStream.end(resolvePromise));
+	}
 
 	const size = statSync(output).size;
 	console.log("[SABR TEST] downloaded:", `${size} bytes`, `(${chunks} chunks)`);
@@ -103,8 +94,7 @@ async function main(): Promise<void> {
 	if (result.code === 0) {
 		console.log("[SABR TEST] ffmpeg decode: PASS");
 	} else if (result.code === -1) {
-		console.warn("[SABR TEST] ffmpeg unavailable; raw file was downloaded but decode was not checked");
-		console.warn(result.stderr.trim());
+		console.warn("[SABR TEST] ffmpeg is unavailable; raw file was downloaded but decode was not checked");
 	} else {
 		console.error("[SABR TEST] ffmpeg decode: FAIL");
 		console.error(result.stderr.trim());
