@@ -42,6 +42,7 @@
 		"typescript": "^5.0.0"
 	},
 	"allowScripts": {
-		"ffmpeg-static": true
+		"ffmpeg-static": true,
+		"esbuild@0.27.7": true
 	}
 }
