@@ -34,9 +34,12 @@ export class PlaybackOrchestrator {
 	private refreshSequence = 0;
 	private refreshAbortController: AbortController | null = null;
 	private trackEndTransition = false;
+	private waitingForQueue = false;
+	private queueStartPromise: Promise<void> | null = null;
 	private readonly detachAction: () => void;
 	private readonly detachTrackEnd: () => void;
 	private readonly detachQueueChanged: () => void;
+	private readonly detachQueueEnd: () => void;
 	private readonly detachRpcs: Array<() => void> = [];
 
 	constructor(
@@ -50,11 +53,15 @@ export class PlaybackOrchestrator {
 			if (!this.session || this.session.id !== session.id) return;
 			void this.advanceAfterTrackEnd(session);
 		});
+		this.detachQueueEnd = bus.subscribe("queueEnd", () => {
+			this.waitingForQueue = true;
+		});
 		this.detachQueueChanged = bus.subscribe("queueChanged", () => {
-			if (this.trackEndTransition) return;
-			if (!this.session || this.session.status !== "ended") return;
+			if (!this.waitingForQueue || this.trackEndTransition || this.queueStartPromise) return;
 			if (!this.o.queueController?.tracks.length) return;
-			void this.startQueuedTrackAfterEnd();
+			this.queueStartPromise = this.startQueuedTrackAfterEnd().finally(() => {
+				this.queueStartPromise = null;
+			});
 		});
 		this.detachRpcs.push(
 			bus.registerRpc<{ query: string | Track | SearchResult | null; requestedBy?: string }, boolean>(
@@ -94,6 +101,7 @@ export class PlaybackOrchestrator {
 				session.setResource(resource);
 				this.o.playbackController?.play(resource, session);
 				session.markPlaying(0);
+				this.waitingForQueue = false;
 				this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
 				return resource;
 			}),
@@ -152,11 +160,14 @@ export class PlaybackOrchestrator {
 		this.detachAction();
 		this.detachTrackEnd();
 		this.detachQueueChanged();
+		this.detachQueueEnd();
 		for (const d of this.detachRpcs) d();
 		this.session?.destroy();
 		this.session = null;
 		this.autoplayPreparation = null;
 		this.trackEndTransition = false;
+		this.waitingForQueue = false;
+		this.queueStartPromise = null;
 	}
 
 	private async play(query: string | Track | SearchResult | null, requestedBy: string | undefined, rpcContext: PlayerBusRpcContext): Promise<boolean> {
@@ -179,6 +190,10 @@ export class PlaybackOrchestrator {
 			if (this.session?.status === "playing" || this.session?.status === "paused") {
 				void this.o.preloadController?.preload().catch((error) => player.debug("[Player] Preload after queue add error:", error));
 				return true;
+			}
+			if (this.waitingForQueue) {
+				await this.queueStartPromise;
+				return this.session?.status === "playing" || this.session?.status === "paused";
 			}
 			await this.skip(context);
 			return this.session?.track !== null && this.session?.track !== undefined;
@@ -263,15 +278,17 @@ export class PlaybackOrchestrator {
 	private async prepareTrack(session: PlaybackSession, context: PlayerMessageContext): Promise<void> { await this.prepareRelated(session, context); if (this.o.queueController?.autoPlay) await this.prepareAutoplay(session, context); }
 
 	private async startQueuedTrackAfterEnd(): Promise<void> {
-		if (this.trackEndTransition || !this.session || this.session.status !== "ended") return;
+		if (!this.waitingForQueue || this.trackEndTransition) return;
 		const queue = this.o.queueController;
 		if (!queue?.tracks.length) return;
 		this.trackEndTransition = true;
 		try {
-			const context: PlayerMessageContext = { requestId: createPlayerRequestId(), source: "PlaybackOrchestrator:queue-refill", signal: new AbortController().signal, timestamp: Date.now(), priority: 50 };
+			const from = this.session?.track ?? null;
+			const context: PlayerMessageContext = { requestId: createPlayerRequestId(), source: "PlaybackOrchestrator:queue-refill", signal: new AbortController().signal, timestamp: Date.now(), priority: PlayerActionPriority.NORMAL };
 			const next = await this.nextThroughBus(false, context);
 			if (!next || context.signal.aborted) return;
-			await this.start(next, context, this.session.track);
+			this.waitingForQueue = false;
+			await this.start(next, context, from);
 		} finally {
 			this.trackEndTransition = false;
 		}
@@ -285,23 +302,23 @@ export class PlaybackOrchestrator {
 			await this.autoplayPreparation;
 			if (!this.session || this.session.id !== snapshot.id || !this.session.isActive()) return;
 			const from = this.session.track; const endedSession = this.session;
-			const context: PlayerMessageContext = { requestId: createPlayerRequestId(), source: "PlaybackOrchestrator:track-end", signal: new AbortController().signal, timestamp: Date.now(), priority: 50 };
+			const context: PlayerMessageContext = { requestId: createPlayerRequestId(), source: "PlaybackOrchestrator:track-end", signal: new AbortController().signal, timestamp: Date.now(), priority: PlayerActionPriority.NORMAL };
 			if (this.o.queueController?.autoPlay && !this.o.queueController.willNext) {
 				const autoplayPreparation = this.prepareAutoplay(endedSession, context); this.autoplayPreparation = autoplayPreparation; await autoplayPreparation;
 				if (this.autoplayPreparation === autoplayPreparation) this.autoplayPreparation = null;
 			}
 			endedSession.markEnded();
 			let next = await this.nextThroughBus(false, context);
-			if (next) { await this.start(next, context, from); return; }
+			if (next) { this.waitingForQueue = false; await this.start(next, context, from); return; }
 			if (this.o.queueController?.autoPlay) {
 				next = this.o.queueController.willNext;
 				if (next) {
 					this.o.queueController.clearWillNext(); this.o.queueController.add(next);
 					const queuedNext = await this.nextThroughBus(false, context);
-					if (queuedNext) { await this.start(queuedNext, context, from); return; }
+					if (queuedNext) { this.waitingForQueue = false; await this.start(queuedNext, context, from); return; }
 				}
 			}
-			this.stopPlayback(context.signal); this.publishState(); this.bus.event({ type: "queueEnd" });
+			this.stopPlayback(context.signal); this.publishState(); this.waitingForQueue = true; this.bus.event({ type: "queueEnd" });
 		} finally {
 			this.trackEndTransition = false;
 		}
@@ -323,6 +340,7 @@ export class PlaybackOrchestrator {
 		const from = this.session?.track ?? null; const oldSession = this.session; if (oldSession && context.sessionId && oldSession.sessionId !== context.sessionId) return;
 		const next = await this.nextThroughBus(true, context);
 		if (!next) { this.stopPlayback(context.signal); this.publishState(); this.bus.event({ type: "queueEnd" }); return; }
+		this.waitingForQueue = false;
 		await this.start(next, context, from);
 	}
 	private async start(track: Track, parentContext: PlayerMessageContext, from: Track | null = null) {
