@@ -354,8 +354,11 @@ export class Player extends EventEmitter {
 	public interruptWithTTSTrack(track: Track, ..._args: any[]): Promise<boolean> {
 		return this.play(track);
 	}
-	public previous(): Track | null {
-		return this.bus.requestRpcSync<void, Track | null>("queue.previous", undefined);
+	public async previous(): Promise<boolean> {
+		const track = this.bus.requestRpcSync<void, Track | null>("queue.previous", undefined);
+		if (!track) return false;
+		await this.startTrack(track);
+		return true;
 	}
 	async save(track: Track, options?: SaveOptions | string): Promise<Stream.Readable> {
 		try {

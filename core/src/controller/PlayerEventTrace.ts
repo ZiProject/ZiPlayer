@@ -74,5 +74,24 @@ function fingerprintEvent(event: PlayerEvent): string {
 		case "ready":
 		case "destroyed":
 			return event.type;
+		case "willPlay":
+			return `willPlay:${value.track?.id}`;
+		case "queueEnd":
+		case "playerStop":
+		case "filtersCleared":
+			return event.type;
+		case "playerPause":
+		case "playerResume":
+			return `${event.type}:${value.track?.id}`;
+		case "seek":
+			return `seek:${value.track?.id}:${value.position}`;
+		case "filterApplied":
+		case "filterRemoved":
+			return `${event.type}:${value.filter?.name ?? value.filter?.type ?? "unknown"}`;
+		case "streamError":
+			return `streamError:${value.track?.id}:${value.error?.message}`;
+		case "forwardModeStart":
+		case "forwardModeEnd":
+			return `${event.type}:${value.leader?.guildId}:${value.reason ?? ""}`;
 	}
 }
