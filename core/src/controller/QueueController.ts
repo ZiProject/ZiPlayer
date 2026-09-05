@@ -15,6 +15,10 @@ export class QueueController {
 	private readonly detachAction?: () => void;
 	private readonly detachQueries: Array<() => void> = [];
 	private readonly detachRpcs: Array<() => void> = [];
+	private readonly detachPlayback: Array<() => void> = [];
+	private waitingForQueue = false;
+	private autoStartScheduled = false;
+
 	public constructor(options: QueueControllerOptions = {}) {
 		this.queue = options.queue ?? new Queue();
 		this.bus = options.bus;
@@ -48,8 +52,22 @@ export class QueueController {
 					return this.willNext;
 				}),
 			);
+
+			// A natural queue end is a waiting state, not a permanent stop. If a
+			// track is appended after the end, resume it without requiring another
+			// call to Player.play(). TRACK_STARTED clears the state when the normal
+			// TRACK_END -> advance path wins the race.
+			this.detachPlayback.push(
+				this.bus.subscribe("TRACK_END", () => {
+					if (this.queue.getTracks().length === 0) this.waitingForQueue = true;
+				}),
+				this.bus.subscribe("TRACK_STARTED", () => {
+					this.waitingForQueue = false;
+				}),
+			);
 		}
 	}
+
 	public get nextTrack(): Track | null {
 		return this.queue.nextTrack;
 	}
@@ -68,6 +86,7 @@ export class QueueController {
 	public get relatedTracks(): Track[] {
 		return this.queue.relatedTracks();
 	}
+
 	private async insertRequest(request: QueueInsertRequest, signal: AbortSignal): Promise<boolean> {
 		try {
 			if (signal.aborted || !this.bus) return false;
@@ -92,6 +111,7 @@ export class QueueController {
 			return false;
 		}
 	}
+
 	private async handleAction(action: PlayerAction, context: PlayerActionExecutionContext): Promise<void> {
 		if (context.signal.aborted) return;
 		switch (action.type) {
@@ -103,91 +123,134 @@ export class QueueController {
 				return;
 		}
 	}
+
 	public add(track: Track): number {
 		const size = this.queue.add(track);
 		this.publishChanged();
+		this.schedulePlaybackAfterQueueAdd();
 		return size;
 	}
+
 	public addMultiple(tracks: Track[]): number {
 		const size = this.queue.addMultiple(tracks);
 		this.publishChanged();
+		this.schedulePlaybackAfterQueueAdd();
 		return size;
 	}
+
 	public insert(track: Track, index = 0): number {
 		const size = this.queue.insert(track, index);
 		this.publishChanged();
+		this.schedulePlaybackAfterQueueAdd();
 		return size;
 	}
+
 	public remove(index: number): Track | null {
 		const track = this.queue.remove(index);
 		if (track) this.publishChanged();
 		return track;
 	}
+
 	public next(ignoreLoop = false): Track | null {
 		const track = this.queue.next(ignoreLoop);
 		this.publishChanged();
 		return track;
 	}
+
 	public restoreNext(previousCurrent: Track | null, nextTrack: Track | null): void {
 		this.queue.restoreNext(previousCurrent, nextTrack);
 		this.publishChanged();
 	}
+
 	public previous(): Track | null {
 		const track = this.queue.previous();
 		this.publishChanged();
 		return track;
 	}
+
 	public setLoop(mode: LoopMode): LoopMode {
 		const value = this.queue.loop(mode);
 		this.publishChanged();
 		return value;
 	}
+
 	public setAutoPlay(enabled: boolean): boolean {
 		const value = this.queue.autoPlay(enabled);
 		this.publishChanged();
 		return value;
 	}
+
 	public shuffle(): void {
 		this.queue.shuffle();
 		this.publishChanged();
 	}
+
 	public clear(): void {
 		this.queue.clear();
 		this.publishChanged();
 	}
+
 	public reset(): void {
 		this.queue.reset();
+		this.waitingForQueue = false;
 		this.publishChanged();
 	}
+
 	public snapshot(): Track[] {
 		return this.queue.getTracks();
 	}
+
 	public setCurrent(track: Track | null): void {
 		this.queue.setCurrentTrack(track);
 		this.publishChanged();
 	}
+
 	public get current(): Track | null {
 		return this.queue.currentTrack;
 	}
+
 	public setWillNext(track: Track | null): void {
 		if (track) this.queue.willNextTrack(track);
 		this.publishChanged();
 	}
+
 	public clearWillNext(): void {
 		this.queue.clearWillNext();
 		this.publishChanged();
 	}
+
 	public setRelated(tracks: Track[]): void {
 		this.queue.relatedTracks(tracks);
 		this.publishChanged();
 	}
+
 	public dispose(): void {
 		this.detachAction?.();
 		for (const detach of this.detachQueries.splice(0)) detach();
 		for (const detach of this.detachRpcs.splice(0)) detach();
+		for (const detach of this.detachPlayback.splice(0)) detach();
 		this.queue.reset();
+		this.waitingForQueue = false;
 	}
+
 	private publishChanged(): void {
 		this.bus?.publish("queueChanged", this.snapshot());
+	}
+
+	private schedulePlaybackAfterQueueAdd(): void {
+		if (!this.bus || !this.waitingForQueue || this.autoStartScheduled || this.queue.getTracks().length === 0) return;
+		this.autoStartScheduled = true;
+
+		// Let the in-flight TRACK_END -> advanceAfterTrackEnd continuation run
+		// first. If it already consumed the appended track, TRACK_STARTED clears
+		// waitingForQueue and this callback becomes a no-op. If queueEnd was
+		// already reached, this starts the newly appended first track.
+		setImmediate(() => {
+			this.autoStartScheduled = false;
+			if (!this.waitingForQueue || !this.bus || this.queue.getTracks().length === 0) return;
+			const track = this.queue.next(false);
+			if (!track) return;
+			void this.bus.action({ type: "PLAY", track });
+		});
 	}
 }
