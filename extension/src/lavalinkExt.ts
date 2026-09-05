@@ -923,11 +923,11 @@ export class TrackResolver {
 		return track;
 	}
 
-	resolveTrackFromLavalink(player: any, raw: LavalinkRawTrack): Track | null {
+	resolveTrackFromLavalink(player: Player, raw: LavalinkRawTrack): Track | null {
 		if (!raw) return null;
-		const current = player.queue.currentTrack;
+		const current = player.currentTrack;
 		if (current && getEncoded(current) === raw.encoded) return current;
-		const upcoming = player.queue.getTracks();
+		const upcoming = player.upcomingTracks;
 		for (const track of [current, ...upcoming]) {
 			if (track && getEncoded(track) === raw.encoded) return track;
 		}

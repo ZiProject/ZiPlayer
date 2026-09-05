@@ -1,4 +1,10 @@
 import type { SearchResult, StreamInfo, Track } from ".";
+
+export interface RelatedTracksOptions {
+	limit?: number;
+	offset?: number;
+	history?: Track[];
+}
 /**
  * Plugin interface
  *
@@ -18,7 +24,7 @@ export interface SourcePlugin {
 	getStream(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
 	/** Optional direct video resolver. Plugins that only expose audio can omit it. */
 	getVideo?(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
-	getRelatedTracks?(track: Track, opts?: { limit?: number; offset?: number }): Promise<Track[]>;
+	getRelatedTracks?(track: Track, opts?: RelatedTracksOptions): Promise<Track[]>;
 	validate?(url: string): boolean;
 	extractPlaylist?(url: string, requestedBy: string): Promise<Track[]>;
 	getFallback?(track: Track, signal?: AbortSignal): Promise<StreamInfo>;

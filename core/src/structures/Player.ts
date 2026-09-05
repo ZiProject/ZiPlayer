@@ -326,6 +326,12 @@ export class Player extends EventEmitter {
 	public autoPlay(enabled?: boolean): boolean {
 		return enabled === undefined ? this.bus.querySync("queueAutoPlay") : this.bus.requestRpcSync("queue.autoPlay", { enabled });
 	}
+	public setWillNext(track: Track | null): Track | null {
+		return this.bus.requestRpcSync("queue.willNext", { track });
+	}
+	public setCurrentTrack(track: Track | null): void {
+		void this.action({ type: "QUEUE_SET_CURRENT", track });
+	}
 	public setVolume(value: number): number {
 		return this.bus.requestRpcSync("volume.set", { value });
 	}

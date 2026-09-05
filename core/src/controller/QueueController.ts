@@ -42,6 +42,11 @@ export class QueueController {
 				this.bus.registerRpc<{ index: number }, Track | null>("queue.remove", ({ index }) => this.remove(index)),
 				this.bus.registerRpc<{ mode: LoopMode }, LoopMode>("queue.loop", ({ mode }) => this.setLoop(mode)),
 				this.bus.registerRpc<{ enabled: boolean }, boolean>("queue.autoPlay", ({ enabled }) => this.setAutoPlay(enabled)),
+				this.bus.registerRpc<{ track: Track | null }, Track | null>("queue.willNext", ({ track }) => {
+					if (track) this.setWillNext(track);
+					else this.clearWillNext();
+					return this.willNext;
+				}),
 			);
 		}
 	}

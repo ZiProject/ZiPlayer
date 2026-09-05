@@ -1,4 +1,4 @@
-import { SourcePlugin, Track, SearchResult, StreamInfo } from "../types";
+import { SourcePlugin, Track, SearchResult, StreamInfo, RelatedTracksOptions } from "../types";
 
 export abstract class BasePlugin implements SourcePlugin {
 	abstract name: string;
@@ -16,7 +16,7 @@ export abstract class BasePlugin implements SourcePlugin {
 		throw new Error("getFallback not implemented");
 	}
 
-	getRelatedTracks?(trackURL: Track, opts?: { limit?: number; offset?: number; history?: Track[] }): Promise<Track[]> {
+	getRelatedTracks?(trackURL: Track, opts?: RelatedTracksOptions): Promise<Track[]> {
 		return Promise.resolve([]);
 	}
 

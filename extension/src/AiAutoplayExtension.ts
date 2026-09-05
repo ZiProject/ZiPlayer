@@ -49,7 +49,7 @@ export class AiAutoplayExtension extends BaseExtension {
 	}
 
 	private async analyzeMusicTaste(context: ExtensionContext): Promise<void> {
-		if (!this.genAI || !context.player.queue.autoPlay()) return;
+		if (!this.genAI || !context.player.autoPlay()) return;
 		this.isAnalyzing = true;
 
 		try {
@@ -95,12 +95,12 @@ export class AiAutoplayExtension extends BaseExtension {
 
 			if (searchResult && searchResult.tracks.length > 0) {
 				const topTrack = searchResult.tracks[0];
-				if (context.player.queue.autoPlay()) {
-					context.player.queue.willNextTrack(topTrack);
+				if (context.player.autoPlay()) {
+					context.player.setWillNext(topTrack);
 					this.forwardToPlayer("AiAutoplay", `[AI Autoplay] Đã ghi đè Autoplay bằng Gemini: ${topTrack.title}`);
 					//	willPlay: [track: Track, upcomingTracks: Track[]];
 
-					this.forwardToPlayer("willPlay", topTrack, context.player.queue.relatedTracks());
+					this.forwardToPlayer("willPlay", topTrack, context.player.relatedTracks);
 				}
 			}
 		} catch (error) {

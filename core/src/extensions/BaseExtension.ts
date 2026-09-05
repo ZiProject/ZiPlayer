@@ -42,9 +42,7 @@ export abstract class BaseExtension extends EventEmitter implements SourceExtens
 	protected updatePlayerState(state: Partial<{ playing: boolean; paused: boolean; track: any }>): void {
 		if (this.player && !this.player.destroyed) {
 			// Update internal player state if needed
-			if (state.track !== undefined && (this.player as any).queue) {
-				(this.player as any).queue.setCurrentTrack(state.track);
-			}
+			if (state.track !== undefined) this.player.setCurrentTrack(state.track);
 		}
 	}
 
