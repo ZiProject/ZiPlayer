@@ -5,6 +5,7 @@ import { spawn, type ChildProcess } from "child_process";
 import ffmpegStaticPath from "ffmpeg-static";
 import type { PlayerBus, PlayerAction } from "../structures/PlayerBus";
 import { StreamType } from "@discordjs/voice";
+import fs from "node:fs";
 
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 
@@ -211,7 +212,20 @@ export class FilterController {
 			return result;
 		}
 
-		const executable = this.options.ffmpegPath || process.env.FFMPEG_PATH || ffmpegStaticPath || "ffmpeg";
+		const candidates = [
+			this.options.ffmpegPath,
+			process.env.FFMPEG_PATH,
+			ffmpegStaticPath,
+			"ffmpeg" // Fallback cuối cùng nếu không tìm thấy file nào
+		];
+
+		// 2. Tìm đường dẫn đầu tiên thực sự tồn tại trên ổ đĩa
+		const executable = candidates.find(path => {
+			if (!path) return false;
+			if (path === "ffmpeg") return true; // Bỏ qua kiểm tra file hệ thống cho lệnh global
+			return fs.existsSync(path);
+		}) || "ffmpeg";
+
 		this.debug(`Using FFmpeg: ${executable}`);
 		this.debug(`FFmpeg input: ${typeof sourceStream === "string" ? "seekable URL" : "readable stream"}${hasSeek ? `, seek=${ffmpegSeekSeconds}s` : ""}`);
 
