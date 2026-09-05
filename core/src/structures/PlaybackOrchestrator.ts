@@ -322,6 +322,10 @@ export class PlaybackOrchestrator {
 	private async prepareAutoplay(session: PlaybackSession, context: PlayerMessageContext): Promise<void> {
 		const queue = this.o.queueController;
 		if (!queue?.autoPlay || context.signal.aborted || !this.matchesContext(session, context)) return;
+		if (queue.loop === "track") {
+			queue.clearWillNext();
+			return;
+		}
 		const related = queue.relatedTracks;
 		if (!related.length) return;
 		const pool = related.slice(0, Math.min(5, related.length));

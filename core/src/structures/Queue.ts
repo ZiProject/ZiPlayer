@@ -91,7 +91,10 @@ export class Queue {
 		return this._autoPlay;
 	}
 	loop(mode?: LoopMode): LoopMode {
-		if (mode) this._loop = mode;
+		if (mode !== undefined && mode !== this._loop) {
+			this._loop = mode;
+			this.willnext = null;
+		}
 		return this._loop;
 	}
 	isLooping(): boolean {
