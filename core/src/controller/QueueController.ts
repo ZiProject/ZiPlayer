@@ -50,6 +50,24 @@ export class QueueController {
 			);
 		}
 	}
+	public get nextTrack(): Track | null {
+		return this.queue.nextTrack;
+	}
+	public get autoPlay(): boolean {
+		return this.queue.autoPlay();
+	}
+	public get loop(): LoopMode {
+		return this.queue.loop();
+	}
+	public get willNext(): Track | null {
+		return this.queue.willNextTrack();
+	}
+	public get tracks(): Track[] {
+		return this.queue.getTracks();
+	}
+	public get relatedTracks(): Track[] {
+		return this.queue.relatedTracks();
+	}
 	private async insertRequest(request: QueueInsertRequest, signal: AbortSignal): Promise<boolean> {
 		try {
 			if (signal.aborted || !this.bus) return false;
@@ -144,24 +162,12 @@ export class QueueController {
 	public snapshot(): Track[] {
 		return this.queue.getTracks();
 	}
-	public get current(): Track | null {
-		return this.queue.currentTrack;
-	}
 	public setCurrent(track: Track | null): void {
 		this.queue.setCurrentTrack(track);
 		this.publishChanged();
 	}
-	public get nextTrack(): Track | null {
-		return this.queue.nextTrack;
-	}
-	public get autoPlay(): boolean {
-		return this.queue.autoPlay();
-	}
-	public get loop(): LoopMode {
-		return this.queue.loop();
-	}
-	public get willNext(): Track | null {
-		return this.queue.willNextTrack();
+	public get current(): Track | null {
+		return this.queue.currentTrack;
 	}
 	public setWillNext(track: Track | null): void {
 		if (track) this.queue.willNextTrack(track);
@@ -170,9 +176,6 @@ export class QueueController {
 	public clearWillNext(): void {
 		this.queue.clearWillNext();
 		this.publishChanged();
-	}
-	public get relatedTracks(): Track[] {
-		return this.queue.relatedTracks();
 	}
 	public setRelated(tracks: Track[]): void {
 		this.queue.relatedTracks(tracks);
