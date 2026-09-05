@@ -33,7 +33,6 @@ export class PlaybackOrchestrator {
 	private autoplayPreparation: Promise<void> | null = null;
 	private readonly detachAction: () => void;
 	private readonly detachTrackEnd: () => void;
-	private readonly detachQueries: Array<() => void> = [];
 	private readonly detachRpcs: Array<() => void> = [];
 
 	constructor(
@@ -88,13 +87,6 @@ export class PlaybackOrchestrator {
 				this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
 				return resource;
 			}),
-		);
-		this.detachQueries.push(
-			bus.registerQuery("playerState", () => this.session?.status ?? "idle"),
-			bus.registerQuery("playbackSession", () => this.session?.snapshot() ?? null),
-			bus.registerQuery("position", () => this.session?.position ?? null),
-			bus.registerQuery("isPlaying", () => this.session?.status === "playing"),
-			bus.registerQuery("isPaused", () => this.session?.status === "paused"),
 		);
 	}
 	get currentSession() {
@@ -156,7 +148,6 @@ export class PlaybackOrchestrator {
 	dispose() {
 		this.detachAction();
 		this.detachTrackEnd();
-		for (const d of this.detachQueries) d();
 		for (const d of this.detachRpcs) d();
 		this.session?.destroy();
 		this.session = null;
@@ -177,14 +168,13 @@ export class PlaybackOrchestrator {
 			timestamp: rpcContext.timestamp,
 			priority: PlayerActionPriority.NORMAL,
 		};
-		if (query === null) {
-			if (this.session?.status === "playing" || this.session?.status === "paused") return true;
-			await this.skip(context);
-			return this.session?.track !== null && this.session?.track !== undefined;
-		}
-		let tracks: Track[];
 		try {
-			tracks =
+			if (query === null) {
+				if (this.session?.status === "playing" || this.session?.status === "paused") return true;
+				await this.skip(context);
+				return this.session?.track !== null && this.session?.track !== undefined;
+			}
+			const tracks: Track[] =
 				typeof query === "string" ?
 					(
 						await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>("search", {
@@ -194,23 +184,23 @@ export class PlaybackOrchestrator {
 					).tracks
 				: "tracks" in query ? query.tracks
 				: [query];
+			if (tracks.length === 0 || rpcContext.signal.aborted) return false;
+			if (tracks.length === 1 && player.options.tts?.interrupt !== false && this.o.ttsController?.isTTS(tracks[0])) {
+				await this.o.ttsController.play(tracks[0]);
+				return true;
+			}
+			await this.bus.requestRpc("queue.addMultiple", { tracks }, { signal: rpcContext.signal });
+			if (this.session?.status === "playing" || this.session?.status === "paused") {
+				void this.o.preloadController?.preload().catch((error) => player.debug("[Player] Preload after queue add error:", error));
+				return true;
+			}
+			await this.skip(context);
+			return this.session?.track !== null && this.session?.track !== undefined;
 		} catch (error) {
-			player.debug("[Player] Play search error:", error);
-			player.emit("playerError", error as Error);
+			player.debug("[Player] Play error:", error);
+			player.emit("playerError", error instanceof Error ? error : new Error(String(error)));
 			return false;
 		}
-		if (tracks.length === 0 || rpcContext.signal.aborted) return false;
-		if (tracks.length === 1 && player.options.tts?.interrupt !== false && this.o.ttsController?.isTTS(tracks[0])) {
-			await this.o.ttsController.play(tracks[0]);
-			return true;
-		}
-		await this.bus.requestRpc("queue.addMultiple", { tracks }, { signal: rpcContext.signal });
-		if (this.session?.status === "playing" || this.session?.status === "paused") {
-			void this.o.preloadController?.preload().catch((error) => player.debug("[Player] Preload after queue add error:", error));
-			return true;
-		}
-		await this.skip(context);
-		return this.session?.track !== null && this.session?.track !== undefined;
 	}
 
 	private async handleAction(a: PlayerAction, context: PlayerMessageContext) {
@@ -277,8 +267,14 @@ export class PlaybackOrchestrator {
 
 	private async nextThroughBus(ignoreLoop: boolean, context: PlayerMessageContext): Promise<Track | null> {
 		if (context.signal.aborted) return null;
+		const previousCurrent = this.o.queueController?.current ?? null;
 		await this.bus.action({ type: "QUEUE_NEXT", ignoreLoop, requestId: context.requestId }, context);
-		return this.bus.query("queueCurrent");
+		const next = await this.bus.query("queueCurrent");
+		if (context.signal.aborted) {
+			if (this.o.queueController && next !== previousCurrent) this.o.queueController.restoreNext(previousCurrent, next);
+			return null;
+		}
+		return next;
 	}
 
 	private async setCurrentThroughBus(track: Track | null, context: PlayerMessageContext) {

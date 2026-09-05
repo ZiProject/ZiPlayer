@@ -69,6 +69,13 @@ export class Queue {
 		if (!this.current && this._loop === "track" && ignoreLoop && this.history.length > 0) return null;
 		return this.current;
 	}
+	restoreNext(previousCurrent: Track | null, nextTrack: Track | null): void {
+		if (this.current === previousCurrent) return;
+		if (this.current !== nextTrack) return;
+		if (nextTrack) this.tracks.unshift(nextTrack);
+		this.current = previousCurrent;
+		if (previousCurrent && this.history[this.history.length - 1] === previousCurrent) this.history.pop();
+	}
 	private addToHistory(track: Track): void {
 		this.history.push(track);
 		if (this.history.length > this.MAX_HISTORY_SIZE) this.history.shift();

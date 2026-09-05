@@ -44,6 +44,21 @@ test("Queue next, history and currentTrack", () => {
 	assert.equal(q.nextTrack, null);
 });
 
+test("Queue restores a cancelled next operation", () => {
+	const q = new Queue();
+	const current = makeTrack("current");
+	const next = makeTrack("next");
+	q.setCurrentTrack(current);
+	q.add(next);
+
+	assert.equal(q.next().id, "next");
+	q.restoreNext(current, next);
+
+	assert.equal(q.currentTrack.id, "current");
+	assert.deepEqual(q.previousTracks, []);
+	assert.equal(q.nextTrack.id, "next");
+});
+
 test("Queue loop track repeats current", () => {
 	const q = new Queue();
 	const t1 = makeTrack("a");
@@ -124,5 +139,23 @@ test("PlayerAction serializes normal actions", async () => {
 
 	await Promise.all([actionExecutor.enqueue({ type: "PLAY" }), actionExecutor.enqueue({ type: "PLAY" })]);
 	assert.deepEqual(order, ["PLAY:start", "PLAY:end", "PLAY:start", "PLAY:end"]);
+	actionExecutor.dispose();
+});
+
+test("PlayerAction serializes critical actions", async () => {
+	const bus = new PlayerBus();
+	const actionExecutor = new PlayerAction(bus);
+	const order = [];
+	bus.onAction(async (action) => {
+		order.push(`${action.type}:start`);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		order.push(`${action.type}:end`);
+	});
+
+	const first = actionExecutor.enqueue({ type: "SKIP" });
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const second = actionExecutor.enqueue({ type: "STOP" });
+	await Promise.all([first, second]);
+	assert.deepEqual(order, ["SKIP:start", "SKIP:end", "STOP:start", "STOP:end"]);
 	actionExecutor.dispose();
 });

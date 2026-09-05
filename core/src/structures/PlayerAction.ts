@@ -31,6 +31,7 @@ export class PlayerAction {
 	private readonly pending: PendingAction[] = [];
 	private running: RunningAction | null = null;
 	private readonly criticalControllers = new Set<AbortController>();
+	private criticalTail: Promise<void> = Promise.resolve();
 	private criticalRunning = 0;
 	private disposed = false;
 	private idleWaiters: Array<() => void> = [];
@@ -72,6 +73,7 @@ export class PlayerAction {
 
 	private preempt(action: PlayerActionMessage): void {
 		this.running?.controller.abort();
+		for (const controller of this.criticalControllers) controller.abort();
 		const priority = action.priority ?? PlayerActionPriority.CRITICAL;
 		for (let index = this.pending.length - 1; index >= 0; index -= 1) {
 			if (this.pending[index].priority < priority) {
@@ -90,7 +92,15 @@ export class PlayerAction {
 		};
 		this.criticalRunning += 1;
 		this.criticalControllers.add(controller);
-		return this.bus.action(action, context).finally(() => {
+		const execution = this.criticalTail.then(() => {
+			if (this.disposed || controller.signal.aborted) return;
+			return this.bus.action(action, context);
+		});
+		this.criticalTail = execution.then(
+			() => undefined,
+			() => undefined,
+		);
+		return execution.finally(() => {
 			this.criticalControllers.delete(controller);
 			this.criticalRunning -= 1;
 			this.drain();

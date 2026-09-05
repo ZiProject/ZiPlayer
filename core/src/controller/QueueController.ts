@@ -110,6 +110,10 @@ export class QueueController {
 		this.publishChanged();
 		return track;
 	}
+	public restoreNext(previousCurrent: Track | null, nextTrack: Track | null): void {
+		this.queue.restoreNext(previousCurrent, nextTrack);
+		this.publishChanged();
+	}
 	public previous(): Track | null {
 		const track = this.queue.previous();
 		this.publishChanged();
