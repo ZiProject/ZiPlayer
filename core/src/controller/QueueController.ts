@@ -187,6 +187,7 @@ export class QueueController {
 
 	public clear(): void {
 		this.queue.clear();
+		this.waitingForQueue = false;
 		this.publishChanged();
 	}
 
@@ -231,6 +232,7 @@ export class QueueController {
 		for (const detach of this.detachPlayback.splice(0)) detach();
 		this.queue.reset();
 		this.waitingForQueue = false;
+		this.autoStartScheduled = false;
 	}
 
 	private publishChanged(): void {
@@ -245,7 +247,7 @@ export class QueueController {
 		// first. If it already consumed the appended track, TRACK_STARTED clears
 		// waitingForQueue and this callback becomes a no-op. If queueEnd was
 		// already reached, this starts the newly appended first track.
-		setImmediate(() => {
+		queueMicrotask(() => {
 			this.autoStartScheduled = false;
 			if (!this.waitingForQueue || !this.bus || this.queue.getTracks().length === 0) return;
 			const track = this.queue.next(false);
