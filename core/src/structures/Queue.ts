@@ -183,7 +183,7 @@ export class Queue {
 	clearWillNext(): void {
 		this.willnext = null;
 	}
-	relatedTracks(track?: Track[]): Track[] | null {
+	relatedTracks(track?: Track[]): Track[] {
 		if (track) this.related = track;
 		return this.related;
 	}

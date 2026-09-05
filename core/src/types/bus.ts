@@ -286,7 +286,7 @@ export interface PlayerQueryMap {
 	willNext: Track | null;
 	queueLoop: LoopMode;
 	queueAutoPlay: boolean;
-	relatedTracks: Track[] | null;
+	relatedTracks: Track[];
 	playbackSession: PlaybackSessionSnapshot | null;
 	currentResource: unknown | null;
 	position: number | null;

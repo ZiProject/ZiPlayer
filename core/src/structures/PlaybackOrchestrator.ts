@@ -30,6 +30,7 @@ export interface PlaybackOrchestratorOptions {
 
 export class PlaybackOrchestrator {
 	private session: PlaybackSession | null = null;
+	private autoplayPreparation: Promise<void> | null = null;
 	private readonly detachAction: () => void;
 	private readonly detachTrackEnd: () => void;
 	private readonly detachQueries: Array<() => void> = [];
@@ -159,6 +160,7 @@ export class PlaybackOrchestrator {
 		for (const d of this.detachRpcs) d();
 		this.session?.destroy();
 		this.session = null;
+		this.autoplayPreparation = null;
 	}
 
 	private async play(
@@ -301,15 +303,13 @@ export class PlaybackOrchestrator {
 		const source = session.track;
 		if (!queue || !source || context.signal.aborted || !this.matchesContext(session, context) || !this.o.relatedTrackResolver)
 			return;
-		if (!queue.autoPlay) return;
 		try {
-			let related = await this.o.relatedTrackResolver(source);
-			if (context.signal.aborted || !this.matchesContext(session, context) || !queue.autoPlay) return;
-			if (!related?.length) return;
+			let related = (await this.o.relatedTrackResolver(source)) ?? [];
+			if (context.signal.aborted || !this.matchesContext(session, context)) return;
 			const upcoming = new Set(queue.snapshot().map((track) => track.id ?? track.url));
 			related = related.filter((track) => track !== source && !upcoming.has(track.id ?? track.url));
-			if (!related.length || !this.matchesContext(session, context) || !queue.autoPlay) return;
 			queue.setRelated(related);
+			if (!related.length || !queue.autoPlay || !this.matchesContext(session, context)) return;
 			const pool = related.slice(0, Math.min(5, related.length));
 			const next = queue.nextTrack ?? pool[Math.floor(Math.random() * pool.length)];
 			if (!next || !this.matchesContext(session, context) || !queue.autoPlay) return;
@@ -328,6 +328,8 @@ export class PlaybackOrchestrator {
 	private async advanceAfterTrackEnd(snapshot: ReturnType<PlaybackSession["snapshot"]>) {
 		if (!this.session || this.session.id !== snapshot.id || this.session.status === "ended" || this.session.status === "stopped")
 			return;
+		await this.autoplayPreparation;
+		if (!this.session || this.session.id !== snapshot.id || !this.session.isActive()) return;
 		const from = this.session.track;
 		const endedSession = this.session;
 		const context: PlayerMessageContext = {
@@ -338,6 +340,12 @@ export class PlaybackOrchestrator {
 			timestamp: Date.now(),
 			priority: 50,
 		};
+		if (this.o.queueController?.autoPlay && !this.o.queueController.willNext) {
+			const autoplayPreparation = this.prepareAutoplay(endedSession, context);
+			this.autoplayPreparation = autoplayPreparation;
+			await autoplayPreparation;
+			if (this.autoplayPreparation === autoplayPreparation) this.autoplayPreparation = null;
+		}
 		endedSession.markEnded();
 		this.o.trackLoader?.cancelPreload();
 		let next = await this.nextThroughBus(false, context);
@@ -405,7 +413,7 @@ export class PlaybackOrchestrator {
 		}
 		this.o.trackLoader?.resetRecovery();
 		const preload = this.o.preloadController?.peek(track);
-		this.session = new PlaybackSession({ track, resource: null });
+		this.session = new PlaybackSession();
 		const x = this.session;
 		x.begin(track);
 		const context = this.childContext(parentContext, x.sessionId);
@@ -420,16 +428,19 @@ export class PlaybackOrchestrator {
 				x.setResource(null);
 				await loaded.stream.handle.play();
 				x.markPlaying(0);
+				const autoplayPreparation = this.prepareAutoplay(x, context);
+				this.autoplayPreparation = autoplayPreparation;
 				this.bus.event({ type: "TRACK_STARTED", session: x.snapshot() });
-				await this.prepareAutoplay(x, context);
+				await autoplayPreparation;
+				if (this.autoplayPreparation === autoplayPreparation) this.autoplayPreparation = null;
 				return;
 			}
-			const filterString = loaded.stream.filterString;
+			const filterString = await this.bus.query("filterString");
 			let activeStream = loaded.stream;
 			if (filterString && this.o.filterController) {
 				const filtered = await this.filterStreamThroughBus(loaded.stream, 0, context);
-				if (!filtered) throw new Error("Filter controller produced no stream");
-				activeStream = { ...loaded.stream, stream: filtered, filterString };
+				if (!filtered?.stream) throw new Error("Filter controller produced no stream");
+				activeStream = filtered;
 			}
 			const resource = this.bus.requestRpcSync<
 				{ stream: import("stream").Readable; track: Track },
@@ -438,8 +449,11 @@ export class PlaybackOrchestrator {
 			x.setResource(resource);
 			this.o.playbackController?.play(resource, x);
 			x.markPlaying(0);
+			const autoplayPreparation = this.prepareAutoplay(x, context);
+			this.autoplayPreparation = autoplayPreparation;
 			this.bus.event({ type: "TRACK_STARTED", session: x.snapshot() });
-			await this.prepareAutoplay(x, context);
+			await autoplayPreparation;
+			if (this.autoplayPreparation === autoplayPreparation) this.autoplayPreparation = null;
 		} catch (error) {
 			if (!context.signal.aborted && this.matchesContext(x, context)) {
 				this.bus.event({

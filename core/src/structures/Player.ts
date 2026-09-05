@@ -133,7 +133,7 @@ export class Player extends EventEmitter {
 		return this.bus.querySync("availablePlugins");
 	}
 
-	public get relatedTracks(): Track[] | null {
+	public get relatedTracks(): Track[] {
 		return this.bus.querySync("relatedTracks");
 	}
 
