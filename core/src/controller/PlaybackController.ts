@@ -27,6 +27,7 @@ export class PlaybackController {
 	private transitionTimer: ReturnType<typeof setTimeout> | null = null;
 	private fadeTimer: ReturnType<typeof setInterval> | null = null;
 	private stuckTimer: ReturnType<typeof setTimeout> | null = null;
+	private resourceRefreshInProgress = false;
 	private readonly recoveryHandlers: AntiStuckRetryHandlers;
 	private fadeGain: number | null = null;
 	private readonly detachQueries: Array<() => void> = [];
@@ -130,19 +131,41 @@ export class PlaybackController {
 	}
 	private armStuckWatchdog(): void {
 		this.clearStuckWatchdog();
-		if (!this.antiStuck || this.stuckTimeoutMs <= 0 || !this.activeSession?.isActive()) return;
+		if (this.resourceRefreshInProgress || !this.antiStuck || this.stuckTimeoutMs <= 0 || !this.activeSession?.isActive()) return;
 		const resource = this.activeResource;
 		const session = this.activeSession;
 		const initialDuration = Number(resource?.playbackDuration ?? session.position);
 		this.stuckTimer = setTimeout(() => {
 			this.stuckTimer = null;
-			if (this.status !== AudioPlayerStatus.Buffering || this.activeResource !== resource || this.activeSession !== session)
+			if (
+				this.resourceRefreshInProgress ||
+				this.status !== AudioPlayerStatus.Buffering ||
+				this.activeResource !== resource ||
+				this.activeSession !== session
+			)
 				return;
 			const currentDuration = Number(resource?.playbackDuration ?? session.position);
 			if (currentDuration === initialDuration)
 				void this.antiStuck?.reportStuck(session, `buffering stalled for ${this.stuckTimeoutMs}ms`, this.recoveryHandlers);
 			else this.armStuckWatchdog();
 		}, this.stuckTimeoutMs);
+	}
+	public beginResourceRefresh(): void {
+		this.resourceRefreshInProgress = true;
+		this.clearStuckWatchdog();
+	}
+	public endResourceRefresh(): void {
+		this.resourceRefreshInProgress = false;
+		if (this.status === AudioPlayerStatus.Buffering) this.armStuckWatchdog();
+	}
+	public reportFilterError(error: Error): void {
+		const session = this.activeSession;
+		if (!session?.isActive() || this.resourceRefreshInProgress) {
+			if (session?.isActive())
+				void this.antiStuck?.reportStuck(session, `filter processing failed: ${error.message}`, this.recoveryHandlers);
+			return;
+		}
+		void this.antiStuck?.reportStuck(session, `filter processing failed: ${error.message}`, this.recoveryHandlers);
 	}
 	private clearStuckWatchdog(): void {
 		if (this.stuckTimer) clearTimeout(this.stuckTimer);
@@ -322,6 +345,7 @@ export class PlaybackController {
 		return this.audioPlayer.state.status;
 	}
 	public dispose(): void {
+		this.resourceRefreshInProgress = false;
 		this.cancelTransition();
 		this.clearStuckWatchdog();
 		this.volume?.bindActiveResourceResolver(null);

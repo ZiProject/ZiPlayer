@@ -11,9 +11,12 @@ type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 export interface FilterControllerOptions {
 	/** Explicit FFmpeg executable path. Falls back to FFMPEG_PATH, ffmpeg-static, then PATH. */
 	ffmpegPath?: string | null;
+	/** Maximum time to wait for FFmpeg to emit the first seek output bytes. */
+	seekStartupTimeoutMs?: number;
 	onFilterApplied?: (filter: AudioFilter) => void;
 	onFilterRemoved?: (filter: AudioFilter) => void;
 	onFiltersCleared?: () => void;
+	onProcessingError?: (error: Error) => void;
 }
 
 export class FilterController {
@@ -23,6 +26,7 @@ export class FilterController {
 	private ffmpegProcess: ChildProcess | null = null;
 	private ffmpegAbortController: AbortController | null = null;
 	private ffmpegGeneration = 0;
+	private seekStartupTimer: ReturnType<typeof setTimeout> | null = null;
 	private lastFilteredStream: StreamInfo | null = null;
 	private readonly detachAction?: () => void;
 	private readonly detachQueries: Array<() => void> = [];
@@ -71,6 +75,8 @@ export class FilterController {
 
 	private teardownFFmpeg(): void {
 		this.ffmpegGeneration++;
+		if (this.seekStartupTimer) clearTimeout(this.seekStartupTimer);
+		this.seekStartupTimer = null;
 		this.ffmpegAbortController?.abort();
 		this.ffmpegAbortController = null;
 		const output = this.ffmpegOutput;
@@ -212,9 +218,23 @@ export class FilterController {
 		this.ffmpegOutput = output;
 		(output as Readable & { inputType?: StreamType }).inputType = inputType;
 		const cleanup = () => {
+			if (this.seekStartupTimer) clearTimeout(this.seekStartupTimer);
+			this.seekStartupTimer = null;
 			if (this.ffmpegProcess === proc) this.ffmpegProcess = null;
 			if (this.ffmpegOutput === output) this.ffmpegOutput = null;
 			if (this.ffmpegAbortController === controller) this.ffmpegAbortController = null;
+		};
+		let processingFailed = false;
+		const failProcessing = (error: Error) => {
+			if (processingFailed || generation !== this.ffmpegGeneration) return;
+			processingFailed = true;
+			this.debug(`FFmpeg seek processing failed: ${error.message}`);
+			const hadFilters = this.activeFilters.length > 0;
+			this.activeFilters = [];
+			this.lastFilteredStream = null;
+			this.teardownFFmpeg();
+			if (hadFilters) this.options.onFiltersCleared?.();
+			this.options.onProcessingError?.(error);
 		};
 		const abort = () => {
 			cleanup();
@@ -228,9 +248,24 @@ export class FilterController {
 		controller.signal.addEventListener("abort", abort, { once: true });
 		proc.once("error", (error) => {
 			this.debug(`FFmpeg process error: ${error.message}`);
+			if (hasSeek) failProcessing(error);
 			cleanup();
 		});
-		proc.once("close", cleanup);
+		proc.once("close", (code, signal) => {
+			if (hasSeek && !processingFailed && code !== 0)
+				failProcessing(new Error(`FFmpeg exited before seek completed (code=${code ?? "null"}, signal=${signal ?? "none"})`));
+			cleanup();
+		});
+		if (hasSeek) {
+			const timeoutMs = Math.max(1000, this.options.seekStartupTimeoutMs ?? 10000);
+			this.seekStartupTimer = setTimeout(() => {
+				failProcessing(new Error(`FFmpeg produced no seek output within ${timeoutMs}ms`));
+			}, timeoutMs);
+			output.once("data", () => {
+				if (this.seekStartupTimer) clearTimeout(this.seekStartupTimer);
+				this.seekStartupTimer = null;
+			});
+		}
 		output.once("close", () => {
 			if (this.ffmpegProcess === proc)
 				try {
@@ -240,6 +275,7 @@ export class FilterController {
 		});
 		output.once("error", (error: Error) => {
 			this.debug(`FFmpeg stdout error: ${error.message}`);
+			if (hasSeek) failProcessing(error);
 			abort();
 		});
 		if (typeof sourceStream !== "string") sourceStream.pipe(proc.stdin!);

@@ -249,6 +249,7 @@ export class PlayerRuntimeController {
 			onFilterApplied: (filter) => this.bus.event({ type: "filterApplied", filter }),
 			onFilterRemoved: (filter) => this.bus.event({ type: "filterRemoved", filter }),
 			onFiltersCleared: () => this.bus.event({ type: "filtersCleared" }),
+			onProcessingError: (error) => playbackController.reportFilterError(error),
 		});
 		const onStreamError = ({ error }: { error: Error }) =>
 			this.bus.event({ type: "streamError", error, track: player.currentTrack });
