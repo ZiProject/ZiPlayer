@@ -14,6 +14,7 @@ import type {
 	SaveVideoOptions,
 	SearchDebugResult,
 } from "../types";
+import { PlaybackMode } from "../types";
 import {
 	PlayerBus,
 	createPlayerRequestId,
@@ -39,15 +40,14 @@ export class Player extends EventEmitter {
 	public readonly options: PlayerOptions;
 
 	public connection: VoiceConnection | null = null;
-	public playbackMode: any = "NATIVE";
 	public userdata?: Record<string, any>;
 	public _lastActivity = Date.now();
 	public destroyed = false;
-	public forwardFollowers = new Set<Player>();
-	public forwardLeader: Player | null = null;
 
 	private disposed = false;
 	private playOperation: Promise<boolean> = Promise.resolve(false);
+	private playGeneration = 0;
+	private playAbortController: AbortController | null = null;
 	public readonly runtimeGraph: PlayerRuntimeGraph;
 
 	public constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
@@ -105,6 +105,15 @@ export class Player extends EventEmitter {
 	public get audioPlayer() {
 		return this.runtimeGraph.audioPlayer;
 	}
+	public get playbackMode(): PlaybackMode {
+		return this.runtimeGraph.forwardController.playbackMode;
+	}
+	public get forwardLeader(): Player | null {
+		return this.runtimeGraph.forwardController.forwardLeader;
+	}
+	public get forwardFollowers(): ReadonlySet<Player> {
+		return this.runtimeGraph.forwardController.forwardFollowers;
+	}
 
 	public get queueSize(): number {
 		return this.bus.querySync("queue").length;
@@ -119,17 +128,17 @@ export class Player extends EventEmitter {
 	}
 
 	public get isLive(): boolean {
-		if (this.playbackMode === "FORWARD") return this.forwardLeader?.isLive ?? false;
+		if (this.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isLive ?? false;
 		return Boolean(this.currentTrack?.isLive);
 	}
 
 	public get isIdle(): boolean {
-		if (this.playbackMode === "FORWARD") return this.forwardLeader?.isIdle ?? true;
+		if (this.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isIdle ?? true;
 		return this.bus.querySync("playerState") === "idle";
 	}
 
 	public get isBuffering(): boolean {
-		if (this.playbackMode === "FORWARD") return this.forwardLeader?.isBuffering ?? false;
+		if (this.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isBuffering ?? false;
 		return this.bus.querySync("playerState") === "buffering";
 	}
 
@@ -153,8 +162,8 @@ export class Player extends EventEmitter {
 		return this.bus.querySync("previousTracks");
 	}
 
-	public get availablePlugins(): BasePlugin[] {
-		return this.bus.querySync("availablePlugins");
+	public get availablePlugins(): string[] {
+		return this.bus.querySync("availablePlugins").map((plugin) => plugin.name);
 	}
 
 	public get relatedTracks(): Track[] {
@@ -200,9 +209,22 @@ export class Player extends EventEmitter {
 			.then(() => undefined);
 	}
 	public async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
-		const operation = this.playOperation.catch(() => false).then(() => this.bus.requestRpc("play", { query, requestedBy }));
+		const generation = ++this.playGeneration;
+		const controller = new AbortController();
+		this.playAbortController?.abort();
+		this.playAbortController = controller;
+		const operation = this.playOperation
+			.catch(() => false)
+			.then(() => {
+				if (generation !== this.playGeneration || controller.signal.aborted) return false;
+				return this.bus
+					.requestRpc("play", { query, requestedBy }, { signal: controller.signal })
+					.then((result) => (generation === this.playGeneration ? result : false));
+			});
 		this.playOperation = operation;
-		return operation;
+		return operation.finally(() => {
+			if (this.playAbortController === controller) this.playAbortController = null;
+		});
 	}
 	public async playNext(): Promise<boolean> {
 		if (this.destroyed) return false;
@@ -211,6 +233,7 @@ export class Player extends EventEmitter {
 			.catch(() => false);
 	}
 	public pause(): boolean {
+		this.invalidatePlay();
 		void this.action({ type: "PAUSE" });
 		return true;
 	}
@@ -219,17 +242,24 @@ export class Player extends EventEmitter {
 		return true;
 	}
 	public stop(): boolean {
+		this.invalidatePlay();
 		void this.action({ type: "STOP" });
 		return true;
 	}
 	public async seek(position: number): Promise<boolean> {
+		this.invalidatePlay();
 		return this.action({ type: "SEEK", position })
 			.then(() => true)
 			.catch(() => false);
 	}
 	public skip(): boolean {
+		this.invalidatePlay();
 		void this.action({ type: "SKIP" });
 		return true;
+	}
+	private invalidatePlay(): void {
+		this.playGeneration++;
+		this.playAbortController?.abort();
 	}
 	public destroyCurrentStream(): void {
 		void this.bus.action({ type: "STOP" });
@@ -358,8 +388,10 @@ export class Player extends EventEmitter {
 	public setCurrentTrack(track: Track | null): void {
 		void this.action({ type: "QUEUE_SET_CURRENT", track });
 	}
-	public setVolume(value: number): number {
-		return this.bus.requestRpcSync("volume.set", { value });
+	public setVolume(value: number): boolean {
+		if (!Number.isFinite(value) || value < 0 || value > 100) return false;
+		this.bus.requestRpcSync("volume.set", { value });
+		return true;
 	}
 	public shuffle(): void {
 		this.bus.requestRpcSync<void, void>("queue.shuffle", undefined);
@@ -398,7 +430,7 @@ export class Player extends EventEmitter {
 		return this.getSerializableState();
 	}
 	public exitRemoteMode(): void {
-		this.playbackMode = "NATIVE";
+		this.unsubscribeForward("remote mode exited");
 	}
 	public getSerializableState(): any {
 		return { guildId: this.guildId, queue: this.runtime.serializeQueue(), volume: this.volume, playbackMode: this.playbackMode };
@@ -406,7 +438,6 @@ export class Player extends EventEmitter {
 	public restoreState(state: any): void {
 		if (state?.queue) this.runtime.restoreQueue(state.queue);
 		if (typeof state?.volume === "number") this.setVolume(state.volume);
-		if (state?.playbackMode !== undefined) this.playbackMode = state.playbackMode;
 	}
 	public getStreamManagerStats(): any {
 		return this.runtime.getStreamManagerStats() ?? {};
@@ -513,6 +544,7 @@ export class Player extends EventEmitter {
 	public dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.invalidatePlay();
 		this.actionExecutor.dispose();
 		void this.runtime.dispose();
 		this.bus.publish("destroyed");

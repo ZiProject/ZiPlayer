@@ -176,7 +176,7 @@ export interface SaveOptions {
 	seek?: number;
 }
 
-export type SaveVideoOptions = Pick<SaveOptions, "filename" | "quality">;
+export type SaveVideoOptions = Pick<SaveOptions, "filename" | "quality" | "timeout" | "metadata">;
 
 export interface PlayerSession {
 	guildId: string;

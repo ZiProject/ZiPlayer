@@ -234,3 +234,47 @@ test("Player.getTime follows the active session across track transitions and see
 	activeSession.updatePosition(42000);
 	assert.equal(player.getTime().current, 42000);
 });
+
+test("stop invalidates an in-flight play RPC", async () => {
+	const bus = new PlayerBus();
+	bus.registerRpc("play", async () => {
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		return true;
+	});
+	const player = Object.create(Player.prototype);
+	player.bus = bus;
+	player.playOperation = Promise.resolve(false);
+	player.playGeneration = 0;
+	player.playAbortController = null;
+	player.action = async () => {};
+
+	const playResult = player.play({
+		id: "track-a",
+		title: "Track A",
+		url: "url",
+		duration: 1000,
+		requestedBy: "test",
+		source: "test",
+	});
+	await new Promise((resolve) => setTimeout(resolve, 2));
+	player.stop();
+
+	assert.equal(await playResult, false);
+	bus.dispose();
+});
+
+test("PlayerBus materializes seek and queueEnd public events", () => {
+	const bus = new PlayerBus();
+	const events = [];
+	bus.subscribe("seek", (event) => events.push(event));
+	bus.subscribe("queueEnd", (event) => events.push(event));
+	const track = { id: "track-a", title: "Track A", url: "url", duration: 1000, requestedBy: "test", source: "test" };
+
+	bus.event({ type: "seek", track, position: 250 });
+	bus.event({ type: "queueEnd" });
+
+	assert.equal(events[0].track, track);
+	assert.equal(events[0].position, 250);
+	assert.equal(events[1].type, "queueEnd");
+	bus.dispose();
+});

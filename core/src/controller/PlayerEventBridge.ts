@@ -42,6 +42,18 @@ export class PlayerEventBridge {
 			"preloadCancelled",
 			"queueChanged",
 			"volumeRequested",
+			"willPlay",
+			"queueEnd",
+			"playerPause",
+			"playerResume",
+			"playerStop",
+			"seek",
+			"filterApplied",
+			"filterRemoved",
+			"filtersCleared",
+			"streamError",
+			"forwardModeStart",
+			"forwardModeEnd",
 		];
 		for (const type of events) this.detach.push(this.bus.subscribe(type, (event) => this.forward(event)));
 
@@ -138,6 +150,30 @@ export class PlayerEventBridge {
 				return "trackRequested";
 			case "stateChanged":
 				return "stateChanged";
+			case "willPlay":
+				return "willPlay";
+			case "queueEnd":
+				return "queueEnd";
+			case "playerPause":
+				return "playerPause";
+			case "playerResume":
+				return "playerResume";
+			case "playerStop":
+				return "playerStop";
+			case "seek":
+				return "seek";
+			case "filterApplied":
+				return "filterApplied";
+			case "filterRemoved":
+				return "filterRemoved";
+			case "filtersCleared":
+				return "filtersCleared";
+			case "streamError":
+				return "streamError";
+			case "forwardModeStart":
+				return "forwardModeStart";
+			case "forwardModeEnd":
+				return "forwardModeEnd";
 			default:
 				return null;
 		}
@@ -162,7 +198,23 @@ export class PlayerEventBridge {
 			case "queueChanged":
 				return [event.queue];
 			case "volumeRequested":
-				return [event.volume];
+				return [event.oldVolume, event.newVolume];
+			case "willPlay":
+				return [event.track, event.upcomingTracks];
+			case "playerPause":
+			case "playerResume":
+				return [event.track];
+			case "seek":
+				return [{ track: event.track, position: event.position }];
+			case "filterApplied":
+			case "filterRemoved":
+				return [event.filter];
+			case "streamError":
+				return [event.error, event.track];
+			case "forwardModeStart":
+				return [event.leader];
+			case "forwardModeEnd":
+				return [event.leader, event.reason];
 			case "preloadStateChanged":
 				return [event.state];
 			case "preloadPromoted":
@@ -174,7 +226,7 @@ export class PlayerEventBridge {
 			case "destroyed":
 				return [];
 			default:
-				return event.session ? [event.session] : [];
+				return "session" in event && event.session ? [event.session] : [];
 		}
 	}
 

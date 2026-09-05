@@ -239,11 +239,12 @@ export class PlayerRuntimeController {
 		const antiStuckController = new AntiStuckController({ ...options.antiStuck, bus: this.bus });
 		const preloadController = new PreloadController({ loader: trackLoader, manager: preloadManager, bus: this.bus });
 		const filterController = new FilterController(undefined, debug, this.bus, {
-			onFilterApplied: (filter) => player.emit("filterApplied", filter),
-			onFilterRemoved: (filter) => player.emit("filterRemoved", filter),
-			onFiltersCleared: () => player.emit("filtersCleared"),
+			onFilterApplied: (filter) => this.bus.event({ type: "filterApplied", filter }),
+			onFilterRemoved: (filter) => this.bus.event({ type: "filterRemoved", filter }),
+			onFiltersCleared: () => this.bus.event({ type: "filtersCleared" }),
 		});
-		const onStreamError = ({ error }: { error: Error }) => player.emit("streamError", error, player.currentTrack);
+		const onStreamError = ({ error }: { error: Error }) =>
+			this.bus.event({ type: "streamError", error, track: player.currentTrack });
 		streamManager.on("streamError", onStreamError);
 		this.monitorCleanup("stream.errors", () => {
 			streamManager.off("streamError", onStreamError);

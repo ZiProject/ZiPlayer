@@ -46,6 +46,18 @@ export class PlayerEventDebug {
 			"preloadCancelled",
 			"queueChanged",
 			"volumeRequested",
+			"willPlay",
+			"queueEnd",
+			"playerPause",
+			"playerResume",
+			"playerStop",
+			"seek",
+			"filterApplied",
+			"filterRemoved",
+			"filtersCleared",
+			"streamError",
+			"forwardModeStart",
+			"forwardModeEnd",
 		];
 		for (const type of eventTypes) this.detach.push(this.bus.subscribe(type, (event) => this.event(event)));
 		this.detach.push(this.bus.onAction((action, context) => this.action(action, context)));

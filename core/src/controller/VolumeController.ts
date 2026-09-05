@@ -64,7 +64,10 @@ export class VolumeController {
 
 	setVolume(value: number): number {
 		if (this.disposed) return this.volume;
+		const oldVolume = this.volume;
 		this.volume = this.clamp(value);
+		if (this.volume !== oldVolume)
+			this.bus.event({ type: "volumeRequested", volume: this.volume, oldVolume, newVolume: this.volume });
 
 		const active = this.activeResourceResolver?.();
 		if (active?.resource) {

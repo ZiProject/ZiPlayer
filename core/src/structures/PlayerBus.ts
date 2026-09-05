@@ -364,13 +364,33 @@ export class PlayerBus {
 			case "queueChanged":
 				return { type, queue: args[0] } as any;
 			case "volumeRequested":
-				return { type, volume: args[0] } as any;
+				return { type, volume: args[1], oldVolume: args[0], newVolume: args[1] } as any;
 			case "stateChanged":
 				return { type, oldState: args[0], newState: args[1] } as any;
 			case "preloadStateChanged":
 				return { type, state: args[0] } as any;
 			case "preloadPromoted":
 				return { type, track: args[0] } as any;
+			case "queueEnd":
+			case "playerStop":
+			case "filtersCleared":
+				return { type } as any;
+			case "willPlay":
+				return { type, track: args[0], upcomingTracks: args[1] } as any;
+			case "playerPause":
+			case "playerResume":
+				return { type, track: args[0] } as any;
+			case "seek":
+				return { type, track: args[0], position: args[1] } as any;
+			case "filterApplied":
+			case "filterRemoved":
+				return { type, filter: args[0] } as any;
+			case "streamError":
+				return { type, error: args[0], track: args[1] } as any;
+			case "forwardModeStart":
+				return { type, leader: args[0] } as any;
+			case "forwardModeEnd":
+				return { type, leader: args[0], reason: args[1] } as any;
 		}
 	}
 	private addListener<T extends string, E>(map: Map<T, Set<(event: E) => any>>, type: T, handler: (event: E) => any): () => void {

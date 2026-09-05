@@ -18,6 +18,7 @@ import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { Readable } from "stream";
+import type { Player } from "../structures/Player";
 
 export type PlayerRequestId = string;
 export type PlayerSessionId = string;
@@ -117,6 +118,19 @@ export type PlayerPlaybackEvents =
 	| { type: "playbackSessionCreated"; session: PlaybackSessionSnapshot }
 	| { type: "trackRequested"; track: Track; session: PlaybackSessionSnapshot }
 	| { type: "stateChanged"; oldState: AudioPlayerState; newState: AudioPlayerState };
+export type PlayerPublicEvents =
+	| { type: "willPlay"; track: Track; upcomingTracks: Track[] }
+	| { type: "queueEnd" }
+	| { type: "playerPause"; track: Track | null }
+	| { type: "playerResume"; track: Track | null }
+	| { type: "playerStop" }
+	| { type: "seek"; track: Track; position: number }
+	| { type: "filterApplied"; filter: import("./filter").AudioFilter }
+	| { type: "filterRemoved"; filter: import("./filter").AudioFilter }
+	| { type: "filtersCleared" }
+	| { type: "streamError"; error: Error; track: Track | null }
+	| { type: "forwardModeStart"; leader: Player }
+	| { type: "forwardModeEnd"; leader: Player; reason?: string };
 export type PlayerRecoveryEvents =
 	| { type: "STUCK_DETECTED"; session: PlaybackSessionSnapshot; reason: string }
 	| { type: "RECOVERY_STARTED"; session: PlaybackSessionSnapshot }
@@ -130,10 +144,11 @@ export type PlayerPreloadEvents =
 	| { type: "preloadPromoted"; track: Track }
 	| { type: "preloadCancelled" };
 export type PlayerQueueEvents = { type: "queueChanged"; queue: Track[] };
-export type PlayerVolumeEvents = { type: "volumeRequested"; volume: number };
+export type PlayerVolumeEvents = { type: "volumeRequested"; volume: number; oldVolume: number; newVolume: number };
 export type PlayerEvent =
 	| PlayerLifecycleEvents
 	| PlayerPlaybackEvents
+	| PlayerPublicEvents
 	| PlayerRecoveryEvents
 	| PlayerPreloadEvents
 	| PlayerQueueEvents
@@ -141,7 +156,10 @@ export type PlayerEvent =
 export type PlayerEventType = PlayerEvent["type"];
 
 export type PlayerEventArgsMap = {
-	[K in PlayerEventType]: K extends "initialized" | "ready" | "destroyed" | "preloadCancelled" ? []
+	[K in PlayerEventType]: K extends (
+		"initialized" | "ready" | "destroyed" | "preloadCancelled" | "queueEnd" | "playerStop" | "filtersCleared"
+	) ?
+		[]
 	: K extends (
 		| "TRACK_LOADING"
 		| "TRACK_LOADED"
@@ -158,10 +176,17 @@ export type PlayerEventArgsMap = {
 	: K extends "STUCK_DETECTED" ? [PlaybackSessionSnapshot, string]
 	: K extends "trackRequested" ? [Track, PlaybackSessionSnapshot]
 	: K extends "queueChanged" ? [Track[]]
-	: K extends "volumeRequested" ? [number]
+	: K extends "volumeRequested" ? [number, number, number]
 	: K extends "stateChanged" ? [AudioPlayerState, AudioPlayerState]
 	: K extends "preloadStateChanged" ? [PlayerPreloadState]
 	: K extends "preloadPromoted" ? [Track]
+	: K extends "willPlay" ? [Track, Track[]]
+	: K extends "playerPause" | "playerResume" ? [Track | null]
+	: K extends "seek" ? [Track, number]
+	: K extends "filterApplied" | "filterRemoved" ? [import("./filter").AudioFilter]
+	: K extends "streamError" ? [Error, Track | null]
+	: K extends "forwardModeStart" ? [Player]
+	: K extends "forwardModeEnd" ? [Player, string | undefined]
 	: never;
 };
 

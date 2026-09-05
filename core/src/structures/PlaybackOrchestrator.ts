@@ -230,7 +230,7 @@ export class PlaybackOrchestrator {
 				if (session?.isActive() && this.matchesContext(session, context) && this.o.playbackController?.pause()) {
 					session.markPaused();
 					this.publishState();
-					this.o.player?.emit("playerPause", session.track);
+					this.bus.event({ type: "playerPause", track: session.track });
 				}
 				break;
 			}
@@ -239,7 +239,7 @@ export class PlaybackOrchestrator {
 				if (session?.isActive() && this.matchesContext(session, context) && this.o.playbackController?.resume()) {
 					session.markPlaying();
 					this.publishState();
-					this.o.player?.emit("playerResume", session.track);
+					this.bus.event({ type: "playerResume", track: session.track });
 				}
 				break;
 			}
@@ -249,7 +249,7 @@ export class PlaybackOrchestrator {
 				this.stopPlayback(context.signal);
 				if (session?.isActive()) session.markStopped();
 				this.publishState();
-				this.o.player?.emit("playerStop");
+				this.bus.event({ type: "playerStop" });
 				break;
 			}
 		}
@@ -382,7 +382,7 @@ export class PlaybackOrchestrator {
 		}
 		this.stopPlayback(context.signal);
 		this.publishState();
-		this.o.player?.emit("queueEnd");
+		this.bus.event({ type: "queueEnd" });
 	}
 
 	private async seek(position: number, context: PlayerMessageContext) {
@@ -396,7 +396,7 @@ export class PlaybackOrchestrator {
 				{ signal: context.signal, timeoutMs: 30000 },
 			);
 			if (context.signal.aborted || !this.matchesContext(x, context)) return;
-			this.o.player?.emit("seek", { track: x.track, position });
+			this.bus.event({ type: "seek", track: x.track, position });
 		} catch (error) {
 			if (!context.signal.aborted && this.matchesContext(x, context))
 				this.bus.event({
@@ -416,7 +416,7 @@ export class PlaybackOrchestrator {
 		if (!next) {
 			this.stopPlayback(context.signal);
 			this.publishState();
-			this.o.player?.emit("queueEnd");
+			this.bus.event({ type: "queueEnd" });
 			return;
 		}
 		await this.start(next, context, from);
@@ -437,7 +437,7 @@ export class PlaybackOrchestrator {
 		const context = this.childContext(parentContext, x.sessionId, x.signal);
 		await this.setCurrentThroughBus(track, context);
 		this.bus.event({ type: "TRACK_LOADING", session: x.snapshot() });
-		this.o.player?.emit("willPlay", track, this.o.queueController?.snapshot() ?? []);
+		this.bus.event({ type: "willPlay", track, upcomingTracks: this.o.queueController?.snapshot() ?? [] });
 		try {
 			const loaded = await this.o.trackLoader?.loadWithRecovery(track, x);
 			if (!loaded) throw new Error("Track loader is unavailable");

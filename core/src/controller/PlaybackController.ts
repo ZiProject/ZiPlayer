@@ -105,7 +105,7 @@ export class PlaybackController {
 		const track = session?.track ?? to ?? (resource.metadata as Track | undefined);
 		const plan = from && to ? this.transitions?.plan(from, to) : undefined;
 		if (plan?.enabled && this.activeResource && this.audioPlayer.state.status !== AudioPlayerStatus.Idle) {
-			this.crossfade(this.activeResource, resource, plan, session, track);
+			this.fadeTransition(this.activeResource, resource, plan, session, track);
 			return;
 		}
 		this.fadeGain = null;
@@ -156,8 +156,12 @@ export class PlaybackController {
 	public getTrackTargetVolume(track?: Track | null): number {
 		return this.volume?.getTargetVolume(track) ?? 1;
 	}
-	private crossfade(
-		oldResource: AudioResource,
+	/**
+	 * Fades the replacement resource in. AudioPlayer owns one active resource,
+	 * so this is a fade transition rather than a true two-source crossfade.
+	 */
+	private fadeTransition(
+		_oldResource: AudioResource,
 		newResource: AudioResource,
 		plan: { enabled: boolean; durationMs: number },
 		session?: PlaybackSession,
@@ -165,7 +169,6 @@ export class PlaybackController {
 	): void {
 		this.fadeGain = 0;
 		this.volume?.applyLoudness(newResource, track, 0);
-		const oldVolume = oldResource.volume?.volume ?? 0;
 		const wait = this.transitions?.beatWaitMs(session?.track ?? null, session?.position ?? 0) ?? 0;
 		const begin = () => {
 			this.transitionTimer = null;
@@ -187,7 +190,6 @@ export class PlaybackController {
 				}
 				const p = Math.min(1, (Date.now() - start) / Math.max(1, plan.durationMs));
 				this.fadeGain = p;
-				if (oldResource.volume) oldResource.volume.setVolume(oldVolume * (1 - p));
 				this.volume?.applyLoudness(newResource, track, p);
 				if (p >= 1) this.cancelFade();
 			}, 25);
