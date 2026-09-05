@@ -113,7 +113,7 @@ export type PlayerPlaybackEvents =
 	| { type: "TRACK_ERROR"; session: PlaybackSessionSnapshot; error: Error }
 	| { type: "TRACK_END"; session: PlaybackSessionSnapshot }
 	| { type: "STREAM_ABORTED"; session: PlaybackSessionSnapshot }
-	| { type: "playbackStateChanged"; session: PlaybackSessionSnapshot }
+	| { type: "playbackStateChanged"; session: PlaybackSessionSnapshot | null }
 	| { type: "playbackSessionCreated"; session: PlaybackSessionSnapshot }
 	| { type: "trackRequested"; track: Track; session: PlaybackSessionSnapshot }
 	| { type: "stateChanged"; oldState: AudioPlayerState; newState: AudioPlayerState };

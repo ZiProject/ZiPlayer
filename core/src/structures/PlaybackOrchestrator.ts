@@ -304,15 +304,16 @@ export class PlaybackOrchestrator {
 		if (!queue || !source || context.signal.aborted || !this.matchesContext(session, context) || !this.o.relatedTrackResolver)
 			return;
 		try {
+			//queue.relatedTracks and queue.willNextTrack always contains track, so we can use it to avoid re-resolving related tracks if they are already known, both for user use and for autoplay preparation.
 			let related = (await this.o.relatedTrackResolver(source)) ?? [];
 			if (context.signal.aborted || !this.matchesContext(session, context)) return;
 			const upcoming = new Set(queue.snapshot().map((track) => track.id ?? track.url));
 			related = related.filter((track) => track !== source && !upcoming.has(track.id ?? track.url));
 			queue.setRelated(related);
-			if (!related.length || !queue.autoPlay || !this.matchesContext(session, context)) return;
+			if (!related.length || !this.matchesContext(session, context)) return;
 			const pool = related.slice(0, Math.min(5, related.length));
 			const next = queue.nextTrack ?? pool[Math.floor(Math.random() * pool.length)];
-			if (!next || !this.matchesContext(session, context) || !queue.autoPlay) return;
+			if (!next || !this.matchesContext(session, context)) return;
 			queue.setWillNext(next);
 			if (this.o.preloadController) await this.requestPreload(next, context);
 		} catch (error) {
@@ -430,7 +431,7 @@ export class PlaybackOrchestrator {
 				x.markPlaying(0);
 				const autoplayPreparation = this.prepareAutoplay(x, context);
 				this.autoplayPreparation = autoplayPreparation;
-				this.bus.event({ type: "TRACK_STARTED", session: x.snapshot() });
+				this.bus.event({ type: "TRACK_STARTED", session: x.snapshot(), track: track ?? x.snapshot().track });
 				await autoplayPreparation;
 				if (this.autoplayPreparation === autoplayPreparation) this.autoplayPreparation = null;
 				return;
@@ -451,7 +452,7 @@ export class PlaybackOrchestrator {
 			x.markPlaying(0);
 			const autoplayPreparation = this.prepareAutoplay(x, context);
 			this.autoplayPreparation = autoplayPreparation;
-			this.bus.event({ type: "TRACK_STARTED", session: x.snapshot() });
+			this.bus.event({ type: "TRACK_STARTED", session: x.snapshot(), track: track ?? x.snapshot().track });
 			await autoplayPreparation;
 			if (this.autoplayPreparation === autoplayPreparation) this.autoplayPreparation = null;
 		} catch (error) {
@@ -466,7 +467,7 @@ export class PlaybackOrchestrator {
 	}
 
 	private async requestPreload(track: Track, context: PlayerMessageContext) {
-		if (!this.o.preloadController || context.signal.aborted || !this.o.queueController?.autoPlay) return;
+		if (!this.o.preloadController || context.signal.aborted) return;
 		try {
 			await this.bus.request(
 				{ type: "[Player]->[Preload]:request", requestId: context.requestId, track },
