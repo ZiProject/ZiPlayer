@@ -173,21 +173,38 @@ export class FilterController {
 	public async applyFiltersAndSeek(streamInfo: StreamInfo, position = -1): Promise<StreamInfo & { wasRecreated?: boolean }> {
 		this.teardownFFmpeg();
 		const generation = ++this.ffmpegGeneration;
-		const source = streamInfo.stream || streamInfo.url;
-		if (!source) throw new Error("No source stream or URL available");
-		let sourceStream: Readable | string = source;
-		let wasRecreated = false;
-		if (position >= 0 && streamInfo.recreate) {
-			sourceStream = await streamInfo.recreate(position);
-			wasRecreated = true;
-			if (!sourceStream) throw new Error("Stream recreation returned no stream");
+		const hasSeek = position >= 0;
+
+		if (hasSeek && streamInfo.recreate) {
+			const recreated = await streamInfo.recreate(position);
+			if (generation !== this.ffmpegGeneration) {
+				recreated.destroy();
+				throw new Error("FFmpeg generation outdated");
+			}
+			if (!recreated) throw new Error("Stream recreation returned no stream");
+			const result = { ...streamInfo, stream: recreated, url: undefined, inputType: StreamType.Raw, wasRecreated: true };
+			this.currentInputStream = recreated;
+			this.lastFilteredStream = result;
+			return result;
 		}
+
+		// A readable stream is not seekable. If a seekable URL is available, use it
+		// instead of piping the already-open stream into FFmpeg. `-ss` on pipe:0
+		// cannot jump to a timestamp; FFmpeg would have to decode from 0, which is
+		// exactly what caused the 10s startup timeout for long seeks.
+		const source: Readable | string | null = hasSeek ? (streamInfo.url || null) : (streamInfo.stream || streamInfo.url || null);
+		if (!source) {
+			if (hasSeek) throw new Error("Cannot seek stream: resolver did not provide a seekable URL or recreate(position)");
+			throw new Error("No source stream or URL available");
+		}
+		let sourceStream: Readable | string = source;
+		const wasRecreated = false;
 		if (generation !== this.ffmpegGeneration) throw new Error("FFmpeg generation outdated");
 		this.currentInputStream = sourceStream;
 		const filterString = this.getFilterString();
-		const hasSeek = position >= 0;
-		// A recreate(position) source is already positioned. Never seek it again in FFmpeg.
-		const ffmpegSeekSeconds = hasSeek && !wasRecreated ? (position / 1000).toFixed(3) : null;
+		// A seekable URL is already handled directly by FFmpeg. Do not combine a
+		// URL seek with the old live Readable, even when both are present.
+		const ffmpegSeekSeconds = hasSeek ? (position / 1000).toFixed(3) : null;
 		if (!hasSeek && !filterString) {
 			const result = { ...streamInfo, stream: typeof sourceStream === "string" ? undefined : sourceStream, wasRecreated };
 			this.lastFilteredStream = result;
@@ -196,6 +213,7 @@ export class FilterController {
 
 		const executable = this.options.ffmpegPath || process.env.FFMPEG_PATH || ffmpegStaticPath || "ffmpeg";
 		this.debug(`Using FFmpeg: ${executable}`);
+		this.debug(`FFmpeg input: ${typeof sourceStream === "string" ? "seekable URL" : "readable stream"}${hasSeek ? `, seek=${ffmpegSeekSeconds}s` : ""}`);
 
 		const args = ["-hide_banner", "-loglevel", "error"];
 		if (typeof sourceStream === "string") {
@@ -203,7 +221,6 @@ export class FilterController {
 			args.push("-i", sourceStream);
 		} else {
 			args.push("-i", "pipe:0");
-			if (ffmpegSeekSeconds !== null) args.push("-ss", ffmpegSeekSeconds);
 		}
 		if (filterString) args.push("-af", filterString);
 		const inputType = hasSeek ? StreamType.Raw : StreamType.OggOpus;
