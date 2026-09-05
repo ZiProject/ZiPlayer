@@ -15,9 +15,6 @@ export class QueueController {
 	private readonly detachAction?: () => void;
 	private readonly detachQueries: Array<() => void> = [];
 	private readonly detachRpcs: Array<() => void> = [];
-	private readonly detachPlayback: Array<() => void> = [];
-	private waitingForQueue = false;
-	private autoStartScheduled = false;
 
 	public constructor(options: QueueControllerOptions = {}) {
 		this.queue = options.queue ?? new Queue();
@@ -50,19 +47,6 @@ export class QueueController {
 					if (track) this.setWillNext(track);
 					else this.clearWillNext();
 					return this.willNext;
-				}),
-			);
-
-			// A natural queue end is a waiting state, not a permanent stop. If a
-			// track is appended after the end, resume it without requiring another
-			// call to Player.play(). TRACK_STARTED clears the state when the normal
-			// TRACK_END -> advance path wins the race.
-			this.detachPlayback.push(
-				this.bus.subscribe("TRACK_END", () => {
-					if (this.queue.getTracks().length === 0) this.waitingForQueue = true;
-				}),
-				this.bus.subscribe("TRACK_STARTED", () => {
-					this.waitingForQueue = false;
 				}),
 			);
 		}
@@ -127,21 +111,18 @@ export class QueueController {
 	public add(track: Track): number {
 		const size = this.queue.add(track);
 		this.publishChanged();
-		this.schedulePlaybackAfterQueueAdd();
 		return size;
 	}
 
 	public addMultiple(tracks: Track[]): number {
 		const size = this.queue.addMultiple(tracks);
 		this.publishChanged();
-		this.schedulePlaybackAfterQueueAdd();
 		return size;
 	}
 
 	public insert(track: Track, index = 0): number {
 		const size = this.queue.insert(track, index);
 		this.publishChanged();
-		this.schedulePlaybackAfterQueueAdd();
 		return size;
 	}
 
@@ -187,13 +168,11 @@ export class QueueController {
 
 	public clear(): void {
 		this.queue.clear();
-		this.waitingForQueue = false;
 		this.publishChanged();
 	}
 
 	public reset(): void {
 		this.queue.reset();
-		this.waitingForQueue = false;
 		this.publishChanged();
 	}
 
@@ -229,30 +208,10 @@ export class QueueController {
 		this.detachAction?.();
 		for (const detach of this.detachQueries.splice(0)) detach();
 		for (const detach of this.detachRpcs.splice(0)) detach();
-		for (const detach of this.detachPlayback.splice(0)) detach();
 		this.queue.reset();
-		this.waitingForQueue = false;
-		this.autoStartScheduled = false;
 	}
 
 	private publishChanged(): void {
 		this.bus?.publish("queueChanged", this.snapshot());
-	}
-
-	private schedulePlaybackAfterQueueAdd(): void {
-		if (!this.bus || !this.waitingForQueue || this.autoStartScheduled || this.queue.getTracks().length === 0) return;
-		this.autoStartScheduled = true;
-
-		// Let the in-flight TRACK_END -> advanceAfterTrackEnd continuation run
-		// first. If it already consumed the appended track, TRACK_STARTED clears
-		// waitingForQueue and this callback becomes a no-op. If queueEnd was
-		// already reached, this starts the newly appended first track.
-		queueMicrotask(() => {
-			this.autoStartScheduled = false;
-			if (!this.waitingForQueue || !this.bus || this.queue.getTracks().length === 0) return;
-			const track = this.queue.next(false);
-			if (!track) return;
-			void this.bus.action({ type: "PLAY", track });
-		});
 	}
 }
