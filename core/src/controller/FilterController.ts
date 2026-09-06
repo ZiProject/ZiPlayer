@@ -183,7 +183,7 @@ export class FilterController {
 				throw new Error("FFmpeg generation outdated");
 			}
 			if (!recreated) throw new Error("Stream recreation returned no stream");
-			const result = { ...streamInfo, stream: recreated, url: undefined, inputType: StreamType.Raw, wasRecreated: true };
+			const result = { ...streamInfo, stream: recreated, url: undefined, inputType: StreamType.Arbitrary, wasRecreated: true };
 			this.currentInputStream = recreated;
 			this.lastFilteredStream = result;
 			return result;
@@ -288,7 +288,7 @@ export class FilterController {
 			cleanup();
 		});
 		if (hasSeek) {
-			const timeoutMs = Math.max(1000, this.options.seekStartupTimeoutMs ?? 10000);
+			const timeoutMs = Math.max(5000, this.options.seekStartupTimeoutMs ?? 50000);
 			this.seekStartupTimer = setTimeout(() => {
 				failProcessing(new Error(`FFmpeg produced no seek output within ${timeoutMs}ms`));
 			}, timeoutMs);

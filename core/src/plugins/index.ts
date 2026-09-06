@@ -312,6 +312,7 @@ export class PluginManager {
 	private pendingStreams: Map<string, Promise<StreamInfo | null>> = new Map(); // Dedupe in-flight requests
 	private pendingSearches: Map<string, Promise<SearchResult | null>> = new Map(); // Dedupe search requests
 	private streamManager?: StreamManager;
+	private destroyed = false;
 
 	constructor(options?: PluginManagerOptions);
 	constructor(player?: Player | null, manager?: PlayerManager | null, options?: PluginManagerOptions);
@@ -409,6 +410,28 @@ export class PluginManager {
 		this.pendingSearches.clear();
 	}
 
+	/**
+	 * Full teardown hook so PlayerRuntimeController's generic `.dispose()`/`.destroy()`
+	 * duck-typed resolver can find and call this. `clear()` alone is never invoked by
+	 * that resolver (it only looks for `dispose`/`destroy`), and even `clear()` only
+	 * drops the Map entries without closing the underlying streams. Without this method,
+	 * every cached `StreamInfo.stream` handle (up to STREAM_CACHE_TTL = 5 minutes old)
+	 * survives player destroy as a live, unreferenced-by-anyone-but-us stream.
+	 */
+	destroy(): void {
+		if (this.destroyed) return;
+		this.destroyed = true;
+		for (const entry of this.streamCache.values()) {
+			const stream = entry.streamInfo?.stream as { destroy?: () => void; destroyed?: boolean } | undefined;
+			if (stream && typeof stream.destroy === "function" && !stream.destroyed) {
+				try {
+					stream.destroy();
+				} catch {}
+			}
+		}
+		this.clear();
+	}
+
 	setStreamManager(manager: StreamManager): void {
 		this.streamManager = manager;
 	}
@@ -438,7 +461,7 @@ export class PluginManager {
 	}
 
 	private setCachedSearch(query: string, requestedBy: string, result: SearchResult): void {
-		if (!this.options.enableCache) return;
+		if (!this.options.enableCache || this.destroyed) return;
 
 		const key = this.getSearchCacheKey(query, requestedBy);
 		this.searchCache.set(key, {
@@ -456,6 +479,7 @@ export class PluginManager {
 	 * @returns Evaluated search result
 	 */
 	async search(query: string, requestedBy: string): Promise<SearchResult | null> {
+		if (this.destroyed) return null;
 		if (!query || !query.trim()) {
 			this.debug(`[Search] Empty query provided`);
 			return null;
@@ -674,7 +698,7 @@ export class PluginManager {
 	}
 
 	private setCachedStream(track: Track, streamInfo: StreamInfo): void {
-		if (!this.options.enableCache) return;
+		if (!this.options.enableCache || this.destroyed) return;
 
 		const key = this.getStreamCacheKey(track);
 		this.streamCache.set(key, {
@@ -890,6 +914,7 @@ export class PluginManager {
 		return null;
 	}
 	async getStream(track: Track, options?: { fresh?: boolean; context?: TrackResolveContext }): Promise<StreamInfo | null> {
+		if (this.destroyed) return null;
 		if (!track) {
 			this.debug(`[getStream] No track provided`);
 			return null;

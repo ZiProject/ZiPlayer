@@ -473,15 +473,32 @@ export class PlaybackOrchestrator {
 		const from = this.session?.track ?? null;
 		const oldSession = this.session;
 		if (oldSession && context.sessionId && oldSession.sessionId !== context.sessionId) return;
-		const next = await this.nextThroughBus(true, context);
-		if (!next) {
-			this.stopPlayback(context.signal);
-			this.publishState();
-			this.bus.event({ type: "queueEnd" });
-			return;
+		this.trackEndTransition = true;
+		try {
+			if (oldSession?.isActive()) {
+				const endedSnapshot = oldSession.snapshot();
+				this.bus.event({
+					type: "TRACK_END",
+					session: endedSnapshot,
+				});
+
+				oldSession.markEnded();
+			}
+			const next = await this.nextThroughBus(true, context);
+
+			if (!next) {
+				this.stopPlayback(context.signal);
+				this.publishState();
+				this.waitingForQueue = true;
+				this.bus.event({ type: "queueEnd" });
+				return;
+			}
+
+			this.waitingForQueue = false;
+			await this.start(next, context, from);
+		} finally {
+			this.trackEndTransition = false;
 		}
-		this.waitingForQueue = false;
-		await this.start(next, context, from);
 	}
 	private async start(track: Track, parentContext: PlayerMessageContext, from: Track | null = null) {
 		if (parentContext.signal.aborted) return;

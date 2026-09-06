@@ -30,7 +30,7 @@
 		"test:sabr-recreate": "tsx ./test-sabr-recreate.ts"
 	},
 	"dependencies": {
-		"@zibot/scdl": "^0.1.5",
+		"@zibot/scdl": "^0.1.6",
 		"@ziplayer/tts": "^1.0.0",
 		"axios": "^1.19.0",
 		"bgutils-js": "^4.0.3",

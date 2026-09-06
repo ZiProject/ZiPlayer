@@ -24,7 +24,7 @@ export class AntiStuckController {
 	public constructor(options: AntiStuckControllerOptions = {}) {
 		this.enabled = options.enabled ?? true;
 		this.maxRetries = Math.max(0, options.maxRetries ?? 2);
-		this.retryDelayMs = Math.max(0, options.retryDelayMs ?? 900);
+		this.retryDelayMs = Math.max(0, options.retryDelayMs ?? 90000);
 		this.reusePreloadFirst = options.reusePreloadFirst ?? true;
 		this.reduceQualityOnRetry = options.reduceQualityOnRetry ?? true;
 		this.controlledSkipThreshold = Math.max(1, options.controlledSkipThreshold ?? 3);
