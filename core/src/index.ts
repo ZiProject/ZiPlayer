@@ -18,6 +18,7 @@ export { TransitionController } from "./controller/TransitionController";
 export { PreloadController } from "./controller/PreloadController";
 export { SaveController } from "./controller/SaveController";
 export { PlayerBusLatencyTrace } from "./controller/PlayerBusLatencyTrace";
+export { StreamManager } from "./structures/StreamManager";
 
 export type {
 	PlayerAction as PlayerActionMessage,

@@ -103,9 +103,15 @@ export class PlaybackOrchestrator {
 				if (!session) return null;
 				const promoted = this.bus.requestRpcSync<{ track: Track }, PromotedPreload | null>("preload.promote", { track });
 				if (!promoted) return null;
-				const resource = this.bus.requestRpcSync("resource.create", {
-					stream: promoted.stream as import("stream").Readable,
+				const streamInfo: StreamInfo = promoted.streamInfo ?? { stream: promoted.stream as any, type: "arbitrary" };
+				const streamToPlay = (streamInfo.stream ?? promoted.stream) as import("stream").Readable;
+				const resource = this.bus.requestRpcSync<
+					{ stream: import("stream").Readable; track: Track; inputType?: import("@discordjs/voice").StreamType },
+					AudioResource
+				>("resource.create", {
+					stream: streamToPlay,
 					track: promoted.track,
+					inputType: streamInfo.inputType,
 				});
 				session.setResource(resource);
 				this.o.playbackController?.play(resource, session);
@@ -207,16 +213,44 @@ export class PlaybackOrchestrator {
 				await this.skip(context);
 				return this.session?.track !== null && this.session?.track !== undefined;
 			}
-			const tracks: Track[] =
-				typeof query === "string" ?
-					(
-						await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>("search", {
-							query,
-							requestedBy: requestedBy || "Unknown",
-						})
-					).tracks
-				: "tracks" in query ? query.tracks
-				: [query];
+
+			/*
+			 * Normalize play input:
+			 *
+			 * string
+			 *   -> search
+			 *   -> SearchResult
+			 *
+			 * Track
+			 *   -> single track
+			 *
+			 * SearchResult
+			 *   -> playlist     => import all tracks
+			 *   -> normal search => import track 0 only
+			 */
+			let tracks: Track[];
+
+			if (typeof query === "string") {
+				const result = await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>("search", {
+					query,
+					requestedBy: requestedBy || "Unknown",
+				});
+
+				if (result.playlist) {
+					tracks = result.tracks;
+				} else {
+					tracks = result.tracks.slice(0, 1);
+				}
+			} else if ("tracks" in query) {
+				if (query.playlist) {
+					tracks = query.tracks;
+				} else {
+					tracks = query.tracks.slice(0, 1);
+				}
+			} else {
+				tracks = [query];
+			}
+
 			if (tracks.length === 0 || rpcContext.signal.aborted) return false;
 			if (tracks.length === 1 && player.options.tts?.interrupt !== false && this.o.ttsController?.isTTS(tracks[0])) {
 				await this.o.ttsController.play(tracks[0]);
@@ -475,6 +509,16 @@ export class PlaybackOrchestrator {
 		if (oldSession && context.sessionId && oldSession.sessionId !== context.sessionId) return;
 		this.trackEndTransition = true;
 		try {
+			let next = await this.nextThroughBus(true, context);
+			if (!next && this.o.queueController?.autoPlay && oldSession) {
+				const candidate = await this.prepareAutoplay(oldSession, context);
+				if (candidate) {
+					this.o.queueController.clearWillNext();
+					if (!this.o.queueController.nextTrack) this.o.queueController.add(candidate);
+					next = await this.nextThroughBus(true, context);
+				}
+			}
+
 			if (oldSession?.isActive()) {
 				const endedSnapshot = oldSession.snapshot();
 				this.bus.event({
@@ -484,7 +528,6 @@ export class PlaybackOrchestrator {
 
 				oldSession.markEnded();
 			}
-			const next = await this.nextThroughBus(true, context);
 
 			if (!next) {
 				this.stopPlayback(context.signal);

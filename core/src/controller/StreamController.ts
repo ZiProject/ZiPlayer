@@ -1,4 +1,4 @@
-import { createAudioResource, type AudioResource, type StreamType } from "@discordjs/voice";
+import type { AudioResource, StreamType } from "@discordjs/voice";
 import type { StreamInfo, Track, ActiveStream, StreamControllerOptions, PlayerAction } from "../types";
 import { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
@@ -107,16 +107,6 @@ export class StreamController {
 		stream.once("error", cleanup);
 		session.signal.addEventListener("abort", () => this.abort(active), { once: true });
 		return active;
-	}
-	/** Creates a silent resource; PlaybackController applies the target gain before playback. */
-	createResource(stream: Readable, track?: Track, inputType?: StreamType): AudioResource {
-		const resource = createAudioResource(stream, {
-			metadata: track ?? null,
-			inlineVolume: true,
-			...(inputType ? { inputType } : {}),
-		});
-		resource.volume?.setVolume(0);
-		return resource;
 	}
 	abortCurrent() {
 		if (this.active) this.abort(this.active);

@@ -278,3 +278,47 @@ test("PlayerBus materializes seek and queueEnd public events", () => {
 	assert.equal(events[1].type, "queueEnd");
 	bus.dispose();
 });
+
+test("PreloadManager manages StreamInfo directly without AudioResource and preserves stream metadata on promotion", async () => {
+	const { PreloadManager, StreamManager } = require("../core/dist");
+	const { Readable } = require("stream");
+
+	const streamManager = new StreamManager();
+	const trackB = { id: "track-b", title: "Track B", duration: 200000 };
+	const sourceStream = new Readable({ read() {} });
+
+	let streamRequested = false;
+	const preloadManager = new PreloadManager({
+		streamManager,
+		debug: () => {},
+		getNextTrack: () => trackB,
+		getStream: async () => {
+			streamRequested = true;
+			return { stream: sourceStream, type: "webm/opus", inputType: 1 };
+		},
+		isDestroyed: () => false,
+		isEnabled: () => true,
+	});
+
+	await preloadManager.preloadNextTrack();
+	assert.ok(streamRequested);
+	assert.ok(preloadManager.hasValidPreload(trackB));
+
+	// Preloaded stream should NOT be in flowing mode (not drained by StreamManager data counter)
+	assert.notEqual(sourceStream.readableFlowing, true);
+
+	// Promote preloaded track
+	const promoted = preloadManager.takePreloaded(trackB);
+	assert.ok(promoted);
+	assert.equal(promoted.track, trackB);
+	assert.equal(promoted.stream, sourceStream);
+	assert.equal(promoted.streamInfo?.type, "webm/opus");
+	assert.equal(promoted.streamInfo?.inputType, 1);
+
+	// Preload slot should now be empty and not valid
+	assert.equal(preloadManager.hasValidPreload(trackB), false);
+
+	preloadManager.dispose();
+	streamManager.dispose();
+});
+

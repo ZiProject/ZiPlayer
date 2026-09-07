@@ -1,4 +1,3 @@
-import { createAudioResource } from "@discordjs/voice";
 import type { Track, StreamInfo, StreamSlot } from "../types";
 import type { StreamManager } from "./StreamManager";
 interface PreloadManagerDeps {
@@ -13,6 +12,7 @@ interface PreloadManagerDeps {
 export interface PromotedPreload {
 	track: Track;
 	stream: NodeJS.ReadableStream;
+	streamInfo?: StreamInfo;
 	streamId: string | null;
 }
 export class PreloadManager {
@@ -26,7 +26,7 @@ export class PreloadManager {
 	private preloadLock = false;
 	private preloadNext = false;
 	private readonly preloadSlot: StreamSlot = {
-		resource: null,
+		streamInfo: null,
 		track: null,
 		streamId: null,
 		processedStreamId: null,
@@ -51,29 +51,31 @@ export class PreloadManager {
 		return a.url === b.url && a.url !== undefined;
 	}
 	public hasValidPreload(track: Track): boolean {
+		const stream = this.preloadSlot.streamInfo?.stream;
+		const isStreamAlive = !stream || (!stream.destroyed && (stream as any).readable !== false);
 		return !!(
 			this.preloadSlot.isValid &&
 			this.trackMatches(this.preloadSlot.track, track) &&
-			this.preloadSlot.resource &&
-			this.preloadSlot.resource.playStream?.readable !== false
+			this.preloadSlot.streamInfo &&
+			isStreamAlive
 		);
 	}
 	public takePreloaded(track: Track): PromotedPreload | null {
 		if (!this.hasValidPreload(track)) return null;
-		const resource = this.preloadSlot.resource;
-		if (!resource?.playStream) return null;
-		const stream = resource.playStream;
+		const streamInfo = this.preloadSlot.streamInfo;
+		if (!streamInfo) return null;
+		const stream = (streamInfo.stream ?? null) as NodeJS.ReadableStream;
 		const streamId = this.preloadSlot.streamId;
-		if (streamId) this.streamManager.unregisterStream(streamId, false);
+		// Transfer ownership to active playback without unregistering from StreamManager
 		this.debugLog(`[Preload] Promoting preloaded track: ${track.title} (Stream ID: ${streamId ?? "none"})`);
-		this.preloadSlot.resource = null;
+		this.preloadSlot.streamInfo = null;
 		this.preloadSlot.track = null;
 		this.preloadSlot.streamId = null;
 		this.preloadSlot.abortController = null;
 		this.preloadSlot.isValid = false;
 		this.preloadSlot.isLoading = false;
 		this.preloadSlot.loadPromise = null;
-		return { track, stream, streamId };
+		return { track, stream, streamInfo, streamId };
 	}
 	public async preloadNextTrack(): Promise<void> {
 		if (this.isDestroyed()) return;
@@ -128,16 +130,13 @@ export class PreloadManager {
 		if (this.preloadNext && !this.isDestroyed() && this.isEnabled()) await this.preloadNextTrack();
 	}
 	public async safeCancelPreload(): Promise<void> {
-		if (!this.preloadSlot.abortController && !this.preloadSlot.resource && !this.preloadSlot.streamId) return;
+		if (!this.preloadSlot.abortController && !this.preloadSlot.streamInfo && !this.preloadSlot.streamId) return;
 		this.debugLog(`[Preload] Safely cancelling preload for: ${this.preloadSlot.track?.title || "unknown"}`);
 		this.preloadSlot.abortController?.abort();
 		this.preloadSlot.abortController = null;
 		if (this.preloadSlot.streamId) this.streamManager.unregisterStream(this.preloadSlot.streamId, true);
-		if (this.preloadSlot.resource) {
-			try {
-				const stream = this.preloadSlot.resource.playStream;
-				if (stream && typeof stream.destroy === "function" && !stream.destroyed) stream.destroy();
-			} catch {}
+		if (this.preloadSlot.streamInfo) {
+			this.destroyStreamInfo(this.preloadSlot.streamInfo);
 		}
 		this.clearPreloadSlot();
 	}
@@ -147,14 +146,11 @@ export class PreloadManager {
 		this.clearPreloadSlot();
 	}
 	public clearPreloadSlot(): void {
-		if (this.preloadSlot.resource) {
-			try {
-				const stream = this.preloadSlot.resource.playStream;
-				if (stream && typeof stream.destroy === "function" && !stream.destroyed) stream.destroy();
-			} catch {}
+		if (this.preloadSlot.streamInfo) {
+			this.destroyStreamInfo(this.preloadSlot.streamInfo);
 		}
 		if (this.preloadSlot.streamId) this.streamManager.unregisterStream(this.preloadSlot.streamId, true);
-		this.preloadSlot.resource = null;
+		this.preloadSlot.streamInfo = null;
 		this.preloadSlot.track = null;
 		this.preloadSlot.streamId = null;
 		this.preloadSlot.abortController = null;
@@ -190,38 +186,40 @@ export class PreloadManager {
 			if (this.removeTrackFromQueue?.(track)) this.debugLog(`[Preload] Removed unplayable track from queue: ${track.title}`);
 			throw new Error("No stream available");
 		}
-		const streamId =
-			streamInfo.stream ?
-				this.streamManager.registerStream(streamInfo.stream, track, {
-					source: track.source || "preload",
-					isPreload: true,
-					priority: 5,
-				})
-			:	null;
-		this.preloadSlot.streamId = streamId;
-		try {
-			const preloadInput = streamInfo.stream || streamInfo.url || (await streamInfo.recreate!(0));
-			const resource = createAudioResource(preloadInput, {
-				inlineVolume: true,
-				metadata: { ...track, preloaded: true },
+
+		// If recreate is present without stream, pre-warm by resolving stream
+		if (!streamInfo.stream && streamInfo.recreate) {
+			try {
+				streamInfo.stream = await streamInfo.recreate(0);
+			} catch {}
+		}
+
+		let streamId: string | null = null;
+		if (streamInfo.stream) {
+			streamId = this.streamManager.registerStream(streamInfo.stream, track, {
+				source: track.source || "preload",
+				isPreload: true,
+				priority: 5,
 			});
-			resource.volume?.setVolume(0);
-			if (abortController.signal.aborted || this.isDestroyed()) {
-				try {
-					resource.playStream?.destroy?.();
-				} catch {}
-				throw new Error("PRELOAD_CANCELLED");
-			}
-			if (!resource.playStream || resource.playStream.readable === false) throw new Error("Resource not readable");
-			this.preloadSlot.resource = resource;
-			this.preloadSlot.isValid = true;
-			this.preloadSlot.track = track;
-			this.debugLog(`[Preload] Successfully preloaded: ${track.title} (Stream ID: ${streamId})`);
-		} catch (error) {
+		}
+		this.preloadSlot.streamId = streamId;
+
+		if (abortController.signal.aborted || this.isDestroyed()) {
+			this.destroyStreamInfo(streamInfo);
+			if (streamId) this.streamManager.unregisterStream(streamId, true);
+			throw new Error("PRELOAD_CANCELLED");
+		}
+
+		if (streamInfo.stream && (streamInfo.stream.destroyed || (streamInfo.stream as any).readable === false)) {
 			if (streamId) this.streamManager.unregisterStream(streamId, true);
 			this.preloadSlot.streamId = null;
-			throw error;
+			throw new Error("Resource not readable");
 		}
+
+		this.preloadSlot.streamInfo = streamInfo;
+		this.preloadSlot.isValid = true;
+		this.preloadSlot.track = track;
+		this.debugLog(`[Preload] Successfully preloaded: ${track.title} (Stream ID: ${streamId})`);
 	}
 	private destroyStreamInfo(streamInfo: StreamInfo | null): void {
 		const stream = streamInfo?.stream;

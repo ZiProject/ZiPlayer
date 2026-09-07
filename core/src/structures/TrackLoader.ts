@@ -59,7 +59,7 @@ export class TrackLoader {
 				this.debugLog(`[TrackLoader] Using preloaded stream for: ${track.title}`);
 				return {
 					track,
-					stream: { stream: preload.stream as any, type: "arbitrary" },
+					stream: preload.streamInfo ?? { stream: preload.stream as any, type: "arbitrary" },
 					sessionId: session.id,
 					retry: 0,
 					usedFallback: false,

@@ -56,6 +56,9 @@ export class StreamManager extends EventEmitter {
 					...metadata,
 				};
 				this.debug(`Stream already managed, reusing ID: ${existing.id}`);
+				if (!existing.metadata.isPreload && !(existing as any).dataListener) {
+					this.setupDataCounter(existing);
+				}
 				return existing.id;
 			}
 		}
@@ -197,10 +200,13 @@ export class StreamManager extends EventEmitter {
 	 * Setup data counter for stream
 	 */
 	private setupDataCounter(managed: ManagedStream): void {
-		let dataListener: (chunk: Buffer) => void;
+		// Do not attach 'data' listener to preloaded streams because stream.on('data')
+		// switches a paused Readable into flowing mode, draining audio before playback.
+		if (managed.metadata.isPreload) return;
 
-		if (managed.stream.readable) {
-			dataListener = (chunk: Buffer) => {
+		const attach = () => {
+			if ((managed as any).dataListener || !managed.stream.readable) return;
+			const dataListener = (chunk: Buffer) => {
 				managed.byteCount += chunk.length;
 				if (this.options.enableMetrics) {
 					this.metrics.totalBytesProcessed += chunk.length;
@@ -218,9 +224,13 @@ export class StreamManager extends EventEmitter {
 			};
 
 			managed.stream.on("data", dataListener);
-
-			// Store data listener for cleanup
 			(managed as any).dataListener = dataListener;
+		};
+
+		if ((managed.stream as any)._readableState?.flowing === true) {
+			attach();
+		} else {
+			managed.stream.once("pipe", attach);
 		}
 	}
 

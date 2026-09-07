@@ -227,10 +227,11 @@ export interface PlayerStats {
 }
 
 export interface StreamSlot {
-	resource: AudioResource | null;
+	resource?: AudioResource | null;
+	streamInfo?: StreamInfo | null;
 	track: Track | null;
 	streamId: string | null;
-	processedStreamId: string | null;
+	processedStreamId?: string | null;
 	abortController: AbortController | null;
 	isValid: boolean;
 	isLoading: boolean;

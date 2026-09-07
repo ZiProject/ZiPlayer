@@ -285,7 +285,7 @@ export interface PlayerRpcMap {
 	"preload.clear": { request: undefined; response: void };
 	"preload.promote": {
 		request: { track: Track };
-		response: { track: Track; stream: Readable; streamId: string | null } | null;
+		response: { track: Track; stream: Readable; streamInfo?: StreamInfo; streamId: string | null } | null;
 	};
 	"plugin.add": { request: { plugin: BasePlugin }; response: void };
 	"plugin.remove": { request: { name: string }; response: boolean };
