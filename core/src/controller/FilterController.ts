@@ -6,11 +6,12 @@ import ffmpegStaticPath from "ffmpeg-static";
 import type { PlayerBus, PlayerAction } from "../structures/PlayerBus";
 import { StreamType } from "@discordjs/voice";
 import fs from "node:fs";
+import { NativePCMFilter, canUseNativePCM } from "./NativePCMFilter";
 
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 
 export interface FilterControllerOptions {
-	/** Explicit FFmpeg executable path. Falls back to FFMPEG_PATH, ffmpeg-static, then PATH. */
+	/** Explicit FFmpeg executable path used only for encoded/unsupported sources. */
 	ffmpegPath?: string | null;
 	/** Maximum time to wait for FFmpeg to emit the first seek output bytes. */
 	seekStartupTimeoutMs?: number;
@@ -28,6 +29,7 @@ export class FilterController {
 	private ffmpegAbortController: AbortController | null = null;
 	private ffmpegGeneration = 0;
 	private seekStartupTimer: ReturnType<typeof setTimeout> | null = null;
+	private nativePCM: NativePCMFilter | null = null;
 	private lastFilteredStream: StreamInfo | null = null;
 	private readonly detachAction?: () => void;
 	private readonly detachQueries: Array<() => void> = [];
@@ -69,9 +71,20 @@ export class FilterController {
 		this.detachAction?.();
 		for (const detach of this.detachQueries.splice(0)) detach();
 		this.activeFilters = [];
+		this.teardownNativePCM();
 		this.teardownFFmpeg();
 		this.currentInputStream = null;
 		this.lastFilteredStream = null;
+	}
+
+	private teardownNativePCM(): void {
+		const native = this.nativePCM;
+		this.nativePCM = null;
+		if (native) {
+			try {
+				native.destroy();
+			} catch {}
+		}
 	}
 
 	private teardownFFmpeg(): void {
@@ -117,6 +130,18 @@ export class FilterController {
 		return typeof filter === "string" ? PREDEFINED_FILTERS[filter] : filter;
 	}
 
+	private nativeFilterUpdate(): boolean {
+		if (!this.nativePCM) return false;
+		if (!canUseNativePCM(this.activeFilters)) return false;
+		try {
+			this.nativePCM.setFilters(this.activeFilters);
+			return true;
+		} catch (error) {
+			this.debug(`Native DSP filter update failed: ${(error as Error).message}`);
+			return false;
+		}
+	}
+
 	public async applyFilter(filter?: string | AudioFilter): Promise<boolean> {
 		if (!filter) return false;
 		const audioFilter = this.resolveFilter(filter);
@@ -124,6 +149,8 @@ export class FilterController {
 		this.activeFilters.push(audioFilter);
 		this.options.onFilterApplied?.(audioFilter);
 		this.debug(`Applied filter: ${audioFilter.name} - ${audioFilter.description}`);
+		if (this.nativePCM && this.nativeFilterUpdate()) return true;
+		if (this.nativePCM) this.teardownNativePCM();
 		return this.refreshPlayerResource();
 	}
 
@@ -142,6 +169,8 @@ export class FilterController {
 			changed = true;
 		}
 		if (!changed) return allApplied;
+		if (this.nativePCM && this.nativeFilterUpdate()) return allApplied;
+		if (this.nativePCM) this.teardownNativePCM();
 		return allApplied && (await this.refreshPlayerResource());
 	}
 
@@ -151,6 +180,8 @@ export class FilterController {
 		const removed = this.activeFilters.splice(index, 1)[0];
 		this.options.onFilterRemoved?.(removed);
 		this.debug(`Removed filter: ${filterName}`);
+		if (this.nativePCM && this.nativeFilterUpdate()) return true;
+		if (this.nativePCM) this.teardownNativePCM();
 		return this.refreshPlayerResource();
 	}
 
@@ -159,6 +190,8 @@ export class FilterController {
 		this.activeFilters = [];
 		if (count > 0) this.options.onFiltersCleared?.();
 		this.debug(`Cleared ${count} filters`);
+		if (this.nativePCM && this.nativeFilterUpdate()) return true;
+		if (this.nativePCM) this.teardownNativePCM();
 		return this.refreshPlayerResource();
 	}
 
@@ -171,7 +204,36 @@ export class FilterController {
 		return this.resourcePort?.refreshPlayerResource() ?? Promise.resolve(false);
 	}
 
+	private async applyNativePCM(streamInfo: StreamInfo, source: Readable, hasSeek: boolean, position: number): Promise<StreamInfo & { wasRecreated?: boolean }> {
+		if (!canUseNativePCM(this.activeFilters)) throw new Error("active filter set is not supported by native DSP");
+		if (hasSeek && !streamInfo.recreate && position > 0) {
+			throw new Error("Cannot seek a raw PCM stream without a seek-capable resolver");
+		}
+		this.teardownNativePCM();
+		const native = new NativePCMFilter(this.activeFilters);
+		this.nativePCM = native;
+		this.currentInputStream = source;
+		source.pipe(native);
+		native.once("error", (error) => {
+			if (this.nativePCM === native) {
+				this.debug(`Native DSP processing failed: ${error.message}`);
+				this.nativePCM = null;
+				this.options.onProcessingError?.(error);
+			}
+		});
+		const result = {
+			...streamInfo,
+			stream: native,
+			url: undefined,
+			inputType: StreamType.Raw,
+			wasRecreated: hasSeek,
+		};
+		this.lastFilteredStream = result;
+		return result;
+	}
+
 	public async applyFiltersAndSeek(streamInfo: StreamInfo, position = -1): Promise<StreamInfo & { wasRecreated?: boolean }> {
+		this.teardownNativePCM();
 		this.teardownFFmpeg();
 		const generation = ++this.ffmpegGeneration;
 		const hasSeek = position >= 0;
@@ -180,19 +242,18 @@ export class FilterController {
 			const recreated = await streamInfo.recreate(position);
 			if (generation !== this.ffmpegGeneration) {
 				recreated.destroy();
-				throw new Error("FFmpeg generation outdated");
+				throw new Error("Filter processing generation outdated");
 			}
 			if (!recreated) throw new Error("Stream recreation returned no stream");
+			if (streamInfo.inputType === StreamType.Raw && canUseNativePCM(this.activeFilters)) {
+				return this.applyNativePCM(streamInfo, recreated, true, position);
+			}
 			const result = { ...streamInfo, stream: recreated, url: undefined, inputType: StreamType.Arbitrary, wasRecreated: true };
 			this.currentInputStream = recreated;
 			this.lastFilteredStream = result;
 			return result;
 		}
 
-		// Prefer a seekable URL when one exists. If the resolver only exposes a
-		// Readable, keep the legacy pipe-based seek path for backwards compatibility.
-		// A pipe cannot seek at the input level, so FFmpeg must receive the stream
-		// from the beginning and seek after input processing, as the old implementation did.
 		const source: Readable | string | null =
 			hasSeek ? streamInfo.url || streamInfo.stream || null : streamInfo.stream || streamInfo.url || null;
 		if (!source) {
@@ -202,8 +263,13 @@ export class FilterController {
 
 		const sourceStream: Readable | string = source;
 		const wasRecreated = false;
-		if (generation !== this.ffmpegGeneration) throw new Error("FFmpeg generation outdated");
+		if (generation !== this.ffmpegGeneration) throw new Error("Filter processing generation outdated");
 		this.currentInputStream = sourceStream;
+
+		if (streamInfo.inputType === StreamType.Raw && typeof sourceStream !== "string" && canUseNativePCM(this.activeFilters)) {
+			return this.applyNativePCM(streamInfo, sourceStream, hasSeek, position);
+		}
+
 		const filterString = this.getFilterString();
 		const ffmpegSeekSeconds = hasSeek ? (position / 1000).toFixed(3) : null;
 		if (!hasSeek && !filterString) {
@@ -220,26 +286,20 @@ export class FilterController {
 				return fs.existsSync(path);
 			}) || "ffmpeg";
 
-		this.debug(`Using FFmpeg: ${executable}`);
-		this.debug(
-			`FFmpeg input: ${typeof sourceStream === "string" ? "seekable URL" : "readable stream"}${hasSeek ? `, seek=${ffmpegSeekSeconds}s` : ""}`,
-		);
-
+		this.debug(`Using FFmpeg compatibility path: ${executable}`);
 		const args = ["-hide_banner", "-loglevel", "error"];
 		if (typeof sourceStream === "string") {
-			// Fast input seek for a real seekable source.
 			if (ffmpegSeekSeconds !== null) args.push("-ss", ffmpegSeekSeconds);
 			args.push("-i", sourceStream);
 		} else {
 			args.push("-i", "pipe:0");
-			// Legacy fallback: the input is a non-seekable pipe, so retain the old
-			// output-side seek instead of rejecting the operation.
 			if (ffmpegSeekSeconds !== null) args.push("-ss", ffmpegSeekSeconds);
 		}
 		if (filterString) args.push("-af", filterString);
 		const inputType = hasSeek ? StreamType.Raw : StreamType.OggOpus;
 		if (hasSeek) args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
 		else args.push("-c:a", "libopus", "-f", "opus", "-ar", "48000", "-ac", "2", "pipe:1");
+
 		const controller = new AbortController();
 		this.ffmpegAbortController = controller;
 		const proc = spawn(executable, args, { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
