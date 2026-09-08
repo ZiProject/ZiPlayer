@@ -304,16 +304,17 @@ export class PlayerRuntimeController {
 		return this.audioPlayer;
 	}
 	public setCurrentTrack(track: Track | null): void {
-		this.queueController?.setCurrentTrack(track);
+		this.bus.requestRpcSync("queue.setCurrent", { track });
 	}
 	public getQueueSnapshot(): Track[] {
 		return this.bus.querySync("queue");
 	}
 	public serializeQueue(): object | undefined {
-		return this.queueController?.toJSON();
+		return this.bus.requestRpcSync("queue.serialize", undefined);
 	}
-	public restoreQueue(state: Parameters<QueueController["fromJSON"]>[0]): void {
-		this.queueController?.fromJSON(state);
+
+	public restoreQueue(state: object): void {
+		this.bus.requestRpcSync("queue.restore", { state });
 	}
 	public getStreamManagerStats(): ReturnType<StreamManager["getStats"]> | undefined {
 		return this.streamManager?.getStats();
@@ -387,7 +388,6 @@ export class PlayerRuntimeController {
 		this.disposables.clear();
 		this.ttsController = null;
 		this.streamManager = null;
-		this.queue = null;
 		this.audioPlayer = null;
 	}
 	private resolveDispose(controller: unknown): (() => void | Promise<void>) | null {

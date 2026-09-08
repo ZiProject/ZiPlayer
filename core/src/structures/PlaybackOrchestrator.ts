@@ -386,7 +386,7 @@ export class PlaybackOrchestrator {
 	private async prepareAutoplay(session: PlaybackSession, context: PlayerMessageContext): Promise<Track | null> {
 		const queue = this.o.queueController;
 		if (!queue?.autoPlay || context.signal.aborted || !this.matchesContext(session, context)) return null;
-		if (queue.loop === "track") {
+		if (queue.loopMode === "track") {
 			queue.clearWillNext();
 			return null;
 		}

@@ -1,8 +1,7 @@
-// Node's built-in test runner
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { Queue, PlayerAction, PlayerBus } = require("../core/dist");
+const { QueueController, PlayerAction, PlayerBus } = require("../core/dist");
 
 function makeTrack(id = "t1", title = "Track 1") {
 	return {
@@ -15,104 +14,163 @@ function makeTrack(id = "t1", title = "Track 1") {
 	};
 }
 
-test("Queue add/remove/size basics", () => {
-	const q = new Queue();
-	assert.equal(q.size, 0);
+function makeQueue() {
+	const bus = new PlayerBus();
+	const queue = new QueueController({ bus });
+	return { bus, queue };
+}
+
+test("QueueController add/remove/size basics", () => {
+	const { queue } = makeQueue();
+
+	assert.equal(queue.size, 0);
+
 	const t1 = makeTrack("a");
-	q.add(t1);
-	assert.equal(q.size, 1);
-	const removed = q.remove(0);
+
+	queue.add(t1);
+
+	assert.equal(queue.size, 1);
+
+	const removed = queue.remove(0);
+
 	assert.deepEqual(removed, t1);
-	assert.equal(q.size, 0);
+	assert.equal(queue.size, 0);
+
+	queue.dispose();
 });
 
-test("Queue next, history and currentTrack", () => {
-	const q = new Queue();
+test("QueueController next, history and currentTrack", () => {
+	const { queue } = makeQueue();
+
 	const t1 = makeTrack("a");
 	const t2 = makeTrack("b");
-	q.addMultiple([t1, t2]);
 
-	assert.equal(q.currentTrack, null);
-	const n1 = q.next();
+	queue.addMultiple([t1, t2]);
+
+	assert.equal(queue.currentTrack, null);
+
+	const n1 = queue.next();
+
 	assert.equal(n1.id, "a");
-	assert.equal(q.currentTrack.id, "a");
+	assert.equal(queue.currentTrack.id, "a");
 
-	const n2 = q.next();
+	const n2 = queue.next();
+
 	assert.equal(n2.id, "b");
-	assert.equal(q.previousTracks.length, 1);
-	assert.equal(q.previousTracks[0].id, "a");
-	assert.equal(q.nextTrack, null);
+	assert.equal(queue.previousTracks.length, 1);
+	assert.equal(queue.previousTracks[0].id, "a");
+	assert.equal(queue.nextTrack, null);
+
+	queue.dispose();
 });
 
-test("Queue restores a cancelled next operation", () => {
-	const q = new Queue();
+test("QueueController restores a cancelled next operation", () => {
+	const { queue } = makeQueue();
+
 	const current = makeTrack("current");
 	const next = makeTrack("next");
-	q.setCurrentTrack(current);
-	q.add(next);
 
-	assert.equal(q.next().id, "next");
-	q.restoreNext(current, next);
+	queue.setCurrentTrack(current);
+	queue.add(next);
 
-	assert.equal(q.currentTrack.id, "current");
-	assert.deepEqual(q.previousTracks, []);
-	assert.equal(q.nextTrack.id, "next");
+	assert.equal(queue.next().id, "next");
+
+	queue.restoreNext(current, next);
+
+	assert.equal(queue.currentTrack.id, "current");
+	assert.deepEqual(queue.previousTracks, []);
+	assert.equal(queue.nextTrack.id, "next");
+
+	queue.dispose();
 });
 
-test("Queue loop track repeats current", () => {
-	const q = new Queue();
+test("QueueController loop track repeats current", () => {
+	const { queue } = makeQueue();
+
 	const t1 = makeTrack("a");
-	q.add(t1);
-	q.loop("track");
-	const n1 = q.next();
+
+	queue.add(t1);
+	queue.loop("track");
+
+	const n1 = queue.next();
 	assert.equal(n1.id, "a");
-	const n2 = q.next();
-	assert.equal(n2.id, "a"); // repeats same track
+
+	const n2 = queue.next();
+	assert.equal(n2.id, "a");
+
+	queue.dispose();
 });
 
-test("Queue loop queue recycles history", () => {
-	const q = new Queue();
+test("QueueController loop queue recycles history", () => {
+	const { queue } = makeQueue();
+
 	const t1 = makeTrack("a");
 	const t2 = makeTrack("b");
-	q.addMultiple([t1, t2]);
-	q.loop("queue");
-	q.next(); // a
-	q.next(); // b
-	const n3 = q.next(); // should recycle to a
+
+	queue.addMultiple([t1, t2]);
+	queue.loop("queue");
+
+	queue.next(); // a
+	queue.next(); // b
+
+	const n3 = queue.next();
+
 	assert.equal(n3.id, "a");
+
+	queue.dispose();
 });
 
-test("Queue shuffle changes order (probabilistic)", () => {
-	const q = new Queue();
+test("QueueController shuffle changes order", () => {
+	const { queue } = makeQueue();
+
 	const ids = Array.from({ length: 10 }, (_, i) => `t${i}`);
-	q.addMultiple(ids.map((id) => makeTrack(id)));
-	const before = q
+
+	queue.addMultiple(ids.map((id) => makeTrack(id)));
+
+	const before = queue
 		.getTracks()
-		.map((t) => t.id)
+		.map((track) => track.id)
 		.join(",");
-	q.shuffle();
-	const after = q
+
+	queue.shuffle();
+
+	const after = queue
 		.getTracks()
-		.map((t) => t.id)
+		.map((track) => track.id)
 		.join(",");
-	// It is possible to be equal, but very unlikely with 10 items
+
+	// Extremely unlikely for a 10-item shuffle to retain
+	// exactly the same order.
 	assert.notEqual(after, before);
+
+	queue.dispose();
 });
 
-test("Queue willNextTrack setter/getter", () => {
-	const q = new Queue();
+test("QueueController willNextTrack setter/getter", () => {
+	const { queue } = makeQueue();
+
 	const t = makeTrack("hint");
-	assert.equal(q.willNextTrack(), null);
-	q.willNextTrack(t);
-	assert.equal(q.willNextTrack().id, "hint");
+
+	assert.equal(queue.willNextTrack(), null);
+
+	queue.willNextTrack(t);
+
+	assert.equal(queue.willNextTrack().id, "hint");
+
+	queue.dispose();
 });
 
-test("Queue restores bounded valid state and matches tracks without ids by URL", () => {
-	const q = new Queue();
-	const original = makeTrack("original");
-	const sameUrl = { ...original, id: undefined };
+test("QueueController restores bounded valid state", () => {
+	const { queue } = makeQueue();
 
-	q.fromJSON({
+	const original = makeTrack("original");
+
+	const sameUrl = {
+		...original,
+		id: undefined,
+	};
+
+	queue.fromJSON({
 		tracks: [sameUrl, null, "invalid"],
 		current: null,
 		history: [original, null],
@@ -120,25 +178,71 @@ test("Queue restores bounded valid state and matches tracks without ids by URL",
 		autoPlay: "yes",
 	});
 
-	assert.equal(q.size, 1);
-	assert.equal(q.indexOf(original), 0);
-	assert.equal(q.previousTracks.length, 1);
-	assert.equal(q.getLoopMode(), "off");
-	assert.equal(q.autoPlay(), false);
+	assert.equal(queue.size, 1);
+	assert.equal(queue.indexOf(original), 0);
+	assert.equal(queue.previousTracks.length, 1);
+	assert.equal(queue.getLoopMode(), "off");
+	assert.equal(queue.autoPlay(), false);
+
+	queue.dispose();
+});
+
+test("QueueController setCurrentTrack routes through PlayerBus", () => {
+	const { bus, queue } = makeQueue();
+
+	const track = makeTrack("current");
+
+	queue.setCurrentTrack(track);
+
+	assert.equal(queue.currentTrack.id, "current");
+	assert.deepEqual(bus.querySync("currentTrack"), track);
+
+	queue.dispose();
+});
+
+test("QueueController serialize/restore routes through PlayerBus", () => {
+	const { bus, queue } = makeQueue();
+
+	const t1 = makeTrack("a");
+	const t2 = makeTrack("b");
+
+	queue.addMultiple([t1, t2]);
+	queue.next();
+
+	const serialized = queue.toJSON();
+
+	assert.ok(serialized);
+	assert.deepEqual(bus.querySync("queueSerialized"), serialized);
+
+	const { queue: restored } = makeQueue();
+
+	restored.fromJSON(serialized);
+
+	assert.equal(restored.size, 1);
+	assert.equal(restored.currentTrack.id, "a");
+	assert.deepEqual(restored.getTracks()[0], t2);
+
+	queue.dispose();
+	restored.dispose();
 });
 
 test("PlayerAction serializes normal actions", async () => {
 	const bus = new PlayerBus();
 	const actionExecutor = new PlayerAction(bus);
 	const order = [];
+
 	bus.onAction(async (action) => {
 		order.push(`${action.type}:start`);
+
 		await new Promise((resolve) => setTimeout(resolve, 5));
+
 		order.push(`${action.type}:end`);
 	});
 
 	await Promise.all([actionExecutor.enqueue({ type: "PLAY" }), actionExecutor.enqueue({ type: "PLAY" })]);
+
 	assert.deepEqual(order, ["PLAY:start", "PLAY:end", "PLAY:start", "PLAY:end"]);
+
 	actionExecutor.dispose();
 });
 
@@ -146,16 +250,24 @@ test("PlayerAction serializes critical actions", async () => {
 	const bus = new PlayerBus();
 	const actionExecutor = new PlayerAction(bus);
 	const order = [];
+
 	bus.onAction(async (action) => {
 		order.push(`${action.type}:start`);
+
 		await new Promise((resolve) => setTimeout(resolve, 5));
+
 		order.push(`${action.type}:end`);
 	});
 
 	const first = actionExecutor.enqueue({ type: "SKIP" });
+
 	await new Promise((resolve) => setTimeout(resolve, 0));
+
 	const second = actionExecutor.enqueue({ type: "STOP" });
+
 	await Promise.all([first, second]);
+
 	assert.deepEqual(order, ["SKIP:start", "SKIP:end", "STOP:start", "STOP:end"]);
+
 	actionExecutor.dispose();
 });
