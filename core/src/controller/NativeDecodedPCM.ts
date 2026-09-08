@@ -18,7 +18,6 @@ async function readEncodedSource(source: EncodedSource): Promise<Buffer> {
         }
         return readFile(source);
     }
-
     const chunks: Buffer[] = [];
     for await (const chunk of source) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     return Buffer.concat(chunks);
@@ -60,17 +59,12 @@ class NativeDecodedReadable extends Readable {
     }
 }
 
-/**
- * First native encoded-source path. The encoded source is buffered once, then
- * miniaudio owns codec decode + PCM seek and NativePCMFilter owns DSP state.
- * This intentionally keeps the decoder/source boundary simple; a callback-backed
- * ma_decoder source can replace the buffering step later without changing the DSP API.
- */
+/** Native encoded source: miniaudio decode/seek -> s16le PCM -> native DSP. */
 export async function createNativeDecodedPCM(
     source: EncodedSource,
-    filters: Parameters<typeof NativePCMFilter>[0] = [],
+    filters: ConstructorParameters<typeof NativePCMFilter>[0] = [],
     positionMs = 0,
-): Promise<Readable> {
+): Promise<NativePCMFilter> {
     const encoded = await readEncodedSource(source);
     const decoded = new NativeDecodedReadable(encoded, positionMs);
     const dsp = new NativePCMFilter(filters);
