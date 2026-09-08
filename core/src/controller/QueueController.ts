@@ -154,18 +154,19 @@ export class QueueController {
 			this.publishChanged();
 			return this.currentTrack;
 		}
-		if (this.currentTrack) {
-			this.history.push(this.currentTrack);
-			if (this.history.length > this.MAX_HISTORY_SIZE) this.history.shift();
+		const current = this.currentTrack;
+		if (current) {
+			this.history.push(current);
+			if (this.history.length > this.MAX_HISTORY_SIZE) {
+				this.history.shift();
+			}
 		}
-		if (ignoreLoop && this.currentTrack && this.tracks[0] === this.currentTrack) this.tracks.shift();
 		let next = this.tracks.shift() ?? null;
-		if (!next && this.loopMode === "queue" && this.history.length > 0 && !ignoreLoop) {
-			this.tracks = [...this.history];
-			this.history = [];
-			next = this.tracks.shift() ?? null;
+		if (!next && this.loopMode === "queue" && !ignoreLoop) {
+			next = this.history.shift() ?? null;
 		}
 		if (!next && this.loopMode === "track" && ignoreLoop) {
+			this.currentTrack = null;
 			this.publishChanged();
 			return null;
 		}
@@ -277,7 +278,8 @@ export class QueueController {
 		return this.tracks.filter(predicate);
 	}
 	public indexOf(identifier: string | Track): number {
-		if (typeof identifier === "string") return this.tracks.findIndex((track) => track.id === identifier || track.url === identifier);
+		if (typeof identifier === "string")
+			return this.tracks.findIndex((track) => track.id === identifier || track.url === identifier);
 		return this.tracks.findIndex(
 			(track) =>
 				(track.id !== undefined && identifier.id !== undefined && track.id === identifier.id) ||
@@ -349,19 +351,27 @@ export class QueueController {
 	}
 	private restoreInternal(state: any): void {
 		if (!state || typeof state !== "object") throw new TypeError("Invalid queue state");
-		const tracks = Array.isArray(state.tracks) ? state.tracks.filter((track: unknown): track is Track => !!track && typeof track === "object") : [];
-		const history = Array.isArray(state.history) ? state.history.filter((track: unknown): track is Track => !!track && typeof track === "object") : [];
+		const tracks =
+			Array.isArray(state.tracks) ?
+				state.tracks.filter((track: unknown): track is Track => !!track && typeof track === "object")
+			:	[];
+		const history =
+			Array.isArray(state.history) ?
+				state.history.filter((track: unknown): track is Track => !!track && typeof track === "object")
+			:	[];
 		this.tracks = tracks.slice(0, this.MAX_QUEUE_SIZE);
 		this.history = history.slice(-this.MAX_HISTORY_SIZE);
-		this.currentTrack = state.current && typeof state.current === "object"
-			? state.current
-			: state.currentTrack && typeof state.currentTrack === "object"
-				? state.currentTrack
-				: null;
+		this.currentTrack =
+			state.current && typeof state.current === "object" ? state.current
+			: state.currentTrack && typeof state.currentTrack === "object" ? state.currentTrack
+			: null;
 		this.willNext = state.willNext && typeof state.willNext === "object" ? state.willNext : null;
-		this.related = Array.isArray(state.relatedTracks)
-			? state.relatedTracks.filter((track: unknown): track is Track => !!track && typeof track === "object").slice(0, this.MAX_QUEUE_SIZE)
-			: [];
+		this.related =
+			Array.isArray(state.relatedTracks) ?
+				state.relatedTracks
+					.filter((track: unknown): track is Track => !!track && typeof track === "object")
+					.slice(0, this.MAX_QUEUE_SIZE)
+			:	[];
 		this.loopMode = state.loopMode === "off" || state.loopMode === "track" || state.loopMode === "queue" ? state.loopMode : "off";
 		this.autoPlayEnabled = state.autoPlay === true;
 		this.publishChanged();
@@ -371,16 +381,15 @@ export class QueueController {
 		try {
 			if (signal.aborted || !this.bus) return false;
 			const tracks =
-				typeof request.query === "string"
-					? (
+				typeof request.query === "string" ?
+					(
 						await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>("search", {
 							query: request.query,
 							requestedBy: request.requestedBy || "Unknown",
 						})
 					).tracks
-					: Array.isArray(request.query)
-						? request.query
-						: [request.query];
+				: Array.isArray(request.query) ? request.query
+				: [request.query];
 			if (!tracks.length) return false;
 			tracks.forEach((track, index) => this.insert(track, (request.index ?? this.tracks.length) + index));
 			return true;
