@@ -21,7 +21,6 @@ import { TTSController } from "../controller/TTSController";
 import { PlayerEventBridge } from "../controller/PlayerEventBridge";
 import { SearchController } from "../controller/SearchController";
 import { PlayerEventDebug } from "../controller/PlayerEventDebug";
-import { Queue } from "./Queue";
 import { StreamManager } from "./StreamManager";
 import { PreloadManager } from "./PreloadManager";
 import { PluginManager } from "../plugins";
@@ -37,7 +36,6 @@ export interface PlayerRuntimeGraph {
 	connectionController: ConnectionController;
 	lifecycleController: LifecycleController;
 	forwardController: ForwardController;
-	queue: Queue;
 	audioPlayer: AudioPlayer;
 	streamManager: StreamManager;
 	preloadManager: PreloadManager;
@@ -63,7 +61,6 @@ export interface PlayerRuntimeGraph {
 /** Composition root and lifecycle owner. It contains no playback workflow. */
 export class PlayerRuntimeController {
 	private disposed = false;
-	private queue: Queue | null = null;
 	private streamManager: StreamManager | null = null;
 	private ttsController: TTSController | null = null;
 	private audioPlayer: AudioPlayer | null = null;
@@ -95,8 +92,7 @@ export class PlayerRuntimeController {
 		const connectionController = new ConnectionController({ guildId, bus: this.bus, audioPlayer, options, debug });
 		const lifecycleController = new LifecycleController({ bus: this.bus, options, debug });
 		const forwardController = new ForwardController(player, { bus: this.bus, debug });
-		const queue = new Queue();
-		this.queue = queue;
+
 		const streamManager = new StreamManager({
 			maxConcurrentStreams: options.maxStreamStore ?? 4,
 			streamTimeout: 5 * 60 * 1000,
@@ -119,21 +115,21 @@ export class PlayerRuntimeController {
 			onEnd: () => player.emit("ttsEnd"),
 		});
 		this.ttsController = ttsController;
-		const queueController = new QueueController({ queue, bus: this.bus });
+		const queueController = new QueueController({ bus: this.bus });
 		const resolver = new TrackResolver({ streamManager, pluginManager, extensionManager });
 		const preloadManager = new PreloadManager({
 			streamManager,
 			debug,
-			getNextTrack: () => (queue.loop() === "track" ? queue.currentTrack : queue.nextTrack),
+			getNextTrack: () => (queueController.loop() === "track" ? queueController.currentTrack : queueController.nextTrack),
 			getStream: (track) => resolver.resolve(track, () => player.destroyed),
 			removeTrackFromQueue: (track) => {
-				const next = queue.nextTrack;
+				const next = queueController.nextTrack;
 				return (
 						next === track ||
 							(next?.id !== undefined && track.id !== undefined && next.id === track.id) ||
 							(next?.url !== undefined && track.url !== undefined && next.url === track.url)
 					) ?
-						queue.remove(0) !== null
+						queueController.remove(0) !== null
 					:	false;
 			},
 			isDestroyed: () => player.destroyed,
@@ -277,7 +273,6 @@ export class PlayerRuntimeController {
 			connectionController,
 			lifecycleController,
 			forwardController,
-			queue,
 			audioPlayer,
 			streamManager,
 			preloadManager,
@@ -309,16 +304,17 @@ export class PlayerRuntimeController {
 		return this.audioPlayer;
 	}
 	public setCurrentTrack(track: Track | null): void {
-		this.queue?.setCurrentTrack(track);
+		this.bus.requestRpcSync("queue.setCurrent", { track });
 	}
 	public getQueueSnapshot(): Track[] {
 		return this.bus.querySync("queue");
 	}
 	public serializeQueue(): object | undefined {
-		return this.queue?.toJSON();
+		return this.bus.requestRpcSync("queue.serialize", undefined);
 	}
-	public restoreQueue(state: Parameters<Queue["fromJSON"]>[0]): void {
-		this.queue?.fromJSON(state);
+
+	public restoreQueue(state: object): void {
+		this.bus.requestRpcSync("queue.restore", { state });
 	}
 	public getStreamManagerStats(): ReturnType<StreamManager["getStats"]> | undefined {
 		return this.streamManager?.getStats();
@@ -392,7 +388,6 @@ export class PlayerRuntimeController {
 		this.disposables.clear();
 		this.ttsController = null;
 		this.streamManager = null;
-		this.queue = null;
 		this.audioPlayer = null;
 	}
 	private resolveDispose(controller: unknown): (() => void | Promise<void>) | null {

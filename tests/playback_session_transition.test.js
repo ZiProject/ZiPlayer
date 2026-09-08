@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { Player, PlayerBus, PlaybackOrchestrator, PlaybackSession, Queue, QueueController, TrackLoader } = require("../core/dist");
+const { Player, PlayerBus, PlaybackOrchestrator, PlaybackSession,QueueController, TrackLoader } = require("../core/dist");
 
 const waitFor = async (predicate) => {
 	for (let attempt = 0; attempt < 50; attempt++) {
@@ -13,7 +13,7 @@ const waitFor = async (predicate) => {
 
 const createOrchestrator = ({ autoPlay, related, relatedResolver, loop = "off", preloadController } = {}) => {
 	const bus = new PlayerBus();
-	const queueController = new QueueController({ queue: new Queue(), bus });
+	const queueController = new QueueController({ bus });
 	const played = [];
 	const trackLoader = {
 		loadWithRecovery: async (track) => ({ track, stream: { stream: null, remote: false } }),

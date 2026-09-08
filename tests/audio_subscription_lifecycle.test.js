@@ -9,7 +9,6 @@ const {
 	StreamController,
 	PlayerBus,
 	PlaybackSession,
-	Queue,
 	QueueController,
 	VolumeController,
 	TransitionController,
@@ -67,8 +66,7 @@ test("ConnectionController ensures subscription on Ready and cleans up on Destro
 
 test("PlaybackOrchestrator.start replaces previous stream through StreamController and passes from/to to playbackController", async () => {
 	const bus = new PlayerBus();
-	const queue = new Queue();
-	const queueController = new QueueController({ queue, bus });
+	const queueController = new QueueController({ bus });
 	const streamController = new StreamController({ bus });
 
 	const trackA = { id: "track-a", title: "Track A", duration: 180000 };

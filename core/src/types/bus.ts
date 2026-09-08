@@ -161,7 +161,6 @@ export type PlayerEventArgsMap = {
 	) ?
 		[]
 	: K extends (
-
 			| "TRACK_LOADING"
 			| "TRACK_LOADED"
 			| "TRACK_STARTED"
@@ -231,10 +230,7 @@ export interface PlayerRpcOptions {
 	priority?: PlayerActionPriority;
 }
 export interface PlayerRpcMap {
-	play: {
-		request: { query: string | Track | SearchResult | null; requestedBy?: string };
-		response: boolean;
-	};
+	play: { request: { query: string | Track | SearchResult | null; requestedBy?: string }; response: boolean };
 	"volume.set": { request: { value: number }; response: number };
 	search: { request: { query: string; requestedBy: string }; response: SearchResult };
 	"search.cache.get": { request: { query: string }; response: SearchResult | null };
@@ -246,13 +242,13 @@ export interface PlayerRpcMap {
 	"queue.shuffle": { request: undefined; response: void };
 	"queue.clear": { request: undefined; response: void };
 	"queue.addMultiple": { request: { tracks: Track[] }; response: number };
-	"queue.insert": {
-		request: { query: string | Track | Track[]; index?: number; requestedBy?: string };
-		response: boolean;
-	};
+	"queue.insert": { request: { query: string | Track | Track[]; index?: number; requestedBy?: string }; response: boolean };
 	"queue.remove": { request: { index: number }; response: Track | null };
 	"queue.loop": { request: { mode: LoopMode }; response: LoopMode };
 	"queue.autoPlay": { request: { enabled: boolean }; response: boolean };
+	"queue.setCurrent": { request: { track: Track | null }; response: void };
+	"queue.serialize": { request: undefined; response: object };
+	"queue.restore": { request: { state: object }; response: void };
 	"playback.destroyCurrentStream": { request: undefined; response: void };
 	"playback.recover": { request: { track: Track; session: unknown }; response: TrackLoadResult };
 	"playback.loadFresh": { request: { track: Track; session: unknown }; response: TrackLoadResult };
@@ -263,30 +259,21 @@ export interface PlayerRpcMap {
 	"forward.health": { request: undefined; response: ForwardHealthStatus };
 	"forward.subscribe": { request: { leader: unknown; options?: { forwardMode?: boolean } }; response: boolean };
 	"forward.unsubscribe": { request: { reason?: string }; response: boolean };
-	"transition.fade": {
-		request: { resource: AudioResource; from: number; to: number; durationMs: number };
-		response: void;
-	};
+	"transition.fade": { request: { resource: AudioResource; from: number; to: number; durationMs: number }; response: void };
 	"transition.fadeIn": { request: { resource: AudioResource; track: Track }; response: void };
 	"transition.fadeOutCurrent": { request: undefined; response: void };
 	"transition.skipAndStop": { request: undefined; response: void };
 	"transition.duration": { request: { from: Track | null; to: Track | null }; response: number };
 	"transition.beatWait": { request: { track: Track | null; positionMs: number }; response: number };
 	"transition.targetVolume": { request: { track: Track | null }; response: number };
-	"resource.create": {
-		request: { stream: Readable; track: Track; inputType?: string };
-		response: AudioResource;
-	};
+	"resource.create": { request: { stream: Readable; track: Track; inputType?: string }; response: AudioResource };
 	"track.middleware": { request: { track: Track }; response: Track };
 	"stream.resolve": { request: { track: Track; fresh?: boolean }; response: StreamInfo | null };
 	"preload.next": { request: undefined; response: void };
 	"preload.cancel": { request: undefined; response: void };
 	"preload.cancelSafe": { request: undefined; response: void };
 	"preload.clear": { request: undefined; response: void };
-	"preload.promote": {
-		request: { track: Track };
-		response: { track: Track; stream: Readable; streamInfo?: StreamInfo; streamId: string | null } | null;
-	};
+	"preload.promote": { request: { track: Track }; response: { track: Track; stream: Readable; streamInfo?: StreamInfo; streamId: string | null } | null };
 	"plugin.add": { request: { plugin: BasePlugin }; response: void };
 	"plugin.remove": { request: { name: string }; response: boolean };
 	"extension.add": { request: { extension: BaseExtension }; response: void };
@@ -301,7 +288,6 @@ export type PlayerRpcHandler<TRequest, TResponse> = (
 	context: PlayerMessageContext,
 ) => TResponse | Promise<TResponse>;
 
-export type PlayerQuery = keyof PlayerQueryMap;
 export interface PlayerQueryMap {
 	currentTrack: Track | null;
 	queueCurrent: Track | null;
@@ -313,6 +299,7 @@ export interface PlayerQueryMap {
 	queueLoop: LoopMode;
 	queueAutoPlay: boolean;
 	relatedTracks: Track[];
+	queueSerialized: object;
 	playbackSession: PlaybackSessionSnapshot | null;
 	currentResource: unknown | null;
 	position: number | null;
@@ -329,6 +316,7 @@ export interface PlayerQueryMap {
 	availablePlugins: BasePlugin[];
 	extensions: BaseExtension[];
 }
+export type PlayerQuery = keyof PlayerQueryMap;
 export type PlayerQueryHandler<K extends PlayerQuery> = () => PlayerQueryMap[K] | Promise<PlayerQueryMap[K]>;
 
 export const SEARCH_RPC_TYPES = {
@@ -339,47 +327,3 @@ export const SEARCH_RPC_TYPES = {
 	cachePurge: "search.cache.purge",
 	debug: "search.debug",
 } as const;
-
-/*
- * Suggested SearchController constructor registrations:
- *
- * detachSearchCacheGet = bus.registerRpc("search.cache.get", ({ query }) =>
- *   this.getCached(query)
- * );
- *
- * detachSearchCacheSet = bus.registerRpc("search.cache.set", ({ query, result }) =>
- *   this.cacheResult(query, result)
- * );
- *
- * detachSearchCacheClear = bus.registerRpc("search.cache.clear", () => {
- *   this.clear();
- * });
- *
- * detachSearchCachePurge = bus.registerRpc("search.cache.purge", () => {
- *   this.purgeStale();
- * });
- *
- * detachSearchDebug = bus.registerRpc("search.debug", ({ query }) =>
- *   this.debug(query)
- * );
- *
- * Keep the existing "search" RPC as-is.
- */
-
-/* -------------------------------------------------------------------------
- * PLAYER BUS — query keys expected by the Player getters.
- * ----------------------------------------------------------------------- */
-
-export const REQUIRED_PLAYER_QUERIES = [
-	"currentTrack",
-	"queue",
-	"isPlaying",
-	"isPaused",
-	"playerState",
-	"volume",
-	"previousTrack",
-	"previousTracks",
-	"availablePlugins",
-	"relatedTracks",
-	"currentResource",
-] as const;

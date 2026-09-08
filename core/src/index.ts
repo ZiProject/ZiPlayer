@@ -1,7 +1,6 @@
 import { PlayerManager, getGlobalManager } from "./structures/PlayerManager";
 
 export { Player } from "./structures/Player";
-export { Queue } from "./structures/Queue";
 export { PlayerManager } from "./structures/PlayerManager";
 export { PlayerBus } from "./structures/PlayerBus";
 export { PlayerAction } from "./structures/PlayerAction";
@@ -12,7 +11,7 @@ export { PlaybackController } from "./controller/PlaybackController";
 export { ConnectionController } from "./controller/ConnectionController";
 export { VolumeController } from "./controller/VolumeController";
 export { StreamController } from "./controller/StreamController";
-export { QueueController } from "./controller/QueueController";
+export { QueueController, QueueController as Queue } from "./controller/QueueController";
 export { AntiStuckController } from "./controller/AntiStuckController";
 export { TransitionController } from "./controller/TransitionController";
 export { PreloadController } from "./controller/PreloadController";
