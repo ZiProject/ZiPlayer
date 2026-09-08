@@ -10,7 +10,7 @@ import { NativePCMFilter } from "./NativePCMFilter";
 const SAMPLE_RATE = 48_000;
 const READ_FRAMES = 16_384;
 
- type DecoderInput = string | Buffer;
+type DecoderInput = string | Buffer;
 type EncodedSource = Readable | DecoderInput;
 
 type ResolvedSource = {
@@ -76,23 +76,33 @@ class NativeDecodedReadable extends Readable {
     private ended = false;
     private reading = false;
     private cleaned = false;
+    private decoderDestroyed = false;
 
     constructor(input: DecoderInput, positionMs: number, cleanup: () => Promise<void>) {
         super({ read() {} });
         this.cleanup = cleanup;
+
+        let decoder: NativeDecoder;
         try {
-            this.decoder = createDecoder(input);
-            if (positionMs > 0) this.decoder.seek(Math.floor((positionMs / 1000) * SAMPLE_RATE));
+            decoder = createDecoder(input);
+            if (positionMs > 0) decoder.seek(Math.floor((positionMs / 1000) * SAMPLE_RATE));
         } catch (error) {
+            try { decoder?.destroy(); } catch {}
             void cleanup();
             throw error;
         }
+        this.decoder = decoder;
+
         this.on("close", () => {
-            try {
-                this.decoder.destroy();
-            } catch {}
+            this.destroyDecoder();
             void this.runCleanup();
         });
+    }
+
+    private destroyDecoder(): void {
+        if (this.decoderDestroyed) return;
+        this.decoderDestroyed = true;
+        try { this.decoder.destroy(); } catch {}
     }
 
     private async runCleanup(): Promise<void> {
@@ -102,23 +112,22 @@ class NativeDecodedReadable extends Readable {
     }
 
     public override _read(): void {
-        if (this.reading || this.ended) return;
+        if (this.reading || this.ended || this.destroyed) return;
         this.reading = true;
         try {
-            while (!this.ended) {
+            while (!this.ended && !this.destroyed) {
                 const chunk = this.decoder.read(READ_FRAMES);
                 if (chunk.length === 0) {
                     this.ended = true;
-                    this.decoder.destroy();
+                    this.destroyDecoder();
                     this.push(null);
-                    void this.runCleanup();
                     return;
                 }
                 if (!this.push(chunk)) return;
             }
         } catch (error) {
             this.ended = true;
-            this.decoder.destroy();
+            this.destroyDecoder();
             this.destroy(error as Error);
         } finally {
             this.reading = false;
@@ -141,8 +150,23 @@ export async function createNativeDecodedPCM(
         throw error;
     }
 
-    const dsp = new NativePCMFilter(filters);
-    decoded.pipe(dsp);
+    let dsp: NativePCMFilter;
+    try {
+        dsp = new NativePCMFilter(filters);
+    } catch (error) {
+        decoded.destroy(error as Error);
+        throw error;
+    }
+
+    // A decoder/source error must terminate the DSP side too. Relying on pipe() alone
+    // leaves the destination alive when the source emits an error.
+    decoded.once("error", (error) => {
+        if (!dsp.destroyed) dsp.destroy(error);
+    });
+    decoded.once("close", () => {
+        if (!dsp.destroyed && decoded.errored) dsp.destroy(decoded.errored);
+    });
     dsp.once("close", () => decoded.destroy());
+    decoded.pipe(dsp);
     return dsp;
 }
