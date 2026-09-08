@@ -6,10 +6,7 @@ const SAMPLE_RATE = 48_000;
 const CHANNELS = 2;
 const BYTES_PER_FRAME = CHANNELS * 2; // s16le stereo
 
-/**
- * Native miniaudio-backed DSP for streams that are already raw s16le PCM.
- * Encoded sources still require a decoder before they can enter this path.
- */
+/** Native miniaudio-backed DSP for streams that are already raw s16le PCM. */
 export class NativePCMFilter extends Transform {
 	private readonly dsp: AudioDSP;
 	private pending = Buffer.alloc(0);
@@ -29,25 +26,33 @@ export class NativePCMFilter extends Transform {
 		this.dsp.setMute(false);
 		this.dsp.setPan(0);
 
+		const graphIds: string[] = [];
 		for (const filter of filters) {
+			const id = `native:${filter.name}`;
 			switch (filter.name) {
 				case "bassboost":
-					this.dsp.setBiquad({ type: "lowShelf", frequency: 110, q: 0.707, gain: 10 });
+					this.dsp.addBiquad(id, { type: "lowShelf", frequency: 110, q: 0.707, gain: 10 });
+					graphIds.push(id);
 					break;
 				case "trebleboost":
-					this.dsp.setBiquad({ type: "highShelf", frequency: 3000, q: 0.707, gain: 10 });
+					this.dsp.addBiquad(id, { type: "highShelf", frequency: 3000, q: 0.707, gain: 10 });
+					graphIds.push(id);
 					break;
 				case "lowpass":
-					this.dsp.addBiquad(`native:${filter.name}`, { type: "lowPass", frequency: 3000, q: 0.707 });
+					this.dsp.addBiquad(id, { type: "lowPass", frequency: 3000, q: 0.707 });
+					graphIds.push(id);
 					break;
 				case "highpass":
-					this.dsp.addBiquad(`native:${filter.name}`, { type: "highPass", frequency: 200, q: 0.707 });
+					this.dsp.addBiquad(id, { type: "highPass", frequency: 200, q: 0.707 });
+					graphIds.push(id);
 					break;
 				case "bandpass":
-					this.dsp.addBiquad(`native:${filter.name}`, { type: "bandPass", frequency: 1000, q: 1 });
+					this.dsp.addBiquad(id, { type: "bandPass", frequency: 1000, q: 1 });
+					graphIds.push(id);
 					break;
 				case "equalizer":
-					this.dsp.addEQ(`native:${filter.name}`, [{ type: "peaking", frequency: 1000, q: 0.707, gain: 5 }]);
+					this.dsp.addEQ(id, [{ type: "peaking", frequency: 1000, q: 0.707, gain: 5 }]);
+					graphIds.push(id);
 					break;
 				case "limiter":
 					this.dsp.setLimiter({ threshold: -1, release: 50 });
@@ -57,11 +62,7 @@ export class NativePCMFilter extends Transform {
 					break;
 			}
 		}
-		this.dsp.setFilterOrder(
-			filters
-				.filter((filter) => ["lowpass", "highpass", "bandpass", "equalizer"].includes(filter.name))
-				.map((filter) => `native:${filter.name}`),
-		);
+		this.dsp.setFilterOrder(graphIds);
 		this.dsp.resetState();
 	}
 
