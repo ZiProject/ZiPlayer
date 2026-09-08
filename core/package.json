@@ -30,6 +30,7 @@
 	"dependencies": {
 		"@discordjs/voice": "^0.19.2",
 		"@snazzah/davey": "^0.1.12",
+		"@ziji/audio-dsp": "github:zijipia/audio-dsp#main",
 		"discord-api-types": "^0.38.53",
 		"ffmpeg-static": "^5.3.0",
 		"libsodium-wrappers": "^0.8.4",
@@ -43,6 +44,7 @@
 	},
 	"allowScripts": {
 		"ffmpeg-static": true,
+		"@ziji/audio-dsp": true,
 		"esbuild@0.27.7": true
 	}
 }
