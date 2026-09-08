@@ -14,12 +14,12 @@ export class QueueController {
 	private readonly detachQueries: Array<() => void> = [];
 	private readonly detachRpcs: Array<() => void> = [];
 
-	private tracks: Track[] = [];
-	private history: Track[] = [];
-	private currentTrack: Track | null = null;
-	private willNext: Track | null = null;
-	private related: Track[] = [];
-	private loopMode: LoopMode = "off";
+	public tracks: Track[] = [];
+	public history: Track[] = [];
+	public currentTrack: Track | null = null;
+	public willNext: Track | null = null;
+	public related: Track[] = [];
+	public loopMode: LoopMode = "off";
 	private autoPlayEnabled = false;
 
 	public constructor(options: QueueControllerOptions = {}) {
@@ -33,8 +33,8 @@ export class QueueController {
 				this.bus.registerQuery("previousTracks", () => this.previousTracks),
 				this.bus.registerQuery("previousTrack", () => this.previousTracks.at(-1) ?? null),
 				this.bus.registerQuery("willNext", () => this.willNext),
-				this.bus.registerQuery("queueLoop", () => this.loop),
-				this.bus.registerQuery("queueAutoPlay", () => this.autoPlay),
+				this.bus.registerQuery("queueLoop", () => this.loopMode),
+				this.bus.registerQuery("queueAutoPlay", () => this.autoPlayEnabled),
 				this.bus.registerQuery("relatedTracks", () => this.relatedTracks),
 			);
 			this.detachRpcs.push(
@@ -42,7 +42,9 @@ export class QueueController {
 				this.bus.registerRpc<void, void>("queue.shuffle", () => this.shuffle()),
 				this.bus.registerRpc<void, void>("queue.clear", () => this.clear()),
 				this.bus.registerRpc<{ tracks: Track[] }, number>("queue.addMultiple", ({ tracks }) => this.addMultiple(tracks)),
-				this.bus.registerRpc<QueueInsertRequest, boolean>("queue.insert", (request, context) => this.insertRequest(request, context.signal)),
+				this.bus.registerRpc<QueueInsertRequest, boolean>("queue.insert", (request, context) =>
+					this.insertRequest(request, context.signal),
+				),
 				this.bus.registerRpc<{ index: number }, Track | null>("queue.remove", ({ index }) => this.remove(index)),
 				this.bus.registerRpc<{ mode: LoopMode }, LoopMode>("queue.loop", ({ mode }) => this.setLoop(mode)),
 				this.bus.registerRpc<{ enabled: boolean }, boolean>("queue.autoPlay", ({ enabled }) => this.setAutoPlay(enabled)),
@@ -59,14 +61,24 @@ export class QueueController {
 		if (this.loopMode === "track" && this.currentTrack) return this.currentTrack;
 		return this.tracks[0] ?? null;
 	}
-	public get autoPlay(): boolean { return this.autoPlayEnabled; }
-	public get loop(): LoopMode { return this.loopMode; }
-	public get current(): Track | null { return this.currentTrack; }
-	public get previousTracks(): Track[] { return this.history.slice(); }
-	public get tracksList(): Track[] { return this.tracks.slice(); }
-	public get relatedTracks(): Track[] { return this.related.slice(); }
-	public get size(): number { return this.tracks.length; }
-	public get isEmpty(): boolean { return this.tracks.length === 0; }
+	public get current(): Track | null {
+		return this.currentTrack;
+	}
+	public get previousTracks(): Track[] {
+		return this.history.slice();
+	}
+	public get tracksList(): Track[] {
+		return this.tracks.slice();
+	}
+	public get relatedTracks(): Track[] {
+		return this.related.slice();
+	}
+	public get size(): number {
+		return this.tracks.length;
+	}
+	public get isEmpty(): boolean {
+		return this.tracks.length === 0;
+	}
 
 	public add(track: Track): number {
 		this.tracks.push(track);
@@ -161,20 +173,47 @@ export class QueueController {
 		this.autoPlayEnabled = false;
 		this.publishChanged();
 	}
-	public snapshot(): Track[] { return this.tracks.slice(); }
-	public getTracks(): Track[] { return this.snapshot(); }
-	public getTrack(index: number): Track | null { return this.tracks[index] ?? null; }
-	public indexOf(track: Track): number { return this.tracks.indexOf(track); }
-	public has(track: Track): boolean { return this.tracks.includes(track); }
-	public setCurrent(track: Track | null): void { this.currentTrack = track; this.publishChanged(); }
-	public setCurrentTrack(track: Track | null): void { this.setCurrent(track); }
-	public setWillNext(track: Track | null): void { this.willNext = track; this.publishChanged(); }
-	public clearWillNext(): void { this.willNext = null; this.publishChanged(); }
+	public snapshot(): Track[] {
+		return this.tracks.slice();
+	}
+	public getTracks(): Track[] {
+		return this.snapshot();
+	}
+	public getTrack(index: number): Track | null {
+		return this.tracks[index] ?? null;
+	}
+	public indexOf(track: Track): number {
+		return this.tracks.indexOf(track);
+	}
+	public has(track: Track): boolean {
+		return this.tracks.includes(track);
+	}
+	public setCurrent(track: Track | null): void {
+		this.currentTrack = track;
+		this.publishChanged();
+	}
+	public setCurrentTrack(track: Track | null): void {
+		this.setCurrent(track);
+	}
+	public setWillNext(track: Track | null): void {
+		this.willNext = track;
+		this.publishChanged();
+	}
+	public clearWillNext(): void {
+		this.willNext = null;
+		this.publishChanged();
+	}
 	public willNextTrack(track?: Track): Track | null {
-		if (track !== undefined) { this.willNext = track; this.publishChanged(); }
+		if (track !== undefined) {
+			this.willNext = track;
+			this.publishChanged();
+		}
 		return this.willNext;
 	}
-	public setRelated(tracks: Track[]): void { this.related = tracks.slice(); this.publishChanged(); }
+	public setRelated(tracks: Track[]): void {
+		this.related = tracks.slice();
+		this.publishChanged();
+	}
 	public relatedTracksState(tracks?: Track[]): Track[] {
 		if (tracks !== undefined) this.setRelated(tracks);
 		return this.relatedTracks;
@@ -204,24 +243,41 @@ export class QueueController {
 	private async insertRequest(request: QueueInsertRequest, signal: AbortSignal): Promise<boolean> {
 		try {
 			if (signal.aborted || !this.bus) return false;
-			const tracks = typeof request.query === "string"
-				? (await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>("search", {
-					query: request.query, requestedBy: request.requestedBy || "Unknown",
-				}, { signal })).tracks
-				: Array.isArray(request.query) ? request.query : [request.query];
+			const tracks =
+				typeof request.query === "string" ?
+					(
+						await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>(
+							"search",
+							{
+								query: request.query,
+								requestedBy: request.requestedBy || "Unknown",
+							},
+							{ signal },
+						)
+					).tracks
+				: Array.isArray(request.query) ? request.query
+				: [request.query];
 			if (!tracks.length) return false;
 			tracks.forEach((track, index) => this.insert(track, (request.index ?? 0) + index));
 			return true;
-		} catch { return false; }
+		} catch {
+			return false;
+		}
 	}
 	private async handleAction(action: PlayerAction, context: PlayerActionExecutionContext): Promise<void> {
 		if (context.signal.aborted) return;
 		switch (action.type) {
-			case "QUEUE_NEXT": this.next(action.ignoreLoop ?? false); return;
-			case "QUEUE_SET_CURRENT": this.setCurrent(action.track); return;
+			case "QUEUE_NEXT":
+				this.next(action.ignoreLoop ?? false);
+				return;
+			case "QUEUE_SET_CURRENT":
+				this.setCurrent(action.track);
+				return;
 		}
 	}
-	private publishChanged(): void { this.bus?.publish("queueChanged", this.snapshot()); }
+	private publishChanged(): void {
+		this.bus?.publish("queueChanged", this.snapshot());
+	}
 	public dispose(): void {
 		this.detachAction?.();
 		for (const detach of this.detachQueries.splice(0)) detach();
