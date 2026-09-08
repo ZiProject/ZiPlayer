@@ -30,6 +30,7 @@ export class QueueController {
 				this.bus.registerQuery("currentTrack", () => this.current),
 				this.bus.registerQuery("queueCurrent", () => this.current),
 				this.bus.registerQuery("queue", () => this.snapshot()),
+				this.bus.registerQuery("queueSerialized", () => this.toJSON()),
 				this.bus.registerQuery("previousTracks", () => this.previousTracks),
 				this.bus.registerQuery("previousTrack", () => this.previousTracks.at(-1) ?? null),
 				this.bus.registerQuery("willNext", () => this.willNext),
@@ -48,6 +49,9 @@ export class QueueController {
 				this.bus.registerRpc<{ index: number }, Track | null>("queue.remove", ({ index }) => this.remove(index)),
 				this.bus.registerRpc<{ mode: LoopMode }, LoopMode>("queue.loop", ({ mode }) => this.setLoop(mode)),
 				this.bus.registerRpc<{ enabled: boolean }, boolean>("queue.autoPlay", ({ enabled }) => this.setAutoPlay(enabled)),
+				this.bus.registerRpc<{ track: Track | null }, void>("queue.setCurrent", ({ track }) => this.setCurrent(track)),
+				this.bus.registerRpc<void, object>("queue.serialize", () => this.toJSON()),
+				this.bus.registerRpc<{ state: object }, void>("queue.restore", ({ state }) => this.fromJSON(state)),
 				this.bus.registerRpc<{ track: Track | null }, Track | null>("queue.willNext", ({ track }) => {
 					if (track) this.setWillNext(track);
 					else this.clearWillNext();
