@@ -150,8 +150,15 @@ export class TTSController {
 	private waitForIdle(track: Track): Promise<void> {
 		if (this.ttsPlayer.state.status === AudioPlayerStatus.Idle) return Promise.resolve();
 
-		const declaredMs = Number.isFinite(track.duration) && track.duration > 0 ? track.duration : undefined;
-		const idleTimeout = declaredMs ? Math.min(this.maxTimeTts, Math.max(1_000, declaredMs + 1_500)) : this.maxTimeTts;
+		// Track.duration is expressed in seconds by the TTSPlugin. Convert it to
+		// milliseconds before using it as a playback timeout. Treat very small or
+		// invalid values as unknown so a metadata value such as `5` cannot cause a
+		// 1.5s timeout and truncate a multi-second sentence.
+		const declaredSeconds = Number.isFinite(track.duration) && track.duration > 0 ? track.duration : undefined;
+		const declaredMs = declaredSeconds !== undefined ? declaredSeconds * 1_000 : undefined;
+		const idleTimeout = declaredMs
+			? Math.min(this.maxTimeTts, Math.max(1_000, declaredMs + 1_500))
+			: this.maxTimeTts;
 
 		return new Promise((resolve) => {
 			let timer: ReturnType<typeof setTimeout> | null = null;
