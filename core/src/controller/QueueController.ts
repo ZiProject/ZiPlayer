@@ -30,7 +30,7 @@ export class QueueController {
 				this.bus.registerQuery("currentTrack", () => this.current),
 				this.bus.registerQuery("queueCurrent", () => this.current),
 				this.bus.registerQuery("queue", () => this.snapshot()),
-				this.bus.registerQuery("queueSerialized", () => this.toJSON()),
+				this.bus.registerQuery("queueSerialized", () => this.serializeInternal()),
 				this.bus.registerQuery("previousTracks", () => this.previousTracks),
 				this.bus.registerQuery("previousTrack", () => this.previousTracks.at(-1) ?? null),
 				this.bus.registerQuery("willNext", () => this.willNext),
@@ -49,9 +49,9 @@ export class QueueController {
 				this.bus.registerRpc<{ index: number }, Track | null>("queue.remove", ({ index }) => this.remove(index)),
 				this.bus.registerRpc<{ mode: LoopMode }, LoopMode>("queue.loop", ({ mode }) => this.setLoop(mode)),
 				this.bus.registerRpc<{ enabled: boolean }, boolean>("queue.autoPlay", ({ enabled }) => this.setAutoPlay(enabled)),
-				this.bus.registerRpc<{ track: Track | null }, void>("queue.setCurrent", ({ track }) => this.setCurrent(track)),
-				this.bus.registerRpc<void, object>("queue.serialize", () => this.toJSON()),
-				this.bus.registerRpc<{ state: object }, void>("queue.restore", ({ state }) => this.fromJSON(state)),
+				this.bus.registerRpc<{ track: Track | null }, void>("queue.setCurrent", ({ track }) => this.setCurrentInternal(track)),
+				this.bus.registerRpc<void, object>("queue.serialize", () => this.serializeInternal()),
+				this.bus.registerRpc<{ state: object }, void>("queue.restore", ({ state }) => this.restoreInternal(state)),
 				this.bus.registerRpc<{ track: Track | null }, Track | null>("queue.willNext", ({ track }) => {
 					if (track) this.setWillNext(track);
 					else this.clearWillNext();
@@ -193,8 +193,11 @@ export class QueueController {
 		return this.tracks.includes(track);
 	}
 	public setCurrent(track: Track | null): void {
-		this.currentTrack = track;
-		this.publishChanged();
+		if (this.bus) {
+			this.bus.requestRpcSync("queue.setCurrent", { track });
+			return;
+		}
+		this.setCurrentInternal(track);
 	}
 	public setCurrentTrack(track: Track | null): void {
 		this.setCurrent(track);
@@ -223,6 +226,21 @@ export class QueueController {
 		return this.relatedTracks;
 	}
 	public toJSON(): object {
+		return this.bus ? this.bus.requestRpcSync("queue.serialize", undefined) : this.serializeInternal();
+	}
+	public fromJSON(state: any): void {
+		if (this.bus) {
+			this.bus.requestRpcSync("queue.restore", { state });
+			return;
+		}
+		this.restoreInternal(state);
+	}
+
+	private setCurrentInternal(track: Track | null): void {
+		this.currentTrack = track;
+		this.publishChanged();
+	}
+	private serializeInternal(): object {
 		return {
 			tracks: this.tracks,
 			history: this.history,
@@ -233,7 +251,7 @@ export class QueueController {
 			autoPlay: this.autoPlayEnabled,
 		};
 	}
-	public fromJSON(state: any): void {
+	private restoreInternal(state: any): void {
 		this.tracks = Array.isArray(state?.tracks) ? state.tracks.slice() : [];
 		this.history = Array.isArray(state?.history) ? state.history.slice() : [];
 		this.currentTrack = state?.currentTrack ?? null;
@@ -275,7 +293,7 @@ export class QueueController {
 				this.next(action.ignoreLoop ?? false);
 				return;
 			case "QUEUE_SET_CURRENT":
-				this.setCurrent(action.track);
+				this.setCurrentInternal(action.track);
 				return;
 		}
 	}
