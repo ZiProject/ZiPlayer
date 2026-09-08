@@ -82,7 +82,7 @@ class NativeDecodedReadable extends Readable {
         super({ read() {} });
         this.cleanup = cleanup;
 
-        let decoder: NativeDecoder;
+        let decoder: NativeDecoder | null = null;
         try {
             decoder = createDecoder(input);
             if (positionMs > 0) decoder.seek(Math.floor((positionMs / 1000) * SAMPLE_RATE));
@@ -164,7 +164,8 @@ export async function createNativeDecodedPCM(
         if (!dsp.destroyed) dsp.destroy(error);
     });
     decoded.once("close", () => {
-        if (!dsp.destroyed && decoded.errored) dsp.destroy(decoded.errored);
+        const error = decoded.errored;
+        if (!dsp.destroyed && error) dsp.destroy(error);
     });
     dsp.once("close", () => decoded.destroy());
     decoded.pipe(dsp);
