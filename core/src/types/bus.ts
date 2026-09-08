@@ -161,6 +161,7 @@ export type PlayerEventArgsMap = {
 	) ?
 		[]
 	: K extends (
+
 			| "TRACK_LOADING"
 			| "TRACK_LOADED"
 			| "TRACK_STARTED"
@@ -273,7 +274,10 @@ export interface PlayerRpcMap {
 	"preload.cancel": { request: undefined; response: void };
 	"preload.cancelSafe": { request: undefined; response: void };
 	"preload.clear": { request: undefined; response: void };
-	"preload.promote": { request: { track: Track }; response: { track: Track; stream: Readable; streamInfo?: StreamInfo; streamId: string | null } | null };
+	"preload.promote": {
+		request: { track: Track };
+		response: { track: Track; stream: Readable; streamInfo?: StreamInfo; streamId: string | null } | null;
+	};
 	"plugin.add": { request: { plugin: BasePlugin }; response: void };
 	"plugin.remove": { request: { name: string }; response: boolean };
 	"extension.add": { request: { extension: BaseExtension }; response: void };

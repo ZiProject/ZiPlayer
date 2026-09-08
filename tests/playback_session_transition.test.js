@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { Player, PlayerBus, PlaybackOrchestrator, PlaybackSession,QueueController, TrackLoader } = require("../core/dist");
+const { Player, PlayerBus, PlaybackOrchestrator, PlaybackSession, QueueController, TrackLoader } = require("../core/dist");
 
 const waitFor = async (predicate) => {
 	for (let attempt = 0; attempt < 50; attempt++) {

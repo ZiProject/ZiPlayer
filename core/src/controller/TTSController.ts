@@ -156,9 +156,7 @@ export class TTSController {
 		// 1.5s timeout and truncate a multi-second sentence.
 		const declaredSeconds = Number.isFinite(track.duration) && track.duration > 0 ? track.duration : undefined;
 		const declaredMs = declaredSeconds !== undefined ? declaredSeconds * 1_000 : undefined;
-		const idleTimeout = declaredMs
-			? Math.min(this.maxTimeTts, Math.max(1_000, declaredMs + 1_500))
-			: this.maxTimeTts;
+		const idleTimeout = declaredMs ? Math.min(this.maxTimeTts, Math.max(1_000, declaredMs + 1_500)) : this.maxTimeTts;
 
 		return new Promise((resolve) => {
 			let timer: ReturnType<typeof setTimeout> | null = null;
