@@ -11,6 +11,14 @@ import type {
 } from "../types";
 import type { PlaybackSession } from "./PlaybackSession";
 import type { PreloadManager } from "./PreloadManager";
+import type { PlayerBus } from "./PlayerBus";
+
+const TRACK_LOADER_RPC = {
+	load: "trackLoader.load",
+	loadWithRecovery: "trackLoader.loadWithRecovery",
+	resetRecovery: "trackLoader.resetRecovery",
+	getRecoveryCount: "trackLoader.getRecoveryCount",
+} as const;
 
 export class TrackLoader {
 	private readonly middleware: TrackMiddleware[];
@@ -20,6 +28,8 @@ export class TrackLoader {
 	private readonly recovery: Required<TrackRecoveryPolicy>;
 	private readonly qualityController?: TrackAttemptQualityController;
 	private readonly debugLog: (message?: any, ...optionalParams: any[]) => void;
+	private readonly bus?: PlayerBus;
+	private readonly detachRpcs: Array<() => void> = [];
 	private readonly failures = new Map<string, number>();
 	constructor(options: TrackLoaderOptions) {
 		this.middleware = [...(options.middleware ?? [])];
@@ -36,6 +46,19 @@ export class TrackLoader {
 		};
 		this.qualityController = options.qualityController;
 		this.debugLog = options.debug ?? (() => undefined);
+		this.bus = options.bus;
+		if (this.bus) {
+			this.detachRpcs.push(
+				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(TRACK_LOADER_RPC.load, ({ track, session }) =>
+					this.load(track, session),
+				),
+				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(TRACK_LOADER_RPC.loadWithRecovery, ({ track, session }) =>
+					this.loadWithRecovery(track, session),
+				),
+				this.bus.registerRpc<{ track?: Track }, void>(TRACK_LOADER_RPC.resetRecovery, ({ track }) => this.resetRecovery(track)),
+				this.bus.registerRpc<{ track: Track }, number>(TRACK_LOADER_RPC.getRecoveryCount, ({ track }) => this.getRecoveryCount(track)),
+			);
+		}
 	}
 	addResolver(resolver: TrackStreamResolver): () => void {
 		this.resolvers.push(resolver);
@@ -115,6 +138,11 @@ export class TrackLoader {
 	}
 	get recoveryPolicy(): Readonly<Required<TrackRecoveryPolicy>> {
 		return this.recovery;
+	}
+	dispose(): void {
+		for (const detach of this.detachRpcs) detach();
+		this.detachRpcs.length = 0;
+		this.failures.clear();
 	}
 	private async resolve(track: Track, session: PlaybackSession): Promise<StreamInfo> {
 		this.assertActive(session);
