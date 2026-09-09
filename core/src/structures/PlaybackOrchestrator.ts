@@ -27,6 +27,8 @@ export interface PlaybackOrchestratorOptions {
 	trackLoader?: TrackLoader;
 	streamController?: StreamController;
 	filterController?: FilterController;
+	/** @deprecated Playback is controlled through PlayerBus. */
+	playbackController?: unknown;
 	transitionController?: TransitionController;
 	preloadController?: PreloadController;
 	ttsController?: TTSController;
@@ -48,8 +50,11 @@ export class PlaybackOrchestrator {
 
 	constructor(
 		private readonly bus: PlayerBus,
-		private readonly o: PlaybackOrchestratorOptions = {},
+		options: PlaybackOrchestratorOptions = {},
 	) {
+		const { playbackController: _legacyPlaybackController, ...busOptions } = options;
+		void _legacyPlaybackController;
+		this.o = busOptions;
 		this.detachAction = bus.onAction((a, c) => this.handleAction(a, c));
 		this.detachTrackEnd = bus.subscribe("TRACK_END", (event) => {
 			const session = event.session;
@@ -119,6 +124,7 @@ export class PlaybackOrchestrator {
 			}),
 		);
 	}
+	private readonly o!: Omit<PlaybackOrchestratorOptions, "playbackController">;
 	get currentSession() {
 		return this.session;
 	}
