@@ -1,10 +1,13 @@
 /**
- * Internal controller boundary contract.
+ * Internal controller-to-controller RPC boundary.
  *
- * Controllers communicate through PlayerBus RPC/events instead of importing
- * Player or reaching into another controller. Player remains the public API
- * facade; PlayerRuntimeController is only the composition/lifecycle root.
+ * Controllers must not import or retain another controller. They communicate
+ * through PlayerBus using stable capability names. Player remains the public
+ * facade and PlayerRuntimeController remains the composition/lifecycle root.
  */
+import type { PlayerBus } from "../structures/PlayerBus";
+import type { Track } from "../types";
+
 export interface ControllerCommandContext {
 	requestId: string;
 	sessionId?: string;
@@ -16,3 +19,48 @@ export type ControllerCommandHandler<TRequest = unknown, TResponse = unknown> = 
 	request: TRequest,
 	context: ControllerCommandContext,
 ) => TResponse | Promise<TResponse>;
+
+export const CONTROLLER_RPC = {
+	transitionPlan: "controller.transition.plan",
+	transitionBeatWait: "controller.transition.beatWait",
+	volumeTarget: "controller.volume.target",
+} as const;
+
+export interface TransitionPlanRequest {
+	from: Track | null;
+	to: Track | null;
+}
+
+export interface TransitionPlanResponse {
+	enabled: boolean;
+	durationMs: number;
+	waitForBeat: boolean;
+	beatAlignMaxWaitMs: number;
+}
+
+export interface TransitionBeatWaitRequest {
+	track: Track | null;
+	positionMs: number;
+}
+
+export interface VolumeTargetRequest {
+	track?: Track | null;
+}
+
+export function requestTransitionPlan(
+	bus: PlayerBus,
+	request: TransitionPlanRequest,
+): Promise<TransitionPlanResponse> {
+	return bus.requestRpc<TransitionPlanRequest, TransitionPlanResponse>(CONTROLLER_RPC.transitionPlan, request);
+}
+
+export function requestTransitionBeatWait(
+	bus: PlayerBus,
+	request: TransitionBeatWaitRequest,
+): Promise<number> {
+	return bus.requestRpc<TransitionBeatWaitRequest, number>(CONTROLLER_RPC.transitionBeatWait, request);
+}
+
+export function requestVolumeTarget(bus: PlayerBus, request: VolumeTargetRequest): Promise<number> {
+	return bus.requestRpc<VolumeTargetRequest, number>(CONTROLLER_RPC.volumeTarget, request);
+}
