@@ -27,6 +27,12 @@ export const CONTROLLER_RPC = {
 	volumeTarget: "controller.volume.target",
 	volumeSet: "controller.volume.set",
 	antiStuckReport: "controller.antistuck.report",
+	playbackPlay: "controller.playback.play",
+	playbackPause: "controller.playback.pause",
+	playbackResume: "controller.playback.resume",
+	playbackStop: "controller.playback.stop",
+	playbackBeginResourceRefresh: "controller.playback.beginResourceRefresh",
+	playbackEndResourceRefresh: "controller.playback.endResourceRefresh",
 } as const;
 
 export interface TransitionPlanRequest {
