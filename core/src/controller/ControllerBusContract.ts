@@ -24,6 +24,7 @@ export const CONTROLLER_RPC = {
 	transitionPlan: "controller.transition.plan",
 	transitionBeatWait: "controller.transition.beatWait",
 	volumeTarget: "controller.volume.target",
+	volumeSet: "controller.volume.set",
 } as const;
 
 export interface TransitionPlanRequest {
@@ -47,6 +48,10 @@ export interface VolumeTargetRequest {
 	track?: Track | null;
 }
 
+export interface VolumeSetRequest {
+	value: number;
+}
+
 export function requestTransitionPlan(
 	bus: PlayerBus,
 	request: TransitionPlanRequest,
@@ -63,4 +68,8 @@ export function requestTransitionBeatWait(
 
 export function requestVolumeTarget(bus: PlayerBus, request: VolumeTargetRequest): Promise<number> {
 	return bus.requestRpc<VolumeTargetRequest, number>(CONTROLLER_RPC.volumeTarget, request);
+}
+
+export function requestVolumeSet(bus: PlayerBus, request: VolumeSetRequest): Promise<number> {
+	return bus.requestRpc<VolumeSetRequest, number>(CONTROLLER_RPC.volumeSet, request);
 }
