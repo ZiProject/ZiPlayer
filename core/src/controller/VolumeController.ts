@@ -1,7 +1,7 @@
 import type { AudioResource } from "@discordjs/voice";
 import type { PlayerBus, PlayerAction, PlayerActionExecutionContext } from "../structures/PlayerBus";
 import type { Track } from "../types";
-import { CONTROLLER_RPC, type VolumeTargetRequest } from "./ControllerBusContract";
+import { CONTROLLER_RPC, type VolumeTargetRequest, type VolumeSetRequest } from "./ControllerBusContract";
 
 export interface VolumeControllerOptions {
 	initialVolume?: number;
@@ -45,6 +45,7 @@ export class VolumeController {
 		this.detachQueries.push(
 			bus.registerQuery("volume", () => this.value),
 			bus.registerRpc<VolumeTargetRequest, number>(CONTROLLER_RPC.volumeTarget, ({ track }) => this.getTargetVolume(track)),
+			bus.registerRpc<VolumeSetRequest, number>(CONTROLLER_RPC.volumeSet, ({ value }) => this.setVolume(value)),
 		);
 	}
 
