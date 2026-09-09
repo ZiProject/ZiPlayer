@@ -38,6 +38,7 @@ export class QueueController {
 				this.bus.registerQuery("queueLoop", () => this.loopMode),
 				this.bus.registerQuery("queueAutoPlay", () => this.autoPlayEnabled),
 				this.bus.registerQuery("relatedTracks", () => this.relatedTracks),
+				this.bus.registerQuery("queueNextTrack", () => this.nextTrack),
 			);
 			this.detachRpcs.push(
 				this.bus.registerRpc<void, Track | null>("queue.previous", () => this.previous()),
@@ -53,6 +54,10 @@ export class QueueController {
 				this.bus.registerRpc<{ track: Track | null }, void>("queue.setCurrent", ({ track }) => this.setCurrentInternal(track)),
 				this.bus.registerRpc<void, object>("queue.serialize", () => this.serializeInternal()),
 				this.bus.registerRpc<{ state: object }, void>("queue.restore", ({ state }) => this.restoreInternal(state)),
+				this.bus.registerRpc<{ previousCurrent: Track | null; nextTrack: Track | null }, void>(
+					"queue.restoreNext",
+					({ previousCurrent, nextTrack }) => this.restoreNext(previousCurrent, nextTrack),
+				),
 				this.bus.registerRpc<{ track: Track | null }, Track | null>("queue.willNext", ({ track }) => {
 					if (track) this.setWillNext(track);
 					else this.clearWillNext();
