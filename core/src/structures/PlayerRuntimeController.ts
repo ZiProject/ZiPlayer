@@ -256,7 +256,6 @@ export class PlayerRuntimeController {
 			streamController,
 			filterController,
 			playbackController,
-			queueController,
 			transitionController,
 			preloadController,
 			ttsController,
