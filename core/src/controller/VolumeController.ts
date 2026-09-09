@@ -1,6 +1,7 @@
 import type { AudioResource } from "@discordjs/voice";
 import type { PlayerBus, PlayerAction, PlayerActionExecutionContext } from "../structures/PlayerBus";
 import type { Track } from "../types";
+import { CONTROLLER_RPC, type VolumeTargetRequest } from "./ControllerBusContract";
 
 export interface VolumeControllerOptions {
 	initialVolume?: number;
@@ -26,7 +27,7 @@ export class VolumeController {
 	private disposed = false;
 	private activeResourceResolver: (() => ActiveResourceState) | null = null;
 	private readonly detachAction: () => void;
-	private readonly detachQuery: () => void;
+	private readonly detachQueries: Array<() => void> = [];
 
 	constructor(
 		private readonly bus: PlayerBus,
@@ -41,7 +42,10 @@ export class VolumeController {
 			limiterCeiling: Math.min(1, Math.max(0, options.loudness?.limiterCeiling ?? 1)),
 		};
 		this.detachAction = bus.onAction((action, context) => this.handleAction(action, context));
-		this.detachQuery = bus.registerQuery("volume", () => this.value);
+		this.detachQueries.push(
+			bus.registerQuery("volume", () => this.value),
+			bus.registerRpc<VolumeTargetRequest, number>(CONTROLLER_RPC.volumeTarget, ({ track }) => this.getTargetVolume(track)),
+		);
 	}
 
 	private handleAction(action: PlayerAction, context: PlayerActionExecutionContext): void {
@@ -118,7 +122,7 @@ export class VolumeController {
 		this.disposed = true;
 		this.activeResourceResolver = null;
 		this.detachAction();
-		this.detachQuery();
+		for (const detach of this.detachQueries.splice(0)) detach();
 	}
 
 	private clamp(value: number): number {
