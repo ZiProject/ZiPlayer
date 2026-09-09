@@ -31,6 +31,7 @@ export class PreloadController {
 				this.bus.registerRpc<void, void>("preload.cancel", () => this.cancel()),
 				this.bus.registerRpc<void, void>("preload.cancelSafe", () => this.cancelSafely()),
 				this.bus.registerRpc<void, void>("preload.clear", () => this.clear()),
+				this.bus.registerRpc<{ track: Track }, boolean>("preload.has", ({ track }) => this.has(track)),
 				this.bus.registerRpc<{ track: Track }, PromotedPreload | null>("preload.promote", ({ track }) =>
 					this.takePreloaded(track),
 				),
