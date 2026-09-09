@@ -1,5 +1,6 @@
 import type { Track } from "../types";
 import type { PlayerBus } from "../structures/PlayerBus";
+import { CONTROLLER_RPC, type TransitionBeatWaitRequest, type TransitionPlanRequest } from "./ControllerBusContract";
 
 export interface TransitionControllerOptions {
 	enabled?: boolean;
@@ -50,8 +51,17 @@ export class TransitionController {
 				...(options.genreDurations ?? {}),
 			},
 		};
-		if (options.bus)
-			this.detachQueries.push(options.bus.registerQuery("transitionSettings", () => this.settings as Record<string, unknown>));
+		if (options.bus) {
+			this.detachQueries.push(
+				options.bus.registerQuery("transitionSettings", () => this.settings as Record<string, unknown>),
+				options.bus.registerRpc<TransitionPlanRequest, TransitionPlan>(CONTROLLER_RPC.transitionPlan, ({ from, to }) =>
+					this.plan(from, to),
+				),
+				options.bus.registerRpc<TransitionBeatWaitRequest, number>(CONTROLLER_RPC.transitionBeatWait, ({ track, positionMs }) =>
+					this.beatWaitMs(track, positionMs),
+				),
+			);
+		}
 	}
 	public plan(from: Track | null, to: Track | null): TransitionPlan {
 		if (!this.options.enabled || !from || !to)
