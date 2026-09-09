@@ -1,22 +1,30 @@
-import type { AudioResource, StreamType } from "@discordjs/voice";
 import type { StreamInfo, Track, ActiveStream, StreamControllerOptions, PlayerAction } from "../types";
 import { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
 import type { PlayerBus } from "../structures/PlayerBus";
 
+const STREAM_RPC_REPLACE = "controller.stream.replace";
+
 export class StreamController {
 	private active: ActiveStream | null = null;
 	private readonly streamManager?: StreamManager;
 	private readonly bus?: PlayerBus;
 	private readonly detachAction?: () => void;
+	private readonly detachRpcs: Array<() => void> = [];
 	constructor(options: StreamControllerOptions = {}) {
 		this.streamManager = options.streamManager;
 		this.bus = options.bus;
-		if (this.bus)
+		if (this.bus) {
 			this.detachAction = this.bus.onAction((action: PlayerAction, context) => {
 				if (!context.signal.aborted && action.type === "STOP") this.abortCurrent();
 			});
+			this.detachRpcs.push(
+				this.bus.registerRpc<{ streamInfo: StreamInfo; session: PlaybackSession }, ActiveStream>(STREAM_RPC_REPLACE, ({ streamInfo, session }) =>
+					this.replace(streamInfo, session),
+				),
+			);
+		}
 	}
 	get current() {
 		return this.active;
@@ -24,12 +32,10 @@ export class StreamController {
 	async resolve(info: StreamInfo, session: PlaybackSession): Promise<Readable> {
 		if (!session.isActive()) throw this.abortError();
 
-		// 1. stream?: Readable
 		if (info.stream && !info.stream.destroyed && (info.stream as any).readable !== false) {
 			return info.stream;
 		}
 
-		// 2. url?: string
 		if (info.url) {
 			try {
 				if (/^https?:\/\//i.test(info.url)) {
@@ -49,7 +55,6 @@ export class StreamController {
 				throw new Error(`File URL not found: ${info.url}`);
 			} catch (urlError) {
 				if (!session.isActive() || this.isAbortError(urlError)) throw this.abortError();
-				// Fallback to recreate if URL fails and recreate is available
 				if (info.recreate) {
 					const stream = await info.recreate(info.position ?? 0);
 					if (!session.isActive()) {
@@ -62,7 +67,6 @@ export class StreamController {
 			}
 		}
 
-		// 3. recreate?: (position: number) => Promise<Readable>
 		if (info.recreate) {
 			const stream = await info.recreate(info.position ?? 0);
 			if (!session.isActive()) {
@@ -72,7 +76,6 @@ export class StreamController {
 			return stream;
 		}
 
-		// 4. false / fail
 		throw new Error("StreamInfo does not contain a readable stream, url, or recreate factory");
 	}
 	async replace(info: StreamInfo, session: PlaybackSession): Promise<ActiveStream> {
@@ -127,6 +130,8 @@ export class StreamController {
 	}
 	dispose() {
 		this.detachAction?.();
+		for (const detach of this.detachRpcs) detach();
+		this.detachRpcs.length = 0;
 		this.abortCurrent();
 		this.active = null;
 	}
