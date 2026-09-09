@@ -65,6 +65,15 @@ export class PlaybackController {
 				),
 				this.bus.registerRpc<void, void>("transition.fadeOutCurrent", () => this.applyCrossfadeOutCurrent()),
 				this.bus.registerRpc<void, void>("transition.skipAndStop", () => this.crossfadeSkipAndStop()),
+				this.bus.registerRpc<{ resource: AudioResource; session?: PlaybackSession; from?: Track | null; to?: Track }, void>(
+					CONTROLLER_RPC.playbackPlay,
+					({ resource, session, from, to }) => this.play(resource, session, from, to),
+				),
+				this.bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackPause, () => this.pause()),
+				this.bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackResume, () => this.resume()),
+				this.bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackStop, () => this.stop()),
+				this.bus.registerRpc<void, void>(CONTROLLER_RPC.playbackBeginResourceRefresh, () => this.beginResourceRefresh()),
+				this.bus.registerRpc<void, void>(CONTROLLER_RPC.playbackEndResourceRefresh, () => this.endResourceRefresh()),
 			);
 			this.detachQueries.push(
 				this.bus.registerRpc<{ stream: Readable; track: Track; inputType?: StreamType }, AudioResource>(
@@ -259,10 +268,6 @@ export class PlaybackController {
 	public getTrackTargetVolume(track?: Track | null): number {
 		return this.requestVolumeTarget(track);
 	}
-	/**
-	 * Fades the replacement resource in. AudioPlayer owns one active resource,
-	 * so this is a fade transition rather than a true two-source crossfade.
-	 */
 	private fadeTransition(
 		oldResource: AudioResource,
 		newResource: AudioResource,
