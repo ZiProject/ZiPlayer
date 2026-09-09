@@ -16,7 +16,6 @@ import type { Player } from "./Player";
 import type { TrackLoader } from "./TrackLoader";
 import type { StreamController } from "../controller/StreamController";
 import type { FilterController } from "../controller/FilterController";
-import type { TransitionController } from "../controller/TransitionController";
 import type { TTSController } from "../controller/TTSController";
 import type { PromotedPreload } from "./PreloadManager";
 import { CONTROLLER_RPC } from "../controller/ControllerBusContract";
@@ -28,7 +27,6 @@ export interface PlaybackOrchestratorOptions {
 	filterController?: FilterController;
 	/** @deprecated Playback is controlled through PlayerBus. */
 	playbackController?: unknown;
-	transitionController?: TransitionController;
 	ttsController?: TTSController;
 	relatedTrackResolver?: (track: Track, context?: TrackResolveContext) => Promise<Track[] | null | undefined>;
 }
@@ -127,7 +125,11 @@ export class PlaybackOrchestrator {
 		return this.session;
 	}
 	get transitionPolicy() {
-		return this.o.transitionController;
+		return this.bus.querySync("transitionSettings");
+	}
+	private transitionEnabled(): boolean {
+		const settings = this.bus.querySync("transitionSettings");
+		return !!settings && settings.enabled !== false;
 	}
 	private isCurrentSession(sessionId: number): boolean {
 		return !!this.session && this.session.owns(sessionId);
@@ -491,7 +493,7 @@ export class PlaybackOrchestrator {
 	private async start(track: Track, parentContext: PlayerMessageContext, from: Track | null = null) {
 		if (parentContext.signal.aborted) return;
 		const hasPreload = this.bus.requestRpcSync<{ track: Track }, boolean>("preload.has", { track });
-		if (!this.o.transitionController?.enabled) this.stopPlayback(parentContext.signal, !hasPreload);
+		if (!this.transitionEnabled()) this.stopPlayback(parentContext.signal, !hasPreload);
 		if (this.session) {
 			this.session.markStopped();
 			this.session.destroy();
