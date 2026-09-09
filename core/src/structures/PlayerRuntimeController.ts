@@ -256,8 +256,6 @@ export class PlayerRuntimeController {
 			streamController,
 			filterController,
 			playbackController,
-			transitionController,
-			preloadController,
 			ttsController,
 			relatedTrackResolver: (track, ctx) => pluginManager.getRelatedTracks(track, ctx ?? { history: player.previousTracks }),
 		});
@@ -308,7 +306,6 @@ export class PlayerRuntimeController {
 	public serializeQueue(): object | undefined {
 		return this.bus.requestRpcSync("queue.serialize", undefined);
 	}
-
 	public restoreQueue(state: object): void {
 		this.bus.requestRpcSync("queue.restore", { state });
 	}
@@ -344,21 +341,14 @@ export class PlayerRuntimeController {
 			player.connection = null;
 		});
 		if (Array.isArray(options.filters) && options.filters.length > 0)
-			void filterController
-				.applyFilters(options.filters)
-				.catch((error) => debug("[FilterController] Initial filter error:", error));
+			void filterController.applyFilters(options.filters).catch((error) => debug("[FilterController] Initial filter error:", error));
 	}
-
 	private async handleResourceRefresh(event: Extract<PlayerInput, { type: "[Player]->[Resource]:refresh" }>): Promise<void> {
 		try {
 			const session = await this.bus.requestRpc("playback.refreshResource", { position: event.position ?? 0 });
 			this.bus.emitOutput({ type: "[Resource]->[Player]:refreshed", requestId: event.requestId, session });
 		} catch (error) {
-			this.bus.emitOutput({
-				type: "[Resource]->[Player]:error",
-				requestId: event.requestId,
-				error: error instanceof Error ? error : new Error(String(error)),
-			});
+			this.bus.emitOutput({ type: "[Resource]->[Player]:error", requestId: event.requestId, error: error instanceof Error ? error : new Error(String(error)) });
 		}
 	}
 	public monitor(name: string, controller: unknown): void {
@@ -375,11 +365,7 @@ export class PlayerRuntimeController {
 		this.disposed = true;
 		this.errors.length = 0;
 		for (const [name, cleanup] of [...this.disposables.entries()].reverse()) {
-			try {
-				await cleanup();
-			} catch (error) {
-				this.errors.push({ name, error });
-			}
+			try { await cleanup(); } catch (error) { this.errors.push({ name, error }); }
 		}
 		this.disposables.clear();
 		this.ttsController = null;
