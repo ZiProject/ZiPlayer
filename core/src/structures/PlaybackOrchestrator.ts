@@ -17,7 +17,6 @@ import type { TrackLoader } from "./TrackLoader";
 import type { StreamController } from "../controller/StreamController";
 import type { FilterController } from "../controller/FilterController";
 import type { PlaybackController } from "../controller/PlaybackController";
-import type { QueueController } from "../controller/QueueController";
 import type { TransitionController } from "../controller/TransitionController";
 import type { PreloadController } from "../controller/PreloadController";
 import type { TTSController } from "../controller/TTSController";
@@ -29,7 +28,6 @@ export interface PlaybackOrchestratorOptions {
 	streamController?: StreamController;
 	filterController?: FilterController;
 	playbackController?: PlaybackController;
-	queueController?: QueueController;
 	transitionController?: TransitionController;
 	preloadController?: PreloadController;
 	ttsController?: TTSController;
@@ -67,7 +65,7 @@ export class PlaybackOrchestrator {
 		});
 		this.detachQueueChanged = bus.subscribe("queueChanged", () => {
 			if (!this.waitingForQueue || this.trackEndTransition || this.queueStartPromise) return;
-			if (!this.o.queueController?.tracks.length) return;
+			if (!this.queueSnapshot().length) return;
 			this.queueStartPromise = this.startQueuedTrackAfterEnd().finally(() => {
 				this.queueStartPromise = null;
 			});
@@ -130,6 +128,18 @@ export class PlaybackOrchestrator {
 	}
 	private isCurrentSession(sessionId: number): boolean {
 		return !!this.session && this.session.owns(sessionId);
+	}
+	private queueSnapshot(): Track[] {
+		return this.bus.querySync("queue") ?? [];
+	}
+	private queueState(): any {
+		return this.bus.querySync("queueSerialized");
+	}
+	private setQueueRelated(tracks: Track[]): void {
+		const state = this.queueState();
+		if (!state || typeof state !== "object") return;
+		state.relatedTracks = tracks;
+		this.bus.requestRpcSync("queue.restore", { state });
 	}
 	private async refreshResource(position: number, rpcContext: PlayerBusRpcContext): Promise<PlaybackSessionSnapshot> {
 		const session = this.session;
@@ -207,8 +217,8 @@ export class PlaybackOrchestrator {
 		const context: PlayerMessageContext = {
 			requestId: rpcContext.requestId,
 			source: "PlaybackOrchestrator:play",
-			signal: rpcContext.signal,
-			timestamp: rpcContext.timestamp,
+		signal: rpcContext.signal,
+		timestamp: rpcContext.timestamp,
 			priority: PlayerActionPriority.NORMAL,
 		};
 		try {
@@ -314,11 +324,11 @@ export class PlaybackOrchestrator {
 
 	private async nextThroughBus(ignoreLoop: boolean, context: PlayerMessageContext): Promise<Track | null> {
 		if (context.signal.aborted) return null;
-		const previousCurrent = this.o.queueController?.current ?? null;
+		const previousCurrent = this.bus.querySync("queueCurrent") ?? null;
 		await this.bus.action({ type: "QUEUE_NEXT", ignoreLoop, requestId: context.requestId }, context);
 		const next = await this.bus.query("queueCurrent");
 		if (context.signal.aborted) {
-			if (this.o.queueController && next !== previousCurrent) this.o.queueController.restoreNext(previousCurrent, next);
+			await this.bus.requestRpc("queue.restoreNext", { previousCurrent, nextTrack: next });
 			return null;
 		}
 		return next;
@@ -342,16 +352,14 @@ export class PlaybackOrchestrator {
 	}
 
 	private async prepareRelated(session: PlaybackSession, context: PlayerMessageContext): Promise<void> {
-		const queue = this.o.queueController;
 		const source = session.track;
-		if (!queue || !source || context.signal.aborted || !this.matchesContext(session, context) || !this.o.relatedTrackResolver)
-			return;
+		if (!source || context.signal.aborted || !this.matchesContext(session, context) || !this.o.relatedTrackResolver) return;
 		try {
 			let related = (await this.o.relatedTrackResolver(source, { history: this.bus.querySync("previousTracks") })) ?? [];
 			if (context.signal.aborted || !this.matchesContext(session, context)) return;
-			const upcoming = new Set(queue.snapshot().map((track) => track.id ?? track.url));
+			const upcoming = new Set(this.queueSnapshot().map((track) => track.id ?? track.url));
 			related = related.filter((track) => track !== source && !upcoming.has(track.id ?? track.url));
-			queue.setRelated(related);
+			this.setQueueRelated(related);
 		} catch (error) {
 			if (!context.signal.aborted && this.matchesContext(session, context))
 				this.bus.event({
@@ -362,31 +370,29 @@ export class PlaybackOrchestrator {
 		}
 	}
 	private async prepareAutoplay(session: PlaybackSession, context: PlayerMessageContext): Promise<Track | null> {
-		const queue = this.o.queueController;
-		if (!queue || !queue.autoPlay() || context.signal.aborted || !this.matchesContext(session, context)) return null;
-		if (queue.loopMode === "track") {
-			queue.clearWillNext();
+		if (!this.bus.querySync("queueAutoPlay") || context.signal.aborted || !this.matchesContext(session, context)) return null;
+		if (this.bus.querySync("queueLoop") === "track") {
+			this.bus.requestRpcSync("queue.willNext", { track: null });
 			return null;
 		}
-		const related = queue.relatedTracks;
+		const related = (this.bus.querySync("relatedTracks") as Track[] | null) ?? [];
 		if (!related.length) return null;
 		const pool = related.slice(0, Math.min(5, related.length));
-		const next = queue.nextTrack ?? pool[Math.floor(Math.random() * pool.length)];
+		const next = (this.bus.querySync("queueNextTrack") as Track | null) ?? pool[Math.floor(Math.random() * pool.length)];
 		if (!next || !this.matchesContext(session, context)) return null;
 		if (this.o.preloadController) await this.requestPreload(next, context);
 		if (context.signal.aborted || !this.matchesContext(session, context)) return null;
-		queue.setWillNext(next);
+		this.bus.requestRpcSync("queue.willNext", { track: next });
 		return next;
 	}
 	private async prepareTrack(session: PlaybackSession, context: PlayerMessageContext): Promise<void> {
 		await this.prepareRelated(session, context);
-		if (this.o.queueController?.autoPlay()) await this.prepareAutoplay(session, context);
+		if (this.bus.querySync("queueAutoPlay")) await this.prepareAutoplay(session, context);
 	}
 
 	private async startQueuedTrackAfterEnd(): Promise<void> {
 		if (!this.waitingForQueue || this.trackEndTransition) return;
-		const queue = this.o.queueController;
-		if (!queue?.tracks.length) return;
+		if (!this.queueSnapshot().length) return;
 		this.trackEndTransition = true;
 		try {
 			const from = this.session?.track ?? null;
@@ -434,12 +440,12 @@ export class PlaybackOrchestrator {
 				await this.start(next, context, from);
 				return;
 			}
-			if (this.o.queueController?.autoPlay()) {
+			if (this.bus.querySync("queueAutoPlay")) {
 				const candidate = await this.prepareAutoplay(endedSession, context);
 				if (candidate && this.session?.id === snapshot.id && this.session.isActive()) {
 					endedSession.markEnded();
-					this.o.queueController.clearWillNext();
-					if (!this.o.queueController.nextTrack) this.o.queueController.add(candidate);
+					this.bus.requestRpcSync("queue.willNext", { track: null });
+					if (!this.bus.querySync("queueNextTrack")) this.bus.requestRpcSync("queue.addMultiple", { tracks: [candidate] });
 					next = await this.nextThroughBus(false, context);
 					if (next) {
 						this.waitingForQueue = false;
@@ -488,11 +494,11 @@ export class PlaybackOrchestrator {
 		this.trackEndTransition = true;
 		try {
 			let next = await this.nextThroughBus(true, context);
-			if (!next && this.o.queueController?.autoPlay() && oldSession) {
+			if (!next && this.bus.querySync("queueAutoPlay") && oldSession) {
 				const candidate = await this.prepareAutoplay(oldSession, context);
 				if (candidate) {
-					this.o.queueController.clearWillNext();
-					if (!this.o.queueController.nextTrack) this.o.queueController.add(candidate);
+					this.bus.requestRpcSync("queue.willNext", { track: null });
+					if (!this.bus.querySync("queueNextTrack")) this.bus.requestRpcSync("queue.addMultiple", { tracks: [candidate] });
 					next = await this.nextThroughBus(true, context);
 				}
 			}
@@ -529,7 +535,7 @@ export class PlaybackOrchestrator {
 		const context = this.childContext(parentContext, x.sessionId, x.signal);
 		await this.setCurrentThroughBus(track, context);
 		this.bus.event({ type: "TRACK_LOADING", session: x.snapshot() });
-		this.bus.event({ type: "willPlay", track, upcomingTracks: this.o.queueController?.snapshot() ?? [] });
+		this.bus.event({ type: "willPlay", track, upcomingTracks: this.queueSnapshot() });
 		try {
 			const loaded = await this.o.trackLoader?.loadWithRecovery(track, x);
 			if (!loaded) throw new Error("Track loader is unavailable");
