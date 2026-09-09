@@ -16,18 +16,17 @@ import type { Player } from "./Player";
 import type { TrackLoader } from "./TrackLoader";
 import type { StreamController } from "../controller/StreamController";
 import type { FilterController } from "../controller/FilterController";
-import type { PlaybackController } from "../controller/PlaybackController";
 import type { TransitionController } from "../controller/TransitionController";
 import type { PreloadController } from "../controller/PreloadController";
 import type { TTSController } from "../controller/TTSController";
 import type { PromotedPreload } from "./PreloadManager";
+import { CONTROLLER_RPC } from "../controller/ControllerBusContract";
 
 export interface PlaybackOrchestratorOptions {
 	player?: Player;
 	trackLoader?: TrackLoader;
 	streamController?: StreamController;
 	filterController?: FilterController;
-	playbackController?: PlaybackController;
 	transitionController?: TransitionController;
 	preloadController?: PreloadController;
 	ttsController?: TTSController;
@@ -112,7 +111,7 @@ export class PlaybackOrchestrator {
 					inputType: streamInfo.inputType,
 				});
 				session.setResource(resource);
-				this.o.playbackController?.play(resource, session);
+				this.bus.requestRpcSync(CONTROLLER_RPC.playbackPlay, { resource, session });
 				session.markPlaying(0);
 				this.waitingForQueue = false;
 				this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
@@ -144,7 +143,7 @@ export class PlaybackOrchestrator {
 	private async refreshResource(position: number, rpcContext: PlayerBusRpcContext): Promise<PlaybackSessionSnapshot> {
 		const session = this.session;
 		if (!session?.track || !session.isActive()) throw new Error("No active playback session");
-		this.o.playbackController?.beginResourceRefresh();
+		this.bus.requestRpcSync(CONTROLLER_RPC.playbackBeginResourceRefresh);
 		const sessionId = session.id;
 		const refreshSequence = ++this.refreshSequence;
 		this.refreshAbortController?.abort();
@@ -168,7 +167,7 @@ export class PlaybackOrchestrator {
 			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 			const processed = await this.bus.query("filteredStream");
 			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			if (!processed || !this.o.streamController || !this.o.playbackController)
+			if (!processed || !this.o.streamController)
 				throw new Error("Playback resource controllers are unavailable");
 			const active = await this.o.streamController.replace(processed, session);
 			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
@@ -183,12 +182,12 @@ export class PlaybackOrchestrator {
 			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 			session.setResource(resource);
 			session.setPlaybackOffset(Math.max(0, position));
-			this.o.playbackController.play(resource, session);
+			this.bus.requestRpcSync(CONTROLLER_RPC.playbackPlay, { resource, session });
 			session.markPlaying(Math.max(0, position));
 			this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
 			return session.snapshot();
 		} finally {
-			this.o.playbackController?.endResourceRefresh();
+			this.bus.requestRpcSync(CONTROLLER_RPC.playbackEndResourceRefresh);
 		}
 	}
 	dispose() {
@@ -217,8 +216,8 @@ export class PlaybackOrchestrator {
 		const context: PlayerMessageContext = {
 			requestId: rpcContext.requestId,
 			source: "PlaybackOrchestrator:play",
-		signal: rpcContext.signal,
-		timestamp: rpcContext.timestamp,
+			signal: rpcContext.signal,
+			timestamp: rpcContext.timestamp,
 			priority: PlayerActionPriority.NORMAL,
 		};
 		try {
@@ -276,7 +275,7 @@ export class PlaybackOrchestrator {
 				break;
 			case "PAUSE": {
 				const session = this.session;
-				if (session?.isActive() && this.matchesContext(session, context) && this.o.playbackController?.pause()) {
+				if (session?.isActive() && this.matchesContext(session, context) && this.bus.requestRpcSync(CONTROLLER_RPC.playbackPause)) {
 					session.markPaused();
 					this.publishState();
 					this.bus.event({ type: "playerPause", track: session.track });
@@ -285,7 +284,7 @@ export class PlaybackOrchestrator {
 			}
 			case "RESUME": {
 				const session = this.session;
-				if (session?.isActive() && this.matchesContext(session, context) && this.o.playbackController?.resume()) {
+				if (session?.isActive() && this.matchesContext(session, context) && this.bus.requestRpcSync(CONTROLLER_RPC.playbackResume)) {
 					session.markPlaying();
 					this.publishState();
 					this.bus.event({ type: "playerResume", track: session.track });
@@ -318,7 +317,7 @@ export class PlaybackOrchestrator {
 		};
 	}
 	private stopPlayback(_s: AbortSignal, cancelPreload = true) {
-		this.o.playbackController?.stop();
+		this.bus.requestRpcSync(CONTROLLER_RPC.playbackStop);
 		if (cancelPreload) this.o.trackLoader?.cancelPreload();
 	}
 
@@ -569,7 +568,7 @@ export class PlaybackOrchestrator {
 				import("@discordjs/voice").AudioResource
 			>("resource.create", { stream: streamToPlay, track, inputType });
 			x.setResource(resource);
-			this.o.playbackController?.play(resource, x, from, track);
+			this.bus.requestRpcSync(CONTROLLER_RPC.playbackPlay, { resource, session: x, from, to: track });
 			x.markPlaying(0);
 			this.bus.event({ type: "TRACK_STARTED", session: x.snapshot(), track: track ?? x.snapshot().track });
 			await this.prepareTrack(x, context);
