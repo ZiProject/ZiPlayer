@@ -8,10 +8,24 @@ export class TrackResolver {
 	private readonly streamManager: StreamManager;
 	private readonly pluginManager: PluginManager;
 	private readonly extensionManager: ExtensionManager;
+	private readonly isDestroyed: () => boolean;
+	private readonly detachRpcs: Array<() => void> = [];
 	public constructor(options: TrackResolverOptions) {
 		this.streamManager = options.streamManager;
 		this.pluginManager = options.pluginManager;
 		this.extensionManager = options.extensionManager;
+		this.isDestroyed = options.isDestroyed ?? (() => false);
+		if (options.bus) {
+			this.detachRpcs.push(
+				options.bus.registerRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>("stream.resolve", ({ track, fresh }) =>
+					this.resolve(track, this.isDestroyed, { fresh }),
+				),
+			);
+		}
+	}
+
+	dispose(): void {
+		for (const detach of this.detachRpcs.splice(0)) detach();
 	}
 
 	public async resolve(

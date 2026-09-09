@@ -57,6 +57,7 @@ export class TrackLoader {
 				),
 				this.bus.registerRpc<{ track?: Track }, void>(TRACK_LOADER_RPC.resetRecovery, ({ track }) => this.resetRecovery(track)),
 				this.bus.registerRpc<{ track: Track }, number>(TRACK_LOADER_RPC.getRecoveryCount, ({ track }) => this.getRecoveryCount(track)),
+				this.bus.registerRpc<{ track: Track }, Track>("track.middleware", ({ track }) => this.applyMiddleware(track)),
 			);
 		}
 	}

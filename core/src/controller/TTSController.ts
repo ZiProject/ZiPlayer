@@ -4,6 +4,8 @@ import type { Readable } from "stream";
 import type { StreamInfo, Track } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
+import type { PlayerBus } from "../structures/PlayerBus";
+import { CONTROLLER_RPC, type TtsIsTTSRequest, type TtsPlayRequest } from "./ControllerBusContract";
 
 export interface TTSControllerOptions {
 	pluginManager: PluginManager;
@@ -17,6 +19,7 @@ export interface TTSControllerOptions {
 	maxTimeTts?: number;
 	/** TTS output volume, expressed as a percentage (0-100). */
 	volume?: number;
+	bus?: PlayerBus;
 }
 
 /** Owns TTS stream resolution and the independent interrupt playback lifecycle. */
@@ -34,6 +37,7 @@ export class TTSController {
 	private activeResource: AudioResource | null = null;
 	private running: Promise<void> | null = null;
 	private readonly onError: (error: Error) => void;
+	private readonly detachRpcs: Array<() => void> = [];
 
 	constructor(options: TTSControllerOptions) {
 		this.pluginManager = options.pluginManager;
@@ -52,6 +56,13 @@ export class TTSController {
 			this.ttsPlayer.stop(true);
 		};
 		this.ttsPlayer.on("error", this.onError);
+		if (options.bus) {
+			this.detachRpcs.push(
+				options.bus.registerQuery("tts.hasPlayer", () => Boolean(this.ttsPlayer)),
+				options.bus.registerRpc<TtsIsTTSRequest, boolean>(CONTROLLER_RPC.ttsIsTTS, ({ track }) => this.isTTS(track)),
+				options.bus.registerRpc<TtsPlayRequest, void>(CONTROLLER_RPC.ttsPlay, ({ track }) => this.play(track)),
+			);
+		}
 	}
 
 	public setConnection(connection: VoiceConnection | null): void {
@@ -187,6 +198,7 @@ export class TTSController {
 	}
 
 	dispose(): void {
+		for (const detach of this.detachRpcs) detach();
 		this.ttsPlayer.removeListener("error", this.onError);
 		this.ttsPlayer.stop(true);
 		this.activeResource = null;

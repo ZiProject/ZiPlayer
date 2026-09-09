@@ -37,6 +37,8 @@ export const CONTROLLER_RPC = {
 	trackLoadWithRecovery: "controller.track.loadWithRecovery",
 	trackResetRecovery: "controller.track.resetRecovery",
 	trackGetRecoveryCount: "controller.track.getRecoveryCount",
+	ttsIsTTS: "controller.tts.isTTS",
+	ttsPlay: "controller.tts.play",
 } as const;
 
 export interface TransitionPlanRequest {
@@ -80,6 +82,14 @@ export interface TrackResetRecoveryRequest {
 }
 
 export interface TrackGetRecoveryCountRequest {
+	track: Track;
+}
+
+export interface TtsIsTTSRequest {
+	track: Track;
+}
+
+export interface TtsPlayRequest {
 	track: Track;
 }
 

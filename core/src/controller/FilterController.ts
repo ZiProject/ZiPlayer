@@ -18,6 +18,7 @@ export interface FilterControllerOptions {
 	onFilterRemoved?: (filter: AudioFilter) => void;
 	onFiltersCleared?: () => void;
 	onProcessingError?: (error: Error) => void;
+	initialFilters?: AudioFilter[];
 }
 
 export class FilterController {
@@ -44,6 +45,11 @@ export class FilterController {
 			this.detachQueries.push(
 				bus.registerQuery("filterString", () => this.getFilterString()),
 				bus.registerQuery("filteredStream", () => this.lastFilteredStream),
+			);
+		}
+		if (options.initialFilters?.length) {
+			void this.applyFilters(options.initialFilters).catch((error) =>
+				this.debug("[FilterController] Initial filter error:", error),
 			);
 		}
 	}

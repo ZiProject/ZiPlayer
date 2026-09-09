@@ -44,6 +44,7 @@ export class VolumeController {
 		this.detachAction = bus.onAction((action, context) => this.handleAction(action, context));
 		this.detachQueries.push(
 			bus.registerQuery("volume", () => this.value),
+			bus.registerRpc<VolumeSetRequest, number>("volume.set", ({ value }) => this.setVolume(value)),
 			bus.registerRpc<VolumeTargetRequest, number>(CONTROLLER_RPC.volumeTarget, ({ track }) => this.getTargetVolume(track)),
 			bus.registerRpc<VolumeSetRequest, number>(CONTROLLER_RPC.volumeSet, ({ value }) => this.setVolume(value)),
 		);

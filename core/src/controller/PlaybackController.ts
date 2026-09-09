@@ -82,6 +82,7 @@ export class PlaybackController {
 				),
 			);
 			this.detachQueries.push(
+				this.bus.registerQuery("audioPlayer", () => this.audioPlayer),
 				this.bus.registerQuery("currentResource", () => this.activeSession?.resource ?? this.activeResource),
 				this.bus.registerQuery("playbackSession", () => this.activeSession?.snapshot() ?? null),
 				this.bus.registerQuery("playerState", () => this.status),

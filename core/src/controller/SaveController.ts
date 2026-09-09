@@ -9,6 +9,7 @@ import type {
 	TrackMiddlewareContext,
 } from "../types";
 import { FilterController } from "./FilterController";
+import type { PlayerBus } from "../structures/PlayerBus";
 
 export interface SaveControllerOptions {
 	middleware?: TrackMiddleware[];
@@ -17,6 +18,7 @@ export interface SaveControllerOptions {
 	resolveVideoStream: (track: Track) => Promise<StreamInfo | null | undefined>;
 	ffmpegPath?: string | null;
 	debug?: (message?: any, ...optionalParams: any[]) => void;
+	bus?: PlayerBus;
 }
 
 /**
@@ -32,6 +34,7 @@ export class SaveController {
 	private readonly resolveVideoStream: SaveControllerOptions["resolveVideoStream"];
 	private readonly ffmpegPath?: string | null;
 	private readonly debug: NonNullable<SaveControllerOptions["debug"]>;
+	private readonly detachRpcs: Array<() => void> = [];
 
 	public constructor(options: SaveControllerOptions) {
 		this.middleware = [...(options.middleware ?? [])];
@@ -40,6 +43,21 @@ export class SaveController {
 		this.resolveVideoStream = options.resolveVideoStream;
 		this.ffmpegPath = options.ffmpegPath;
 		this.debug = options.debug ?? (() => undefined);
+		if (options.bus) {
+			this.detachRpcs.push(
+				options.bus.registerRpc<{ track: Track; options?: SaveOptions | string }, Readable>("save", ({ track, options: saveOptions }) =>
+					this.save(track, saveOptions),
+				),
+				options.bus.registerRpc<{ track: Track; options?: SaveVideoOptions | string }, Readable>(
+					"save.video",
+					({ track, options: saveOptions }) => this.saveVideo(track, saveOptions),
+				),
+			);
+		}
+	}
+
+	dispose(): void {
+		for (const detach of this.detachRpcs.splice(0)) detach();
 	}
 
 	public async save(track: Track, options?: SaveOptions | string): Promise<Readable> {

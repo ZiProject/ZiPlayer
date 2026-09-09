@@ -12,6 +12,7 @@ export class StreamController {
 	private readonly bus?: PlayerBus;
 	private readonly detachAction?: () => void;
 	private readonly detachRpcs: Array<() => void> = [];
+	private readonly detachStreamError?: () => void;
 	constructor(options: StreamControllerOptions = {}) {
 		this.streamManager = options.streamManager;
 		this.bus = options.bus;
@@ -23,7 +24,14 @@ export class StreamController {
 				this.bus.registerRpc<{ streamInfo: StreamInfo; session: PlaybackSession }, ActiveStream>(STREAM_RPC_REPLACE, ({ streamInfo, session }) =>
 					this.replace(streamInfo, session),
 				),
+				this.bus.registerQuery("stream.stats", () => this.streamManager?.getStats() ?? null),
 			);
+		}
+		if (this.streamManager && this.bus) {
+			const onStreamError = ({ error }: { error: Error }) =>
+				this.bus?.event({ type: "streamError", error, track: this.bus.querySync("currentTrack") as Track | null });
+			this.streamManager.on("streamError", onStreamError);
+			this.detachStreamError = () => this.streamManager?.off("streamError", onStreamError);
 		}
 	}
 	get current() {
@@ -129,6 +137,7 @@ export class StreamController {
 		}
 	}
 	dispose() {
+		this.detachStreamError?.();
 		this.detachAction?.();
 		for (const detach of this.detachRpcs) detach();
 		this.detachRpcs.length = 0;

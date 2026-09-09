@@ -22,6 +22,8 @@ export interface TrackResolverOptions {
 	streamManager: StreamManager;
 	pluginManager: PluginManager;
 	extensionManager: ExtensionManager;
+	bus?: import("../structures/PlayerBus").PlayerBus;
+	isDestroyed?: () => boolean;
 }
 
 export interface RelatedTracksOptions {
