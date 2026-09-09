@@ -7,6 +7,7 @@ import type {
 	LegacyAntiStuckRetryHandlers,
 	PlayerAction,
 } from "../types";
+import { CONTROLLER_RPC, type AntiStuckReportRequest } from "./ControllerBusContract";
 
 export class AntiStuckController {
 	private readonly enabled: boolean;
@@ -34,7 +35,12 @@ export class AntiStuckController {
 				if (context.signal.aborted) return;
 				if (action.type === "STOP" || action.type === "SEEK") this.cancelRecovery();
 			});
-			this.detachQueries.push(this.bus.registerQuery("retryPolicy", () => this.policy as Record<string, unknown>));
+			this.detachQueries.push(
+				this.bus.registerQuery("retryPolicy", () => this.policy as Record<string, unknown>),
+				this.bus.registerRpc<AntiStuckReportRequest, boolean>(CONTROLLER_RPC.antiStuckReport, ({ session, reason, handlers }) =>
+					this.reportStuck(session, reason, handlers),
+				),
+			);
 		}
 	}
 	public arm(session: PlaybackSession, timeoutMs: number, handlers: AntiStuckRetryHandlers): void {
