@@ -6,7 +6,8 @@
  * facade and PlayerRuntimeController remains the composition/lifecycle root.
  */
 import type { PlayerBus } from "../structures/PlayerBus";
-import type { Track } from "../types";
+import type { PlaybackSession } from "../structures/PlaybackSession";
+import type { Track, AntiStuckRetryHandlers } from "../types";
 
 export interface ControllerCommandContext {
 	requestId: string;
@@ -25,6 +26,7 @@ export const CONTROLLER_RPC = {
 	transitionBeatWait: "controller.transition.beatWait",
 	volumeTarget: "controller.volume.target",
 	volumeSet: "controller.volume.set",
+	antiStuckReport: "controller.antistuck.report",
 } as const;
 
 export interface TransitionPlanRequest {
@@ -52,6 +54,12 @@ export interface VolumeSetRequest {
 	value: number;
 }
 
+export interface AntiStuckReportRequest {
+	session: PlaybackSession;
+	reason: string;
+	handlers: AntiStuckRetryHandlers;
+}
+
 export function requestTransitionPlan(
 	bus: PlayerBus,
 	request: TransitionPlanRequest,
@@ -72,4 +80,11 @@ export function requestVolumeTarget(bus: PlayerBus, request: VolumeTargetRequest
 
 export function requestVolumeSet(bus: PlayerBus, request: VolumeSetRequest): Promise<number> {
 	return bus.requestRpc<VolumeSetRequest, number>(CONTROLLER_RPC.volumeSet, request);
+}
+
+export function requestAntiStuckReport(
+	bus: PlayerBus,
+	request: AntiStuckReportRequest,
+): Promise<boolean> {
+	return bus.requestRpc<AntiStuckReportRequest, boolean>(CONTROLLER_RPC.antiStuckReport, request);
 }
