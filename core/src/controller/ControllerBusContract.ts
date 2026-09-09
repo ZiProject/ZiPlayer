@@ -7,7 +7,7 @@
  */
 import type { PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
-import type { Track, AntiStuckRetryHandlers } from "../types";
+import type { Track, AntiStuckRetryHandlers, TrackLoadResult } from "../types";
 
 export interface ControllerCommandContext {
 	requestId: string;
@@ -33,6 +33,10 @@ export const CONTROLLER_RPC = {
 	playbackStop: "controller.playback.stop",
 	playbackBeginResourceRefresh: "controller.playback.beginResourceRefresh",
 	playbackEndResourceRefresh: "controller.playback.endResourceRefresh",
+	trackLoad: "controller.track.load",
+	trackLoadWithRecovery: "controller.track.loadWithRecovery",
+	trackResetRecovery: "controller.track.resetRecovery",
+	trackGetRecoveryCount: "controller.track.getRecoveryCount",
 } as const;
 
 export interface TransitionPlanRequest {
@@ -64,6 +68,19 @@ export interface AntiStuckReportRequest {
 	session: PlaybackSession;
 	reason: string;
 	handlers: AntiStuckRetryHandlers;
+}
+
+export interface TrackLoadRequest {
+	track: Track;
+	session: PlaybackSession;
+}
+
+export interface TrackResetRecoveryRequest {
+	track?: Track;
+}
+
+export interface TrackGetRecoveryCountRequest {
+	track: Track;
 }
 
 export function requestTransitionPlan(
