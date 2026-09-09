@@ -181,9 +181,6 @@ export class PlayerRuntimeController {
 		const playbackController = new PlaybackController({
 			audioPlayer,
 			bus: this.bus,
-			volumeController,
-			transitionController,
-			antiStuckController,
 			stuckTimeoutMs: options.antiStuck?.stuckTimeoutMs,
 		});
 		const streamController = new StreamController({ streamManager, bus: this.bus });
