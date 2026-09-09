@@ -14,10 +14,10 @@ import type { PreloadManager } from "./PreloadManager";
 import type { PlayerBus } from "./PlayerBus";
 
 const TRACK_LOADER_RPC = {
-	load: "trackLoader.load",
-	loadWithRecovery: "trackLoader.loadWithRecovery",
-	resetRecovery: "trackLoader.resetRecovery",
-	getRecoveryCount: "trackLoader.getRecoveryCount",
+	load: "controller.track.load",
+	loadWithRecovery: "controller.track.loadWithRecovery",
+	resetRecovery: "controller.track.resetRecovery",
+	getRecoveryCount: "controller.track.getRecoveryCount",
 } as const;
 
 export class TrackLoader {
