@@ -4,9 +4,6 @@ import type { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
 import type { PlayerBus } from "../structures/PlayerBus";
-import type { VolumeController } from "../controller/VolumeController";
-import type { TransitionController } from "../controller/TransitionController";
-import type { AntiStuckController } from "../controller/AntiStuckController";
 
 export interface ConnectionControllerOptions {
 	guildId: string;
@@ -28,9 +25,6 @@ export interface ForwardControllerOptions {
 export interface PlaybackControllerOptions {
 	audioPlayer: AudioPlayer;
 	bus?: PlayerBus;
-	volumeController?: VolumeController;
-	transitionController?: TransitionController;
-	antiStuckController?: AntiStuckController;
 	stuckTimeoutMs?: number;
 }
 
