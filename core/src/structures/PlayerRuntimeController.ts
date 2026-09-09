@@ -110,6 +110,7 @@ export class PlayerRuntimeController {
 			preloadManager,
 			qualityController: { get: () => options.quality, set: (quality) => { options.quality = quality; } },
 			debug,
+			bus: this.bus,
 		});
 		const transitionController = new TransitionController({
 			enabled: options.lowPerformance && options.crossfade?.autoDisableInLowPerformance ? false : (options.crossfade?.enabled ?? options.crossfade?.autoEnable ?? true),
