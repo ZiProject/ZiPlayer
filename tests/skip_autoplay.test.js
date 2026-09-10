@@ -25,10 +25,18 @@ const createOrchestrator = ({ autoPlay, related } = {}) => {
 	bus.registerRpc("resource.create", () => ({}));
 	bus.registerRpc("preload.has", () => false);
 	bus.registerRpc("preload.cancel", () => {});
-	bus.registerRpc("controller.stream.replace", ({ streamInfo }) => ({ stream: streamInfo.stream, inputType: streamInfo.inputType }));
+	bus.registerRpc("controller.stream.replace", ({ streamInfo }) => ({
+		stream: streamInfo.stream,
+		inputType: streamInfo.inputType,
+	}));
 	bus.registerRpc("controller.track.loadWithRecovery", trackLoader.loadWithRecovery);
 	bus.registerRpc("controller.track.resetRecovery", () => {});
-	bus.registerRpc("controller.transition.plan", () => ({ enabled: false, durationMs: 0, waitForBeat: false, beatAlignMaxWaitMs: 0 }));
+	bus.registerRpc("controller.transition.plan", () => ({
+		enabled: false,
+		durationMs: 0,
+		waitForBeat: false,
+		beatAlignMaxWaitMs: 0,
+	}));
 	bus.registerRpc("controller.volume.target", () => 1);
 	bus.registerRpc("controller.playback.play", ({ session }) => {
 		played.push(session.track.id);
@@ -54,7 +62,7 @@ test("manual SKIP should also trigger autoplay fallback like natural TRACK_END",
 	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
 	const harness = createOrchestrator({ autoPlay: true, related: [trackB] });
 
-	await harness.orchestrator.start(trackA, context());
+	await harness.bus.action({ type: "PLAY", track: trackA }, context());
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	assert.deepEqual(harness.queueController.relatedTracks, [trackB]);
 

@@ -1,14 +1,9 @@
-import type { Track, TrackLoadResult } from "../types";
+import type { Track, TrackLoadResult, PromotedPreload } from "../types";
 import type { PlayerBus } from "../structures/PlayerBus";
 import { createPlayerRequestId } from "../structures/PlayerBus";
 import type { TrackLoader } from "../structures/TrackLoader";
-import { PreloadManager, type PromotedPreload } from "../structures/PreloadManager";
-
-export interface PreloadControllerOptions {
-	loader: TrackLoader;
-	manager: PreloadManager;
-	bus?: PlayerBus;
-}
+import { PreloadManager } from "../structures/PreloadManager";
+import type { PreloadControllerOptions } from "../types";
 
 /** Owns preload lifecycle. Player-facing requests are routed through PlayerBus. */
 export class PreloadController {

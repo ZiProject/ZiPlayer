@@ -21,7 +21,7 @@ export class AntiStuckController {
 	private timer: NodeJS.Timeout | null = null;
 	private generation = 0;
 	private readonly detachAction?: () => void;
-	private readonly detachQueries: Array<() => void> = [];
+	private readonly detachBusHandlers: Array<() => void> = [];
 	public constructor(options: AntiStuckControllerOptions = {}) {
 		this.enabled = options.enabled ?? true;
 		this.maxRetries = Math.max(0, options.maxRetries ?? 2);
@@ -35,7 +35,7 @@ export class AntiStuckController {
 				if (context.signal.aborted) return;
 				if (action.type === "STOP" || action.type === "SEEK") this.cancelRecovery();
 			});
-			this.detachQueries.push(
+			this.detachBusHandlers.push(
 				this.bus.registerQuery("retryPolicy", () => this.policy as Record<string, unknown>),
 				this.bus.registerRpc<AntiStuckReportRequest, boolean>(CONTROLLER_RPC.antiStuckReport, ({ session, reason, handlers }) =>
 					this.reportStuck(session, reason, handlers),
@@ -115,7 +115,7 @@ export class AntiStuckController {
 	}
 	public dispose(): void {
 		this.detachAction?.();
-		for (const detach of this.detachQueries.splice(0)) detach();
+		for (const detach of this.detachBusHandlers.splice(0)) detach();
 		this.reset();
 	}
 	public requestRecovery(

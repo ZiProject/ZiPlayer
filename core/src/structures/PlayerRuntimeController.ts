@@ -1,6 +1,6 @@
 import type { AudioPlayer } from "@discordjs/voice";
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
-import type { PlayerOptions, TrackMiddleware } from "../types";
+import type { PlayerOptions, TrackMiddleware, PlayerRuntimeGraph } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 import type { Player } from "./Player";
 import { PlayerBus } from "./PlayerBus";
@@ -32,37 +32,6 @@ import { ExtensionManager } from "../extensions";
 import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { SaveController } from "../controller/SaveController";
 import type { Track } from "../types";
-
-export interface PlayerRuntimeGraph {
-	connectionController: ConnectionController;
-	lifecycleController: LifecycleController;
-	forwardController: ForwardController;
-	audioPlayer: AudioPlayer;
-	streamManager: StreamManager;
-	preloadManager: PreloadManager;
-	trackResolver: TrackResolver;
-	pluginManager: PluginManager;
-	extensionManager: ExtensionManager;
-	pluginController: PluginController;
-	extensionController: ExtensionController;
-	queueController: QueueController;
-	trackLoader: TrackLoader;
-	playbackController: PlaybackController;
-	streamController: StreamController;
-	saveController: SaveController;
-	filterController: FilterController;
-	antiStuckController: AntiStuckController;
-	transitionController: TransitionController;
-	volumeController: VolumeController;
-	preloadController: PreloadController;
-	resourceRefreshController: ResourceRefreshController;
-	playerConnectionBridge: PlayerConnectionBridge;
-	orchestrator: PlaybackOrchestrator;
-	ttsController: TTSController;
-	debugTracer: PlayerEventDebug;
-	searchController: SearchController;
-	eventBridge: PlayerEventBridge;
-}
 
 /** Composition root and lifecycle owner. It contains no playback workflow. */
 export class PlayerRuntimeController {
@@ -197,9 +166,12 @@ export class PlayerRuntimeController {
 				void this.bus.requestRpc("playback.reportFilterError", { error }).catch(() => undefined);
 			},
 		});
-		const resourceRefreshController = new ResourceRefreshController({ bus: this.bus });
 		const playerConnectionBridge = new PlayerConnectionBridge({ player, bus: this.bus, debug, guildId });
 		const orchestrator = new PlaybackOrchestrator(this.bus, { debug });
+		const resourceRefreshController = new ResourceRefreshController({
+			bus: this.bus,
+			getSession: () => orchestrator.currentSession,
+		});
 		const searchController = new SearchController({ extensionManager, pluginManager, debug, bus: this.bus });
 		const debugTracer = new PlayerEventDebug(this.bus, guildId, debug, manager.debugLevel ?? "info");
 		const eventBridge = new PlayerEventBridge(player, manager, this.bus, debugTracer);
@@ -233,7 +205,36 @@ export class PlayerRuntimeController {
 			searchController,
 			eventBridge,
 		};
-		for (const [name, controller] of Object.entries(graph)) this.monitor(name, controller);
+		const lifecycleOrder: Array<keyof PlayerRuntimeGraph> = [
+			"connectionController",
+			"lifecycleController",
+			"forwardController",
+			"streamManager",
+			"preloadManager",
+			"trackResolver",
+			"pluginManager",
+			"extensionManager",
+			"pluginController",
+			"extensionController",
+			"queueController",
+			"trackLoader",
+			"playbackController",
+			"streamController",
+			"saveController",
+			"filterController",
+			"antiStuckController",
+			"transitionController",
+			"volumeController",
+			"preloadController",
+			"playerConnectionBridge",
+			"orchestrator",
+			"resourceRefreshController",
+			"ttsController",
+			"debugTracer",
+			"searchController",
+			"eventBridge",
+		];
+		for (const name of lifecycleOrder) this.monitor(name, graph[name]);
 		return graph;
 	}
 

@@ -1,12 +1,6 @@
 import type { Player } from "../structures/Player";
 import type { PlayerBus } from "../structures/PlayerBus";
-
-export interface PlayerConnectionBridgeOptions {
-	player: Player;
-	bus: PlayerBus;
-	debug?: (...args: any[]) => void;
-	guildId: string;
-}
+import type { PlayerConnectionBridgeOptions } from "../types";
 
 /** Syncs voice connection state from ConnectionController to the public Player facade. */
 export class PlayerConnectionBridge {

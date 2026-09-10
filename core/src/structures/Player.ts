@@ -29,7 +29,8 @@ import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { PlaybackSession } from "./PlaybackSession";
-import { PlayerRuntimeController, type PlayerRuntimeGraph } from "./PlayerRuntimeController";
+import { PlayerRuntimeController } from "./PlayerRuntimeController";
+import type { PlayerRuntimeGraph } from "../types";
 
 export class Player extends EventEmitter {
 	public readonly bus = new PlayerBus();

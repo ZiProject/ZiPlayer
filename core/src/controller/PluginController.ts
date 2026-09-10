@@ -2,11 +2,7 @@ import type { PlayerBus } from "../structures/PlayerBus";
 import type { PluginManager } from "../plugins";
 import type { BasePlugin } from "../plugins/BasePlugin";
 import type { Track } from "../types";
-
-export interface PluginControllerOptions {
-	pluginManager: PluginManager;
-	bus: PlayerBus;
-}
+import type { PluginControllerOptions } from "../types";
 
 /** Owns plugin-related PlayerBus RPC/query registration. */
 export class PluginController {

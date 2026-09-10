@@ -1,11 +1,7 @@
 import type { PlayerBus } from "../structures/PlayerBus";
 import type { ExtensionManager } from "../extensions";
 import type { BaseExtension } from "../extensions/BaseExtension";
-
-export interface ExtensionControllerOptions {
-	extensionManager: ExtensionManager;
-	bus: PlayerBus;
-}
+import type { ExtensionControllerOptions } from "../types";
 
 /** Owns extension-related PlayerBus RPC/query registration. */
 export class ExtensionController {

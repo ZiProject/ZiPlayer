@@ -3,6 +3,8 @@ import type {
 	PlayerActionExecutionContext,
 	PlayerBusEvents,
 	PlayerBusRequestErrorReason,
+	PlayerBusRpcContext,
+	PlayerBusRpcOptions,
 	PlayerEvent,
 	PlayerEventArgsMap,
 	PlayerEventType,
@@ -28,6 +30,8 @@ export type {
 	PlayerActionExecutionContext,
 	PlayerBusEvents,
 	PlayerBusRequestErrorReason,
+	PlayerBusRpcContext,
+	PlayerBusRpcOptions,
 	PlayerEvent,
 	PlayerEventArgsMap,
 	PlayerEventType,
@@ -87,17 +91,6 @@ export class PlayerBusRequestError extends Error {
 		super(message);
 		this.name = "PlayerBusRequestError";
 	}
-}
-
-export interface PlayerBusRpcContext {
-	readonly requestId: PlayerRequestId;
-	readonly signal: AbortSignal;
-	readonly timestamp: number;
-}
-
-export interface PlayerBusRpcOptions {
-	timeoutMs?: number;
-	signal?: AbortSignal;
 }
 
 type RpcHandler<TRequest, TResponse> = (request: TRequest, context: PlayerBusRpcContext) => TResponse | Promise<TResponse>;

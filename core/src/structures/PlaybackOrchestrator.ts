@@ -1,27 +1,26 @@
-import type { PlayerBus, PlayerAction, PlayerBusRpcContext } from "./PlayerBus";
+import type { PlayerBus, PlayerAction } from "./PlayerBus";
+import type { PlayerBusRpcContext } from "../types";
 import { PlaybackSession } from "./PlaybackSession";
 import { createPlayerRequestId } from "./PlayerBus";
-import { PlayerActionPriority } from "../types";
 import type { AudioResource } from "@discordjs/voice";
+import { PlayerActionPriority } from "../types";
 import type {
 	PlayerMessageContext,
-	PlaybackSessionSnapshot,
 	SearchResult,
 	StreamInfo,
 	Track,
 	TrackLoadResult,
+	PlaybackOrchestratorOptions,
 } from "../types";
-import type { PromotedPreload } from "./PreloadManager";
+import type { PromotedPreload } from "../types";
 import { CONTROLLER_RPC } from "../controller/ControllerBusContract";
-
-export interface PlaybackOrchestratorOptions {
-	debug?: (message?: any, ...optionalParams: any[]) => void;
-}
+import { PlaybackStartController } from "../controller/PlaybackStartController";
+import { PlaybackPreparationController } from "../controller/PlaybackPreparationController";
 
 export class PlaybackOrchestrator {
+	private readonly lifecycleAbort = new AbortController();
+	private disposed = false;
 	private session: PlaybackSession | null = null;
-	private refreshSequence = 0;
-	private refreshAbortController: AbortController | null = null;
 	private trackEndTransition = false;
 	private waitingForQueue = false;
 	private queueStartPromise: Promise<void> | null = null;
@@ -31,9 +30,30 @@ export class PlaybackOrchestrator {
 	private readonly detachQueueEnd: () => void;
 	private readonly detachRpcs: Array<() => void> = [];
 	private readonly debug: (message?: any, ...optionalParams: any[]) => void;
+	private readonly preparationController: PlaybackPreparationController;
+	private readonly startController: PlaybackStartController;
 
-	constructor(private readonly bus: PlayerBus, options: PlaybackOrchestratorOptions = {}) {
+	constructor(
+		private readonly bus: PlayerBus,
+		options: PlaybackOrchestratorOptions = {},
+	) {
 		this.debug = options.debug ?? (() => undefined);
+		this.preparationController = new PlaybackPreparationController({
+			bus,
+			isCurrentSession: (session, context) => this.matchesContext(session, context),
+			queueSnapshot: () => this.queueSnapshot(),
+			setQueueRelated: (tracks) => this.setQueueRelated(tracks),
+		});
+		this.startController = new PlaybackStartController({
+			bus,
+			getSession: () => this.session,
+			setSession: (session) => {
+				this.session = session;
+			},
+			transitionEnabled: () => this.transitionEnabled(),
+			stopPlayback: (signal, cancelPreload) => this.stopPlayback(signal, cancelPreload),
+			prepareTrack: (session, context) => this.preparationController.prepareTrack(session, context),
+		});
 		this.detachAction = bus.onAction((a, c) => this.handleAction(a, c));
 		this.detachTrackEnd = bus.subscribe("TRACK_END", (event) => {
 			const session = event.session;
@@ -47,7 +67,7 @@ export class PlaybackOrchestrator {
 			this.waitingForQueue = true;
 		});
 		this.detachQueueChanged = bus.subscribe("queueChanged", () => {
-			if (!this.waitingForQueue || this.trackEndTransition || this.queueStartPromise) return;
+			if (this.disposed || !this.waitingForQueue || this.trackEndTransition || this.queueStartPromise) return;
 			if (!this.queueSnapshot().length) return;
 			this.queueStartPromise = this.startQueuedTrackAfterEnd().finally(() => {
 				this.queueStartPromise = null;
@@ -55,31 +75,42 @@ export class PlaybackOrchestrator {
 		});
 		this.detachRpcs.push(
 			bus.registerRpc<{ query: string | Track | SearchResult | null; requestedBy?: string }, boolean>(
-				"play",
+				CONTROLLER_RPC.play,
 				(request, context) => this.play(request.query, request.requestedBy, context),
 			),
-			bus.registerRpc<void, void>("playback.destroyCurrentStream", () => this.stopPlayback(new AbortController().signal)),
-			bus.registerRpc<{ track: Track; session: PlaybackSession }, unknown>("playback.recover", ({ track, session }, context) =>
-				this.bus.requestRpc(CONTROLLER_RPC.trackLoadWithRecovery, { track, session }, { signal: context.signal }),
+			bus.registerRpc<void, void>(CONTROLLER_RPC.playbackDestroyCurrentStream, () =>
+				this.stopPlayback(new AbortController().signal),
 			),
-			bus.registerRpc<{ track: Track; session: PlaybackSession }, unknown>("playback.loadFresh", ({ track, session }, context) =>
-				this.bus.requestRpc(CONTROLLER_RPC.trackLoad, { track, session }, { signal: context.signal }),
+			bus.registerRpc<{ track: Track; session: PlaybackSession }, unknown>(
+				CONTROLLER_RPC.playbackRecover,
+				({ track, session }, context) =>
+					this.bus.requestRpc(
+						CONTROLLER_RPC.trackLoadWithRecovery,
+						{ track, session },
+						{ signal: this.combinedSignal(context.signal) },
+					),
+			),
+			bus.registerRpc<{ track: Track; session: PlaybackSession }, unknown>(
+				CONTROLLER_RPC.playbackLoadFresh,
+				({ track, session }, context) =>
+					this.bus.requestRpc(CONTROLLER_RPC.trackLoad, { track, session }, { signal: this.combinedSignal(context.signal) }),
 			),
 			bus.registerRpc<{ track: Track; stream: { handle?: { play?: () => void | Promise<void> } } }, boolean>(
-				"playback.remote",
+				CONTROLLER_RPC.playbackRemote,
 				async ({ stream }) => {
 					if (stream?.handle?.play) await stream.handle.play();
 					return true;
 				},
 			),
-			bus.registerRpc<{ position: number }, PlaybackSessionSnapshot>("playback.refreshResource", ({ position }, context) =>
-				this.refreshResource(position, context),
-			),
-			bus.registerRpc<{ track: Track }, TrackLoadResult | null>("playback.loadFreshCurrent", ({ track }, context) => {
+			bus.registerRpc<{ track: Track }, TrackLoadResult | null>(CONTROLLER_RPC.playbackLoadFreshCurrent, ({ track }, context) => {
 				if (!this.session) return null;
-				return this.bus.requestRpc(CONTROLLER_RPC.trackLoad, { track, session: this.session }, { signal: context.signal });
+				return this.bus.requestRpc(
+					CONTROLLER_RPC.trackLoad,
+					{ track, session: this.session },
+					{ signal: this.combinedSignal(context.signal) },
+				);
 			}),
-			bus.registerRpc<{ track: Track }, AudioResource | null>("playback.promotePreload", ({ track }) => {
+			bus.registerRpc<{ track: Track }, AudioResource | null>(CONTROLLER_RPC.playbackPromotePreload, ({ track }) => {
 				const session = this.session;
 				if (!session) return null;
 				const promoted = this.bus.requestRpcSync<{ track: Track }, PromotedPreload | null>("preload.promote", { track });
@@ -132,48 +163,10 @@ export class PlaybackOrchestrator {
 		this.bus.requestRpcSync("queue.restore", { state });
 	}
 
-	private async refreshResource(position: number, rpcContext: PlayerBusRpcContext): Promise<PlaybackSessionSnapshot> {
-		const session = this.session;
-		if (!session?.track || !session.isActive()) throw new Error("No active playback session");
-		this.bus.requestRpcSync(CONTROLLER_RPC.playbackBeginResourceRefresh, {});
-		const sessionId = session.id;
-		const refreshSequence = ++this.refreshSequence;
-		this.refreshAbortController?.abort();
-		const refreshAbortController = new AbortController();
-		this.refreshAbortController = refreshAbortController;
-		const signal = AbortSignal.any([rpcContext.signal, refreshAbortController.signal]);
-		const isCurrentRefresh = () => refreshSequence === this.refreshSequence && !signal.aborted && this.isCurrentSession(sessionId);
-		try {
-			const info = await this.bus.requestRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>("stream.resolve", { track: session.track, fresh: true }, { signal });
-			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			if (!info?.stream && !info?.url && !info?.recreate) throw new Error("No stream available for resource refresh");
-			if (info.remote) throw new Error("Cannot refresh a remote playback resource");
-			await this.bus.action({ type: "FILTER_SET_SOURCE_TYPE", streamType: info.type ?? "arbitrary" }, { signal });
-			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			await this.bus.action({ type: "FILTER_APPLY_AND_SEEK", streamInfo: info, position: Math.max(0, position) }, { signal });
-			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			const processed = await this.bus.query("filteredStream");
-			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			if (!processed) throw new Error("Playback resource controllers are unavailable");
-			const active = this.bus.requestRpcSync<{ streamInfo: StreamInfo; session: PlaybackSession }, import("../types").ActiveStream>("controller.stream.replace", { streamInfo: processed, session });
-			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			const resource = this.bus.requestRpcSync<{ stream: import("stream").Readable; track: Track; inputType?: import("@discordjs/voice").StreamType }, AudioResource>("resource.create", { stream: active.stream, track: session.track, inputType: active.inputType });
-			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			session.setResource(resource);
-			session.setPlaybackOffset(Math.max(0, position));
-			this.bus.requestRpcSync(CONTROLLER_RPC.playbackPlay, { resource, session });
-			session.markPlaying(Math.max(0, position));
-			this.bus.event({ type: "playbackStateChanged", session: session.snapshot() });
-			return session.snapshot();
-		} finally {
-			this.bus.requestRpcSync(CONTROLLER_RPC.playbackEndResourceRefresh, {});
-		}
-	}
-
 	dispose(): void {
-		this.refreshSequence++;
-		this.refreshAbortController?.abort();
-		this.refreshAbortController = null;
+		if (this.disposed) return;
+		this.disposed = true;
+		this.lifecycleAbort.abort();
 		this.detachAction();
 		this.detachTrackEnd();
 		this.detachQueueChanged();
@@ -186,12 +179,16 @@ export class PlaybackOrchestrator {
 		this.queueStartPromise = null;
 	}
 
-	private async play(query: string | Track | SearchResult | null, requestedBy: string | undefined, rpcContext: PlayerBusRpcContext): Promise<boolean> {
+	private async play(
+		query: string | Track | SearchResult | null,
+		requestedBy: string | undefined,
+		rpcContext: PlayerBusRpcContext,
+	): Promise<boolean> {
 		if (rpcContext.signal.aborted) return false;
 		const context: PlayerMessageContext = {
 			requestId: rpcContext.requestId,
 			source: "PlaybackOrchestrator:play",
-			signal: rpcContext.signal,
+			signal: AbortSignal.any([rpcContext.signal, this.lifecycleAbort.signal]),
 			timestamp: rpcContext.timestamp,
 			priority: PlayerActionPriority.NORMAL,
 		};
@@ -203,27 +200,48 @@ export class PlaybackOrchestrator {
 			}
 			let tracks: Track[];
 			if (typeof query === "string") {
-				const result = await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>("search", { query, requestedBy: requestedBy || "Unknown" });
+				const result = await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>(
+					"search",
+					{
+						query,
+						requestedBy: requestedBy || "Unknown",
+					},
+					{ signal: context.signal },
+				);
 				tracks = result.playlist ? result.tracks : result.tracks.slice(0, 1);
 			} else if ("tracks" in query) tracks = query.playlist ? query.tracks : query.tracks.slice(0, 1);
 			else tracks = [query];
 			if (tracks.length === 0 || rpcContext.signal.aborted) return false;
-			if (tracks.length === 1 && (this.bus.querySync("ttsInterrupt") ?? true) && this.bus.requestRpcSync<{ track: Track }, boolean>(CONTROLLER_RPC.ttsIsTTS, { track: tracks[0] })) {
+			if (
+				tracks.length === 1 &&
+				(this.bus.querySync("ttsInterrupt") ?? true) &&
+				this.bus.requestRpcSync<{ track: Track }, boolean>(CONTROLLER_RPC.ttsIsTTS, { track: tracks[0] })
+			) {
 				await this.bus.requestRpc(CONTROLLER_RPC.ttsPlay, { track: tracks[0] });
 				return true;
 			}
 			await this.bus.requestRpc("queue.addMultiple", { tracks }, { signal: rpcContext.signal });
 			if ((this.session?.status === "playing" || this.session?.status === "paused") && !this.waitingForQueue) {
-				void this.bus.requestRpc("preload.next", {}, { signal: rpcContext.signal }).catch((error) => this.debug("[PlaybackOrchestrator] Preload after queue add error:", error));
+				void this.bus
+					.requestRpc("preload.next", {}, { signal: rpcContext.signal })
+					.catch((error) => this.debug("[PlaybackOrchestrator] Preload after queue add error:", error));
 				return true;
 			}
-			if (this.waitingForQueue) { await this.queueStartPromise; return this.session?.status === "playing" || this.session?.status === "paused"; }
+			if (this.waitingForQueue) {
+				await Promise.race([this.queueStartPromise, this.waitForLifecycleAbort()]);
+				return this.session?.status === "playing" || this.session?.status === "paused";
+			}
 			await this.skip(context);
 			return this.session?.track !== null && this.session?.track !== undefined;
 		} catch (error) {
 			this.debug("[PlaybackOrchestrator] Play error:", error);
 			const session = this.session;
-			if (session) this.bus.event({ type: "TRACK_ERROR", session: session.snapshot(), error: error instanceof Error ? error : new Error(String(error)) });
+			if (session)
+				this.bus.event({
+					type: "TRACK_ERROR",
+					session: session.snapshot(),
+					error: error instanceof Error ? error : new Error(String(error)),
+				});
 			return false;
 		}
 	}
@@ -231,19 +249,55 @@ export class PlaybackOrchestrator {
 	private async handleAction(a: PlayerAction, context: PlayerMessageContext): Promise<void> {
 		if (context.signal.aborted) return;
 		switch (a.type) {
-			case "PLAY": if (a.track) await this.start(a.track, context); break;
-			case "SEEK": await this.seek(a.position, context); break;
-			case "SKIP": await this.skip(context); break;
-			case "PAUSE": { const session = this.session; if (session?.isActive() && this.matchesContext(session, context) && this.bus.requestRpcSync(CONTROLLER_RPC.playbackPause, {})) { session.markPaused(); this.publishState(); this.bus.event({ type: "playerPause", track: session.track }); } break; }
-			case "RESUME": { const session = this.session; if (session?.isActive() && this.matchesContext(session, context) && this.bus.requestRpcSync(CONTROLLER_RPC.playbackResume, {})) { session.markPlaying(); this.publishState(); this.bus.event({ type: "playerResume", track: session.track }); } break; }
-			case "STOP": { const session = this.session; if (session && !this.matchesContext(session, context)) break; this.stopPlayback(context.signal); if (session?.isActive()) session.markStopped(); this.publishState(); this.bus.event({ type: "playerStop" }); break; }
+			case "PLAY":
+				if (a.track) await this.startController.start(a.track, context);
+				break;
+			case "SEEK":
+				await this.seek(a.position, context);
+				break;
+			case "SKIP":
+				await this.skip(context);
+				break;
+			case "PAUSE": {
+				const session = this.session;
+				if (
+					session?.isActive() &&
+					this.matchesContext(session, context) &&
+					this.bus.requestRpcSync(CONTROLLER_RPC.playbackPause, {})
+				) {
+					session.markPaused();
+					this.publishState();
+					this.bus.event({ type: "playerPause", track: session.track });
+				}
+				break;
+			}
+			case "RESUME": {
+				const session = this.session;
+				if (
+					session?.isActive() &&
+					this.matchesContext(session, context) &&
+					this.bus.requestRpcSync(CONTROLLER_RPC.playbackResume, {})
+				) {
+					session.markPlaying();
+					this.publishState();
+					this.bus.event({ type: "playerResume", track: session.track });
+				}
+				break;
+			}
+			case "STOP": {
+				const session = this.session;
+				if (session && !this.matchesContext(session, context)) break;
+				this.stopPlayback(context.signal);
+				if (session?.isActive()) session.markStopped();
+				this.publishState();
+				this.bus.event({ type: "playerStop" });
+				break;
+			}
 		}
 	}
 
-	private matchesContext(session: PlaybackSession, context: PlayerMessageContext): boolean { return session.ownsContext(context.sessionId); }
-
-	private childContext(context: PlayerMessageContext, sessionId?: string, sessionSignal?: AbortSignal): PlayerMessageContext {
-		return { requestId: context.requestId, sessionId, source: context.source, signal: sessionSignal ? AbortSignal.any([context.signal, sessionSignal]) : context.signal, timestamp: context.timestamp, priority: context.priority };
+	private matchesContext(session: PlaybackSession, context: PlayerMessageContext): boolean {
+		return session.ownsContext(context.sessionId);
 	}
 
 	private stopPlayback(_s: AbortSignal, cancelPreload = true): void {
@@ -263,90 +317,78 @@ export class PlaybackOrchestrator {
 		return next;
 	}
 
-	private async setCurrentThroughBus(track: Track | null, context: PlayerMessageContext): Promise<void> {
-		if (!context.signal.aborted) await this.bus.action({ type: "QUEUE_SET_CURRENT", track, requestId: context.requestId }, context);
-	}
-
-	private async filterStreamThroughBus(streamInfo: StreamInfo, position: number, context: PlayerMessageContext) {
-		if (context.signal.aborted) return null;
-		await this.bus.action({ type: "FILTER_SET_SOURCE_TYPE", streamType: streamInfo.type ?? "arbitrary", requestId: context.requestId }, context);
-		await this.bus.action({ type: "FILTER_APPLY_AND_SEEK", streamInfo, position, requestId: context.requestId }, context);
-		return this.bus.query("filteredStream");
-	}
-
-	private async prepareRelated(session: PlaybackSession, context: PlayerMessageContext): Promise<void> {
-		const source = session.track;
-		if (!source || context.signal.aborted || !this.matchesContext(session, context)) return;
-		try {
-			let related = await this.bus.requestRpc<{ track: Track; history?: Track[] }, Track[]>(
-				"plugin.relatedTracks",
-				{ track: source, history: this.bus.querySync("previousTracks") },
-				{ signal: context.signal },
-			);
-			related = related ?? [];
-			if (context.signal.aborted || !this.matchesContext(session, context)) return;
-			const upcoming = new Set(this.queueSnapshot().map((track) => track.id ?? track.url));
-			related = related.filter((track) => track !== source && !upcoming.has(track.id ?? track.url));
-			this.setQueueRelated(related);
-		} catch (error) {
-			if (!context.signal.aborted && this.matchesContext(session, context)) this.bus.event({ type: "TRACK_ERROR", session: session.snapshot(), error: error instanceof Error ? error : new Error(String(error)) });
-		}
-	}
-
-	private async prepareAutoplay(session: PlaybackSession, context: PlayerMessageContext): Promise<Track | null> {
-		if (!this.bus.querySync("queueAutoPlay") || context.signal.aborted || !this.matchesContext(session, context)) return null;
-		if (this.bus.querySync("queueLoop") === "track") { this.bus.requestRpcSync("queue.willNext", { track: null }); return null; }
-		const related = (this.bus.querySync("relatedTracks") as Track[] | null) ?? [];
-		if (!related.length) return null;
-		const pool = related.slice(0, Math.min(5, related.length));
-		const next = (this.bus.querySync("queueNextTrack") as Track | null) ?? pool[Math.floor(Math.random() * pool.length)];
-		if (!next || !this.matchesContext(session, context)) return null;
-		await this.requestPreload(next, context);
-		if (context.signal.aborted || !this.matchesContext(session, context)) return null;
-		this.bus.requestRpcSync("queue.willNext", { track: next });
-		return next;
-	}
-
-	private async prepareTrack(session: PlaybackSession, context: PlayerMessageContext): Promise<void> {
-		await this.prepareRelated(session, context);
-		if (this.bus.querySync("queueAutoPlay")) await this.prepareAutoplay(session, context);
-	}
-
 	private async startQueuedTrackAfterEnd(): Promise<void> {
 		if (!this.waitingForQueue || this.trackEndTransition || !this.queueSnapshot().length) return;
 		this.trackEndTransition = true;
 		try {
 			const from = this.session?.track ?? null;
-			const context: PlayerMessageContext = { requestId: createPlayerRequestId(), source: "PlaybackOrchestrator:queue-refill", signal: new AbortController().signal, timestamp: Date.now(), priority: PlayerActionPriority.NORMAL };
+			const context: PlayerMessageContext = {
+				requestId: createPlayerRequestId(),
+				source: "PlaybackOrchestrator:queue-refill",
+				signal: this.lifecycleSignal(),
+				timestamp: Date.now(),
+				priority: PlayerActionPriority.NORMAL,
+			};
 			const next = await this.nextThroughBus(false, context);
 			if (!next || context.signal.aborted) return;
 			this.waitingForQueue = false;
-			await this.start(next, context, from);
-		} finally { this.trackEndTransition = false; }
+			await this.startController.start(next, context, from);
+		} finally {
+			this.trackEndTransition = false;
+		}
 	}
 
 	private async advanceAfterTrackEnd(snapshot: ReturnType<PlaybackSession["snapshot"]>): Promise<void> {
-		if (!this.session || this.session.id !== snapshot.id || this.session.status === "ended" || this.session.status === "stopped") { this.trackEndTransition = false; return; }
+		if (
+			!this.session ||
+			this.session.id !== snapshot.id ||
+			this.session.status === "ended" ||
+			this.session.status === "stopped"
+		) {
+			this.trackEndTransition = false;
+			return;
+		}
 		try {
 			if (!this.session || this.session.id !== snapshot.id || !this.session.isActive()) return;
 			const from = this.session.track;
 			const endedSession = this.session;
-			const context: PlayerMessageContext = { requestId: createPlayerRequestId(), source: "PlaybackOrchestrator:track-end", signal: new AbortController().signal, timestamp: Date.now(), priority: PlayerActionPriority.NORMAL };
+			const context: PlayerMessageContext = {
+				requestId: createPlayerRequestId(),
+				source: "PlaybackOrchestrator:track-end",
+				signal: this.lifecycleSignal(),
+				timestamp: Date.now(),
+				priority: PlayerActionPriority.NORMAL,
+			};
 			let next = await this.nextThroughBus(false, context);
-			if (next) { endedSession.markEnded(); this.waitingForQueue = false; await this.start(next, context, from); return; }
+			if (next) {
+				endedSession.markEnded();
+				this.waitingForQueue = false;
+				await this.startController.start(next, context, from);
+				return;
+			}
 			if (this.bus.querySync("queueAutoPlay")) {
-				const candidate = await this.prepareAutoplay(endedSession, context);
+				const candidate = await this.preparationController.prepareAutoplay(endedSession, context);
 				if (candidate && this.session?.id === snapshot.id && this.session.isActive()) {
 					endedSession.markEnded();
 					this.bus.requestRpcSync("queue.willNext", { track: null });
 					if (!this.bus.querySync("queueNextTrack")) this.bus.requestRpcSync("queue.addMultiple", { tracks: [candidate] });
 					next = await this.nextThroughBus(false, context);
-					if (next) { this.waitingForQueue = false; await this.start(next, context, from); return; }
+					if (next) {
+						this.waitingForQueue = false;
+						await this.startController.start(next, context, from);
+						return;
+					}
 				}
 			}
 			if (!this.session || this.session.id !== snapshot.id || !this.session.isActive()) return;
-			endedSession.markEnded(); this.stopPlayback(context.signal); this.publishState(); this.waitingForQueue = true; this.bus.event({ type: "queueEnd" });
-		} finally { this.trackEndTransition = false; }
+			endedSession.markEnded();
+			this.stopPlayback(context.signal);
+			this.publishState();
+			this.waitingForQueue = true;
+			this.bus.event({ type: "queueEnd" });
+		} finally {
+			this.trackEndTransition = false;
+		}
 	}
 
 	private async seek(position: number, context: PlayerMessageContext): Promise<void> {
@@ -355,12 +397,33 @@ export class PlaybackOrchestrator {
 		const duration = x.track.duration > 1000 ? x.track.duration : x.track.duration * 1000;
 		if (position < 0 || position > duration) return;
 		try {
-			await this.bus.request({ type: "[Player]->[Resource]:refresh", requestId: context.requestId, position }, { signal: context.signal, timeoutMs: 30000 });
+			await this.bus.request(
+				{ type: "[Player]->[Resource]:refresh", requestId: context.requestId, position },
+				{ signal: context.signal, timeoutMs: 30000 },
+			);
 			if (context.signal.aborted || !this.matchesContext(x, context)) return;
 			this.bus.event({ type: "seek", track: x.track, position });
 		} catch (error) {
-			if (!context.signal.aborted && this.matchesContext(x, context)) this.bus.event({ type: "TRACK_ERROR", session: x.snapshot(), error: error instanceof Error ? error : new Error(String(error)) });
+			if (!context.signal.aborted && this.matchesContext(x, context))
+				this.bus.event({
+					type: "TRACK_ERROR",
+					session: x.snapshot(),
+					error: error instanceof Error ? error : new Error(String(error)),
+				});
 		}
+	}
+
+	private lifecycleSignal(): AbortSignal {
+		return this.lifecycleAbort.signal;
+	}
+
+	private combinedSignal(signal: AbortSignal): AbortSignal {
+		return AbortSignal.any([signal, this.lifecycleAbort.signal]);
+	}
+
+	private waitForLifecycleAbort(): Promise<void> {
+		if (this.lifecycleAbort.signal.aborted) return Promise.resolve();
+		return new Promise((resolve) => this.lifecycleAbort.signal.addEventListener("abort", () => resolve(), { once: true }));
 	}
 
 	private async skip(context: PlayerMessageContext): Promise<void> {
@@ -372,57 +435,33 @@ export class PlaybackOrchestrator {
 		try {
 			let next = await this.nextThroughBus(true, context);
 			if (!next && this.bus.querySync("queueAutoPlay") && oldSession) {
-				const candidate = await this.prepareAutoplay(oldSession, context);
+				const candidate = await this.preparationController.prepareAutoplay(oldSession, context);
 				if (candidate) {
 					this.bus.requestRpcSync("queue.willNext", { track: null });
 					if (!this.bus.querySync("queueNextTrack")) this.bus.requestRpcSync("queue.addMultiple", { tracks: [candidate] });
 					next = await this.nextThroughBus(true, context);
 				}
 			}
-			if (oldSession?.isActive()) { const endedSnapshot = oldSession.snapshot(); this.bus.event({ type: "TRACK_END", session: endedSnapshot }); oldSession.markEnded(); }
-			if (!next) { this.stopPlayback(context.signal); this.publishState(); this.waitingForQueue = true; this.bus.event({ type: "queueEnd" }); return; }
-			this.waitingForQueue = false;
-			await this.start(next, context, from);
-		} finally { this.trackEndTransition = false; }
-	}
-
-	private async start(track: Track, parentContext: PlayerMessageContext, from: Track | null = null): Promise<void> {
-		if (parentContext.signal.aborted) return;
-		const hasPreload = this.bus.requestRpcSync<{ track: Track }, boolean>("preload.has", { track });
-		if (!this.transitionEnabled()) this.stopPlayback(parentContext.signal, !hasPreload);
-		if (this.session) { this.session.markStopped(); this.session.destroy(); }
-		this.bus.requestRpcSync(CONTROLLER_RPC.trackResetRecovery, {});
-		this.session = new PlaybackSession();
-		const x = this.session;
-		x.begin(track);
-		const context = this.childContext(parentContext, x.sessionId, x.signal);
-		await this.setCurrentThroughBus(track, context);
-		this.bus.event({ type: "TRACK_LOADING", session: x.snapshot() });
-		this.bus.event({ type: "willPlay", track, upcomingTracks: this.queueSnapshot() });
-		try {
-			const loaded = await this.bus.requestRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(CONTROLLER_RPC.trackLoadWithRecovery, { track, session: x }, { signal: context.signal });
-			if (!loaded) throw new Error("Track loader is unavailable");
-			if (context.signal.aborted || !this.matchesContext(x, context)) return;
-			this.bus.event({ type: "TRACK_LOADED", session: x.snapshot() });
-			if (loaded.stream.remote && loaded.stream.handle?.play) {
-				x.setResource(null); await loaded.stream.handle.play(); x.markPlaying(0); this.bus.event({ type: "TRACK_STARTED", session: x.snapshot(), track }); await this.prepareTrack(x, context); return;
+			if (oldSession?.isActive()) {
+				const endedSnapshot = oldSession.snapshot();
+				this.bus.event({ type: "TRACK_END", session: endedSnapshot });
+				oldSession.markEnded();
 			}
-			const filterString = await this.bus.query("filterString");
-			let activeStream = loaded.stream;
-			if (filterString) { const filtered = await this.filterStreamThroughBus(loaded.stream, 0, context); if (!filtered?.stream) throw new Error("Filter controller produced no stream"); activeStream = filtered; }
-			const active = await this.bus.requestRpcSync<{ streamInfo: StreamInfo; session: PlaybackSession }, import("../types").ActiveStream>("controller.stream.replace", { streamInfo: activeStream, session: x });
-			if (context.signal.aborted || !this.matchesContext(x, context)) return;
-			const resource = this.bus.requestRpcSync<{ stream: import("stream").Readable; track: Track; inputType?: import("@discordjs/voice").StreamType }, AudioResource>("resource.create", { stream: active.stream, track, inputType: active.inputType ?? activeStream.inputType });
-			x.setResource(resource); this.bus.requestRpcSync(CONTROLLER_RPC.playbackPlay, { resource, session: x, from, to: track }); x.markPlaying(0); this.bus.event({ type: "TRACK_STARTED", session: x.snapshot(), track }); await this.prepareTrack(x, context);
-		} catch (error) {
-			if (!context.signal.aborted && this.matchesContext(x, context)) this.bus.event({ type: "TRACK_ERROR", session: x.snapshot(), error: error instanceof Error ? error : new Error(String(error)) });
+			if (!next) {
+				this.stopPlayback(context.signal);
+				this.publishState();
+				this.waitingForQueue = true;
+				this.bus.event({ type: "queueEnd" });
+				return;
+			}
+			this.waitingForQueue = false;
+			await this.startController.start(next, context, from);
+		} finally {
+			this.trackEndTransition = false;
 		}
 	}
 
-	private async requestPreload(track: Track, context: PlayerMessageContext): Promise<void> {
-		if (context.signal.aborted) return;
-		try { await this.bus.request({ type: "[Player]->[Preload]:request", requestId: context.requestId, track }, { signal: context.signal, timeoutMs: 30000 }); } catch {}
+	private publishState(): void {
+		this.bus.event({ type: "playbackStateChanged", session: this.session?.snapshot() ?? null });
 	}
-
-	private publishState(): void { this.bus.event({ type: "playbackStateChanged", session: this.session?.snapshot() ?? null }); }
 }

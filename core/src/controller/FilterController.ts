@@ -8,18 +8,7 @@ import { StreamType } from "@discordjs/voice";
 import fs from "node:fs";
 
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
-
-export interface FilterControllerOptions {
-	/** Explicit FFmpeg executable path. Falls back to FFMPEG_PATH, ffmpeg-static, then PATH. */
-	ffmpegPath?: string | null;
-	/** Maximum time to wait for FFmpeg to emit the first seek output bytes. */
-	seekStartupTimeoutMs?: number;
-	onFilterApplied?: (filter: AudioFilter) => void;
-	onFilterRemoved?: (filter: AudioFilter) => void;
-	onFiltersCleared?: () => void;
-	onProcessingError?: (error: Error) => void;
-	initialFilters?: (string | AudioFilter)[];
-}
+import type { FilterControllerOptions } from "../types";
 
 export class FilterController {
 	private activeFilters: AudioFilter[] = [];
@@ -31,7 +20,7 @@ export class FilterController {
 	private seekStartupTimer: ReturnType<typeof setTimeout> | null = null;
 	private lastFilteredStream: StreamInfo | null = null;
 	private readonly detachAction?: () => void;
-	private readonly detachQueries: Array<() => void> = [];
+	private readonly detachBusHandlers: Array<() => void> = [];
 	public StreamType: FilterControllerStreamType = "arbitrary";
 
 	constructor(
@@ -42,7 +31,7 @@ export class FilterController {
 	) {
 		if (bus) {
 			this.detachAction = bus.onAction((action, context) => this.handleAction(action, context.signal));
-			this.detachQueries.push(
+			this.detachBusHandlers.push(
 				bus.registerQuery("filterString", () => this.getFilterString()),
 				bus.registerQuery("filteredStream", () => this.lastFilteredStream),
 			);
@@ -73,7 +62,7 @@ export class FilterController {
 
 	public destroy(): void {
 		this.detachAction?.();
-		for (const detach of this.detachQueries.splice(0)) detach();
+		for (const detach of this.detachBusHandlers.splice(0)) detach();
 		this.activeFilters = [];
 		this.teardownFFmpeg();
 		this.currentInputStream = null;

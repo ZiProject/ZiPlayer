@@ -1,32 +1,13 @@
 import type { Track } from "../types";
 import type { PlayerBus } from "../structures/PlayerBus";
 import { CONTROLLER_RPC, type TransitionBeatWaitRequest, type TransitionPlanRequest } from "./ControllerBusContract";
-
-export interface TransitionControllerOptions {
-	enabled?: boolean;
-	durationMs?: number;
-	smartEnabled?: boolean;
-	genreAware?: boolean;
-	beatAlign?: boolean;
-	baseDurationMs?: number;
-	minDurationMs?: number;
-	maxDurationMs?: number;
-	beatAlignMaxWaitMs?: number;
-	genreDurations?: Record<string, number>;
-	bus?: PlayerBus;
-}
-export interface TransitionPlan {
-	enabled: boolean;
-	durationMs: number;
-	waitForBeat: boolean;
-	beatAlignMaxWaitMs: number;
-}
+import type { TransitionControllerOptions, TransitionPlan } from "../types";
 
 export class TransitionController {
 	private readonly options: Required<Omit<TransitionControllerOptions, "genreDurations" | "bus">> & {
 		genreDurations: Record<string, number>;
 	};
-	private readonly detachQueries: Array<() => void> = [];
+	private readonly detachBusHandlers: Array<() => void> = [];
 	public constructor(options: TransitionControllerOptions = {}) {
 		const minDurationMs = Math.max(0, options.minDurationMs ?? 120);
 		this.options = {
@@ -52,7 +33,7 @@ export class TransitionController {
 			},
 		};
 		if (options.bus) {
-			this.detachQueries.push(
+			this.detachBusHandlers.push(
 				options.bus.registerQuery("transitionSettings", () => this.settings as Record<string, unknown>),
 				options.bus.registerRpc<TransitionPlanRequest, TransitionPlan>(CONTROLLER_RPC.transitionPlan, ({ from, to }) =>
 					this.plan(from, to),
@@ -96,7 +77,7 @@ export class TransitionController {
 		return this.options.enabled;
 	}
 	public dispose(): void {
-		for (const detach of this.detachQueries.splice(0)) detach();
+		for (const detach of this.detachBusHandlers.splice(0)) detach();
 	}
 	private genreOf(track: Track): string | null {
 		const metadata = (track as Track & { metadata?: Record<string, unknown> }).metadata;

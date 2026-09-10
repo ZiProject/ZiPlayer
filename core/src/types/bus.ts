@@ -229,6 +229,15 @@ export interface PlayerRpcOptions {
 	source?: string;
 	priority?: PlayerActionPriority;
 }
+export interface PlayerBusRpcContext {
+	readonly requestId: PlayerRequestId;
+	readonly signal: AbortSignal;
+	readonly timestamp: number;
+}
+export interface PlayerBusRpcOptions {
+	timeoutMs?: number;
+	signal?: AbortSignal;
+}
 export interface PlayerRpcMap {
 	play: { request: { query: string | Track | SearchResult | null; requestedBy?: string }; response: boolean };
 	"volume.set": { request: { value: number }; response: number };

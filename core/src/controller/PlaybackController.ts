@@ -24,8 +24,10 @@ export class PlaybackController {
 	private stuckTimer: ReturnType<typeof setTimeout> | null = null;
 	private resourceRefreshInProgress = false;
 	private readonly recoveryHandlers: AntiStuckRetryHandlers;
+	private readonly lifecycleAbort = new AbortController();
+	private disposed = false;
 	private fadeGain: number | null = null;
-	private readonly detachQueries: Array<() => void> = [];
+	private readonly detachBusHandlers: Array<() => void> = [];
 	private readonly onStateChange: (oldState: AudioPlayerState, newState: AudioPlayerState) => void;
 	private readonly onError: (error: Error) => void;
 
@@ -50,7 +52,7 @@ export class PlaybackController {
 			skip: ({ session }) => this.bus?.action({ type: "SKIP" }, { signal: session.signal, sessionId: session.sessionId }),
 		};
 		if (this.bus) {
-			this.detachQueries.push(
+			this.detachBusHandlers.push(
 				this.bus.subscribe("volumeRequested", () => {
 					if (!this.activeResource) return;
 					const track = this.activeSession?.track ?? (this.activeResource.metadata as Track | undefined);
@@ -76,13 +78,13 @@ export class PlaybackController {
 				this.bus.registerRpc<void, void>(CONTROLLER_RPC.playbackEndResourceRefresh, () => this.endResourceRefresh()),
 				this.bus.registerRpc<{ error: Error }, void>("playback.reportFilterError", ({ error }) => this.reportFilterError(error)),
 			);
-			this.detachQueries.push(
+			this.detachBusHandlers.push(
 				this.bus.registerRpc<{ stream: Readable; track: Track; inputType?: StreamType }, AudioResource>(
 					"resource.create",
 					({ stream, track, inputType }) => this.createResource(stream, track, inputType),
 				),
 			);
-			this.detachQueries.push(
+			this.detachBusHandlers.push(
 				this.bus.registerQuery("audioPlayer", () => this.audioPlayer),
 				this.bus.registerQuery("currentResource", () => this.activeSession?.resource ?? this.activeResource),
 				this.bus.registerQuery("playbackSession", () => this.activeSession?.snapshot() ?? null),
@@ -229,15 +231,21 @@ export class PlaybackController {
 		this.activeResource = resource;
 		this.audioPlayer.play(resource);
 	}
-	public async fadeResourceVolume(resource: AudioResource, from: number, to: number, durationMs: number): Promise<void> {
+	public async fadeResourceVolume(
+		resource: AudioResource,
+		from: number,
+		to: number,
+		durationMs: number,
+		signal: AbortSignal = this.lifecycleAbort.signal,
+	): Promise<void> {
 		if (!resource?.volume) return;
 		const duration = Math.max(0, durationMs);
 		if (duration === 0) {
-			resource.volume.setVolume(to);
+			if (!signal.aborted && !this.disposed) resource.volume.setVolume(to);
 			return;
 		}
 		const start = Date.now();
-		while (true) {
+		while (!signal.aborted && !this.disposed) {
 			const progress = Math.min(1, (Date.now() - start) / duration);
 			resource.volume.setVolume(from + (to - from) * progress);
 			if (progress >= 1) return;
@@ -245,7 +253,7 @@ export class PlaybackController {
 		}
 	}
 	public async applyCrossfadeIn(resource: AudioResource, track: Track): Promise<void> {
-		if (!resource?.volume) return;
+		if (!resource?.volume || this.disposed) return;
 		this.applyTargetVolume(resource, track, 1);
 		const target = resource.volume.volume;
 		resource.volume.setVolume(0);
@@ -254,18 +262,26 @@ export class PlaybackController {
 			0,
 			target,
 			this.requestTransitionPlan(this.activeSession?.track ?? null, track).durationMs,
+			this.lifecycleAbort.signal,
 		);
 	}
 	public async applyCrossfadeOutCurrent(): Promise<void> {
+		if (this.disposed) return;
 		const resource = this.activeResource;
 		if (!resource?.volume) return;
 		const track = this.activeSession?.track ?? (resource.metadata as Track | undefined);
 		const current = Number(resource.volume.volume ?? 0);
-		await this.fadeResourceVolume(resource, current, 0, this.requestTransitionPlan(track ?? null, track ?? null).durationMs);
+		await this.fadeResourceVolume(
+			resource,
+			current,
+			0,
+			this.requestTransitionPlan(track ?? null, track ?? null).durationMs,
+			this.lifecycleAbort.signal,
+		);
 	}
 	public async crossfadeSkipAndStop(): Promise<void> {
 		await this.applyCrossfadeOutCurrent();
-		this.stop();
+		if (!this.disposed) this.stop();
 	}
 	public getTrackTargetVolume(track?: Track | null): number {
 		return this.requestVolumeTarget(track);
@@ -284,7 +300,7 @@ export class PlaybackController {
 		const wait = plan.waitForBeat ? this.requestBeatWait(outgoingTrack, outgoingPosition) : 0;
 		const begin = () => {
 			this.transitionTimer = null;
-			if (session && !session.isActive()) {
+			if (this.disposed || (session && !session.isActive())) {
 				this.cancelFade();
 				return;
 			}
@@ -386,11 +402,13 @@ export class PlaybackController {
 	}
 	public dispose(): void {
 		this.resourceRefreshInProgress = false;
+		this.disposed = true;
+		this.lifecycleAbort.abort();
 		this.cancelTransition();
 		this.clearStuckWatchdog();
 		this.activeSession?.destroy();
 		this.activeSession = null;
-		for (const detach of this.detachQueries.splice(0)) detach();
+		for (const detach of this.detachBusHandlers.splice(0)) detach();
 		this.audioPlayer.removeListener("stateChange", this.onStateChange);
 		this.audioPlayer.removeListener("error", this.onError);
 		this.audioPlayer.stop(true);

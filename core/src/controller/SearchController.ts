@@ -3,17 +3,13 @@ import type { SearchResult, SearchRequest, SearchDebugResult } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
 import type { PlayerBus } from "../structures/PlayerBus";
-
-export interface SearchControllerOptions {
-	extensionManager: ExtensionManager;
-	pluginManager: PluginManager;
-	debug: (...args: any[]) => void;
-	bus?: PlayerBus;
-}
+import type { SearchControllerOptions } from "../types";
 
 /** Owns search orchestration and its cache so Player remains a facade. */
 export class SearchController {
 	private static readonly CACHE_TTL = 2 * 60 * 1000;
+	private readonly lifecycleAbort = new AbortController();
+	private disposed = false;
 	public readonly cache: LRUCache<string, SearchResult>;
 	private readonly detachRpcs: Array<() => void> = [];
 
@@ -43,7 +39,9 @@ export class SearchController {
 	}
 
 	public async search(query: string, requestedBy: string, signal?: AbortSignal): Promise<SearchResult> {
-		this.throwIfAborted(signal);
+		if (this.disposed) throw new Error("SearchController is disposed");
+		const operationSignal = signal ? AbortSignal.any([signal, this.lifecycleAbort.signal]) : this.lifecycleAbort.signal;
+		this.throwIfAborted(operationSignal);
 		this.options.debug(`[SearchController] Search called with query: ${query}, requestedBy: ${requestedBy}`);
 		const cached = this.cache.get(this.key(query));
 		if (cached) {
@@ -51,18 +49,18 @@ export class SearchController {
 			return cached;
 		}
 
-		this.throwIfAborted(signal);
+		this.throwIfAborted(operationSignal);
 		const extensionResult = await this.options.extensionManager.provideSearch(query, requestedBy);
-		this.throwIfAborted(signal);
+		this.throwIfAborted(operationSignal);
 		if (extensionResult?.tracks?.length) {
 			this.options.debug(`[SearchController] Extension handled search for query: ${query}`);
 			this.cacheResult(query, extensionResult);
 			return extensionResult;
 		}
 
-		this.throwIfAborted(signal);
+		this.throwIfAborted(operationSignal);
 		const pluginResult = await this.options.pluginManager.search(query, requestedBy);
-		this.throwIfAborted(signal);
+		this.throwIfAborted(operationSignal);
 		if (pluginResult?.tracks?.length) {
 			this.options.debug(
 				`[SearchController] Plugin search returned ${pluginResult.tracks.length} tracks (score: ${pluginResult.score?.score}%)`,
@@ -106,6 +104,9 @@ export class SearchController {
 	}
 
 	public dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.lifecycleAbort.abort();
 		for (const detach of this.detachRpcs.splice(0)) detach();
 		this.cache.clear();
 	}

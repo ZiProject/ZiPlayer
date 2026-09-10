@@ -1,4 +1,4 @@
-import type { Track, StreamInfo, StreamSlot } from "../types";
+import type { Track, StreamInfo, StreamSlot, PromotedPreload } from "../types";
 import type { StreamManager } from "./StreamManager";
 import type { PlayerBus } from "./PlayerBus";
 interface PreloadManagerDeps {
@@ -10,12 +10,6 @@ interface PreloadManagerDeps {
 	removeTrackFromQueue?: (track: Track) => boolean;
 	isDestroyed: () => boolean;
 	isEnabled: () => boolean;
-}
-export interface PromotedPreload {
-	track: Track;
-	stream: NodeJS.ReadableStream;
-	streamInfo?: StreamInfo;
-	streamId: string | null;
 }
 export class PreloadManager {
 	private readonly streamManager: StreamManager;

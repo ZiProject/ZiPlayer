@@ -7,21 +7,52 @@
  */
 import type { PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
-import type { Track, AntiStuckRetryHandlers, TrackLoadResult } from "../types";
+import type {
+	Track,
+	AntiStuckRetryHandlers,
+	TrackLoadResult,
+	ControllerCommandContext,
+	ControllerCommandHandler,
+	TransitionPlanRequest,
+	TransitionPlanResponse,
+	TransitionBeatWaitRequest,
+	VolumeTargetRequest,
+	VolumeSetRequest,
+	AntiStuckReportRequest,
+	TrackLoadRequest,
+	TrackResetRecoveryRequest,
+	TrackGetRecoveryCountRequest,
+	TtsIsTTSRequest,
+	TtsPlayRequest,
+} from "../types";
 
-export interface ControllerCommandContext {
-	requestId: string;
-	sessionId?: string;
-	signal?: AbortSignal;
-	timestamp?: number;
-}
-
-export type ControllerCommandHandler<TRequest = unknown, TResponse = unknown> = (
-	request: TRequest,
-	context: ControllerCommandContext,
-) => TResponse | Promise<TResponse>;
+export type {
+	ControllerCommandContext,
+	ControllerCommandHandler,
+	TransitionPlanRequest,
+	TransitionPlanResponse,
+	TransitionBeatWaitRequest,
+	VolumeTargetRequest,
+	VolumeSetRequest,
+	AntiStuckReportRequest,
+	TrackLoadRequest,
+	TrackResetRecoveryRequest,
+	TrackGetRecoveryCountRequest,
+	TtsIsTTSRequest,
+	TtsPlayRequest,
+} from "../types";
 
 export const CONTROLLER_RPC = {
+	play: "play",
+	playbackDestroyCurrentStream: "playback.destroyCurrentStream",
+	playbackRecover: "playback.recover",
+	playbackLoadFresh: "playback.loadFresh",
+	playbackRemote: "playback.remote",
+	playbackLoadFreshCurrent: "playback.loadFreshCurrent",
+	playbackPromotePreload: "playback.promotePreload",
+	preloadHas: "preload.has",
+	streamReplace: "controller.stream.replace",
+	resourceCreate: "resource.create",
 	transitionPlan: "controller.transition.plan",
 	transitionBeatWait: "controller.transition.beatWait",
 	volumeTarget: "controller.volume.target",
@@ -41,69 +72,11 @@ export const CONTROLLER_RPC = {
 	ttsPlay: "controller.tts.play",
 } as const;
 
-export interface TransitionPlanRequest {
-	from: Track | null;
-	to: Track | null;
-}
-
-export interface TransitionPlanResponse {
-	enabled: boolean;
-	durationMs: number;
-	waitForBeat: boolean;
-	beatAlignMaxWaitMs: number;
-}
-
-export interface TransitionBeatWaitRequest {
-	track: Track | null;
-	positionMs: number;
-}
-
-export interface VolumeTargetRequest {
-	track?: Track | null;
-}
-
-export interface VolumeSetRequest {
-	value: number;
-}
-
-export interface AntiStuckReportRequest {
-	session: PlaybackSession;
-	reason: string;
-	handlers: AntiStuckRetryHandlers;
-}
-
-export interface TrackLoadRequest {
-	track: Track;
-	session: PlaybackSession;
-}
-
-export interface TrackResetRecoveryRequest {
-	track?: Track;
-}
-
-export interface TrackGetRecoveryCountRequest {
-	track: Track;
-}
-
-export interface TtsIsTTSRequest {
-	track: Track;
-}
-
-export interface TtsPlayRequest {
-	track: Track;
-}
-
-export function requestTransitionPlan(
-	bus: PlayerBus,
-	request: TransitionPlanRequest,
-): Promise<TransitionPlanResponse> {
+export function requestTransitionPlan(bus: PlayerBus, request: TransitionPlanRequest): Promise<TransitionPlanResponse> {
 	return bus.requestRpc<TransitionPlanRequest, TransitionPlanResponse>(CONTROLLER_RPC.transitionPlan, request);
 }
 
-export function requestTransitionBeatWait(
-	bus: PlayerBus,
-	request: TransitionBeatWaitRequest,
-): Promise<number> {
+export function requestTransitionBeatWait(bus: PlayerBus, request: TransitionBeatWaitRequest): Promise<number> {
 	return bus.requestRpc<TransitionBeatWaitRequest, number>(CONTROLLER_RPC.transitionBeatWait, request);
 }
 
@@ -115,9 +88,6 @@ export function requestVolumeSet(bus: PlayerBus, request: VolumeSetRequest): Pro
 	return bus.requestRpc<VolumeSetRequest, number>(CONTROLLER_RPC.volumeSet, request);
 }
 
-export function requestAntiStuckReport(
-	bus: PlayerBus,
-	request: AntiStuckReportRequest,
-): Promise<boolean> {
+export function requestAntiStuckReport(bus: PlayerBus, request: AntiStuckReportRequest): Promise<boolean> {
 	return bus.requestRpc<AntiStuckReportRequest, boolean>(CONTROLLER_RPC.antiStuckReport, request);
 }
