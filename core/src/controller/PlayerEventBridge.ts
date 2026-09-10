@@ -1,6 +1,5 @@
 import type { Player } from "../structures/Player";
 import type { PlayerEventType, PlayerBus, PlayerEvent } from "../structures/PlayerBus";
-
 import { PlayerEventDebug } from "./PlayerEventDebug";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
 
@@ -19,44 +18,14 @@ export class PlayerEventBridge {
 	) {
 		this.previousQueue = player.bus.querySync("queue") ?? [];
 		this.debug("attached", { queueSize: this.previousQueue.length });
-
 		const events: PlayerEventType[] = [
-			"initialized",
-			"ready",
-			"destroyed",
-			"TRACK_LOADING",
-			"TRACK_LOADED",
-			"TRACK_STARTED",
-			"TRACK_ERROR",
-			"TRACK_END",
-			"STREAM_ABORTED",
-			"playbackStateChanged",
-			"playbackSessionCreated",
-			"trackRequested",
-			"stateChanged",
-			"STUCK_DETECTED",
-			"RECOVERY_STARTED",
-			"RECOVERY_FAILED",
-			"preloadStateChanged",
-			"preloadPromoted",
-			"preloadCancelled",
-			"queueChanged",
-			"volumeRequested",
-			"willPlay",
-			"queueEnd",
-			"playerPause",
-			"playerResume",
-			"playerStop",
-			"seek",
-			"filterApplied",
-			"filterRemoved",
-			"filtersCleared",
-			"streamError",
-			"forwardModeStart",
-			"forwardModeEnd",
+			"initialized", "ready", "destroyed", "TRACK_LOADING", "TRACK_LOADED", "TRACK_STARTED", "TRACK_ERROR", "TRACK_END",
+			"STREAM_ABORTED", "playbackStateChanged", "playbackSessionCreated", "trackRequested", "stateChanged", "STUCK_DETECTED",
+			"RECOVERY_STARTED", "RECOVERY_FAILED", "preloadStateChanged", "preloadPromoted", "preloadCancelled", "queueChanged",
+			"volumeRequested", "willPlay", "queueEnd", "playerPause", "playerResume", "playerStop", "seek", "filterApplied",
+			"filterRemoved", "filtersCleared", "streamError", "forwardModeStart", "forwardModeEnd",
 		];
 		for (const type of events) this.detach.push(this.bus.subscribe(type, (event) => this.forward(event)));
-
 		this.detach.push(
 			this.bus.onOutput("[Connection]->[Player]:error", (event) => {
 				if (this.disposed || this.player.destroyed) return;
@@ -76,33 +45,19 @@ export class PlayerEventBridge {
 			this.debug("DROP EVENT", { ...describeEvent(event), reason: this.disposed ? "disposed" : "player-destroyed" });
 			return;
 		}
-
 		const trace = traceEvent(event);
 		const publicType = this.toPublicEventName(event.type);
 		if (!publicType) {
 			this.debug("UNMAPPED BUS EVENT", { ...describeEvent(event), sequence: trace.sequence });
 			return;
 		}
-
 		const args = this.toArgs(event);
 		const previous = this.recent.get(trace.fingerprint);
 		if (previous !== undefined) {
-			this.debug("DUPLICATE PROPAGATION", {
-				sequence: trace.sequence,
-				previousSequence: previous,
-				fingerprint: trace.fingerprint,
-				...describeEvent(event),
-			});
+			this.debug("DUPLICATE PROPAGATION", { sequence: trace.sequence, previousSequence: previous, fingerprint: trace.fingerprint, ...describeEvent(event) });
 		}
 		this.recent.set(trace.fingerprint, trace.sequence);
-
-		this.debug("BUS -> PLAYER", {
-			sequence: trace.sequence,
-			busEvent: event.type,
-			playerEvent: publicType,
-			args: this.describeArgs(event, args),
-		});
-
+		this.debug("BUS -> PLAYER", { sequence: trace.sequence, busEvent: event.type, playerEvent: publicType, args: this.describeArgs(event, args) });
 		try {
 			this.player.emit(publicType, ...args);
 			this.emitQueueCompatibilityEvents(event);
@@ -163,7 +118,7 @@ export class PlayerEventBridge {
 			case "queueChanged": return [event.queue];
 			case "volumeRequested": return [event.oldVolume, event.newVolume];
 			case "willPlay": return [event.track, event.upcomingTracks];
-			case "playerPause':
+			case "playerPause":
 			case "playerResume": return [event.track];
 			case "seek": return [{ track: event.track, position: event.position }];
 			case "filterApplied":
@@ -174,7 +129,7 @@ export class PlayerEventBridge {
 			case "preloadStateChanged": return [event.state];
 			case "preloadPromoted": return [event.track];
 			case "preloadCancelled": return [];
-			case "initialized':
+			case "initialized":
 			case "ready":
 			case "destroyed": return [];
 			default: return "session" in event && event.session ? [event.session] : [];
@@ -199,29 +154,18 @@ export class PlayerEventBridge {
 		}
 	}
 
-	private trackIdentity(track: any): string | undefined {
-		return track?.id ?? track?.url;
-	}
-
+	private trackIdentity(track: any): string | undefined { return track?.id ?? track?.url; }
 	private describeArgs(event: PlayerEvent, args: any[]): any {
 		if (event.type === "TRACK_ERROR") return { error: event.error?.message, track: event.session.track?.id };
 		return args;
 	}
-
 	private debug(message: string, ...args: any[]): void {
-		try {
-			this.eventDebug.bridge("debug", `[PlayerEventBridge:${this.player.guildId}] ${message}`, ...args);
-		} catch {
-			// Debugging must never affect playback/event propagation.
-		}
+		try { this.eventDebug.bridge("debug", `[PlayerEventBridge:${this.player.guildId}] ${message}`, ...args); } catch { /* Debugging must never affect playback/event propagation. */ }
 	}
-
 	public dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		for (const unsubscribe of this.detach.splice(0)) {
-			try { unsubscribe(); } catch { /* noop */ }
-		}
+		for (const unsubscribe of this.detach.splice(0)) { try { unsubscribe(); } catch { /* noop */ } }
 		this.recent.clear();
 	}
 }
