@@ -283,6 +283,14 @@ export class PlayerBus {
 		}
 	}
 
+	public get isDisposed(): boolean {
+		return this.disposed;
+	}
+
+	public hasRpc(type: string): boolean {
+		return this.rpcHandlers.has(type);
+	}
+
 	public registerRpc<TRequest, TResponse>(type: string, handler: RpcHandler<TRequest, TResponse>): () => void {
 		if (this.disposed) return () => undefined;
 		this.rpcHandlers.set(type, handler);

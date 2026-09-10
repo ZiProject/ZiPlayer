@@ -1,6 +1,7 @@
 import type { PlayerBus } from "../structures/PlayerBus";
 import type { PluginManager } from "../plugins";
 import type { BasePlugin } from "../plugins/BasePlugin";
+import type { Track } from "../types";
 
 export interface PluginControllerOptions {
 	pluginManager: PluginManager;
@@ -17,6 +18,10 @@ export class PluginController {
 			bus.registerQuery("availablePlugins", () => pluginManager.getAll()),
 			bus.registerRpc<{ plugin: BasePlugin }, void>("plugin.add", ({ plugin }) => pluginManager.register(plugin)),
 			bus.registerRpc<{ name: string }, boolean>("plugin.remove", ({ name }) => pluginManager.unregister(name)),
+			bus.registerRpc<{ track: Track; history?: Track[] }, Track[]>("plugin.relatedTracks", async ({ track, history }) => {
+				const result = await pluginManager.getRelatedTracks(track, { history });
+				return result ?? [];
+			}),
 		);
 	}
 

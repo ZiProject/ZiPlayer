@@ -12,13 +12,25 @@ import type {
 	TrackLoadResult,
 	TrackResolveContext,
 } from "../types";
-import type { Player } from "./Player";
 import type { PromotedPreload } from "./PreloadManager";
 import { CONTROLLER_RPC } from "../controller/ControllerBusContract";
 
 export interface PlaybackOrchestratorOptions {
-	player?: Player;
+	debug?: (message?: any, ...optionalParams: any[]) => void;
 	relatedTrackResolver?: (track: Track, context?: TrackResolveContext) => Promise<Track[] | null | undefined>;
+	trackLoader?: {
+		load?: (track: Track, session: any) => Promise<any>;
+		loadWithRecovery?: (track: Track, session: any) => Promise<any>;
+		resetRecovery?: (track?: Track) => void;
+		getRecoveryCount?: (track: Track) => number;
+	};
+	playbackController?: {
+		play: (resource: any, session: any, from?: any, to?: any) => void | Promise<void>;
+		stop?: () => void;
+	};
+	queueController?: unknown;
+	streamController?: unknown;
+	preloadController?: unknown;
 }
 
 export class PlaybackOrchestrator {
@@ -39,6 +51,45 @@ export class PlaybackOrchestrator {
 		options: PlaybackOrchestratorOptions = {},
 	) {
 		this.o = options;
+		if (options.trackLoader) {
+			if (!bus.hasRpc(CONTROLLER_RPC.trackLoadWithRecovery) && options.trackLoader.loadWithRecovery) {
+				this.detachRpcs.push(
+					bus.registerRpc(CONTROLLER_RPC.trackLoadWithRecovery, async ({ track, session }) =>
+						options.trackLoader!.loadWithRecovery!(track, session),
+					),
+				);
+			}
+			if (!bus.hasRpc(CONTROLLER_RPC.trackLoad) && options.trackLoader.load) {
+				this.detachRpcs.push(
+					bus.registerRpc(CONTROLLER_RPC.trackLoad, async ({ track, session }) =>
+						options.trackLoader!.load!(track, session),
+					),
+				);
+			}
+			if (!bus.hasRpc(CONTROLLER_RPC.trackResetRecovery) && options.trackLoader.resetRecovery) {
+				this.detachRpcs.push(
+					bus.registerRpc(CONTROLLER_RPC.trackResetRecovery, ({ track }) => {
+						options.trackLoader!.resetRecovery!(track);
+					}),
+				);
+			}
+		}
+		if (options.playbackController) {
+			if (!bus.hasRpc(CONTROLLER_RPC.playbackPlay)) {
+				this.detachRpcs.push(
+					bus.registerRpc(CONTROLLER_RPC.playbackPlay, ({ resource, session, from, to }) =>
+						options.playbackController!.play(resource, session, from, to),
+					),
+				);
+			}
+			if (!bus.hasRpc(CONTROLLER_RPC.playbackStop) && options.playbackController.stop) {
+				this.detachRpcs.push(
+					bus.registerRpc(CONTROLLER_RPC.playbackStop, () => {
+						options.playbackController!.stop!();
+					}),
+				);
+			}
+		}
 		this.detachAction = bus.onAction((a, c) => this.handleAction(a, c));
 		this.detachTrackEnd = bus.subscribe("TRACK_END", (event) => {
 			const session = event.session;

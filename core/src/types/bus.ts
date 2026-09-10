@@ -269,6 +269,7 @@ export interface PlayerRpcMap {
 	"resource.create": { request: { stream: Readable; track: Track; inputType?: string }; response: AudioResource };
 	"track.middleware": { request: { track: Track }; response: Track };
 	"stream.resolve": { request: { track: Track; fresh?: boolean }; response: StreamInfo | null };
+	"preload.has": { request: { track: Track }; response: boolean };
 	"preload.next": { request: undefined; response: void };
 	"preload.cancel": { request: undefined; response: void };
 	"preload.cancelSafe": { request: undefined; response: void };
@@ -279,6 +280,7 @@ export interface PlayerRpcMap {
 	};
 	"plugin.add": { request: { plugin: BasePlugin }; response: void };
 	"plugin.remove": { request: { name: string }; response: boolean };
+	"plugin.relatedTracks": { request: { track: Track; history?: Track[] }; response: Track[] };
 	"extension.add": { request: { extension: BaseExtension }; response: void };
 	"extension.remove": { request: { extension: BaseExtension }; response: boolean };
 	save: { request: { track: Track; options?: SaveOptions | string }; response: Readable };
@@ -292,6 +294,10 @@ export type PlayerRpcHandler<TRequest, TResponse> = (
 ) => TResponse | Promise<TResponse>;
 
 export interface PlayerQueryMap {
+	audioPlayer: import("@discordjs/voice").AudioPlayer | null;
+	"tts.hasPlayer": boolean;
+	"stream.stats": Record<string, unknown> | null;
+	ttsInterrupt: boolean;
 	currentTrack: Track | null;
 	queueCurrent: Track | null;
 	playerState: PlaybackSessionSnapshot["status"];

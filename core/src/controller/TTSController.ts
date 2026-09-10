@@ -19,6 +19,7 @@ export interface TTSControllerOptions {
 	maxTimeTts?: number;
 	/** TTS output volume, expressed as a percentage (0-100). */
 	volume?: number;
+	interrupt?: boolean;
 	bus?: PlayerBus;
 }
 
@@ -34,6 +35,7 @@ export class TTSController {
 	private readonly onEnd?: () => void;
 	private readonly maxTimeTts: number;
 	private readonly volume: number;
+	private readonly interrupt: boolean;
 	private activeResource: AudioResource | null = null;
 	private running: Promise<void> | null = null;
 	private readonly onError: (error: Error) => void;
@@ -50,6 +52,7 @@ export class TTSController {
 		this.maxTimeTts =
 			Number.isFinite(options.maxTimeTts) && (options.maxTimeTts as number) > 0 ? (options.maxTimeTts as number) : 60_000;
 		this.volume = Number.isFinite(options.volume) ? Math.max(0, Math.min(100, options.volume as number)) : 100;
+		this.interrupt = options.interrupt ?? true;
 		this.ttsPlayer = new AudioPlayer();
 		this.onError = (error) => {
 			this.debug("[TTSController] audio player error:", error instanceof Error ? error : new Error(String(error)));
@@ -59,6 +62,7 @@ export class TTSController {
 		if (options.bus) {
 			this.detachRpcs.push(
 				options.bus.registerQuery("tts.hasPlayer", () => Boolean(this.ttsPlayer)),
+				options.bus.registerQuery("ttsInterrupt", () => this.interrupt),
 				options.bus.registerRpc<TtsIsTTSRequest, boolean>(CONTROLLER_RPC.ttsIsTTS, ({ track }) => this.isTTS(track)),
 				options.bus.registerRpc<TtsPlayRequest, void>(CONTROLLER_RPC.ttsPlay, ({ track }) => this.play(track)),
 			);
