@@ -50,7 +50,7 @@ export class SearchController {
 		}
 
 		this.throwIfAborted(operationSignal);
-		const extensionResult = await this.options.extensionManager.provideSearch(query, requestedBy);
+		const extensionResult = await this.options.extensionManager.provideSearch(query, requestedBy, operationSignal);
 		this.throwIfAborted(operationSignal);
 		if (extensionResult?.tracks?.length) {
 			this.options.debug(`[SearchController] Extension handled search for query: ${query}`);
@@ -59,7 +59,7 @@ export class SearchController {
 		}
 
 		this.throwIfAborted(operationSignal);
-		const pluginResult = await this.options.pluginManager.search(query, requestedBy);
+		const pluginResult = await this.options.pluginManager.search(query, requestedBy, operationSignal);
 		this.throwIfAborted(operationSignal);
 		if (pluginResult?.tracks?.length) {
 			this.options.debug(

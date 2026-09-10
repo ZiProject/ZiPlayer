@@ -31,6 +31,7 @@ import { PluginManager } from "../plugins";
 import { ExtensionManager } from "../extensions";
 import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { SaveController } from "../controller/SaveController";
+import { PlaybackSessionController } from "../controller/PlaybackSessionController";
 import type { Track } from "../types";
 
 /** Composition root and lifecycle owner. It contains no playback workflow. */
@@ -167,10 +168,10 @@ export class PlayerRuntimeController {
 			},
 		});
 		const playerConnectionBridge = new PlayerConnectionBridge({ player, bus: this.bus, debug, guildId });
-		const orchestrator = new PlaybackOrchestrator(this.bus, { debug });
+		const sessionController = new PlaybackSessionController(this.bus);
+		const orchestrator = new PlaybackOrchestrator(this.bus, { debug, sessionController });
 		const resourceRefreshController = new ResourceRefreshController({
 			bus: this.bus,
-			getSession: () => orchestrator.currentSession,
 		});
 		const searchController = new SearchController({ extensionManager, pluginManager, debug, bus: this.bus });
 		const debugTracer = new PlayerEventDebug(this.bus, guildId, debug, manager.debugLevel ?? "info");
@@ -200,6 +201,7 @@ export class PlayerRuntimeController {
 			resourceRefreshController,
 			playerConnectionBridge,
 			orchestrator,
+			sessionController,
 			ttsController,
 			debugTracer,
 			searchController,
@@ -227,6 +229,7 @@ export class PlayerRuntimeController {
 			"volumeController",
 			"preloadController",
 			"playerConnectionBridge",
+			"sessionController",
 			"orchestrator",
 			"resourceRefreshController",
 			"ttsController",

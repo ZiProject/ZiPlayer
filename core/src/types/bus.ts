@@ -1,4 +1,5 @@
 import type { AudioPlayerState, VoiceConnection } from "@discordjs/voice";
+import type { PlaybackSession } from "../structures/PlaybackSession";
 import type {
 	Track,
 	StreamInfo,
@@ -327,6 +328,7 @@ export interface PlayerQueryMap {
 	relatedTracks: Track[];
 	queueSerialized: object;
 	playbackSession: PlaybackSessionSnapshot | null;
+	playbackSessionInternal: PlaybackSession | null;
 	currentResource: unknown | null;
 	position: number | null;
 	queueNextTrack: Track | null;

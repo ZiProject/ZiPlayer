@@ -1,6 +1,7 @@
 import type { AudioResource } from "@discordjs/voice";
 import type { PlayerBus } from "../structures/PlayerBus";
 import { PlaybackSession } from "../structures/PlaybackSession";
+import type { PlaybackSessionController } from "./PlaybackSessionController";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 import type { PlayerMessageContext, StreamInfo, Track, TrackLoadResult } from "../types";
 import type { PlaybackStartControllerOptions } from "../types";
@@ -8,16 +9,14 @@ import type { PlaybackStartControllerOptions } from "../types";
 /** Owns loading and starting one playback session through the Bus. */
 export class PlaybackStartController {
 	private readonly bus: PlayerBus;
-	private readonly getSession: PlaybackStartControllerOptions["getSession"];
-	private readonly setSession: PlaybackStartControllerOptions["setSession"];
+	private readonly sessionController: PlaybackSessionController;
 	private readonly transitionEnabled: PlaybackStartControllerOptions["transitionEnabled"];
 	private readonly stopPlayback: PlaybackStartControllerOptions["stopPlayback"];
 	private readonly prepareTrack: PlaybackStartControllerOptions["prepareTrack"];
 
 	constructor(options: PlaybackStartControllerOptions) {
 		this.bus = options.bus;
-		this.getSession = options.getSession;
-		this.setSession = options.setSession;
+		this.sessionController = options.sessionController;
 		this.transitionEnabled = options.transitionEnabled;
 		this.stopPlayback = options.stopPlayback;
 		this.prepareTrack = options.prepareTrack;
@@ -28,16 +27,9 @@ export class PlaybackStartController {
 		const hasPreload = this.bus.requestRpcSync<{ track: Track }, boolean>(CONTROLLER_RPC.preloadHas, { track });
 		if (!this.transitionEnabled()) this.stopPlayback(parentContext.signal, !hasPreload);
 
-		const previousSession = this.getSession();
-		if (previousSession) {
-			previousSession.markStopped();
-			previousSession.destroy();
-		}
 		this.bus.requestRpcSync(CONTROLLER_RPC.trackResetRecovery, {});
 
-		const session = new PlaybackSession();
-		session.begin(track);
-		this.setSession(session);
+		const session = this.sessionController.replace(track);
 		const context = this.childContext(parentContext, session.sessionId, session.signal);
 		await this.setCurrentThroughBus(track, context);
 		this.bus.event({ type: "TRACK_LOADING", session: session.snapshot() });
@@ -94,7 +86,7 @@ export class PlaybackStartController {
 	}
 
 	private isCurrentSession(session: PlaybackSession, context: PlayerMessageContext): boolean {
-		return this.getSession() === session && session.ownsContext(context.sessionId);
+		return this.sessionController.current === session && session.ownsContext(context.sessionId);
 	}
 
 	private queueSnapshot(): Track[] {

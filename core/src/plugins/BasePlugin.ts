@@ -6,7 +6,7 @@ export abstract class BasePlugin implements SourcePlugin {
 	priority?: number = 0; // Higher = run first
 
 	abstract canHandle(query: string): boolean;
-	abstract search(query: string, requestedBy: string): Promise<SearchResult>;
+	abstract search(query: string, requestedBy: string, signal?: AbortSignal): Promise<SearchResult>;
 	abstract getStream(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
 
 	/** Optional direct video resolver for plugins that expose video media. */

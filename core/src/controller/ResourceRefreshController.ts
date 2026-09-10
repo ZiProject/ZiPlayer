@@ -11,7 +11,6 @@ export class ResourceRefreshController {
 	private readonly detach: () => void;
 	private readonly detachRpc: () => void;
 	private readonly bus: PlayerBus;
-	private readonly getSession: ResourceRefreshControllerOptions["getSession"];
 	private readonly lifecycleAbort = new AbortController();
 	private refreshSequence = 0;
 	private refreshAbortController: AbortController | null = null;
@@ -19,7 +18,6 @@ export class ResourceRefreshController {
 
 	constructor(options: ResourceRefreshControllerOptions) {
 		this.bus = options.bus;
-		this.getSession = options.getSession;
 		this.detachRpc = this.bus.registerRpc<{ position: number }, PlaybackSessionSnapshot>(
 			"playback.refreshResource",
 			({ position }, context) => this.refreshResource(position, context),
@@ -41,7 +39,7 @@ export class ResourceRefreshController {
 	}
 
 	private async refreshResource(position: number, rpcContext: PlayerBusRpcContext): Promise<PlaybackSessionSnapshot> {
-		const session = this.getSession();
+		const session = this.bus.querySync("playbackSessionInternal");
 		if (this.disposed || !session?.track || !session.isActive()) throw new Error("No active playback session");
 		const sessionId = session.id;
 		const refreshSequence = ++this.refreshSequence;
@@ -57,7 +55,7 @@ export class ResourceRefreshController {
 			!this.disposed &&
 			refreshSequence === this.refreshSequence &&
 			!signal.aborted &&
-			this.getSession()?.owns(sessionId) === true;
+			this.bus.querySync("playbackSessionInternal")?.owns(sessionId) === true;
 		try {
 			const info = await this.bus.requestRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>(
 				"stream.resolve",

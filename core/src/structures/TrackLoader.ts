@@ -12,6 +12,7 @@ import type {
 import type { PlaybackSession } from "./PlaybackSession";
 import type { PreloadManager } from "./PreloadManager";
 import type { PlayerBus } from "./PlayerBus";
+import { CONTROLLER_RPC } from "../controller/ControllerBusContract";
 
 const TRACK_LOADER_RPC = {
 	load: "controller.track.load",
@@ -50,6 +51,24 @@ export class TrackLoader {
 		this.bus = options.bus;
 		if (this.bus) {
 			this.detachRpcs.push(
+				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+					CONTROLLER_RPC.playbackRecover,
+					({ track, session }, context) =>
+						this.bus!.requestRpc(CONTROLLER_RPC.trackLoadWithRecovery, { track, session }, { signal: context.signal }),
+				),
+				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+					CONTROLLER_RPC.playbackLoadFresh,
+					({ track, session }, context) =>
+						this.bus!.requestRpc(CONTROLLER_RPC.trackLoad, { track, session }, { signal: context.signal }),
+				),
+				this.bus.registerRpc<{ track: Track }, TrackLoadResult | null>(
+					CONTROLLER_RPC.playbackLoadFreshCurrent,
+					({ track }, context) => {
+						const session = this.bus!.querySync("playbackSessionInternal");
+						if (!session) return null;
+						return this.bus!.requestRpc(CONTROLLER_RPC.trackLoad, { track, session }, { signal: context.signal });
+					},
+				),
 				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
 					TRACK_LOADER_RPC.load,
 					({ track, session }) => this.load(track, session),

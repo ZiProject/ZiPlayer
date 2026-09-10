@@ -3,6 +3,7 @@ import { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
 import type { PlayerBus } from "../structures/PlayerBus";
+import { CONTROLLER_RPC } from "./ControllerBusContract";
 
 const STREAM_RPC_REPLACE = "controller.stream.replace";
 
@@ -21,8 +22,19 @@ export class StreamController {
 				if (!context.signal.aborted && action.type === "STOP") this.abortCurrent();
 			});
 			this.detachRpcs.push(
-				this.bus.registerRpc<{ streamInfo: StreamInfo; session: PlaybackSession }, ActiveStream>(STREAM_RPC_REPLACE, ({ streamInfo, session }) =>
-					this.replace(streamInfo, session),
+				this.bus.registerRpc<{ track: Track; stream: { handle?: { play?: () => void | Promise<void> } } }, boolean>(
+					CONTROLLER_RPC.playbackRemote,
+					async ({ stream }) => {
+						if (stream?.handle?.play) await stream.handle.play();
+						return true;
+					},
+				),
+				this.bus.registerRpc<void, void>(CONTROLLER_RPC.playbackDestroyCurrentStream, () => {
+					this.abortCurrent();
+				}),
+				this.bus.registerRpc<{ streamInfo: StreamInfo; session: PlaybackSession }, ActiveStream>(
+					STREAM_RPC_REPLACE,
+					({ streamInfo, session }) => this.replace(streamInfo, session),
 				),
 				this.bus.registerQuery("stream.stats", () => this.streamManager?.getStats() ?? null),
 			);

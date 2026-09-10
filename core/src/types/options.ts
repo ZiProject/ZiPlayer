@@ -15,6 +15,10 @@ import type { PlayerEventDebug } from "../controller/PlayerEventDebug";
 import type { PlayerConnectionBridge } from "../controller/PlayerConnectionBridge";
 import type { PlayerEventBridge } from "../controller/PlayerEventBridge";
 import type { PlaybackController } from "../controller/PlaybackController";
+import type { PlaybackSessionController } from "../controller/PlaybackSessionController";
+import type { PlaybackPreparationController } from "../controller/PlaybackPreparationController";
+import type { PlaybackStartController } from "../controller/PlaybackStartController";
+import type { PlaybackSkipController } from "../controller/PlaybackSkipController";
 import type { StreamController } from "../controller/StreamController";
 import type { FilterController } from "../controller/FilterController";
 import type { QueueController } from "../controller/QueueController";
@@ -34,8 +38,7 @@ import type { ForwardController } from "../controller/ForwardController";
 import type { PlayerOptions, Track, TrackMiddleware, StreamInfo, TrackLoadResult } from "./index";
 export interface PlaybackStartControllerOptions {
 	bus: PlayerBus;
-	getSession: () => PlaybackSession | null;
-	setSession: (session: PlaybackSession | null) => void;
+	sessionController: PlaybackSessionController;
 	transitionEnabled: () => boolean;
 	stopPlayback: (signal: AbortSignal, cancelPreload?: boolean) => void;
 	prepareTrack: (session: PlaybackSession, context: import("./bus").PlayerMessageContext) => Promise<void>;
@@ -46,9 +49,38 @@ export interface PlaybackPreparationControllerOptions {
 	queueSnapshot: () => Track[];
 	setQueueRelated: (tracks: Track[]) => void;
 }
+export interface PlaybackSkipControllerOptions {
+	bus: PlayerBus;
+	sessionController: PlaybackSessionController;
+	preparationController: PlaybackPreparationController;
+	startController: PlaybackStartController;
+	nextThroughBus: (ignoreLoop: boolean, context: import("./bus").PlayerMessageContext) => Promise<Track | null>;
+	stopPlayback: (signal: AbortSignal) => void;
+	publishState: () => void;
+	setWaitingForQueue: (waiting: boolean) => void;
+	setTrackEndTransition: (active: boolean) => void;
+}
+export interface PlaybackTrackEndControllerOptions {
+	bus: PlayerBus;
+	sessionController: PlaybackSessionController;
+	preparationController: PlaybackPreparationController;
+	startController: PlaybackStartController;
+	nextThroughBus: (ignoreLoop: boolean, context: import("./bus").PlayerMessageContext) => Promise<Track | null>;
+	stopPlayback: (signal: AbortSignal) => void;
+	publishState: () => void;
+	queueSnapshot: () => Track[];
+	lifecycleSignal: AbortSignal;
+}
+export interface PlaybackPlayControllerOptions {
+	bus: PlayerBus;
+	sessionController: PlaybackSessionController;
+	skipController: PlaybackSkipController;
+	isWaitingForQueue: () => boolean;
+	debug: (message?: any, ...optionalParams: any[]) => void;
+	lifecycleSignal: AbortSignal;
+}
 export interface ResourceRefreshControllerOptions {
 	bus: PlayerBus;
-	getSession: () => PlaybackSession | null;
 }
 export interface SaveControllerOptions {
 	middleware?: TrackMiddleware[];
@@ -132,6 +164,7 @@ export interface PlayerConnectionBridgeOptions {
 }
 export interface PlaybackOrchestratorOptions {
 	debug?: (...args: any[]) => void;
+	sessionController?: PlaybackSessionController;
 }
 export interface PlayerRuntimeGraph {
 	connectionController: ConnectionController;
@@ -158,6 +191,7 @@ export interface PlayerRuntimeGraph {
 	resourceRefreshController: ResourceRefreshController;
 	playerConnectionBridge: PlayerConnectionBridge;
 	orchestrator: PlaybackOrchestrator;
+	sessionController: PlaybackSessionController;
 	ttsController: TTSController;
 	debugTracer: PlayerEventDebug;
 	searchController: SearchController;
