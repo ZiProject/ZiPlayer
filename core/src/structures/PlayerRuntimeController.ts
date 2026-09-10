@@ -21,6 +21,7 @@ import { TTSController } from "../controller/TTSController";
 import { PlayerEventBridge } from "../controller/PlayerEventBridge";
 import { PlayerEventDebug } from "../controller/PlayerEventDebug";
 import { ResourceRefreshController } from "../controller/ResourceRefreshController";
+import { PlayerConnectionBridge } from "../controller/PlayerConnectionBridge";
 import { SearchController } from "../controller/SearchController";
 import { StreamManager } from "./StreamManager";
 import { PreloadManager } from "./PreloadManager";
@@ -50,6 +51,7 @@ export interface PlayerRuntimeGraph {
 	volumeController: VolumeController;
 	preloadController: PreloadController;
 	resourceRefreshController: ResourceRefreshController;
+	playerConnectionBridge: PlayerConnectionBridge;
 	orchestrator: PlaybackOrchestrator;
 	ttsController: TTSController;
 	debugTracer: PlayerEventDebug;
@@ -80,7 +82,6 @@ export class PlayerRuntimeController {
 		debug: (...args: any[]) => void,
 	): PlayerRuntimeGraph {
 		if (this.disposed) throw new Error("PlayerRuntimeController is disposed");
-
 		const guildId = player.guildId;
 		const middleware: TrackMiddleware[] = [
 			...manager.getTrackMiddlewareChain(),
@@ -90,7 +91,6 @@ export class PlayerRuntimeController {
 					? [options.trackMiddleware]
 					: []),
 		];
-
 		const audioPlayer = createAudioPlayer({
 			behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: 100 },
 		});
@@ -118,7 +118,6 @@ export class PlayerRuntimeController {
 			onEnd: () => player.emit("ttsEnd"),
 			bus: this.bus,
 		});
-
 		const queueController = new QueueController({ bus: this.bus });
 		const resolver = new TrackResolver({ streamManager, pluginManager, extensionManager });
 		const preloadManager = new PreloadManager({
@@ -198,6 +197,7 @@ export class PlayerRuntimeController {
 			onProcessingError: (error) => playbackController.reportFilterError(error),
 		});
 		const resourceRefreshController = new ResourceRefreshController({ bus: this.bus });
+		const playerConnectionBridge = new PlayerConnectionBridge({ player, bus: this.bus, debug, guildId });
 		const orchestrator = new PlaybackOrchestrator(this.bus, {
 			debug,
 			relatedTrackResolver: (track, ctx) =>
@@ -227,13 +227,13 @@ export class PlayerRuntimeController {
 			volumeController,
 			preloadController,
 			resourceRefreshController,
+			playerConnectionBridge,
 			orchestrator,
 			ttsController,
 			debugTracer,
 			searchController,
 			eventBridge,
 		};
-
 		for (const [name, controller] of Object.entries(graph)) this.monitor(name, controller);
 		return graph;
 	}
