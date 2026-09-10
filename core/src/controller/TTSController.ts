@@ -13,8 +13,6 @@ export interface TTSControllerOptions {
 	connection?: VoiceConnection | null;
 	audioPlayer?: AudioPlayer;
 	debug?: (...args: any[]) => void;
-	onStart?: (track: Track) => void;
-	onEnd?: () => void;
 	/** Maximum amount of time a TTS playback may remain active. */
 	maxTimeTts?: number;
 	/** TTS output volume, expressed as a percentage (0-100). */
@@ -31,8 +29,7 @@ export class TTSController {
 	private readonly debug: (...args: any[]) => void;
 	private connection: VoiceConnection | null;
 	private readonly audioPlayer?: AudioPlayer;
-	private readonly onStart?: (track: Track) => void;
-	private readonly onEnd?: () => void;
+	private readonly bus?: PlayerBus;
 	private readonly maxTimeTts: number;
 	private readonly volume: number;
 	private readonly interrupt: boolean;
@@ -46,9 +43,8 @@ export class TTSController {
 		this.extensionManager = options.extensionManager;
 		this.connection = options.connection ?? null;
 		this.audioPlayer = options.audioPlayer;
+		this.bus = options.bus;
 		this.debug = options.debug ?? (() => undefined);
-		this.onStart = options.onStart;
-		this.onEnd = options.onEnd;
 		this.maxTimeTts =
 			Number.isFinite(options.maxTimeTts) && (options.maxTimeTts as number) > 0 ? (options.maxTimeTts as number) : 60_000;
 		this.volume = Number.isFinite(options.volume) ? Math.max(0, Math.min(100, options.volume as number)) : 100;
@@ -65,6 +61,8 @@ export class TTSController {
 				options.bus.registerQuery("ttsInterrupt", () => this.interrupt),
 				options.bus.registerRpc<TtsIsTTSRequest, boolean>(CONTROLLER_RPC.ttsIsTTS, ({ track }) => this.isTTS(track)),
 				options.bus.registerRpc<TtsPlayRequest, void>(CONTROLLER_RPC.ttsPlay, ({ track }) => this.play(track)),
+				options.bus.onOutput("[Connection]->[Player]:connected", (event) => this.setConnection(event.connection)),
+				options.bus.onOutput("[Connection]->[Player]:disconnected", () => this.setConnection(null)),
 			);
 		}
 	}
@@ -92,10 +90,7 @@ export class TTSController {
 		}
 	}
 
-	/**
-	 * Legacy-compatible TTS interrupt playback.
-	 * TTS uses a dedicated AudioPlayer and is not part of normal track lifecycle events.
-	 */
+	/** Legacy-compatible TTS interrupt playback. */
 	public play(track: Track): Promise<void> {
 		if (!this.isTTS(track)) return Promise.reject(new Error("Track is not a TTS track"));
 		if (this.running) return this.running;
@@ -108,49 +103,40 @@ export class TTSController {
 	private async playInternal(track: Track): Promise<void> {
 		const connection = this.connection;
 		if (!connection) throw new Error("Cannot play TTS without a voice connection");
-
 		const wasPlaying = this.audioPlayer?.state.status === AudioPlayerStatus.Playing;
 		let started = false;
-
 		try {
 			const streamInfo = await this.resolve(track);
 			const stream = streamInfo.stream as Readable;
 			const resource = createAudioResource(stream as any, { metadata: track, inlineVolume: true });
 			this.activeResource = resource;
 			resource.volume?.setVolume(this.volume / 100);
-
 			if (wasPlaying) this.audioPlayer?.pause(true);
 			connection.subscribe(this.ttsPlayer);
-
-			// Preserve Player.old.ts ordering: subscribe -> ttsStart -> play.
-			this.onStart?.(track);
+			void this.bus?.requestRpc("player.emitTtsStart", { track }).catch((error) =>
+				this.debug("[TTSController] failed to publish ttsStart:", error),
+			);
 			started = true;
 			this.ttsPlayer.play(resource);
-
 			await this.waitForPlayingOrIdle();
-			if (this.ttsPlayer.state.status === AudioPlayerStatus.Playing) {
-				await this.waitForIdle(track);
-			}
+			if (this.ttsPlayer.state.status === AudioPlayerStatus.Playing) await this.waitForIdle(track);
 		} finally {
 			this.activeResource = null;
 			this.ttsPlayer.stop(true);
-
 			if (this.audioPlayer) {
 				connection.subscribe(this.audioPlayer);
-				if (wasPlaying && this.audioPlayer.state.status === AudioPlayerStatus.Paused) {
-					this.audioPlayer.unpause();
-				}
+				if (wasPlaying && this.audioPlayer.state.status === AudioPlayerStatus.Paused) this.audioPlayer.unpause();
 			}
-
-			if (started) this.onEnd?.();
+			if (started)
+				void this.bus?.requestRpc("player.emitTtsEnd", undefined).catch((error) =>
+					this.debug("[TTSController] failed to publish ttsEnd:", error),
+				);
 		}
 	}
 
 	private waitForPlayingOrIdle(): Promise<void> {
 		const status = this.ttsPlayer.state.status;
-		if (status === AudioPlayerStatus.Playing || status === AudioPlayerStatus.Idle) {
-			return Promise.resolve();
-		}
+		if (status === AudioPlayerStatus.Playing || status === AudioPlayerStatus.Idle) return Promise.resolve();
 		return new Promise((resolve) => {
 			const onState = (_oldState: AudioPlayerState, newState: AudioPlayerState) => {
 				if (newState.status === AudioPlayerStatus.Playing || newState.status === AudioPlayerStatus.Idle) {
@@ -164,15 +150,9 @@ export class TTSController {
 
 	private waitForIdle(track: Track): Promise<void> {
 		if (this.ttsPlayer.state.status === AudioPlayerStatus.Idle) return Promise.resolve();
-
-		// Track.duration is expressed in seconds by the TTSPlugin. Convert it to
-		// milliseconds before using it as a playback timeout. Treat very small or
-		// invalid values as unknown so a metadata value such as `5` cannot cause a
-		// 1.5s timeout and truncate a multi-second sentence.
 		const declaredSeconds = Number.isFinite(track.duration) && track.duration > 0 ? track.duration : undefined;
 		const declaredMs = declaredSeconds !== undefined ? declaredSeconds * 1_000 : undefined;
 		const idleTimeout = declaredMs ? Math.min(this.maxTimeTts, Math.max(1_000, declaredMs + 1_500)) : this.maxTimeTts;
-
 		return new Promise((resolve) => {
 			let timer: ReturnType<typeof setTimeout> | null = null;
 			const cleanup = () => {
@@ -202,7 +182,7 @@ export class TTSController {
 	}
 
 	dispose(): void {
-		for (const detach of this.detachRpcs) detach();
+		for (const detach of this.detachRpcs.splice(0)) detach();
 		this.ttsPlayer.removeListener("error", this.onError);
 		this.ttsPlayer.stop(true);
 		this.activeResource = null;
