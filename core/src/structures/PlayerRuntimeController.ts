@@ -129,17 +129,20 @@ export class PlayerRuntimeController {
 		const preloadManager = new PreloadManager({
 			streamManager,
 			debug,
-			getNextTrack: () => (queueController.loop() === "track" ? queueController.currentTrack : queueController.nextTrack),
-			getStream: (track) => resolver.resolve(track, () => player.destroyed),
+			getNextTrack: () =>
+				this.bus.querySync("queueLoop") === "track"
+					? this.bus.querySync("queueCurrent")
+					: this.bus.querySync("queueNextTrack"),
+			getStream: (track) => resolver.resolve(track, () => this.disposed),
 			removeTrackFromQueue: (track) => {
-				const next = queueController.nextTrack;
+				const next = this.bus.querySync("queueNextTrack");
 				const same =
 					next === track ||
 					(next?.id !== undefined && track.id !== undefined && next.id === track.id) ||
 					(next?.url !== undefined && track.url !== undefined && next.url === track.url);
-				return same ? queueController.remove(0) !== null : false;
+				return same ? this.bus.requestRpcSync("queue.remove", { index: 0 }) !== null : false;
 			},
-			isDestroyed: () => player.destroyed,
+			isDestroyed: () => this.disposed,
 			isEnabled: () =>
 				!(options.lowPerformance && options.preload?.autoDisableInLowPerformance) &&
 				(options.preload?.enabled ?? true),
@@ -147,7 +150,7 @@ export class PlayerRuntimeController {
 		const trackLoader = new TrackLoader({
 			middleware,
 			context: { player, manager },
-			resolvers: [(track) => resolver.resolve(track, () => player.destroyed)],
+			resolvers: [(track) => resolver.resolve(track, () => this.disposed)],
 			recovery: options.antiStuck,
 			preloadManager,
 			qualityController: {
@@ -185,6 +188,10 @@ export class PlayerRuntimeController {
 			bus: this.bus,
 			stuckTimeoutMs: options.antiStuck?.stuckTimeoutMs,
 		});
+		this.monitorCleanup(
+			"playback.filterError.rpc",
+			this.bus.registerRpc<{ error: Error }, void>("playback.reportFilterError", ({ error }) => playbackController.reportFilterError(error)),
+		);
 		const streamController = new StreamController({ streamManager, bus: this.bus });
 		const saveController = new SaveController({
 			middleware: [async (track) => trackLoader.applyMiddleware(track)],
@@ -200,7 +207,9 @@ export class PlayerRuntimeController {
 			onFilterApplied: (filter) => this.bus.event({ type: "filterApplied", filter }),
 			onFilterRemoved: (filter) => this.bus.event({ type: "filterRemoved", filter }),
 			onFiltersCleared: () => this.bus.event({ type: "filtersCleared" }),
-			onProcessingError: (error) => playbackController.reportFilterError(error),
+			onProcessingError: (error) => {
+				void this.bus.requestRpc("playback.reportFilterError", { error }).catch(() => undefined);
+			},
 		});
 		const resourceRefreshController = new ResourceRefreshController({ bus: this.bus });
 		const playerConnectionBridge = new PlayerConnectionBridge({ player, bus: this.bus, debug, guildId });
