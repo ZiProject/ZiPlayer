@@ -1,6 +1,6 @@
 import type { AudioPlayer } from "@discordjs/voice";
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
-import type { PlayerOptions, TrackMiddleware, StreamInfo, PlayerInput } from "../types";
+import type { PlayerOptions, TrackMiddleware } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 import type { Player } from "./Player";
 import { PlayerBus } from "./PlayerBus";
@@ -19,8 +19,9 @@ import { LifecycleController } from "../controller/LifecycleController";
 import { ForwardController } from "../controller/ForwardController";
 import { TTSController } from "../controller/TTSController";
 import { PlayerEventBridge } from "../controller/PlayerEventBridge";
-import { SearchController } from "../controller/SearchController";
 import { PlayerEventDebug } from "../controller/PlayerEventDebug";
+import { ResourceRefreshController } from "../controller/ResourceRefreshController";
+import { SearchController } from "../controller/SearchController";
 import { StreamManager } from "./StreamManager";
 import { PreloadManager } from "./PreloadManager";
 import { PluginManager } from "../plugins";
@@ -48,6 +49,7 @@ export interface PlayerRuntimeGraph {
 	transitionController: TransitionController;
 	volumeController: VolumeController;
 	preloadController: PreloadController;
+	resourceRefreshController: ResourceRefreshController;
 	orchestrator: PlaybackOrchestrator;
 	ttsController: TTSController;
 	debugTracer: PlayerEventDebug;
@@ -195,7 +197,7 @@ export class PlayerRuntimeController {
 			onFiltersCleared: () => this.bus.event({ type: "filtersCleared" }),
 			onProcessingError: (error) => playbackController.reportFilterError(error),
 		});
-
+		const resourceRefreshController = new ResourceRefreshController({ bus: this.bus });
 		const orchestrator = new PlaybackOrchestrator(this.bus, {
 			debug,
 			relatedTrackResolver: (track, ctx) =>
@@ -224,6 +226,7 @@ export class PlayerRuntimeController {
 			transitionController,
 			volumeController,
 			preloadController,
+			resourceRefreshController,
 			orchestrator,
 			ttsController,
 			debugTracer,
