@@ -22,6 +22,8 @@ import { PlayerEventBridge } from "../controller/PlayerEventBridge";
 import { PlayerEventDebug } from "../controller/PlayerEventDebug";
 import { ResourceRefreshController } from "../controller/ResourceRefreshController";
 import { PlayerConnectionBridge } from "../controller/PlayerConnectionBridge";
+import { PluginController } from "../controller/PluginController";
+import { ExtensionController } from "../controller/ExtensionController";
 import { SearchController } from "../controller/SearchController";
 import { StreamManager } from "./StreamManager";
 import { PreloadManager } from "./PreloadManager";
@@ -40,6 +42,8 @@ export interface PlayerRuntimeGraph {
 	preloadManager: PreloadManager;
 	pluginManager: PluginManager;
 	extensionManager: ExtensionManager;
+	pluginController: PluginController;
+	extensionController: ExtensionController;
 	queueController: QueueController;
 	trackLoader: TrackLoader;
 	playbackController: PlaybackController;
@@ -107,6 +111,8 @@ export class PlayerRuntimeController {
 		const pluginManager = new PluginManager(player, manager, { extractorTimeout: options.extractorTimeout });
 		pluginManager.setStreamManager(streamManager);
 		const extensionManager = new ExtensionManager(player, manager);
+		const pluginController = new PluginController({ pluginManager, bus: this.bus });
+		const extensionController = new ExtensionController({ extensionManager, bus: this.bus });
 		const ttsController = new TTSController({
 			pluginManager,
 			extensionManager,
@@ -206,7 +212,6 @@ export class PlayerRuntimeController {
 		const searchController = new SearchController({ extensionManager, pluginManager, debug, bus: this.bus });
 		const debugTracer = new PlayerEventDebug(this.bus, guildId, debug, manager.debugLevel ?? "info");
 		const eventBridge = new PlayerEventBridge(player, manager, this.bus, debugTracer);
-
 		const graph: PlayerRuntimeGraph = {
 			connectionController,
 			lifecycleController,
@@ -216,6 +221,8 @@ export class PlayerRuntimeController {
 			preloadManager,
 			pluginManager,
 			extensionManager,
+			pluginController,
+			extensionController,
 			queueController,
 			trackLoader,
 			playbackController,
