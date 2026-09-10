@@ -58,7 +58,6 @@ export interface PlaybackSkipControllerOptions {
 	stopPlayback: (signal: AbortSignal) => void;
 	publishState: () => void;
 	setWaitingForQueue: (waiting: boolean) => void;
-	setTrackEndTransition: (active: boolean) => void;
 }
 export interface PlaybackTrackEndControllerOptions {
 	bus: PlayerBus;

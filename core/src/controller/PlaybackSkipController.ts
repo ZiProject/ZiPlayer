@@ -15,7 +15,6 @@ export class PlaybackSkipController {
 	private readonly stopPlayback: PlaybackSkipControllerOptions["stopPlayback"];
 	private readonly publishState: PlaybackSkipControllerOptions["publishState"];
 	private readonly setWaitingForQueue: PlaybackSkipControllerOptions["setWaitingForQueue"];
-	private readonly setTrackEndTransition: PlaybackSkipControllerOptions["setTrackEndTransition"];
 
 	public constructor(options: PlaybackSkipControllerOptions) {
 		this.bus = options.bus;
@@ -26,7 +25,6 @@ export class PlaybackSkipController {
 		this.stopPlayback = options.stopPlayback;
 		this.publishState = options.publishState;
 		this.setWaitingForQueue = options.setWaitingForQueue;
-		this.setTrackEndTransition = options.setTrackEndTransition;
 	}
 
 	public async skip(context: PlayerMessageContext): Promise<void> {
@@ -34,7 +32,7 @@ export class PlaybackSkipController {
 		const from = this.sessionController.current?.track ?? null;
 		const oldSession = this.sessionController.current;
 		if (oldSession && context.sessionId && oldSession.sessionId !== context.sessionId) return;
-		this.setTrackEndTransition(true);
+		this.bus.requestRpcSync("playback.transitionLock", { active: true });
 		try {
 			let next = await this.nextThroughBus(true, context);
 			if (!next && this.bus.querySync("queueAutoPlay") && oldSession) {
@@ -59,7 +57,7 @@ export class PlaybackSkipController {
 			this.setWaitingForQueue(false);
 			await this.startController.start(next, context, from);
 		} finally {
-			this.setTrackEndTransition(false);
+			this.bus.requestRpcSync("playback.transitionLock", { active: false });
 		}
 	}
 }

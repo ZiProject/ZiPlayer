@@ -266,6 +266,7 @@ export interface PlayerRpcMap {
 	"playback.refreshResource": { request: { position: number }; response: PlaybackSessionSnapshot };
 	"playback.loadFreshCurrent": { request: { track: Track }; response: TrackLoadResult | null };
 	"playback.promotePreload": { request: { track: Track }; response: AudioResource | null };
+	"playback.transitionLock": { request: { active: boolean }; response: void };
 	"forward.health": { request: undefined; response: ForwardHealthStatus };
 	"forward.subscribe": { request: { leader: unknown; options?: { forwardMode?: boolean } }; response: boolean };
 	"forward.unsubscribe": { request: { reason?: string }; response: boolean };

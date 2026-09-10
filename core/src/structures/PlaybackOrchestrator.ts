@@ -67,7 +67,6 @@ export class PlaybackOrchestrator {
 			stopPlayback: (signal) => this.stopPlayback(signal),
 			publishState: () => this.publishState(),
 			setWaitingForQueue: (waiting) => this.trackEndController.setWaitingForQueue(waiting),
-			setTrackEndTransition: () => undefined,
 		});
 		this.playController = new PlaybackPlayController({
 			bus,

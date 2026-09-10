@@ -6,6 +6,7 @@ import type { PlaybackStartController } from "./PlaybackStartController";
 import type { PlayerMessageContext, PlaybackSessionSnapshot, Track } from "../types";
 import type { PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackTrackEndControllerOptions } from "../types";
+import { CONTROLLER_RPC } from "./ControllerBusContract";
 import { PlayerActionPriority } from "../types";
 
 /** Owns TRACK_END, queue refill, autoplay fallback, and queue-end transitions. */
@@ -23,6 +24,7 @@ export class PlaybackTrackEndController {
 	private waitingForQueue = false;
 	private queueStartPromise: Promise<void> | null = null;
 	private queueStartGeneration = 0;
+	private readonly detachRpcs: Array<() => void> = [];
 
 	public constructor(options: PlaybackTrackEndControllerOptions) {
 		this.bus = options.bus;
@@ -34,6 +36,11 @@ export class PlaybackTrackEndController {
 		this.publishState = options.publishState;
 		this.queueSnapshot = options.queueSnapshot;
 		this.lifecycleSignal = options.lifecycleSignal;
+		this.detachRpcs.push(
+			this.bus.registerRpc<{ active: boolean }, void>(CONTROLLER_RPC.playbackTransitionLock, ({ active }) => {
+				if (!this.lifecycleSignal.aborted) this.trackEndTransition = active;
+			}),
+		);
 	}
 
 	public get isTransitioning(): boolean {
@@ -49,6 +56,10 @@ export class PlaybackTrackEndController {
 
 	public setWaitingForQueue(waiting: boolean): void {
 		if (!this.lifecycleSignal.aborted) this.waitingForQueue = waiting;
+	}
+
+	public setTrackEndTransition(active: boolean): void {
+		if (!this.lifecycleSignal.aborted) this.trackEndTransition = active;
 	}
 
 	public async waitForQueue(signal: AbortSignal): Promise<void> {
@@ -128,6 +139,7 @@ export class PlaybackTrackEndController {
 		this.queueStartPromise = null;
 		this.trackEndTransition = false;
 		this.waitingForQueue = false;
+		for (const detach of this.detachRpcs.splice(0)) detach();
 	}
 
 	private async startQueuedTrackAfterEnd(): Promise<void> {
