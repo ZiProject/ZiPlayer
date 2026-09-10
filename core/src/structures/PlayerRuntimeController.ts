@@ -120,8 +120,6 @@ export class PlayerRuntimeController {
 			debug,
 			maxTimeTts: options.tts?.maxTimeTts,
 			volume: options.tts?.volume ?? options.volume ?? 100,
-			onStart: (track) => player.emit("ttsStart", { track }),
-			onEnd: () => player.emit("ttsEnd"),
 			bus: this.bus,
 		});
 		const queueController = new QueueController({ bus: this.bus });
@@ -191,6 +189,14 @@ export class PlayerRuntimeController {
 		this.monitorCleanup(
 			"playback.filterError.rpc",
 			this.bus.registerRpc<{ error: Error }, void>("playback.reportFilterError", ({ error }) => playbackController.reportFilterError(error)),
+		);
+		this.monitorCleanup(
+			"tts.publicEvents.rpc",
+			this.bus.registerRpc<{ track: Track }, void>("player.emitTtsStart", ({ track }) => player.emit("ttsStart", { track })),
+		);
+		this.monitorCleanup(
+			"tts.publicEnd.rpc",
+			this.bus.registerRpc<void, void>("player.emitTtsEnd", () => player.emit("ttsEnd")),
 		);
 		const streamController = new StreamController({ streamManager, bus: this.bus });
 		const saveController = new SaveController({
