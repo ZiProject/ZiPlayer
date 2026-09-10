@@ -204,11 +204,7 @@ export class PlayerRuntimeController {
 		});
 		const resourceRefreshController = new ResourceRefreshController({ bus: this.bus });
 		const playerConnectionBridge = new PlayerConnectionBridge({ player, bus: this.bus, debug, guildId });
-		const orchestrator = new PlaybackOrchestrator(this.bus, {
-			debug,
-			relatedTrackResolver: (track, ctx) =>
-				pluginManager.getRelatedTracks(track, ctx ?? { history: player.previousTracks }),
-		});
+		const orchestrator = new PlaybackOrchestrator(this.bus, { debug });
 		const searchController = new SearchController({ extensionManager, pluginManager, debug, bus: this.bus });
 		const debugTracer = new PlayerEventDebug(this.bus, guildId, debug, manager.debugLevel ?? "info");
 		const eventBridge = new PlayerEventBridge(player, manager, this.bus, debugTracer);
