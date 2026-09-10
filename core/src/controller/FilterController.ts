@@ -18,7 +18,7 @@ export interface FilterControllerOptions {
 	onFilterRemoved?: (filter: AudioFilter) => void;
 	onFiltersCleared?: () => void;
 	onProcessingError?: (error: Error) => void;
-	initialFilters?: AudioFilter[];
+	initialFilters?: (string | AudioFilter)[];
 }
 
 export class FilterController {

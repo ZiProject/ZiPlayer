@@ -40,6 +40,7 @@ export interface PlayerRuntimeGraph {
 	audioPlayer: AudioPlayer;
 	streamManager: StreamManager;
 	preloadManager: PreloadManager;
+	trackResolver: TrackResolver;
 	pluginManager: PluginManager;
 	extensionManager: ExtensionManager;
 	pluginController: PluginController;
@@ -89,11 +90,9 @@ export class PlayerRuntimeController {
 		const guildId = player.guildId;
 		const middleware: TrackMiddleware[] = [
 			...manager.getTrackMiddlewareChain(),
-			...(Array.isArray(options.trackMiddleware)
-				? options.trackMiddleware
-				: options.trackMiddleware
-					? [options.trackMiddleware]
-					: []),
+			...(Array.isArray(options.trackMiddleware) ? options.trackMiddleware
+			: options.trackMiddleware ? [options.trackMiddleware]
+			: []),
 		];
 		const audioPlayer = createAudioPlayer({
 			behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: 100 },
@@ -123,27 +122,20 @@ export class PlayerRuntimeController {
 			bus: this.bus,
 		});
 		const queueController = new QueueController({ bus: this.bus });
-		const resolver = new TrackResolver({ streamManager, pluginManager, extensionManager });
+		const resolver = new TrackResolver({
+			streamManager,
+			pluginManager,
+			extensionManager,
+			bus: this.bus,
+			isDestroyed: () => this.disposed,
+		});
 		const preloadManager = new PreloadManager({
 			streamManager,
 			debug,
-			getNextTrack: () =>
-				this.bus.querySync("queueLoop") === "track"
-					? this.bus.querySync("queueCurrent")
-					: this.bus.querySync("queueNextTrack"),
-			getStream: (track) => resolver.resolve(track, () => this.disposed),
-			removeTrackFromQueue: (track) => {
-				const next = this.bus.querySync("queueNextTrack");
-				const same =
-					next === track ||
-					(next?.id !== undefined && track.id !== undefined && next.id === track.id) ||
-					(next?.url !== undefined && track.url !== undefined && next.url === track.url);
-				return same ? this.bus.requestRpcSync("queue.remove", { index: 0 }) !== null : false;
-			},
+			bus: this.bus,
 			isDestroyed: () => this.disposed,
 			isEnabled: () =>
-				!(options.lowPerformance && options.preload?.autoDisableInLowPerformance) &&
-				(options.preload?.enabled ?? true),
+				!(options.lowPerformance && options.preload?.autoDisableInLowPerformance) && (options.preload?.enabled ?? true),
 		});
 		const trackLoader = new TrackLoader({
 			middleware,
@@ -162,9 +154,9 @@ export class PlayerRuntimeController {
 		});
 		const transitionController = new TransitionController({
 			enabled:
-				options.lowPerformance && options.crossfade?.autoDisableInLowPerformance
-					? false
-					: (options.crossfade?.enabled ?? options.crossfade?.autoEnable ?? true),
+				options.lowPerformance && options.crossfade?.autoDisableInLowPerformance ?
+					false
+				:	(options.crossfade?.enabled ?? options.crossfade?.autoEnable ?? true),
 			durationMs: options.crossfade?.durationMs,
 			smartEnabled: options.smartTransition?.enabled ?? true,
 			genreAware: options.smartTransition?.genreAware ?? true,
@@ -186,18 +178,6 @@ export class PlayerRuntimeController {
 			bus: this.bus,
 			stuckTimeoutMs: options.antiStuck?.stuckTimeoutMs,
 		});
-		this.monitorCleanup(
-			"playback.filterError.rpc",
-			this.bus.registerRpc<{ error: Error }, void>("playback.reportFilterError", ({ error }) => playbackController.reportFilterError(error)),
-		);
-		this.monitorCleanup(
-			"tts.publicEvents.rpc",
-			this.bus.registerRpc<{ track: Track }, void>("player.emitTtsStart", ({ track }) => player.emit("ttsStart", { track })),
-		);
-		this.monitorCleanup(
-			"tts.publicEnd.rpc",
-			this.bus.registerRpc<void, void>("player.emitTtsEnd", () => player.emit("ttsEnd")),
-		);
 		const streamController = new StreamController({ streamManager, bus: this.bus });
 		const saveController = new SaveController({
 			middleware: [async (track) => trackLoader.applyMiddleware(track)],
@@ -230,6 +210,7 @@ export class PlayerRuntimeController {
 			audioPlayer,
 			streamManager,
 			preloadManager,
+			trackResolver: resolver,
 			pluginManager,
 			extensionManager,
 			pluginController,

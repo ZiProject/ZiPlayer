@@ -1,10 +1,12 @@
 import type { Track, StreamInfo, StreamSlot } from "../types";
 import type { StreamManager } from "./StreamManager";
+import type { PlayerBus } from "./PlayerBus";
 interface PreloadManagerDeps {
 	streamManager: StreamManager;
 	debug: (message?: any, ...optionalParams: any[]) => void;
-	getNextTrack: () => Track | null;
-	getStream: (track: Track) => Promise<StreamInfo | null>;
+	bus?: PlayerBus;
+	getNextTrack?: () => Track | null;
+	getStream?: (track: Track) => Promise<StreamInfo | null>;
 	removeTrackFromQueue?: (track: Track) => boolean;
 	isDestroyed: () => boolean;
 	isEnabled: () => boolean;
@@ -18,8 +20,9 @@ export interface PromotedPreload {
 export class PreloadManager {
 	private readonly streamManager: StreamManager;
 	private readonly debugLog: (message?: any, ...optionalParams: any[]) => void;
-	private readonly getNextTrack: () => Track | null;
-	private readonly getStream: (track: Track) => Promise<StreamInfo | null>;
+	private readonly bus?: PlayerBus;
+	private readonly getNextTrackFallback?: () => Track | null;
+	private readonly getStreamFallback?: (track: Track) => Promise<StreamInfo | null>;
 	private readonly removeTrackFromQueue?: (track: Track) => boolean;
 	private readonly isDestroyed: () => boolean;
 	private readonly isEnabled: () => boolean;
@@ -38,11 +41,34 @@ export class PreloadManager {
 	constructor(deps: PreloadManagerDeps) {
 		this.streamManager = deps.streamManager;
 		this.debugLog = deps.debug;
-		this.getNextTrack = deps.getNextTrack;
-		this.getStream = deps.getStream;
+		this.bus = deps.bus;
+		this.getNextTrackFallback = deps.getNextTrack;
+		this.getStreamFallback = deps.getStream;
 		this.removeTrackFromQueue = deps.removeTrackFromQueue;
 		this.isDestroyed = deps.isDestroyed;
 		this.isEnabled = deps.isEnabled;
+	}
+	private getNextTrack(): Track | null {
+		if (this.bus)
+			return this.bus.querySync("queueLoop") === "track" ?
+					this.bus.querySync("queueCurrent")
+				:	this.bus.querySync("queueNextTrack");
+		return this.getNextTrackFallback?.() ?? null;
+	}
+	private getStream(track: Track): Promise<StreamInfo | null> {
+		if (this.bus) return this.bus.requestRpc("stream.resolve", { track });
+		return this.getStreamFallback?.(track) ?? Promise.resolve(null);
+	}
+	private removeTrack(track: Track): boolean {
+		if (this.bus) {
+			const next = this.bus.querySync("queueNextTrack");
+			const same =
+				next === track ||
+				(next?.id !== undefined && track.id !== undefined && next.id === track.id) ||
+				(next?.url !== undefined && track.url !== undefined && next.url === track.url);
+			return same ? this.bus.requestRpcSync("queue.remove", { index: 0 }) !== null : false;
+		}
+		return this.removeTrackFromQueue?.(track) ?? false;
 	}
 	private trackMatches(a: Track | null, b: Track | null): boolean {
 		if (!a || !b) return false;
@@ -183,7 +209,7 @@ export class PreloadManager {
 			throw new Error("PRELOAD_CANCELLED");
 		}
 		if (!streamInfo?.stream && !streamInfo?.url && !streamInfo?.recreate) {
-			if (this.removeTrackFromQueue?.(track)) this.debugLog(`[Preload] Removed unplayable track from queue: ${track.title}`);
+			if (this.removeTrack(track)) this.debugLog(`[Preload] Removed unplayable track from queue: ${track.title}`);
 			throw new Error("No stream available");
 		}
 

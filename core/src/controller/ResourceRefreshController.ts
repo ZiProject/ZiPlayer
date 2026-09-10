@@ -7,8 +7,10 @@ export interface ResourceRefreshControllerOptions {
 /** Bridges Player resource refresh requests to playback.refreshResource RPC. */
 export class ResourceRefreshController {
 	private readonly detach: () => void;
+	private readonly bus: PlayerBus;
 
 	constructor(options: ResourceRefreshControllerOptions) {
+		this.bus = options.bus;
 		this.detach = options.bus.onInput("[Player]->[Resource]:refresh", (event) => {
 			void this.handleRefresh(event);
 		});

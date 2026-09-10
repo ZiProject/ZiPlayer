@@ -296,7 +296,15 @@ export type PlayerRpcHandler<TRequest, TResponse> = (
 export interface PlayerQueryMap {
 	audioPlayer: import("@discordjs/voice").AudioPlayer | null;
 	"tts.hasPlayer": boolean;
-	"stream.stats": Record<string, unknown> | null;
+	"stream.stats": {
+		active: number;
+		paused: number;
+		ended: number;
+		error: number;
+		destroyed: number;
+		total: number;
+		bySource: Record<string, number>;
+	} | null;
 	ttsInterrupt: boolean;
 	currentTrack: Track | null;
 	queueCurrent: Track | null;

@@ -74,6 +74,7 @@ export class PlaybackController {
 				this.bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackStop, () => this.stop()),
 				this.bus.registerRpc<void, void>(CONTROLLER_RPC.playbackBeginResourceRefresh, () => this.beginResourceRefresh()),
 				this.bus.registerRpc<void, void>(CONTROLLER_RPC.playbackEndResourceRefresh, () => this.endResourceRefresh()),
+				this.bus.registerRpc<{ error: Error }, void>("playback.reportFilterError", ({ error }) => this.reportFilterError(error)),
 			);
 			this.detachQueries.push(
 				this.bus.registerRpc<{ stream: Readable; track: Track; inputType?: StreamType }, AudioResource>(
