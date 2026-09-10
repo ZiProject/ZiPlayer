@@ -13,8 +13,6 @@ export interface TTSControllerOptions {
 	connection?: VoiceConnection | null;
 	audioPlayer?: AudioPlayer;
 	debug?: (...args: any[]) => void;
-	onStart?: (track: Track) => void;
-	onEnd?: () => void;
 	/** Maximum amount of time a TTS playback may remain active. */
 	maxTimeTts?: number;
 	/** TTS output volume, expressed as a percentage (0-100). */
@@ -31,8 +29,7 @@ export class TTSController {
 	private readonly debug: (...args: any[]) => void;
 	private connection: VoiceConnection | null;
 	private readonly audioPlayer?: AudioPlayer;
-	private readonly onStart?: (track: Track) => void;
-	private readonly onEnd?: () => void;
+	private readonly bus?: PlayerBus;
 	private readonly maxTimeTts: number;
 	private readonly volume: number;
 	private readonly interrupt: boolean;
@@ -46,9 +43,8 @@ export class TTSController {
 		this.extensionManager = options.extensionManager;
 		this.connection = options.connection ?? null;
 		this.audioPlayer = options.audioPlayer;
+		this.bus = options.bus;
 		this.debug = options.debug ?? (() => undefined);
-		this.onStart = options.onStart;
-		this.onEnd = options.onEnd;
 		this.maxTimeTts =
 			Number.isFinite(options.maxTimeTts) && (options.maxTimeTts as number) > 0 ? (options.maxTimeTts as number) : 60_000;
 		this.volume = Number.isFinite(options.volume) ? Math.max(0, Math.min(100, options.volume as number)) : 100;
@@ -117,7 +113,9 @@ export class TTSController {
 			resource.volume?.setVolume(this.volume / 100);
 			if (wasPlaying) this.audioPlayer?.pause(true);
 			connection.subscribe(this.ttsPlayer);
-			this.onStart?.(track);
+			void this.bus?.requestRpc("player.emitTtsStart", { track }).catch((error) =>
+				this.debug("[TTSController] failed to publish ttsStart:", error),
+			);
 			started = true;
 			this.ttsPlayer.play(resource);
 			await this.waitForPlayingOrIdle();
@@ -129,7 +127,10 @@ export class TTSController {
 				connection.subscribe(this.audioPlayer);
 				if (wasPlaying && this.audioPlayer.state.status === AudioPlayerStatus.Paused) this.audioPlayer.unpause();
 			}
-			if (started) this.onEnd?.();
+			if (started)
+				void this.bus?.requestRpc("player.emitTtsEnd", undefined).catch((error) =>
+					this.debug("[TTSController] failed to publish ttsEnd:", error),
+				);
 		}
 	}
 
