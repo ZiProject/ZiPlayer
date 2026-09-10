@@ -35,6 +35,9 @@ const createOrchestrator = ({ autoPlay, related } = {}) => {
 	});
 	bus.registerRpc("controller.playback.stop", () => {});
 	bus.registerRpc("plugin.relatedTracks", async () => related ?? []);
+	bus.onInput("[Player]->[Preload]:request", (event) => {
+		bus.emitOutput({ type: "[Preload]->[Player]:ready", requestId: event.requestId, track: event.track });
+	});
 	queueController.setAutoPlay(autoPlay);
 	const orchestrator = new PlaybackOrchestrator(bus);
 	return { bus, queueController, orchestrator, played };
