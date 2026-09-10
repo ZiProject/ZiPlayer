@@ -17,8 +17,6 @@ const createOrchestrator = ({ autoPlay, related } = {}) => {
 	const played = [];
 	const trackLoader = {
 		loadWithRecovery: async (track) => ({ track, stream: { stream: null, remote: false } }),
-		resetRecovery: () => {},
-		cancelPreload: () => {},
 	};
 	bus.registerQuery("filterString", () => "");
 	bus.registerQuery("transitionSettings", () => ({ enabled: false, durationMs: 0 }));
@@ -28,14 +26,14 @@ const createOrchestrator = ({ autoPlay, related } = {}) => {
 	bus.registerRpc("preload.has", () => false);
 	bus.registerRpc("preload.cancel", () => {});
 	bus.registerRpc("controller.stream.replace", ({ streamInfo }) => ({ stream: streamInfo.stream, inputType: streamInfo.inputType }));
-	bus.registerRpc("track.loadWithRecovery", trackLoader.loadWithRecovery);
-	bus.registerRpc("track.resetRecovery", trackLoader.resetRecovery);
-	bus.registerRpc("transition.plan", () => ({ enabled: false, durationMs: 0, waitForBeat: false, beatAlignMaxWaitMs: 0 }));
-	bus.registerRpc("volume.target", () => 1);
-	bus.registerRpc("playback.play", ({ session }) => {
+	bus.registerRpc("controller.track.loadWithRecovery", trackLoader.loadWithRecovery);
+	bus.registerRpc("controller.track.resetRecovery", () => {});
+	bus.registerRpc("controller.transition.plan", () => ({ enabled: false, durationMs: 0, waitForBeat: false, beatAlignMaxWaitMs: 0 }));
+	bus.registerRpc("controller.volume.target", () => 1);
+	bus.registerRpc("controller.playback.play", ({ session }) => {
 		played.push(session.track.id);
 	});
-	bus.registerRpc("playback.stop", () => {});
+	bus.registerRpc("controller.playback.stop", () => {});
 	bus.registerRpc("plugin.relatedTracks", async () => related ?? []);
 	queueController.setAutoPlay(autoPlay);
 	const orchestrator = new PlaybackOrchestrator(bus);
