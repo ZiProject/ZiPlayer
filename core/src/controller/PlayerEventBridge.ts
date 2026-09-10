@@ -62,6 +62,12 @@ export class PlayerEventBridge {
 				if (this.disposed || this.player.destroyed) return;
 				this.player.emit("connectionError", event.error);
 			}),
+			this.bus.registerRpc<{ track: any }, void>("player.emitTtsStart", ({ track }) => {
+				if (!this.disposed && !this.player.destroyed) this.player.emit("ttsStart", { track });
+			}),
+			this.bus.registerRpc<void, void>("player.emitTtsEnd", () => {
+				if (!this.disposed && !this.player.destroyed) this.player.emit("ttsEnd");
+			}),
 		);
 	}
 
@@ -108,125 +114,70 @@ export class PlayerEventBridge {
 
 	private toPublicEventName(type: PlayerEventType): string | null {
 		switch (type) {
-			case "initialized":
-				return "initialized";
-			case "ready":
-				return "ready";
-			case "destroyed":
-				return "destroyed";
-			case "TRACK_LOADING":
-				return "trackLoading";
-			case "TRACK_LOADED":
-				return "trackLoaded";
-			case "TRACK_STARTED":
-				return "trackStart";
-			case "TRACK_ERROR":
-				return "playerError";
-			case "TRACK_END":
-				return "trackEnd";
-			case "STREAM_ABORTED":
-				return "streamAborted";
-			case "STUCK_DETECTED":
-				return "trackStuck";
-			case "RECOVERY_STARTED":
-				return "recoveryStart";
-			case "RECOVERY_FAILED":
-				return "recoveryFailed";
-			case "preloadStateChanged":
-				return "preloadStateChanged";
-			case "preloadPromoted":
-				return "preloadPromoted";
-			case "preloadCancelled":
-				return "preloadCancelled";
-			case "queueChanged":
-				return "queueChange";
-			case "volumeRequested":
-				return "volumeChange";
-			case "playbackStateChanged":
-				return "playbackStateChanged";
-			case "playbackSessionCreated":
-				return "playbackSessionCreated";
-			case "trackRequested":
-				return "trackRequested";
-			case "stateChanged":
-				return "stateChanged";
-			case "willPlay":
-				return "willPlay";
-			case "queueEnd":
-				return "queueEnd";
-			case "playerPause":
-				return "playerPause";
-			case "playerResume":
-				return "playerResume";
-			case "playerStop":
-				return "playerStop";
-			case "seek":
-				return "seek";
-			case "filterApplied":
-				return "filterApplied";
-			case "filterRemoved":
-				return "filterRemoved";
-			case "filtersCleared":
-				return "filtersCleared";
-			case "streamError":
-				return "streamError";
-			case "forwardModeStart":
-				return "forwardModeStart";
-			case "forwardModeEnd":
-				return "forwardModeEnd";
-			default:
-				return null;
+			case "initialized": return "initialized";
+			case "ready": return "ready";
+			case "destroyed": return "destroyed";
+			case "TRACK_LOADING": return "trackLoading";
+			case "TRACK_LOADED": return "trackLoaded";
+			case "TRACK_STARTED": return "trackStart";
+			case "TRACK_ERROR": return "playerError";
+			case "TRACK_END": return "trackEnd";
+			case "STREAM_ABORTED": return "streamAborted";
+			case "STUCK_DETECTED": return "trackStuck";
+			case "RECOVERY_STARTED": return "recoveryStart";
+			case "RECOVERY_FAILED": return "recoveryFailed";
+			case "preloadStateChanged": return "preloadStateChanged";
+			case "preloadPromoted": return "preloadPromoted";
+			case "preloadCancelled": return "preloadCancelled";
+			case "queueChanged": return "queueChange";
+			case "volumeRequested": return "volumeChange";
+			case "playbackStateChanged": return "playbackStateChanged";
+			case "playbackSessionCreated": return "playbackSessionCreated";
+			case "trackRequested": return "trackRequested";
+			case "stateChanged": return "stateChanged";
+			case "willPlay": return "willPlay";
+			case "queueEnd": return "queueEnd";
+			case "playerPause": return "playerPause";
+			case "playerResume": return "playerResume";
+			case "playerStop": return "playerStop";
+			case "seek": return "seek";
+			case "filterApplied": return "filterApplied";
+			case "filterRemoved": return "filterRemoved";
+			case "filtersCleared": return "filtersCleared";
+			case "streamError": return "streamError";
+			case "forwardModeStart": return "forwardModeStart";
+			case "forwardModeEnd": return "forwardModeEnd";
+			default: return null;
 		}
 	}
 
 	private toArgs(event: PlayerEvent): any[] {
 		switch (event.type) {
-			case "TRACK_STARTED":
-				return [event.track];
-			case "TRACK_ERROR":
-				return [event.error, event.session.track ?? undefined];
-			case "TRACK_END":
-				return event.session.track ? [event.session.track] : [];
-			case "STUCK_DETECTED":
-				return [event.session.track ?? null];
-			case "RECOVERY_FAILED":
-				return [];
-			case "trackRequested":
-				return [event.track, event.session];
-			case "stateChanged":
-				return [event.oldState, event.newState];
-			case "queueChanged":
-				return [event.queue];
-			case "volumeRequested":
-				return [event.oldVolume, event.newVolume];
-			case "willPlay":
-				return [event.track, event.upcomingTracks];
-			case "playerPause":
-			case "playerResume":
-				return [event.track];
-			case "seek":
-				return [{ track: event.track, position: event.position }];
+			case "TRACK_STARTED": return [event.track];
+			case "TRACK_ERROR": return [event.error, event.session.track ?? undefined];
+			case "TRACK_END": return event.session.track ? [event.session.track] : [];
+			case "STUCK_DETECTED": return [event.session.track ?? null];
+			case "RECOVERY_FAILED": return [];
+			case "trackRequested": return [event.track, event.session];
+			case "stateChanged": return [event.oldState, event.newState];
+			case "queueChanged": return [event.queue];
+			case "volumeRequested": return [event.oldVolume, event.newVolume];
+			case "willPlay": return [event.track, event.upcomingTracks];
+			case "playerPause':
+			case "playerResume": return [event.track];
+			case "seek": return [{ track: event.track, position: event.position }];
 			case "filterApplied":
-			case "filterRemoved":
-				return [event.filter];
-			case "streamError":
-				return [event.error, event.track];
-			case "forwardModeStart":
-				return [event.leader];
-			case "forwardModeEnd":
-				return [event.leader, event.reason];
-			case "preloadStateChanged":
-				return [event.state];
-			case "preloadPromoted":
-				return [event.track];
-			case "preloadCancelled":
-				return [];
-			case "initialized":
+			case "filterRemoved": return [event.filter];
+			case "streamError": return [event.error, event.track];
+			case "forwardModeStart": return [event.leader];
+			case "forwardModeEnd": return [event.leader, event.reason];
+			case "preloadStateChanged": return [event.state];
+			case "preloadPromoted": return [event.track];
+			case "preloadCancelled": return [];
+			case "initialized':
 			case "ready":
-			case "destroyed":
-				return [];
-			default:
-				return "session" in event && event.session ? [event.session] : [];
+			case "destroyed": return [];
+			default: return "session" in event && event.session ? [event.session] : [];
 		}
 	}
 
@@ -235,15 +186,12 @@ export class PlayerEventBridge {
 		const next = event.queue;
 		const previous = this.previousQueue;
 		this.previousQueue = [...next];
-
 		if (next.length > previous.length) {
 			const added = next.filter((track) => !previous.some((old) => this.trackIdentity(old) === this.trackIdentity(track)));
 			if (added.length === 1) this.player.emit("queueAdd", added[0]);
 			else if (added.length > 1) this.player.emit("queueAddList", added);
 		} else if (next.length < previous.length) {
-			const removed = previous.filter(
-				(track) => !next.some((current) => this.trackIdentity(current) === this.trackIdentity(track)),
-			);
+			const removed = previous.filter((track) => !next.some((current) => this.trackIdentity(current) === this.trackIdentity(track)));
 			if (removed.length === 1) {
 				const track = removed[0];
 				this.player.emit("queueRemove", track, previous.indexOf(track));
@@ -272,11 +220,7 @@ export class PlayerEventBridge {
 		if (this.disposed) return;
 		this.disposed = true;
 		for (const unsubscribe of this.detach.splice(0)) {
-			try {
-				unsubscribe();
-			} catch {
-				/* noop */
-			}
+			try { unsubscribe(); } catch { /* noop */ }
 		}
 		this.recent.clear();
 	}
