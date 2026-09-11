@@ -26,9 +26,10 @@ export class PlaybackStartController {
 
 	public async start(track: Track, parentContext: PlayerMessageContext, from: Track | null = null): Promise<void> {
 		if (parentContext.signal.aborted) return;
-		const hasPreload = this.bus.hasRpc(CONTROLLER_RPC.preloadHas)
-			? this.bus.requestRpcSync<{ track: Track }, boolean>(CONTROLLER_RPC.preloadHas, { track })
-			: (this.adapters?.hasPreload?.(track) ?? false);
+		const hasPreload =
+			this.bus.hasRpc(CONTROLLER_RPC.preloadHas) ?
+				this.bus.requestRpcSync<{ track: Track }, boolean>(CONTROLLER_RPC.preloadHas, { track })
+			:	(this.adapters?.hasPreload?.(track) ?? false);
 		if (!this.transitionEnabled()) this.stopPlayback(parentContext.signal, !hasPreload);
 
 		this.bus.requestRpcSync(CONTROLLER_RPC.trackResetRecovery, {});

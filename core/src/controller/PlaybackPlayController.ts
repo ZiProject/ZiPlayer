@@ -69,9 +69,9 @@ export class PlaybackPlayController {
 			const isTTSTrack =
 				tracks.length === 1 &&
 				ttsInterruptEnabled &&
-				(this.bus.hasRpc(CONTROLLER_RPC.ttsIsTTS)
-					? this.bus.requestRpcSync<{ track: Track }, boolean>(CONTROLLER_RPC.ttsIsTTS, { track: tracks[0] })
-					: (this.adapters?.isTTS?.(tracks[0]) ?? false));
+				(this.bus.hasRpc(CONTROLLER_RPC.ttsIsTTS) ?
+					this.bus.requestRpcSync<{ track: Track }, boolean>(CONTROLLER_RPC.ttsIsTTS, { track: tracks[0] })
+				:	(this.adapters?.isTTS?.(tracks[0]) ?? false));
 			if (isTTSTrack) {
 				if (this.bus.hasRpc(CONTROLLER_RPC.ttsPlay)) {
 					await this.bus.requestRpc(CONTROLLER_RPC.ttsPlay, { track: tracks[0] }, { signal: context.signal });
