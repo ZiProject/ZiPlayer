@@ -20,6 +20,7 @@ export class PlaybackOrchestrator {
 	private readonly detachQueueEnd: () => void;
 	private readonly detachRpcs: Array<() => void> = [];
 	private readonly debug: (message?: any, ...optionalParams: any[]) => void;
+	private readonly adapters: PlaybackOrchestratorOptions["adapters"];
 	private readonly preparationController: PlaybackPreparationController;
 	private readonly startController: PlaybackStartController;
 	private readonly seekController: PlaybackSeekController;
@@ -32,6 +33,7 @@ export class PlaybackOrchestrator {
 		options: PlaybackOrchestratorOptions = {},
 	) {
 		this.debug = options.debug ?? (() => undefined);
+		this.adapters = options.adapters;
 		this.sessionController = options.sessionController ?? new PlaybackSessionController(bus);
 		this.preparationController = new PlaybackPreparationController({
 			bus,
@@ -45,6 +47,7 @@ export class PlaybackOrchestrator {
 			transitionEnabled: () => this.transitionEnabled(),
 			stopPlayback: (signal, cancelPreload) => this.stopPlayback(signal, cancelPreload),
 			prepareTrack: (session, context) => this.preparationController.prepareTrack(session, context),
+			adapters: this.adapters,
 		});
 		this.seekController = new PlaybackSeekController(bus, this.sessionController);
 		this.trackEndController = new PlaybackTrackEndController({
@@ -75,6 +78,7 @@ export class PlaybackOrchestrator {
 			isWaitingForQueue: () => this.trackEndController.isWaitingForQueue,
 			debug: this.debug,
 			lifecycleSignal: this.lifecycleAbort.signal,
+			adapters: this.adapters,
 		});
 		this.detachAction = bus.onAction((a, c) => this.handleAction(a, c));
 		this.detachTrackEnd = bus.subscribe("TRACK_END", (event) => {
@@ -194,7 +198,12 @@ export class PlaybackOrchestrator {
 
 	private stopPlayback(_s: AbortSignal, cancelPreload = true): void {
 		this.bus.requestRpcSync(CONTROLLER_RPC.playbackStop, {});
-		if (cancelPreload) this.bus.requestRpcSync("preload.cancel", {});
+		if (!cancelPreload) return;
+		if (this.bus.hasRpc("preload.cancel")) {
+			this.bus.requestRpcSync("preload.cancel", {});
+		} else {
+			this.adapters?.cancelPreload?.();
+		}
 	}
 
 	private async nextThroughBus(ignoreLoop: boolean, context: PlayerMessageContext): Promise<Track | null> {

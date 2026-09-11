@@ -13,6 +13,7 @@ export class PlaybackStartController {
 	private readonly transitionEnabled: PlaybackStartControllerOptions["transitionEnabled"];
 	private readonly stopPlayback: PlaybackStartControllerOptions["stopPlayback"];
 	private readonly prepareTrack: PlaybackStartControllerOptions["prepareTrack"];
+	private readonly adapters: PlaybackStartControllerOptions["adapters"];
 
 	constructor(options: PlaybackStartControllerOptions) {
 		this.bus = options.bus;
@@ -20,11 +21,14 @@ export class PlaybackStartController {
 		this.transitionEnabled = options.transitionEnabled;
 		this.stopPlayback = options.stopPlayback;
 		this.prepareTrack = options.prepareTrack;
+		this.adapters = options.adapters;
 	}
 
 	public async start(track: Track, parentContext: PlayerMessageContext, from: Track | null = null): Promise<void> {
 		if (parentContext.signal.aborted) return;
-		const hasPreload = this.bus.requestRpcSync<{ track: Track }, boolean>(CONTROLLER_RPC.preloadHas, { track });
+		const hasPreload = this.bus.hasRpc(CONTROLLER_RPC.preloadHas)
+			? this.bus.requestRpcSync<{ track: Track }, boolean>(CONTROLLER_RPC.preloadHas, { track })
+			: (this.adapters?.hasPreload?.(track) ?? false);
 		if (!this.transitionEnabled()) this.stopPlayback(parentContext.signal, !hasPreload);
 
 		this.bus.requestRpcSync(CONTROLLER_RPC.trackResetRecovery, {});

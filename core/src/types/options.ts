@@ -42,6 +42,7 @@ export interface PlaybackStartControllerOptions {
 	transitionEnabled: () => boolean;
 	stopPlayback: (signal: AbortSignal, cancelPreload?: boolean) => void;
 	prepareTrack: (session: PlaybackSession, context: import("./bus").PlayerMessageContext) => Promise<void>;
+	adapters?: PlaybackOrchestratorAdapters;
 }
 export interface PlaybackPreparationControllerOptions {
 	bus: PlayerBus;
@@ -77,6 +78,7 @@ export interface PlaybackPlayControllerOptions {
 	isWaitingForQueue: () => boolean;
 	debug: (message?: any, ...optionalParams: any[]) => void;
 	lifecycleSignal: AbortSignal;
+	adapters?: PlaybackOrchestratorAdapters;
 }
 export interface ResourceRefreshControllerOptions {
 	bus: PlayerBus;
@@ -161,9 +163,23 @@ export interface PlayerConnectionBridgeOptions {
 	debug?: (...args: any[]) => void;
 	guildId: string;
 }
+/**
+ * Optional fallback adapters used when the corresponding controller RPC is not
+ * registered on the bus (e.g. PreloadController / TTSController not wired up,
+ * such as in standalone unit tests that construct a PlaybackOrchestrator
+ * against a minimal bus). When the RPC exists on the bus it always takes
+ * priority; adapters are only consulted via `bus.hasRpc(...)` graceful checks.
+ */
+export interface PlaybackOrchestratorAdapters {
+	hasPreload?: (track: Track) => boolean;
+	cancelPreload?: () => void;
+	isTTS?: (track: Track) => boolean;
+	playTTS?: (track: Track) => void | Promise<void>;
+}
 export interface PlaybackOrchestratorOptions {
 	debug?: (...args: any[]) => void;
 	sessionController?: PlaybackSessionController;
+	adapters?: PlaybackOrchestratorAdapters;
 }
 export interface PlayerRuntimeGraph {
 	connectionController: ConnectionController;
