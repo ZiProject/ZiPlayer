@@ -100,9 +100,71 @@ export class YouTubePlugin extends BasePlugin {
 
 		throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 	}
+	// LockupView feed items (YouTube Mix/"RD" watch_next_feed) only carry lightweight, UI-shaped
+	// data — duration in particular is buried in a thumbnail overlay badge and unreliable to scrape.
+	// This re-fetches full VideoInfo per id via getInfo() and builds the Track from its accurate
+	// `basic_info` (same shape used for the anchor track), matching what getRelatedTracks already does.
+	// Falls back to building from the lightweight feed item if the extra fetch fails for that id.
+	private async resolveFeedTrackViaFullInfo(
+		feedItem: any,
+		requestedBy: string,
+		options?: { listId?: string; fallbackToLightweight?: boolean },
+	): Promise<Track | null> {
+		const fallbackToLightweight = options?.fallbackToLightweight ?? true;
+		const id = [
+			feedItem?.id,
+			feedItem?.video_id,
+			feedItem?.videoId,
+			feedItem?.content_id,
+			feedItem?.identifier,
+			feedItem?.basic_info?.id,
+			feedItem?.basic_info?.video_id,
+			feedItem?.basic_info?.videoId,
+			feedItem?.basic_info?.content_id,
+		].find((v) => v !== undefined && v !== null && v !== "");
+		if (id) {
+			try {
+				const info: any = await this.client.getInfo(id, { client: this.options.searchClientType || "WEB" });
+				if (info?.basic_info) return this.buildTrack(info.basic_info, requestedBy, { playlist: options?.listId });
+			} catch (error) {
+				this.debug(`Falling back for ${id}:`, error);
+			}
+		}
+		return fallbackToLightweight ? this.buildTrack(feedItem, requestedBy, { playlist: options?.listId }) : null;
+	}
+
+	// Parses "mm:ss" / "h:mm:ss" duration strings (e.g. YouTube's PlaylistVideo.duration.text) into seconds.
+	// Returns NaN if the string cannot be parsed, so callers can keep falling back to other fields.
+	private parseDurationTextToSeconds(text: unknown): number {
+		if (typeof text !== "string" || !text.trim()) return NaN;
+		const parts = text.trim().split(":");
+		if (!parts.length || parts.some((p) => p === "" || Number.isNaN(Number(p)))) return NaN;
+		return parts.reduce((acc, part) => acc * 60 + Number(part), 0);
+	}
+
+	private extractLockupOverlayDurationText(raw: any): string | undefined {
+		const overlays = raw?.content_image?.overlays ?? raw?.content_image?.primary_thumbnail?.overlays;
+		if (!Array.isArray(overlays)) return undefined;
+		const durationPattern = /^\d{1,2}(:\d{2}){1,2}$/;
+		for (const overlay of overlays) {
+			const badges = overlay?.badges;
+			if (!Array.isArray(badges)) continue;
+			for (const badge of badges) {
+				const text = typeof badge?.text === "string" ? badge.text.trim() : undefined;
+				if (text && durationPattern.test(text)) return text;
+			}
+		}
+		return undefined;
+	}
+
 	// Build a Track from various YouTube object shapes (search item, playlist item, watch_next feed, basic_info, info)
 	private buildTrack(raw: any, requestedBy: string, extra?: { playlist?: string }): Track {
-		const pickFirst = (...vals: any[]) => vals.find((v) => v !== undefined && v !== null && v !== "");
+		// NaN must be excluded here: youtubei.js's PlaylistVideo always sets `duration.seconds`
+		// via `parseInt(data.lengthSeconds)`, which is NaN for playlist items (they don't carry
+		// lengthSeconds) — without this filter, that NaN gets picked over the still-usable
+		// `duration.text` string that follows it.
+		const pickFirst = (...vals: any[]) =>
+			vals.find((v) => v !== undefined && v !== null && v !== "" && !(typeof v === "number" && Number.isNaN(v)));
 
 		// Try to resolve from multiple common shapes
 		const id = pickFirst(
@@ -126,17 +188,13 @@ export class YouTubePlugin extends BasePlugin {
 			"Unknown title",
 		);
 
-		const duration =
-			Number(
-				pickFirst(
-					raw?.length_seconds,
-					raw?.duration?.seconds,
-					raw?.duration?.text,
-					raw?.duration,
-					raw?.length_text,
-					raw?.basic_info?.duration,
-				),
-			) * 1000;
+		const durationSeconds = Number(
+			pickFirst(raw?.length_seconds, raw?.duration?.seconds, raw?.duration, raw?.basic_info?.duration),
+		);
+		const durationFromText = this.parseDurationTextToSeconds(
+			pickFirst(raw?.duration?.text, raw?.length_text, this.extractLockupOverlayDurationText(raw)),
+		);
+		const duration = (Number.isFinite(durationSeconds) ? durationSeconds : durationFromText) * 1000;
 
 		const thumb = pickFirst(
 			raw?.thumbnails?.[0]?.url,
@@ -271,6 +329,7 @@ export class YouTubePlugin extends BasePlugin {
 
 			if (listId) {
 				if (this.isMixListId(listId)) {
+					query = this.normalizeYouTubeMixUrl(query);
 					const anchorVideoId = this.extractVideoId(query);
 					if (anchorVideoId) {
 						try {
@@ -279,9 +338,13 @@ export class YouTubePlugin extends BasePlugin {
 							this.debug("Info:", info);
 							const feed: any[] = info?.watch_next_feed || [];
 							this.debug("Feed:", feed);
-							const tracks: Track[] = feed
-								.filter((tr: any) => tr?.content_type === "VIDEO")
-								.map((v: any) => this.buildTrack(v, requestedBy, { playlist: listId }));
+							const tracks: Track[] = (
+								await Promise.all(
+									feed
+										.filter((tr: any) => tr?.content_type === "VIDEO")
+										.map((v: any) => this.resolveFeedTrackViaFullInfo(v, requestedBy, { listId })),
+								)
+							).filter((t: Track | null): t is Track => t !== null);
 							this.debug("Tracks:", tracks);
 							const { basic_info } = info;
 
@@ -388,9 +451,13 @@ export class YouTubePlugin extends BasePlugin {
 					try {
 						const info: any = await this.client.getInfo(anchorVideoId, { client: this.options.searchClientType || "WEB" });
 						const feed: any[] = info?.watch_next_feed || [];
-						return feed
-							.filter((tr: any) => tr?.content_type === "VIDEO")
-							.map((v: any) => this.buildTrack(v, requestedBy, { playlist: listId }));
+						return (
+							await Promise.all(
+								feed
+									.filter((tr: any) => tr?.content_type === "VIDEO")
+									.map((v: any) => this.resolveFeedTrackViaFullInfo(v, requestedBy, { listId })),
+							)
+						).filter((t: Track | null): t is Track => t !== null);
 					} catch {}
 				}
 			}
@@ -692,29 +759,13 @@ export class YouTubePlugin extends BasePlugin {
 		const historyUrls = new Set((opts.history ?? []).map((t) => t.url));
 		const relatedfilter = related.filter((tr: any) => tr?.content_type === "VIDEO" && !historyUrls.has(tr?.url));
 
-		const reSearchTrack = async (track: any) => {
-			const info: any = await this.client.getInfo(
-				track?.id ??
-					track?.video_id ??
-					track?.videoId ??
-					track?.content_id ??
-					track?.identifier ??
-					track?.basic_info?.id ??
-					track?.basic_info?.video_id ??
-					track?.basic_info?.videoId ??
-					track?.basic_info?.content_id,
-				{ client: this.options.searchClientType || "WEB" },
-			);
-			if (info && info.basic_info) {
-				const track = this.buildTrack(info.basic_info, "auto");
-				return track;
-			}
-			return null;
-		};
-
-		return (await Promise.all(relatedfilter.slice(offset, offset + limit).map((v: any) => reSearchTrack(v)))).filter(
-			(t) => t !== null,
-		);
+		return (
+			await Promise.all(
+				relatedfilter
+					.slice(offset, offset + limit)
+					.map((v: any) => this.resolveFeedTrackViaFullInfo(v, "auto", { fallbackToLightweight: false })),
+			)
+		).filter((t: Track | null): t is Track => t !== null);
 	}
 
 	/**
@@ -772,6 +823,45 @@ export class YouTubePlugin extends BasePlugin {
 				mediaType: "video",
 			},
 		};
+	}
+
+	private normalizeYouTubeMixUrl(input: string): string {
+		try {
+			const u = new URL(input);
+
+			if (!["youtube.com", "www.youtube.com", "music.youtube.com", "m.youtube.com"].includes(u.hostname.toLowerCase())) {
+				return input;
+			}
+
+			const listId = u.searchParams.get("list");
+
+			if (!listId || !this.isMixListId(listId)) {
+				return input;
+			}
+
+			// Already has a video ID
+			const videoId = u.searchParams.get("v");
+			if (videoId) {
+				return input;
+			}
+
+			// playlist?list=RD<videoId>
+			const mixVideoId = listId.slice(2);
+
+			if (!/^[\w-]{11}$/.test(mixVideoId)) {
+				return input;
+			}
+
+			const normalized = new URL("https://www.youtube.com/watch");
+
+			normalized.searchParams.set("v", mixVideoId);
+			normalized.searchParams.set("list", listId);
+			normalized.searchParams.set("index", "1");
+
+			return normalized.toString();
+		} catch {
+			return input;
+		}
 	}
 
 	private extractVideoId(input: string): string | null {
