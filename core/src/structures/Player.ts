@@ -199,7 +199,6 @@ export class Player extends EventEmitter {
 		return this.bus.requestRpc("search.debug", { query });
 	}
 
-	/** Regenerates related tracks for the supplied track or the current track. */
 	public createRelatedTracks(track?: Track | null): Promise<Track[]> {
 		return this.bus.requestRpc("playback.createRelatedTracks", { track });
 	}
@@ -391,22 +390,173 @@ export class Player extends EventEmitter {
 	public autoPlay(enabled?: boolean): boolean {
 		return enabled === undefined ? this.bus.querySync("queueAutoPlay") : this.bus.requestRpcSync("queue.autoPlay", { enabled });
 	}
-	public getTime(): { current: number; total: number; format: string; formatted: { current: string; total: string } } {
-		return this.bus.querySync("time");
+	public setWillNext(track: Track | null): Track | null {
+		return this.bus.requestRpcSync("queue.willNext", { track });
+	}
+	public setCurrentTrack(track: Track | null): void {
+		void this.action({ type: "QUEUE_SET_CURRENT", track });
+	}
+	public setVolume(value: number): boolean {
+		if (!Number.isFinite(value) || value < 0 || value > 100) return false;
+		this.bus.requestRpcSync("volume.set", { value });
+		return true;
+	}
+	public shuffle(): void {
+		this.bus.requestRpcSync<void, void>("queue.shuffle", undefined);
+	}
+	public clearQueue(): void {
+		this.bus.requestRpcSync<void, void>("queue.clear", undefined);
+	}
+	public async insert(query: string | Track | Track[], index = 0, requestedBy?: string): Promise<boolean> {
+		return this.bus
+			.requestRpc<{ query: string | Track | Track[]; index: number; requestedBy?: string }, boolean>("queue.insert", {
+				query,
+				index,
+				requestedBy,
+			})
+			.catch(() => false);
+	}
+	public remove(index: number): Track | null {
+		return this.bus.requestRpcSync<{ index: number }, Track | null>("queue.remove", { index });
+	}
+	public scheduleLeave(): void {
+		this.bus.requestRpcSync("lifecycle.scheduleLeave", {});
+	}
+	public clearLeaveTimeout(): void {
+		this.bus.requestRpcSync("lifecycle.clearLeaveTimeout", undefined);
+	}
+	public refreshPlayerResource(position = 0): Promise<boolean> {
+		return this.bus
+			.request({ type: "[Player]->[Resource]:refresh", requestId: createPlayerRequestId(), position } as any)
+			.then(() => true)
+			.catch(() => false);
+	}
+	public getExtensions(): any[] {
+		return this.bus.querySync("extensions") ?? [];
+	}
+	public saveSession(_options?: any): any {
+		return this.getSerializableState();
+	}
+	public exitRemoteMode(): void {
+		this.unsubscribeForward("remote mode exited");
+	}
+	public getSerializableState(): any {
+		return { guildId: this.guildId, queue: this.runtime.serializeQueue(), volume: this.volume, playbackMode: this.playbackMode };
+	}
+	public restoreState(state: any): void {
+		if (state?.queue) this.runtime.restoreQueue(state.queue);
+		if (typeof state?.volume === "number") this.setVolume(state.volume);
+	}
+	public getStreamManagerStats(): any {
+		return this.runtime.getStreamManagerStats() ?? {};
+	}
+	public getTime() {
+		const session = this.bus.querySync("playbackSession");
+		const track = session?.track ?? this.currentTrack;
+		const isLive = Boolean(track?.isLive);
+		if (isLive) return { current: 0, total: 0, format: "LIVE", formatted: { current: "LIVE", total: "LIVE" } };
+		if (!track) return { current: 0, total: 0, format: "00:00", formatted: { current: "00:00", total: "00:00" } };
+		const total = Math.floor(track.duration > 1000 ? track.duration : track.duration * 1000) | 0;
+		const current = Math.max(0, Math.floor(this.bus.querySync("position") ?? session?.position ?? 0)) | 0;
+		return {
+			current,
+			total,
+			format: this.formatTime(current),
+			formatted: { current: this.formatTimeCompact(current), total: this.formatTimeCompact(total) },
+		};
+	}
+	public getProgressBar(options: ProgressBarOptions = {}): string {
+		const {
+			size = 20,
+			barChar = "▬",
+			progressChar = "🔘",
+			timeFormat = "compact",
+			showPercentage = false,
+			showTime = true,
+		} = options;
+		const session = this.bus.querySync("playbackSession");
+		const track = session?.track ?? this.currentTrack;
+		const isLive = Boolean(track?.isLive);
+		if (isLive || !track) return isLive ? "🔴 LIVE" : "";
+		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
+		const current = Math.max(0, Number(this.bus.querySync("position") ?? session?.position ?? 0));
+		if (!total) return this.formatTimeCompact(current);
+		const ratio = Math.min(Math.max(current / total, 0), 1);
+		const progress = Math.round(ratio * size);
+		const filled = barChar.repeat(progress);
+		const empty = barChar.repeat(Math.max(0, size - progress));
+		const bar = progressChar === "none" || options.hideProgressChar ? filled + empty : filled + progressChar + empty;
+		const formatTimeFn = timeFormat === "compact" ? this.formatTimeCompact.bind(this) : this.formatTime.bind(this);
+		let result = showTime ? `${formatTimeFn(current)} ${bar} ${formatTimeFn(total)}` : bar;
+		if (showPercentage) result += ` (${Math.round(ratio * 100)}%)`;
+		return result;
+	}
+	public formatTime(ms: number): string {
+		const totalSeconds = Math.floor(ms / 1000) | 0;
+		const hours = Math.floor(totalSeconds / 3600) | 0;
+		const minutes = Math.floor((totalSeconds % 3600) / 60) | 0;
+		const seconds = totalSeconds % 60;
+		const parts: string[] = [];
+		if (hours > 0) {
+			parts.push(String(hours));
+			parts.push(String(minutes).padStart(2, "0"));
+		} else parts.push(String(minutes));
+		parts.push(String(seconds).padStart(2, "0"));
+		return parts.join(":");
+	}
+	public formatTimeCompact(ms: number): string {
+		const totalSeconds = Math.floor(ms / 1000) | 0;
+		const hours = Math.floor(totalSeconds / 3600) | 0;
+		const minutes = Math.floor((totalSeconds % 3600) / 60) | 0;
+		const seconds = totalSeconds % 60;
+		if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+		return `${minutes}:${String(seconds).padStart(2, "0")}`;
 	}
 	public action(action: PlayerActionMessage): Promise<void> {
-		return this.actionExecutor.execute(action);
+		return this.actionExecutor.enqueue(action);
 	}
-	public onEvent(type: PlayerEventType, listener: (...args: any[]) => void): this {
-		return this.on(type, listener);
+	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> {
+		return this.bus.query(query);
+	}
+	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void {
+		return this.bus.subscribe(type, listener);
+	}
+	public addPlugin(plugin: BasePlugin): void {
+		this.bus.requestRpcSync<{ plugin: BasePlugin }, void>("plugin.add", { plugin });
+	}
+	public removePlugin(name: string): boolean {
+		return this.bus.requestRpcSync<{ name: string }, boolean>("plugin.remove", { name });
+	}
+	public attachExtension(extension: BaseExtension): void {
+		this.bus.requestRpcSync<{ extension: BaseExtension }, void>("extension.add", { extension });
+	}
+	public detachExtension(extension: BaseExtension): boolean {
+		return this.bus.requestRpcSync<{ extension: BaseExtension }, boolean>("extension.remove", { extension });
+	}
+	public subscribeTo(leader: Player, options?: { forwardMode?: boolean }): boolean {
+		return this.bus.requestRpcSync("forward.subscribe", { leader, options });
+	}
+	public unsubscribeForward(reason?: string): boolean {
+		return this.bus.requestRpcSync("forward.unsubscribe", { reason });
+	}
+	public getForwardHealthStatus() {
+		return this.bus.requestRpcSync("forward.health", undefined);
 	}
 	public destroy(): void {
+		if (this.destroyed) return;
+		this.destroyed = true;
+		this.dispose();
+		this.emit("playerDestroy");
+		this.removeAllListeners();
+	}
+	public dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.destroyed = true;
 		this.invalidatePlay();
-		this.runtime.dispose();
-		this.removeAllListeners();
-		this.bus.dispose();
+		this.actionExecutor.dispose();
+		this.runtimeGraph.extensionManager.destroy();
+		void this.runtime.dispose();
+		this.bus.publish("destroyed");
+		this.bus.clear();
 	}
 }
