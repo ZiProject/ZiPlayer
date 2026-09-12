@@ -11,6 +11,7 @@ export class PlaybackPreparationController {
 	private readonly queueSnapshot: PlaybackPreparationControllerOptions["queueSnapshot"];
 	private readonly setQueueRelated: PlaybackPreparationControllerOptions["setQueueRelated"];
 	private readonly detachRpc: () => void;
+	private readonly detachRelatedRpc: () => void;
 
 	constructor(options: PlaybackPreparationControllerOptions) {
 		this.bus = options.bus;
@@ -21,15 +22,39 @@ export class PlaybackPreparationController {
 			CONTROLLER_RPC.playbackPrepareAutoplay,
 			({ session, context }) => this.prepareAutoplay(session, context),
 		);
+		this.detachRelatedRpc = this.bus.registerRpc<{ track?: Track | null }, Promise<Track[]>>(
+			CONTROLLER_RPC.playbackCreateRelatedTracks,
+			({ track }) => this.createRelatedTracks(track),
+		);
 	}
 
 	public dispose(): void {
 		this.detachRpc();
+		this.detachRelatedRpc();
 	}
 
 	public async prepareTrack(session: PlaybackSession, context: PlayerMessageContext): Promise<void> {
 		await this.prepareRelated(session, context);
 		if (this.bus.querySync("queueAutoPlay")) await this.prepareAutoplay(session, context);
+	}
+
+	/** Regenerates related tracks for the supplied track or the current track. */
+	public async createRelatedTracks(track?: Track | null): Promise<Track[]> {
+		const source = track ?? this.bus.querySync("currentTrack");
+		if (!source) {
+			this.setQueueRelated([]);
+			return [];
+		}
+
+		let related = await this.bus.requestRpc<{ track: Track; history?: Track[] }, Track[]>(
+			"plugin.relatedTracks",
+			{ track: source, history: this.bus.querySync("previousTracks") },
+		);
+		related = related ?? [];
+		const upcoming = new Set(this.queueSnapshot().map((item) => item.id ?? item.url));
+		related = related.filter((item) => item !== source && !upcoming.has(item.id ?? item.url));
+		this.setQueueRelated(related);
+		return related.slice();
 	}
 
 	public async prepareAutoplay(session: PlaybackSession, context: PlayerMessageContext): Promise<Track | null> {
