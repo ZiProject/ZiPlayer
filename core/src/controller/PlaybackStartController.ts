@@ -14,6 +14,7 @@ export class PlaybackStartController {
 	private readonly stopPlayback: PlaybackStartControllerOptions["stopPlayback"];
 	private readonly prepareTrack: PlaybackStartControllerOptions["prepareTrack"];
 	private readonly adapters: PlaybackStartControllerOptions["adapters"];
+	private readonly detachRpc: () => void;
 
 	constructor(options: PlaybackStartControllerOptions) {
 		this.bus = options.bus;
@@ -22,6 +23,14 @@ export class PlaybackStartController {
 		this.stopPlayback = options.stopPlayback;
 		this.prepareTrack = options.prepareTrack;
 		this.adapters = options.adapters;
+		this.detachRpc = this.bus.registerRpc<{ track: Track; context: PlayerMessageContext; from: Track | null }, Promise<void>>(
+			CONTROLLER_RPC.playbackStart,
+			({ track, context, from }) => this.start(track, context, from),
+		);
+	}
+
+	public dispose(): void {
+		this.detachRpc();
 	}
 
 	public async start(track: Track, parentContext: PlayerMessageContext, from: Track | null = null): Promise<void> {

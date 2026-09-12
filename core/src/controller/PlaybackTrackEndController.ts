@@ -1,20 +1,16 @@
 import { createPlayerRequestId } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
-import type { PlaybackPreparationController } from "./PlaybackPreparationController";
-import type { PlaybackSessionController } from "./PlaybackSessionController";
-import type { PlaybackStartController } from "./PlaybackStartController";
 import type { PlayerMessageContext, PlaybackSessionSnapshot, Track } from "../types";
 import type { PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackTrackEndControllerOptions } from "../types";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 import { PlayerActionPriority } from "../types";
 
-/** Owns TRACK_END, queue refill, autoplay fallback, and queue-end transitions. */
+/** Owns TRACK_END, queue refill, autoplay fallback, and queue-end transitions.
+ * Talks to sibling playback controllers only through PlayerBus queries/RPCs —
+ * never by holding a direct reference to them. */
 export class PlaybackTrackEndController {
 	private readonly bus: PlayerBus;
-	private readonly sessionController: PlaybackSessionController;
-	private readonly preparationController: PlaybackPreparationController;
-	private readonly startController: PlaybackStartController;
 	private readonly nextThroughBus: PlaybackTrackEndControllerOptions["nextThroughBus"];
 	private readonly stopPlayback: PlaybackTrackEndControllerOptions["stopPlayback"];
 	private readonly publishState: PlaybackTrackEndControllerOptions["publishState"];
@@ -28,9 +24,6 @@ export class PlaybackTrackEndController {
 
 	public constructor(options: PlaybackTrackEndControllerOptions) {
 		this.bus = options.bus;
-		this.sessionController = options.sessionController;
-		this.preparationController = options.preparationController;
-		this.startController = options.startController;
 		this.nextThroughBus = options.nextThroughBus;
 		this.stopPlayback = options.stopPlayback;
 		this.publishState = options.publishState;
@@ -41,6 +34,10 @@ export class PlaybackTrackEndController {
 				if (!this.lifecycleSignal.aborted) this.trackEndTransition = active;
 			}),
 		);
+	}
+
+	private currentSession(): PlaybackSession | null {
+		return this.bus.querySync("playbackSessionInternal") ?? null;
 	}
 
 	public get isTransitioning(): boolean {
@@ -83,47 +80,39 @@ export class PlaybackTrackEndController {
 	}
 
 	public async onTrackEnd(snapshot: PlaybackSessionSnapshot): Promise<void> {
-		if (
-			!this.sessionController.current ||
-			this.sessionController.current.id !== snapshot.id ||
-			this.sessionController.current.status === "ended" ||
-			this.sessionController.current.status === "stopped"
-		)
-			return;
+		const current = this.currentSession();
+		if (!current || current.id !== snapshot.id || current.status === "ended" || current.status === "stopped") return;
 		if (this.trackEndTransition) return;
 		this.trackEndTransition = true;
 		try {
-			if (!this.sessionController.current || !this.sessionController.current.isActive()) return;
-			const from = this.sessionController.current.track;
-			const endedSession = this.sessionController.current;
+			if (!current.isActive()) return;
+			const from = current.track;
+			const endedSession = current;
 			const context = this.createContext("PlaybackTrackEndController:track-end");
 			let next = await this.nextThroughBus(false, context);
 			if (next) {
 				endedSession.markEnded();
 				this.waitingForQueue = false;
-				await this.startController.start(next, context, from);
+				await this.bus.requestRpc(CONTROLLER_RPC.playbackStart, { track: next, context, from });
 				return;
 			}
 			if (this.bus.querySync("queueAutoPlay")) {
-				const candidate = await this.preparationController.prepareAutoplay(endedSession, context);
-				if (candidate && this.sessionController.current?.id === snapshot.id && this.sessionController.current.isActive()) {
+				const candidate = await this.bus.requestRpc(CONTROLLER_RPC.playbackPrepareAutoplay, { session: endedSession, context });
+				const stillCurrent = this.currentSession();
+				if (candidate && stillCurrent?.id === snapshot.id && stillCurrent.isActive()) {
 					endedSession.markEnded();
 					this.bus.requestRpcSync("queue.willNext", { track: null });
 					if (!this.bus.querySync("queueNextTrack")) this.bus.requestRpcSync("queue.addMultiple", { tracks: [candidate] });
 					next = await this.nextThroughBus(false, context);
 					if (next) {
 						this.waitingForQueue = false;
-						await this.startController.start(next, context, from);
+						await this.bus.requestRpc(CONTROLLER_RPC.playbackStart, { track: next, context, from });
 						return;
 					}
 				}
 			}
-			if (
-				!this.sessionController.current ||
-				this.sessionController.current.id !== snapshot.id ||
-				!this.sessionController.current.isActive()
-			)
-				return;
+			const finalSession = this.currentSession();
+			if (!finalSession || finalSession.id !== snapshot.id || !finalSession.isActive()) return;
 			endedSession.markEnded();
 			this.stopPlayback(context.signal);
 			this.publishState();
@@ -146,12 +135,12 @@ export class PlaybackTrackEndController {
 		if (this.lifecycleSignal.aborted || !this.waitingForQueue || this.trackEndTransition || !this.queueSnapshot().length) return;
 		this.trackEndTransition = true;
 		try {
-			const from = this.sessionController.current?.track ?? null;
+			const from = this.currentSession()?.track ?? null;
 			const context = this.createContext("PlaybackTrackEndController:queue-refill");
 			const next = await this.nextThroughBus(false, context);
 			if (!next || context.signal.aborted) return;
 			this.waitingForQueue = false;
-			await this.startController.start(next, context, from);
+			await this.bus.requestRpc(CONTROLLER_RPC.playbackStart, { track: next, context, from });
 		} finally {
 			this.trackEndTransition = false;
 		}

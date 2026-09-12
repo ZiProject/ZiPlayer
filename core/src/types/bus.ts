@@ -267,6 +267,8 @@ export interface PlayerRpcMap {
 	"playback.loadFreshCurrent": { request: { track: Track }; response: TrackLoadResult | null };
 	"playback.promotePreload": { request: { track: Track }; response: AudioResource | null };
 	"playback.transitionLock": { request: { active: boolean }; response: void };
+	"playback.prepareAutoplay": { request: { session: PlaybackSession; context: PlayerMessageContext }; response: Track | null };
+	"playback.start": { request: { track: Track; context: PlayerMessageContext; from: Track | null }; response: void };
 	"forward.health": { request: undefined; response: ForwardHealthStatus };
 	"forward.subscribe": { request: { leader: unknown; options?: { forwardMode?: boolean } }; response: boolean };
 	"forward.unsubscribe": { request: { reason?: string }; response: boolean };

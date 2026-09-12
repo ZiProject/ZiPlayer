@@ -51,6 +51,8 @@ export const CONTROLLER_RPC = {
 	playbackLoadFreshCurrent: "playback.loadFreshCurrent",
 	playbackPromotePreload: "playback.promotePreload",
 	playbackTransitionLock: "playback.transitionLock",
+	playbackPrepareAutoplay: "playback.prepareAutoplay",
+	playbackStart: "playback.start",
 	preloadHas: "preload.has",
 	streamReplace: "controller.stream.replace",
 	resourceCreate: "resource.create",

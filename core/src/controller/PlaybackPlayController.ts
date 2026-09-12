@@ -1,16 +1,15 @@
 import type { PlayerBus, PlayerBusRpcContext } from "../structures/PlayerBus";
-import type { PlaybackSessionController } from "./PlaybackSessionController";
-import type { PlaybackSkipController } from "./PlaybackSkipController";
+import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, SearchResult, Track } from "../types";
 import type { PlaybackPlayControllerOptions } from "../types";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 
-/** Owns the public play RPC: search, queue insertion, TTS interrupt, and initial skip. */
+/** Owns the public play RPC: search, queue insertion, TTS interrupt, and initial skip.
+ * Talks to sibling playback controllers only through PlayerBus queries/actions —
+ * never by holding a direct reference to them. */
 export class PlaybackPlayController {
 	private readonly detachRpc: () => void;
 	private readonly bus: PlayerBus;
-	private readonly sessionController: PlaybackSessionController;
-	private readonly skipController: PlaybackSkipController;
 	private readonly isWaitingForQueue: PlaybackPlayControllerOptions["isWaitingForQueue"];
 	private readonly debug: PlaybackPlayControllerOptions["debug"];
 	private readonly lifecycleSignal: AbortSignal;
@@ -18,8 +17,6 @@ export class PlaybackPlayController {
 
 	public constructor(options: PlaybackPlayControllerOptions) {
 		this.bus = options.bus;
-		this.sessionController = options.sessionController;
-		this.skipController = options.skipController;
 		this.isWaitingForQueue = options.isWaitingForQueue;
 		this.debug = options.debug;
 		this.lifecycleSignal = options.lifecycleSignal;
@@ -32,6 +29,14 @@ export class PlaybackPlayController {
 
 	public dispose(): void {
 		this.detachRpc();
+	}
+
+	private currentSession(): PlaybackSession | null {
+		return this.bus.querySync("playbackSessionInternal") ?? null;
+	}
+
+	private async skipThroughBus(context: PlayerMessageContext): Promise<void> {
+		await this.bus.action({ type: "SKIP", requestId: context.requestId }, context);
 	}
 
 	private async play(
@@ -49,10 +54,11 @@ export class PlaybackPlayController {
 		};
 		try {
 			if (query === null) {
-				const session = this.sessionController.current;
+				const session = this.currentSession();
 				if (session?.status === "playing" || session?.status === "paused") return true;
-				await this.skipController.skip(context);
-				return this.sessionController.current?.track !== null && this.sessionController.current?.track !== undefined;
+				await this.skipThroughBus(context);
+				const after = this.currentSession();
+				return after?.track !== null && after?.track !== undefined;
 			}
 			let tracks: Track[];
 			if (typeof query === "string") {
@@ -81,7 +87,7 @@ export class PlaybackPlayController {
 				return true;
 			}
 			await this.bus.requestRpc("queue.addMultiple", { tracks }, { signal: context.signal });
-			const session = this.sessionController.current;
+			const session = this.currentSession();
 			if ((session?.status === "playing" || session?.status === "paused") && !this.isWaitingForQueue()) {
 				if (this.bus.hasRpc("preload.next")) {
 					void this.bus
@@ -91,13 +97,15 @@ export class PlaybackPlayController {
 				return true;
 			}
 			if (this.isWaitingForQueue()) {
-				return this.sessionController.current?.status === "playing" || this.sessionController.current?.status === "paused";
+				const waiting = this.currentSession();
+				return waiting?.status === "playing" || waiting?.status === "paused";
 			}
-			await this.skipController.skip(context);
-			return this.sessionController.current?.track !== null && this.sessionController.current?.track !== undefined;
+			await this.skipThroughBus(context);
+			const after = this.currentSession();
+			return after?.track !== null && after?.track !== undefined;
 		} catch (error) {
 			this.debug("[PlaybackPlayController] Play error:", error);
-			const session = this.sessionController.current;
+			const session = this.currentSession();
 			if (session && !context.signal.aborted)
 				this.bus.event({
 					type: "TRACK_ERROR",

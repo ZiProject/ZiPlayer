@@ -428,44 +428,19 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	private setupEventForwarding(player: Player, guildId: string): void {
-		const forwardEvents = {
-			willPlay: "willPlay",
-			trackStart: "trackStart",
-			trackEnd: "trackEnd",
-			queueEnd: "queueEnd",
-			playerError: "playerError",
-			connectionError: "connectionError",
-			volumeChange: "volumeChange",
-			queueAdd: "queueAdd",
-			queueAddList: "queueAddList",
-			queueRemove: "queueRemove",
-			playerPause: "playerPause",
-			playerResume: "playerResume",
-			playerStop: "playerStop",
-			ttsStart: "ttsStart",
-			ttsEnd: "ttsEnd",
-			streamError: "streamError",
-			forwardModeStart: "forwardModeStart",
-			forwardModeEnd: "forwardModeEnd",
-			seek: "seek",
-		} as const satisfies Record<string, keyof ManagerEvents>;
+		const originalEmit = player.emit.bind(player);
 
-		for (const [sourceEvent, targetEvent] of Object.entries(forwardEvents) as [
-			keyof typeof forwardEvents,
-			keyof ManagerEvents,
-		][]) {
-			player.on(sourceEvent, (...args: any[]) => {
-				if (sourceEvent === "trackStart") {
-					player._lastActivity = Date.now();
-				}
+		player.emit = ((event: string | symbol, ...args: any[]) => {
+			const result = originalEmit(event, ...args);
 
-				(this.emit as any)(targetEvent, player, ...args);
-			});
-		}
+			if (typeof event === "string" && this.listenerCount(event as keyof ManagerEvents) > 0) {
+				(this.emit as any)(event, player, ...args);
+			}
+
+			return result;
+		}) as Player["emit"];
 
 		player.on("playerDestroy", () => {
-			this.emit("playerDestroy", player);
-
 			// Cleanup: unsubscribe all followers when leader is destroyed
 			if (player.forwardFollowers.size > 0) {
 				this.debug(`Leader ${guildId} destroyed, cleaning up ${player.forwardFollowers.size} followers`);
@@ -489,10 +464,8 @@ export class PlayerManager extends EventEmitter {
 			this.debug(`Player destroyed for guildId: ${guildId}`);
 		});
 
-		player.on("debug", (message: string, ...rest: any[]) => {
-			if (this.listenerCount("debug") > 0) {
-				this.emit("debug", message, ...rest);
-			}
+		player.on("trackStart", () => {
+			player._lastActivity = Date.now();
 		});
 	}
 	/**

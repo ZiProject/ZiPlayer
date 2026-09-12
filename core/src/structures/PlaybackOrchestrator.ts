@@ -52,9 +52,6 @@ export class PlaybackOrchestrator {
 		this.seekController = new PlaybackSeekController(bus, this.sessionController);
 		this.trackEndController = new PlaybackTrackEndController({
 			bus,
-			sessionController: this.sessionController,
-			preparationController: this.preparationController,
-			startController: this.startController,
 			nextThroughBus: (ignoreLoop, context) => this.nextThroughBus(ignoreLoop, context),
 			stopPlayback: (signal) => this.stopPlayback(signal),
 			publishState: () => this.publishState(),
@@ -63,9 +60,6 @@ export class PlaybackOrchestrator {
 		});
 		this.skipController = new PlaybackSkipController({
 			bus,
-			sessionController: this.sessionController,
-			preparationController: this.preparationController,
-			startController: this.startController,
 			nextThroughBus: (ignoreLoop, context) => this.nextThroughBus(ignoreLoop, context),
 			stopPlayback: (signal) => this.stopPlayback(signal),
 			publishState: () => this.publishState(),
@@ -73,8 +67,6 @@ export class PlaybackOrchestrator {
 		});
 		this.playController = new PlaybackPlayController({
 			bus,
-			sessionController: this.sessionController,
-			skipController: this.skipController,
 			isWaitingForQueue: () => this.trackEndController.isWaitingForQueue,
 			debug: this.debug,
 			lifecycleSignal: this.lifecycleAbort.signal,
@@ -140,6 +132,8 @@ export class PlaybackOrchestrator {
 		this.sessionController.clear();
 		this.trackEndController.dispose();
 		this.playController.dispose();
+		this.preparationController.dispose();
+		this.startController.dispose();
 	}
 
 	private async handleAction(a: PlayerAction, context: PlayerMessageContext): Promise<void> {

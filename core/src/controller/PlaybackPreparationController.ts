@@ -2,6 +2,7 @@ import type { PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, Track } from "../types";
 import type { PlaybackPreparationControllerOptions } from "../types";
+import { CONTROLLER_RPC } from "./ControllerBusContract";
 
 /** Owns related-track and autoplay preparation after a track starts. */
 export class PlaybackPreparationController {
@@ -9,12 +10,21 @@ export class PlaybackPreparationController {
 	private readonly isCurrentSession: PlaybackPreparationControllerOptions["isCurrentSession"];
 	private readonly queueSnapshot: PlaybackPreparationControllerOptions["queueSnapshot"];
 	private readonly setQueueRelated: PlaybackPreparationControllerOptions["setQueueRelated"];
+	private readonly detachRpc: () => void;
 
 	constructor(options: PlaybackPreparationControllerOptions) {
 		this.bus = options.bus;
 		this.isCurrentSession = options.isCurrentSession;
 		this.queueSnapshot = options.queueSnapshot;
 		this.setQueueRelated = options.setQueueRelated;
+		this.detachRpc = this.bus.registerRpc<{ session: PlaybackSession; context: PlayerMessageContext }, Promise<Track | null>>(
+			CONTROLLER_RPC.playbackPrepareAutoplay,
+			({ session, context }) => this.prepareAutoplay(session, context),
+		);
+	}
+
+	public dispose(): void {
+		this.detachRpc();
 	}
 
 	public async prepareTrack(session: PlaybackSession, context: PlayerMessageContext): Promise<void> {

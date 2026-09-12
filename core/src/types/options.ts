@@ -16,9 +16,6 @@ import type { PlayerConnectionBridge } from "../controller/PlayerConnectionBridg
 import type { PlayerEventBridge } from "../controller/PlayerEventBridge";
 import type { PlaybackController } from "../controller/PlaybackController";
 import type { PlaybackSessionController } from "../controller/PlaybackSessionController";
-import type { PlaybackPreparationController } from "../controller/PlaybackPreparationController";
-import type { PlaybackStartController } from "../controller/PlaybackStartController";
-import type { PlaybackSkipController } from "../controller/PlaybackSkipController";
 import type { StreamController } from "../controller/StreamController";
 import type { FilterController } from "../controller/FilterController";
 import type { QueueController } from "../controller/QueueController";
@@ -52,9 +49,6 @@ export interface PlaybackPreparationControllerOptions {
 }
 export interface PlaybackSkipControllerOptions {
 	bus: PlayerBus;
-	sessionController: PlaybackSessionController;
-	preparationController: PlaybackPreparationController;
-	startController: PlaybackStartController;
 	nextThroughBus: (ignoreLoop: boolean, context: import("./bus").PlayerMessageContext) => Promise<Track | null>;
 	stopPlayback: (signal: AbortSignal) => void;
 	publishState: () => void;
@@ -62,9 +56,6 @@ export interface PlaybackSkipControllerOptions {
 }
 export interface PlaybackTrackEndControllerOptions {
 	bus: PlayerBus;
-	sessionController: PlaybackSessionController;
-	preparationController: PlaybackPreparationController;
-	startController: PlaybackStartController;
 	nextThroughBus: (ignoreLoop: boolean, context: import("./bus").PlayerMessageContext) => Promise<Track | null>;
 	stopPlayback: (signal: AbortSignal) => void;
 	publishState: () => void;
@@ -73,8 +64,6 @@ export interface PlaybackTrackEndControllerOptions {
 }
 export interface PlaybackPlayControllerOptions {
 	bus: PlayerBus;
-	sessionController: PlaybackSessionController;
-	skipController: PlaybackSkipController;
 	isWaitingForQueue: () => boolean;
 	debug: (message?: any, ...optionalParams: any[]) => void;
 	lifecycleSignal: AbortSignal;
