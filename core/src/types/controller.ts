@@ -9,7 +9,7 @@ export interface ConnectionControllerOptions {
 	guildId: string;
 	bus: PlayerBus;
 	audioPlayer?: AudioPlayer;
-	options?: Pick<PlayerOptions, "selfDeaf" | "selfMute">;
+	options?: Pick<PlayerOptions, "selfDeaf" | "selfMute" | "group">;
 	debug?: (message: string) => void;
 	readyTimeoutMs?: number;
 }
