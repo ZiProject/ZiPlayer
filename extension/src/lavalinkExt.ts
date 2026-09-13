@@ -1432,7 +1432,9 @@ export class lavalinkExt extends BaseExtension {
 		if (message.reason === "finished" || message.reason === "loadFailed") {
 			if (!state.skipNext) {
 				// Let Player drive the queue — provideStream will be called again
-				void (player as any).playNext().catch((err: Error) => this.lavalinkDebug(`playNext error for ${player.guildId}: ${err.message}`));
+				void (player as any)
+					.playNext()
+					.catch((err: Error) => this.lavalinkDebug(`playNext error for ${player.guildId}: ${err.message}`));
 			}
 			state.skipNext = false;
 		} else if (message.reason === "stopped" || message.reason === "replaced" || message.reason === "cleanup") {

@@ -122,7 +122,11 @@ export class SaveController {
 		const exportTrack = this.prepareExportTrack(track, saveOptions);
 		await this.applyMiddleware(exportTrack, operationSignal);
 
-		const streamInfo = await this.resolveWithTimeout(() => this.resolveVideoStream(exportTrack), saveOptions.timeout, operationSignal);
+		const streamInfo = await this.resolveWithTimeout(
+			() => this.resolveVideoStream(exportTrack),
+			saveOptions.timeout,
+			operationSignal,
+		);
 		if (!streamInfo?.stream) throw new Error(`No save stream available for track: ${track.title}`);
 
 		this.debug(`[SaveController] Save stream obtained for track: ${track.title}`);
@@ -148,22 +152,22 @@ export class SaveController {
 		this.throwIfAborted(signal);
 		let timer: ReturnType<typeof setTimeout> | null = null;
 		const timeout =
-			Number.isFinite(timeoutMs) && (timeoutMs as number) > 0
-				? new Promise<never>((_, reject) => {
+			Number.isFinite(timeoutMs) && (timeoutMs as number) > 0 ?
+				new Promise<never>((_, reject) => {
 					timer = setTimeout(() => reject(new Error(`Save operation timed out after ${timeoutMs}ms`)), timeoutMs);
 				})
-				: null;
+			:	null;
 		const abort = new Promise<never>((_, reject) => {
-				const rejectIfAborted = () => reject(this.abortError());
-				if (this.lifecycleAbort.signal.aborted || signal?.aborted) {
-					rejectIfAborted();
-					return;
-				}
-				const onLifecycleAbort = () => rejectIfAborted();
-				const onOperationAbort = () => rejectIfAborted();
-				this.lifecycleAbort.signal.addEventListener("abort", onLifecycleAbort, { once: true });
-				if (signal) signal.addEventListener("abort", onOperationAbort, { once: true });
-			});
+			const rejectIfAborted = () => reject(this.abortError());
+			if (this.lifecycleAbort.signal.aborted || signal?.aborted) {
+				rejectIfAborted();
+				return;
+			}
+			const onLifecycleAbort = () => rejectIfAborted();
+			const onOperationAbort = () => rejectIfAborted();
+			this.lifecycleAbort.signal.addEventListener("abort", onLifecycleAbort, { once: true });
+			if (signal) signal.addEventListener("abort", onOperationAbort, { once: true });
+		});
 		try {
 			return await Promise.race(timeout ? [resolve(), timeout, abort] : [resolve(), abort]);
 		} finally {

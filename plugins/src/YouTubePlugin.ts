@@ -6,6 +6,7 @@ import { createSabrStream, createSabrVideoStream } from "./utils/sabr-stream-fac
 import { webStreamToNodeStream } from "./utils/stream-converter.js";
 import { mintYouTubePoToken } from "./utils/youtube-botguard.js";
 import { Readable } from "stream";
+import { createPluginDebugLogger } from "./utils/debugLog.js";
 
 /**
  * YouTube VM shim
@@ -59,6 +60,8 @@ export class YouTubePlugin extends BasePlugin {
 	private ready: Promise<void>;
 	private player: Player | undefined;
 	private options: PluginOptions;
+	/** Used only when no `options.player` is bound; see debug(). */
+	private readonly fallbackDebugLogger: (message?: any, ...optionalParams: any[]) => void;
 	/**
 	 * Creates a new YouTubePlugin instance.
 	 *
@@ -73,6 +76,7 @@ export class YouTubePlugin extends BasePlugin {
 		super();
 		this.player = options?.player ?? undefined;
 		this.options = options ?? {};
+		this.fallbackDebugLogger = createPluginDebugLogger("YouTubePlugin", options?.debug);
 		this.ready = this.init();
 	}
 
@@ -89,10 +93,12 @@ export class YouTubePlugin extends BasePlugin {
 	}
 
 	private debug(message?: any, ...optionalParams: any[]): void {
-		if (this?.player && this.player?.listenerCount("debug") > 0) {
-			this.player.emit("debug", `[YouTubePlugin] ${message}`, ...optionalParams);
+		const tracer = this.player?.runtimeGraph?.debugTracer;
+		if (tracer) {
+			tracer.log("debug", "YouTubePlugin", message, ...optionalParams);
+			return;
 		}
-		if (this.options.debug) this.options.debug(`[YouTubePlugin] ${message}`, ...optionalParams);
+		this.fallbackDebugLogger(message, ...optionalParams);
 	}
 
 	private throwIfAborted(signal?: AbortSignal): void {

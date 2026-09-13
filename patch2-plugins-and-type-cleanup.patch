@@ -1,0 +1,191 @@
+diff --git a/core/src/index.ts b/core/src/index.ts
+index 9581e57..929917e 100644
+--- a/core/src/index.ts
++++ b/core/src/index.ts
+@@ -17,6 +17,7 @@ export { TransitionController } from "./controller/TransitionController";
+ export { PreloadController } from "./controller/PreloadController";
+ export { SaveController } from "./controller/SaveController";
+ export { PlayerBusLatencyTrace } from "./controller/PlayerBusLatencyTrace";
++export { PlayerEventDebug, DEBUG_PRIORITY } from "./controller/PlayerEventDebug";
+ export { StreamManager } from "./structures/StreamManager";
+ 
+ export type {
+diff --git a/core/src/types/core.ts b/core/src/types/core.ts
+index 70d2ac9..5f0a11b 100644
+--- a/core/src/types/core.ts
++++ b/core/src/types/core.ts
+@@ -4,6 +4,7 @@ import type { PlayerManager } from "../structures/PlayerManager";
+ import type { AudioFilter } from "./filter";
+ import type { SourcePluginLike } from "./plugin";
+ import type { AudioResource, StreamType } from "@discordjs/voice";
++import type { PlayerDebugLevel } from "./debug";
+ 
+ export enum PlaybackMode {
+ 	NATIVE = "native",
+# @@ -143,9 +144,6 @@ export interface PlayerOptions {
+#  	maxStreamStore?: number;
+#  }
+ 
+# -export type PlayerDebugLevel = "off" | "error" | "warn" | "info" | "debug" | "verbose" | "time";
+# -export type PlayerEventDebugLogger = (message: string, value?: unknown) => void;
+# -
+#  export interface PlayerManagerOptions {
+#  	plugins?: SourcePluginLike[];
+#  	extensions?: any[];
+diff --git a/core/src/types/debug.ts b/core/src/types/debug.ts
+new file mode 100644
+index 0000000..12df2b7
+--- /dev/null
++++ b/core/src/types/debug.ts
+@@ -0,0 +1,13 @@
++/**
++ * PRIORITY levels understood by {@link PlayerEventDebug} (see
++ * `core/src/controller/PlayerEventDebug.ts`). Lower priority number = more
++ * severe / always shown; see `DEBUG_PRIORITY` for the numeric ordering.
++ */
++export type PlayerDebugLevel = "off" | "error" | "warn" | "info" | "debug" | "verbose" | "time";
++
++/**
++ * Sink invoked by {@link PlayerEventDebug} once a message has cleared its priority check.
++ * Kept variadic (rather than a single `value` payload) so every call site - controllers,
++ * plugins, extensions - can forward extra args through untouched.
++ */
++export type PlayerEventDebugLogger = (message: string, ...args: any[]) => void;
+diff --git a/core/src/types/index.ts b/core/src/types/index.ts
+index bc8f0bb..c61415a 100644
+--- a/core/src/types/index.ts
++++ b/core/src/types/index.ts
+@@ -1,4 +1,5 @@
+ export * from "./core";
++export * from "./debug";
+ export * from "./plugin";
+ export * from "./extension";
+ export * from "./filter";
+diff --git a/plugins/src/AttachmentsPlugin.ts b/plugins/src/AttachmentsPlugin.ts
+index 497f2d5..54663f3 100644
+--- a/plugins/src/AttachmentsPlugin.ts
++++ b/plugins/src/AttachmentsPlugin.ts
+@@ -6,6 +6,7 @@ import fs from "fs";
+ import path from "path";
+ import mime from "mime-types";
+ import { fileTypeFromBuffer } from "file-type";
++import { createPluginDebugLogger } from "./utils/debugLog.js";
+ 
+ /**
+  * Configuration options for the AttachmentsPlugin.
+@@ -57,6 +58,7 @@ export class AttachmentsPlugin extends BasePlugin {
+ 	priority = 0; // Higher priority to handle attachment URLs before more generic plugins
+ 	private opts: AttachmentsPluginOptions;
+ 	private readonly defaultAllowedExtensions = ["mp3", "wav", "ogg", "m4a", "flac", "aac", "wma", "opus", "webm"];
++	private readonly debugLogger: (message?: any, ...optionalParams: any[]) => void;
+ 
+ 	/**
+ 	 * Creates a new AttachmentsPlugin instance.
+@@ -84,6 +86,7 @@ export class AttachmentsPlugin extends BasePlugin {
+ 			allowedExtensions: opts?.allowedExtensions || this.defaultAllowedExtensions,
+ 			debug: opts?.debug || false,
+ 		};
++		this.debugLogger = createPluginDebugLogger("AttachmentsPlugin", this.opts.debug);
+ 	}
+ 
+ 	/**
+@@ -611,8 +614,6 @@ export class AttachmentsPlugin extends BasePlugin {
+ 	 * Debug logging helper.
+ 	 */
+ 	private debug(message: string, ...args: any[]): void {
+-		if (this.opts.debug) {
+-			console.log(`[AttachmentsPlugin] ${message}`, ...args);
+-		}
++		this.debugLogger(message, ...args);
+ 	}
+ }
+diff --git a/plugins/src/YouTubePlugin.ts b/plugins/src/YouTubePlugin.ts
+index 9b0d54f..4f13cd2 100644
+--- a/plugins/src/YouTubePlugin.ts
++++ b/plugins/src/YouTubePlugin.ts
+@@ -6,6 +6,7 @@ import { createSabrStream, createSabrVideoStream } from "./utils/sabr-stream-fac
+ import { webStreamToNodeStream } from "./utils/stream-converter.js";
+ import { mintYouTubePoToken } from "./utils/youtube-botguard.js";
+ import { Readable } from "stream";
++import { createPluginDebugLogger } from "./utils/debugLog.js";
+ 
+ /**
+  * YouTube VM shim
+@@ -59,6 +60,8 @@ export class YouTubePlugin extends BasePlugin {
+ 	private ready: Promise<void>;
+ 	private player: Player | undefined;
+ 	private options: PluginOptions;
++	/** Used only when no `options.player` is bound; see debug(). */
++	private readonly fallbackDebugLogger: (message?: any, ...optionalParams: any[]) => void;
+ 	/**
+ 	 * Creates a new YouTubePlugin instance.
+ 	 *
+@@ -73,6 +76,7 @@ export class YouTubePlugin extends BasePlugin {
+ 		super();
+ 		this.player = options?.player ?? undefined;
+ 		this.options = options ?? {};
++		this.fallbackDebugLogger = createPluginDebugLogger("YouTubePlugin", options?.debug);
+ 		this.ready = this.init();
+ 	}
+ 
+@@ -89,10 +93,12 @@ export class YouTubePlugin extends BasePlugin {
+ 	}
+ 
+ 	private debug(message?: any, ...optionalParams: any[]): void {
+-		if (this?.player && this.player?.listenerCount("debug") > 0) {
+-			this.player.emit("debug", `[YouTubePlugin] ${message}`, ...optionalParams);
++		const tracer = this.player?.runtimeGraph?.debugTracer;
++		if (tracer) {
++			tracer.log("debug", "YouTubePlugin", message, ...optionalParams);
++			return;
+ 		}
+-		if (this.options.debug) this.options.debug(`[YouTubePlugin] ${message}`, ...optionalParams);
++		this.fallbackDebugLogger(message, ...optionalParams);
+ 	}
+ 
+ 	private throwIfAborted(signal?: AbortSignal): void {
+diff --git a/plugins/src/utils/debugLog.ts b/plugins/src/utils/debugLog.ts
+new file mode 100644
+index 0000000..8f59982
+--- /dev/null
++++ b/plugins/src/utils/debugLog.ts
+@@ -0,0 +1,39 @@
++import { PlayerEventDebug, type PlayerDebugLevel } from "ziplayer";
++
++export type PluginDebugOption = boolean | ((message?: any, ...optionalParams: any[]) => any) | undefined;
++
++/**
++ * Builds a `(message?, ...args) => void` debug logger for a standalone plugin.
++ *
++ * Plugins (unlike extensions) are typically registered once and shared across
++ * every guild's `Player`, so they have no single player to bind a
++ * {@link PlayerEventDebug} tracer to. Instead this follows the same
++ * convention used by `lavalinkExt`'s own local logger: the legacy
++ * `options.debug` flag just picks a default PRIORITY -
++ *
++ * - `true` (or a custom function) -> `"debug"` (visible by default)
++ * - `false` / `undefined` -> `"verbose"` (hidden unless explicitly requested)
++ *
++ * and {@link PlayerEventDebug.resolveLevel} still auto-escalates messages
++ * that look like a failure (an `Error`, or text matching "error"/"failed"/
++ * "⚠️"/etc.) to at least `"warn"` so problems always surface, even when the
++ * plugin's own debug flag is off.
++ */
++export function createPluginDebugLogger(
++	tag: string,
++	debugOption: PluginDebugOption,
++): (message?: any, ...optionalParams: any[]) => void {
++	const customSink = typeof debugOption === "function" ? debugOption : undefined;
++	const defaultLevel: PlayerDebugLevel = customSink || debugOption ? "debug" : "verbose";
++	const sink = customSink ?? ((message: string, ...args: any[]) => console.log(message, ...args));
++
++	return (message?: any, ...optionalParams: any[]) => {
++		const level = PlayerEventDebug.resolveLevel(defaultLevel, message, optionalParams);
++		// Without a live player-bound tracer to compare against a running debugLevel,
++		// mirror the previous opt-in contract: stay quiet unless explicitly enabled,
++		// but never swallow a message that auto-escalated because it looks like a failure.
++		if (level === defaultLevel && defaultLevel === "verbose") return;
++		const text = message === undefined ? "" : typeof message === "string" ? message : String(message);
++		sink(`[${tag}] ${text}`.trimEnd(), ...optionalParams);
++	};
++}

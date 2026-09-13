@@ -120,7 +120,10 @@ export class PlayerEventDebug {
 	public log(defaultLevel: PlayerDebugLevel, tag: string, message?: any, ...args: any[]): void {
 		const level = PlayerEventDebug.resolveLevel(defaultLevel, message, args);
 		if (!this.enabled(level)) return;
-		const text = message === undefined ? "" : typeof message === "string" ? message : String(message);
+		const text =
+			message === undefined ? ""
+			: typeof message === "string" ? message
+			: String(message);
 		this.logger?.(`[${tag}] ${text}`.trimEnd(), ...args);
 	}
 

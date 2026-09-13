@@ -1,4 +1,5 @@
 export * from "./core";
+export * from "./debug";
 export * from "./plugin";
 export * from "./extension";
 export * from "./filter";

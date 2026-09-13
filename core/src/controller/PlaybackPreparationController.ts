@@ -46,10 +46,10 @@ export class PlaybackPreparationController {
 			return [];
 		}
 
-		let related = await this.bus.requestRpc<{ track: Track; history?: Track[] }, Track[]>(
-			"plugin.relatedTracks",
-			{ track: source, history: this.bus.querySync("previousTracks") },
-		);
+		let related = await this.bus.requestRpc<{ track: Track; history?: Track[] }, Track[]>("plugin.relatedTracks", {
+			track: source,
+			history: this.bus.querySync("previousTracks"),
+		});
 		related = related ?? [];
 		const upcoming = new Set(this.queueSnapshot().map((item) => item.id ?? item.url));
 		related = related.filter((item) => item !== source && !upcoming.has(item.id ?? item.url));

@@ -4,6 +4,7 @@ import type { PlayerManager } from "../structures/PlayerManager";
 import type { AudioFilter } from "./filter";
 import type { SourcePluginLike } from "./plugin";
 import type { AudioResource, StreamType } from "@discordjs/voice";
+import type { PlayerDebugLevel } from "./debug";
 
 export enum PlaybackMode {
 	NATIVE = "native",
@@ -142,14 +143,6 @@ export interface PlayerOptions {
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
 	maxStreamStore?: number;
 }
-
-export type PlayerDebugLevel = "off" | "error" | "warn" | "info" | "debug" | "verbose" | "time";
-/**
- * Sink invoked by {@link PlayerEventDebug} once a message has cleared its priority check.
- * Kept variadic (rather than a single `value` payload) so every call site - controllers,
- * plugins, extensions - can forward extra args through untouched.
- */
-export type PlayerEventDebugLogger = (message: string, ...args: any[]) => void;
 
 export interface PlayerManagerOptions {
 	plugins?: SourcePluginLike[];

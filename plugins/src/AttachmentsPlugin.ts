@@ -6,6 +6,7 @@ import fs from "fs";
 import path from "path";
 import mime from "mime-types";
 import { fileTypeFromBuffer } from "file-type";
+import { createPluginDebugLogger } from "./utils/debugLog.js";
 
 /**
  * Configuration options for the AttachmentsPlugin.
@@ -57,6 +58,7 @@ export class AttachmentsPlugin extends BasePlugin {
 	priority = 0; // Higher priority to handle attachment URLs before more generic plugins
 	private opts: AttachmentsPluginOptions;
 	private readonly defaultAllowedExtensions = ["mp3", "wav", "ogg", "m4a", "flac", "aac", "wma", "opus", "webm"];
+	private readonly debugLogger: (message?: any, ...optionalParams: any[]) => void;
 
 	/**
 	 * Creates a new AttachmentsPlugin instance.
@@ -84,6 +86,7 @@ export class AttachmentsPlugin extends BasePlugin {
 			allowedExtensions: opts?.allowedExtensions || this.defaultAllowedExtensions,
 			debug: opts?.debug || false,
 		};
+		this.debugLogger = createPluginDebugLogger("AttachmentsPlugin", this.opts.debug);
 	}
 
 	/**
@@ -611,8 +614,6 @@ export class AttachmentsPlugin extends BasePlugin {
 	 * Debug logging helper.
 	 */
 	private debug(message: string, ...args: any[]): void {
-		if (this.opts.debug) {
-			console.log(`[AttachmentsPlugin] ${message}`, ...args);
-		}
+		this.debugLogger(message, ...args);
 	}
 }
