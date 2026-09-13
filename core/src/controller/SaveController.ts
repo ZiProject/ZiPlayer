@@ -10,6 +10,7 @@ import type {
 } from "../types";
 import { FilterController } from "./FilterController";
 import type { PlayerBus } from "../structures/PlayerBus";
+import type { PlayerBusRpcContext } from "../types";
 import type { SaveControllerOptions } from "../types";
 
 /**
@@ -20,8 +21,6 @@ import type { SaveControllerOptions } from "../types";
  */
 export class SaveController {
 	private readonly lifecycleAbort = new AbortController();
-	private userAbortController: AbortController | null = null;
-	private userAbortListener: (() => void) | null = null;
 	private disposed = false;
 	private readonly activeFilterControllers = new Set<FilterController>();
 	private readonly middleware: TrackMiddleware[];
@@ -43,59 +42,37 @@ export class SaveController {
 			this.detachRpcs.push(
 				options.bus.registerRpc<{ track: Track; options?: SaveOptions | string }, Readable>(
 					"save",
-					({ track, options: saveOptions }) => this.save(track, saveOptions),
+					({ track, options: saveOptions }, rpcContext) => this.save(track, saveOptions, rpcContext.signal),
 				),
 				options.bus.registerRpc<{ track: Track; options?: SaveVideoOptions | string }, Readable>(
 					"save.video",
-					({ track, options: saveOptions }) => this.saveVideo(track, saveOptions),
+					({ track, options: saveOptions }, rpcContext) => this.saveVideo(track, saveOptions, rpcContext.signal),
 				),
 			);
 		}
-	}
-
-	/**
-	 * Attach a user-owned AbortController to the save pipeline.
-	 *
-	 * The controller is never aborted or disposed by SaveController. Aborting
-	 * the supplied controller cancels the current save operation and tears down
-	 * any isolated filter pipeline owned by that operation.
-	 */
-	public setAbortController(controller: AbortController | null): void {
-		if (this.userAbortController === controller) return;
-		this.detachUserAbortController();
-		this.userAbortController = controller;
-		if (!controller) return;
-
-		const onAbort = () => {
-			for (const filterController of this.activeFilterControllers) filterController.destroy();
-		};
-		controller.signal.addEventListener("abort", onAbort, { once: true });
-		this.userAbortListener = () => controller.signal.removeEventListener("abort", onAbort);
-
-		if (controller.signal.aborted) onAbort();
 	}
 
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.lifecycleAbort.abort();
-		this.detachUserAbortController();
 		for (const controller of this.activeFilterControllers) controller.destroy();
 		this.activeFilterControllers.clear();
 		for (const detach of this.detachRpcs.splice(0)) detach();
 	}
 
-	public async save(track: Track, options?: SaveOptions | string): Promise<Readable> {
+	public async save(track: Track, options?: SaveOptions | string, signal?: AbortSignal): Promise<Readable> {
 		this.assertActive();
 		if (!track) throw new TypeError("A track is required to save audio");
 
 		const saveOptions: SaveOptions = typeof options === "string" ? { filename: options } : (options ?? {});
+		const operationSignal = signal ?? saveOptions.signal;
 		this.debug(`[SaveController] save called for track: ${track.title}`);
 
 		const exportTrack = this.prepareExportTrack(track, saveOptions);
-		await this.applyMiddleware(exportTrack);
+		await this.applyMiddleware(exportTrack, operationSignal);
 
-		const streamInfo = await this.resolveWithTimeout(() => this.resolveStream(exportTrack), saveOptions.timeout);
+		const streamInfo = await this.resolveWithTimeout(() => this.resolveStream(exportTrack), saveOptions.timeout, operationSignal);
 		if (!streamInfo?.stream) throw new Error(`No save stream available for track: ${track.title}`);
 
 		this.debug(`[SaveController] Save stream obtained for track: ${track.title}`);
@@ -103,47 +80,49 @@ export class SaveController {
 			this.debug(`[SaveController] filename=${saveOptions.filename}, quality=${saveOptions.quality ?? "default"}`);
 		}
 
-		if (!saveOptions.filter?.length && saveOptions.seek === undefined) return this.decorateStream(streamInfo.stream, saveOptions);
+		if (!saveOptions.filter?.length && saveOptions.seek === undefined) {
+			return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions);
+		}
 
 		const filterController = new FilterController({ refreshPlayerResource: async () => true }, this.debug, undefined, {
 			ffmpegPath: this.ffmpegPath,
 		});
 		this.activeFilterControllers.add(filterController);
-		this.lifecycleAbort.signal.addEventListener("abort", () => filterController.destroy(), { once: true });
-		if (this.userAbortController) {
-			this.userAbortController.signal.addEventListener("abort", () => filterController.destroy(), { once: true });
-		}
+		const cleanupAbort = this.bindAbortToFilter(filterController, operationSignal);
 
 		try {
-			this.throwIfAborted();
+			this.throwIfAborted(operationSignal);
 			const filters: AudioFilter[] = saveOptions.filter ?? [];
 			if (filters.length) await filterController.applyFilters(filters);
-			this.throwIfAborted();
+			this.throwIfAborted(operationSignal);
 			const seek = typeof saveOptions.seek === "number" && saveOptions.seek >= 0 ? saveOptions.seek : -1;
 			this.debug(`[SaveController] Applying filters to save stream: ${filterController.getFilterString() || "none"}`);
 
 			const output = (await filterController.applyFiltersAndSeek(streamInfo, seek)).stream!;
-			this.throwIfAborted();
+			this.throwIfAborted(operationSignal);
 			this.disposeFilterOnStreamEnd(filterController, output);
-			return this.decorateStream(output, saveOptions);
+			cleanupAbort();
+			return this.decorateStream(this.bindAbortToStream(output, operationSignal), saveOptions);
 		} catch (error) {
+			cleanupAbort();
 			this.activeFilterControllers.delete(filterController);
 			filterController.destroy();
 			throw error;
 		}
 	}
 
-	public async saveVideo(track: Track, options?: SaveVideoOptions | string): Promise<Readable> {
+	public async saveVideo(track: Track, options?: SaveVideoOptions | string, signal?: AbortSignal): Promise<Readable> {
 		this.assertActive();
 		if (!track) throw new TypeError("A track is required to save video");
 
 		const saveOptions: SaveVideoOptions = typeof options === "string" ? { filename: options } : (options ?? {});
+		const operationSignal = signal ?? saveOptions.signal;
 		this.debug(`[SaveController] save called for track: ${track.title}`);
 
 		const exportTrack = this.prepareExportTrack(track, saveOptions);
-		await this.applyMiddleware(exportTrack);
+		await this.applyMiddleware(exportTrack, operationSignal);
 
-		const streamInfo = await this.resolveWithTimeout(() => this.resolveVideoStream(exportTrack), saveOptions.timeout);
+		const streamInfo = await this.resolveWithTimeout(() => this.resolveVideoStream(exportTrack), saveOptions.timeout, operationSignal);
 		if (!streamInfo?.stream) throw new Error(`No save stream available for track: ${track.title}`);
 
 		this.debug(`[SaveController] Save stream obtained for track: ${track.title}`);
@@ -151,7 +130,7 @@ export class SaveController {
 			this.debug(`[SaveController] filename=${saveOptions.filename}, quality=${saveOptions.quality ?? "default"}`);
 		}
 
-		return this.decorateStream(streamInfo.stream, saveOptions);
+		return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions);
 	}
 
 	private prepareExportTrack(track: Track, options: SaveOptions): Track {
@@ -165,8 +144,8 @@ export class SaveController {
 		};
 	}
 
-	private async resolveWithTimeout<T>(resolve: () => Promise<T>, timeoutMs?: number): Promise<T> {
-		this.throwIfAborted();
+	private async resolveWithTimeout<T>(resolve: () => Promise<T>, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
+		this.throwIfAborted(signal);
 		let timer: ReturnType<typeof setTimeout> | null = null;
 		const timeout =
 			Number.isFinite(timeoutMs) && (timeoutMs as number) > 0
@@ -176,15 +155,15 @@ export class SaveController {
 				: null;
 		const abort = new Promise<never>((_, reject) => {
 				const rejectIfAborted = () => reject(this.abortError());
-				if (this.lifecycleAbort.signal.aborted || this.userAbortController?.signal.aborted) {
+				if (this.lifecycleAbort.signal.aborted || signal?.aborted) {
 					rejectIfAborted();
 					return;
 				}
 				const onLifecycleAbort = () => rejectIfAborted();
+				const onOperationAbort = () => rejectIfAborted();
 				this.lifecycleAbort.signal.addEventListener("abort", onLifecycleAbort, { once: true });
-				const userSignal = this.userAbortController?.signal;
-				if (userSignal) userSignal.addEventListener("abort", onLifecycleAbort, { once: true });
-		});
+				if (signal) signal.addEventListener("abort", onOperationAbort, { once: true });
+			});
 		try {
 			return await Promise.race(timeout ? [resolve(), timeout, abort] : [resolve(), abort]);
 		} finally {
@@ -200,13 +179,36 @@ export class SaveController {
 		return exportStream;
 	}
 
-	private async applyMiddleware(track: Track): Promise<void> {
+	private async applyMiddleware(track: Track, signal?: AbortSignal): Promise<void> {
 		for (const middleware of this.middleware) {
-			this.throwIfAborted();
+			this.throwIfAborted(signal);
 			const result = await middleware(track, this.context);
-			this.throwIfAborted();
+			this.throwIfAborted(signal);
 			if (result && result !== track) Object.assign(track, result);
 		}
+	}
+
+	private bindAbortToFilter(controller: FilterController, signal?: AbortSignal): () => void {
+		const onLifecycleAbort = () => controller.destroy();
+		const onOperationAbort = () => controller.destroy();
+		this.lifecycleAbort.signal.addEventListener("abort", onLifecycleAbort, { once: true });
+		if (signal) signal.addEventListener("abort", onOperationAbort, { once: true });
+		return () => {
+			this.lifecycleAbort.signal.removeEventListener("abort", onLifecycleAbort);
+			if (signal) signal.removeEventListener("abort", onOperationAbort);
+		};
+	}
+
+	private bindAbortToStream<T extends Readable>(stream: T, signal?: AbortSignal): T {
+		if (!signal) return stream;
+		const onAbort = () => stream.destroy(this.abortError());
+		if (signal.aborted) onAbort();
+		else signal.addEventListener("abort", onAbort, { once: true });
+		const cleanup = () => signal.removeEventListener("abort", onAbort);
+		stream.once("close", cleanup);
+		stream.once("error", cleanup);
+		stream.once("end", cleanup);
+		return stream;
 	}
 
 	private disposeFilterOnStreamEnd(controller: FilterController, stream: Readable): void {
@@ -219,18 +221,12 @@ export class SaveController {
 		stream.once("error", cleanup);
 	}
 
-	private detachUserAbortController(): void {
-		this.userAbortListener?.();
-		this.userAbortListener = null;
-		this.userAbortController = null;
-	}
-
 	private assertActive(): void {
 		if (this.disposed) throw new Error("SaveController is disposed");
 	}
 
-	private throwIfAborted(): void {
-		if (this.lifecycleAbort.signal.aborted || this.userAbortController?.signal.aborted) throw this.abortError();
+	private throwIfAborted(signal?: AbortSignal): void {
+		if (this.lifecycleAbort.signal.aborted || signal?.aborted) throw this.abortError();
 	}
 
 	private abortError(): Error {
