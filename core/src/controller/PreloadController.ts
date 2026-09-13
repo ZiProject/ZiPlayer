@@ -1,14 +1,11 @@
-import type { Track, TrackLoadResult } from "../types";
+import type { AudioResource } from "@discordjs/voice";
+import type { Track, TrackLoadResult, PromotedPreload, StreamInfo } from "../types";
 import type { PlayerBus } from "../structures/PlayerBus";
 import { createPlayerRequestId } from "../structures/PlayerBus";
 import type { TrackLoader } from "../structures/TrackLoader";
-import { PreloadManager, type PromotedPreload } from "../structures/PreloadManager";
-
-export interface PreloadControllerOptions {
-	loader: TrackLoader;
-	manager: PreloadManager;
-	bus?: PlayerBus;
-}
+import { PreloadManager } from "../structures/PreloadManager";
+import type { PreloadControllerOptions } from "../types";
+import { CONTROLLER_RPC } from "./ControllerBusContract";
 
 /** Owns preload lifecycle. Player-facing requests are routed through PlayerBus. */
 export class PreloadController {
@@ -27,10 +24,31 @@ export class PreloadController {
 				void this.handleRequest(event);
 			});
 			this.detachRpcs.push(
+				this.bus.registerRpc<{ track: Track }, AudioResource | null>(CONTROLLER_RPC.playbackPromotePreload, ({ track }) => {
+					const session = this.bus!.querySync("playbackSessionInternal");
+					if (!session) return null;
+					const promoted = this.bus!.requestRpcSync<{ track: Track }, PromotedPreload | null>("preload.promote", { track });
+					if (!promoted) return null;
+					const streamInfo: StreamInfo = promoted.streamInfo ?? { stream: promoted.stream as any, type: "arbitrary" };
+					const resource = this.bus!.requestRpcSync<
+						{ stream: import("stream").Readable; track: Track; inputType?: import("@discordjs/voice").StreamType },
+						AudioResource
+					>("resource.create", {
+						stream: (streamInfo.stream ?? promoted.stream) as import("stream").Readable,
+						track: promoted.track,
+						inputType: streamInfo.inputType,
+					});
+					session.setResource(resource);
+					this.bus!.requestRpcSync(CONTROLLER_RPC.playbackPlay, { resource, session });
+					session.markPlaying(0);
+					this.bus!.event({ type: "playbackStateChanged", session: session.snapshot() });
+					return resource;
+				}),
 				this.bus.registerRpc<void, void>("preload.next", () => this.preload()),
 				this.bus.registerRpc<void, void>("preload.cancel", () => this.cancel()),
 				this.bus.registerRpc<void, void>("preload.cancelSafe", () => this.cancelSafely()),
 				this.bus.registerRpc<void, void>("preload.clear", () => this.clear()),
+				this.bus.registerRpc<{ track: Track }, boolean>("preload.has", ({ track }) => this.has(track)),
 				this.bus.registerRpc<{ track: Track }, PromotedPreload | null>("preload.promote", ({ track }) =>
 					this.takePreloaded(track),
 				),

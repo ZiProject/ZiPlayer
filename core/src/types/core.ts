@@ -172,12 +172,13 @@ export interface SaveOptions {
 	filename?: string;
 	quality?: "high" | "low";
 	timeout?: number;
+	signal?: AbortSignal;
 	metadata?: Record<string, any>;
 	filter?: AudioFilter[];
 	seek?: number;
 }
 
-export type SaveVideoOptions = Pick<SaveOptions, "filename" | "quality" | "timeout" | "metadata">;
+export type SaveVideoOptions = Pick<SaveOptions, "filename" | "quality" | "timeout" | "metadata" | "signal">;
 
 export interface PlayerSession {
 	guildId: string;

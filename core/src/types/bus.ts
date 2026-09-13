@@ -1,4 +1,5 @@
 import type { AudioPlayerState, VoiceConnection } from "@discordjs/voice";
+import type { PlaybackSession } from "../structures/PlaybackSession";
 import type {
 	Track,
 	StreamInfo,
@@ -161,16 +162,15 @@ export type PlayerEventArgsMap = {
 	) ?
 		[]
 	: K extends (
-
-			| "TRACK_LOADING"
-			| "TRACK_LOADED"
-			| "TRACK_STARTED"
-			| "TRACK_END"
-			| "STREAM_ABORTED"
-			| "playbackStateChanged"
-			| "playbackSessionCreated"
-			| "RECOVERY_STARTED"
-			| "RECOVERY_FAILED"
+		| "TRACK_LOADING"
+		| "TRACK_LOADED"
+		| "TRACK_STARTED"
+		| "TRACK_END"
+		| "STREAM_ABORTED"
+		| "playbackStateChanged"
+		| "playbackSessionCreated"
+		| "RECOVERY_STARTED"
+		| "RECOVERY_FAILED"
 	) ?
 		[PlaybackSessionSnapshot]
 	: K extends "TRACK_ERROR" ? [PlaybackSessionSnapshot, Error]
@@ -230,6 +230,15 @@ export interface PlayerRpcOptions {
 	source?: string;
 	priority?: PlayerActionPriority;
 }
+export interface PlayerBusRpcContext {
+	readonly requestId: PlayerRequestId;
+	readonly signal: AbortSignal;
+	readonly timestamp: number;
+}
+export interface PlayerBusRpcOptions {
+	timeoutMs?: number;
+	signal?: AbortSignal;
+}
 export interface PlayerRpcMap {
 	play: { request: { query: string | Track | SearchResult | null; requestedBy?: string }; response: boolean };
 	"volume.set": { request: { value: number }; response: number };
@@ -257,6 +266,9 @@ export interface PlayerRpcMap {
 	"playback.refreshResource": { request: { position: number }; response: PlaybackSessionSnapshot };
 	"playback.loadFreshCurrent": { request: { track: Track }; response: TrackLoadResult | null };
 	"playback.promotePreload": { request: { track: Track }; response: AudioResource | null };
+	"playback.transitionLock": { request: { active: boolean }; response: void };
+	"playback.prepareAutoplay": { request: { session: PlaybackSession; context: PlayerMessageContext }; response: Track | null };
+	"playback.start": { request: { track: Track; context: PlayerMessageContext; from: Track | null }; response: void };
 	"forward.health": { request: undefined; response: ForwardHealthStatus };
 	"forward.subscribe": { request: { leader: unknown; options?: { forwardMode?: boolean } }; response: boolean };
 	"forward.unsubscribe": { request: { reason?: string }; response: boolean };
@@ -270,6 +282,7 @@ export interface PlayerRpcMap {
 	"resource.create": { request: { stream: Readable; track: Track; inputType?: string }; response: AudioResource };
 	"track.middleware": { request: { track: Track }; response: Track };
 	"stream.resolve": { request: { track: Track; fresh?: boolean }; response: StreamInfo | null };
+	"preload.has": { request: { track: Track }; response: boolean };
 	"preload.next": { request: undefined; response: void };
 	"preload.cancel": { request: undefined; response: void };
 	"preload.cancelSafe": { request: undefined; response: void };
@@ -280,6 +293,7 @@ export interface PlayerRpcMap {
 	};
 	"plugin.add": { request: { plugin: BasePlugin }; response: void };
 	"plugin.remove": { request: { name: string }; response: boolean };
+	"plugin.relatedTracks": { request: { track: Track; history?: Track[] }; response: Track[] };
 	"extension.add": { request: { extension: BaseExtension }; response: void };
 	"extension.remove": { request: { extension: BaseExtension }; response: boolean };
 	save: { request: { track: Track; options?: SaveOptions | string }; response: Readable };
@@ -293,6 +307,18 @@ export type PlayerRpcHandler<TRequest, TResponse> = (
 ) => TResponse | Promise<TResponse>;
 
 export interface PlayerQueryMap {
+	audioPlayer: import("@discordjs/voice").AudioPlayer | null;
+	"tts.hasPlayer": boolean;
+	"stream.stats": {
+		active: number;
+		paused: number;
+		ended: number;
+		error: number;
+		destroyed: number;
+		total: number;
+		bySource: Record<string, number>;
+	} | null;
+	ttsInterrupt: boolean;
 	currentTrack: Track | null;
 	queueCurrent: Track | null;
 	playerState: PlaybackSessionSnapshot["status"];
@@ -305,8 +331,10 @@ export interface PlayerQueryMap {
 	relatedTracks: Track[];
 	queueSerialized: object;
 	playbackSession: PlaybackSessionSnapshot | null;
+	playbackSessionInternal: PlaybackSession | null;
 	currentResource: unknown | null;
 	position: number | null;
+	queueNextTrack: Track | null;
 	volume: number;
 	isPlaying: boolean;
 	isPaused: boolean;

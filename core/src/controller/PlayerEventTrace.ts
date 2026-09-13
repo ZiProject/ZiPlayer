@@ -1,12 +1,8 @@
 import type { PlayerEvent } from "../structures/PlayerBus";
+import type { PlayerEventTraceInfo } from "../types";
 
 const sequenceByEvent = new WeakMap<object, number>();
 let sequence = 0;
-
-export interface PlayerEventTraceInfo {
-	sequence: number;
-	fingerprint: string;
-}
 
 export function traceEvent(event: PlayerEvent): PlayerEventTraceInfo {
 	let id = sequenceByEvent.get(event as object);

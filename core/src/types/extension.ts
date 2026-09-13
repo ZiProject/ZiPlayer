@@ -129,4 +129,5 @@ export interface ExtensionStreamRequest {
 export interface ExtensionSearchRequest {
 	query: string;
 	requestedBy: string;
+	signal?: AbortSignal;
 }

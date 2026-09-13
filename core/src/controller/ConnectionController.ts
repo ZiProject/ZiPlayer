@@ -14,6 +14,7 @@ import { PlayerBus, createPlayerSessionId, type PlayerRequestId, type PlayerSess
 export class ConnectionController {
 	private readonly guildId: string;
 	private readonly bus: PlayerBus;
+	private readonly group?: string;
 	private readonly selfDeaf: boolean;
 	private readonly selfMute: boolean;
 	private readonly debug?: (message: string) => void;
@@ -33,6 +34,7 @@ export class ConnectionController {
 		this.guildId = options.guildId;
 		this.bus = options.bus;
 		this.audioPlayer = options.audioPlayer ?? null;
+		this.group = options.options?.group;
 		this.selfDeaf = options.options?.selfDeaf ?? true;
 		this.selfMute = options.options?.selfMute ?? false;
 		this.debug = options.debug;
@@ -164,6 +166,7 @@ export class ConnectionController {
 				channelId: event.channel.id,
 				guildId: event.channel.guildId || this.guildId,
 				adapterCreator: event.channel.guild.voiceAdapterCreator,
+				group: this.group,
 				selfDeaf: this.selfDeaf,
 				selfMute: this.selfMute,
 			});

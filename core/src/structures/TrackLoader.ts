@@ -11,8 +11,18 @@ import type {
 } from "../types";
 import type { PlaybackSession } from "./PlaybackSession";
 import type { PreloadManager } from "./PreloadManager";
+import type { PlayerBus } from "./PlayerBus";
+import { CONTROLLER_RPC } from "../controller/ControllerBusContract";
+
+const TRACK_LOADER_RPC = {
+	load: "controller.track.load",
+	loadWithRecovery: "controller.track.loadWithRecovery",
+	resetRecovery: "controller.track.resetRecovery",
+	getRecoveryCount: "controller.track.getRecoveryCount",
+} as const;
 
 export class TrackLoader {
+	private disposed = false;
 	private readonly middleware: TrackMiddleware[];
 	private readonly context: TrackLoaderContext;
 	private readonly resolvers: TrackStreamResolver[];
@@ -20,6 +30,8 @@ export class TrackLoader {
 	private readonly recovery: Required<TrackRecoveryPolicy>;
 	private readonly qualityController?: TrackAttemptQualityController;
 	private readonly debugLog: (message?: any, ...optionalParams: any[]) => void;
+	private readonly bus?: PlayerBus;
+	private readonly detachRpcs: Array<() => void> = [];
 	private readonly failures = new Map<string, number>();
 	constructor(options: TrackLoaderOptions) {
 		this.middleware = [...(options.middleware ?? [])];
@@ -36,6 +48,42 @@ export class TrackLoader {
 		};
 		this.qualityController = options.qualityController;
 		this.debugLog = options.debug ?? (() => undefined);
+		this.bus = options.bus;
+		if (this.bus) {
+			this.detachRpcs.push(
+				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+					CONTROLLER_RPC.playbackRecover,
+					({ track, session }, context) =>
+						this.bus!.requestRpc(CONTROLLER_RPC.trackLoadWithRecovery, { track, session }, { signal: context.signal }),
+				),
+				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+					CONTROLLER_RPC.playbackLoadFresh,
+					({ track, session }, context) =>
+						this.bus!.requestRpc(CONTROLLER_RPC.trackLoad, { track, session }, { signal: context.signal }),
+				),
+				this.bus.registerRpc<{ track: Track }, TrackLoadResult | null>(
+					CONTROLLER_RPC.playbackLoadFreshCurrent,
+					({ track }, context) => {
+						const session = this.bus!.querySync("playbackSessionInternal");
+						if (!session) return null;
+						return this.bus!.requestRpc(CONTROLLER_RPC.trackLoad, { track, session }, { signal: context.signal });
+					},
+				),
+				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+					TRACK_LOADER_RPC.load,
+					({ track, session }) => this.load(track, session),
+				),
+				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+					TRACK_LOADER_RPC.loadWithRecovery,
+					({ track, session }) => this.loadWithRecovery(track, session),
+				),
+				this.bus.registerRpc<{ track?: Track }, void>(TRACK_LOADER_RPC.resetRecovery, ({ track }) => this.resetRecovery(track)),
+				this.bus.registerRpc<{ track: Track }, number>(TRACK_LOADER_RPC.getRecoveryCount, ({ track }) =>
+					this.getRecoveryCount(track),
+				),
+				this.bus.registerRpc<{ track: Track }, Track>("track.middleware", ({ track }) => this.applyMiddleware(track)),
+			);
+		}
 	}
 	addResolver(resolver: TrackStreamResolver): () => void {
 		this.resolvers.push(resolver);
@@ -45,10 +93,12 @@ export class TrackLoader {
 		};
 	}
 	async load(track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
+		this.assertNotDisposed();
 		const stream = await this.resolve(track, session);
 		return { track, stream, sessionId: session.id, retry: 0, usedFallback: false };
 	}
 	async loadWithRecovery(track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
+		this.assertNotDisposed();
 		this.assertActive(session);
 		const key = this.key(track);
 		let retry = this.failures.get(key) ?? 0;
@@ -88,9 +138,11 @@ export class TrackLoader {
 		throw lastError instanceof Error ? lastError : new Error(String(lastError ?? `Unable to load track: ${track.title}`));
 	}
 	async preloadNext(): Promise<void> {
+		this.assertNotDisposed();
 		if (this.preloadManager) await this.preloadManager.preloadNextTrack();
 	}
 	async applyMiddleware(track: Track): Promise<Track> {
+		this.assertNotDisposed();
 		for (const middleware of this.middleware) {
 			const result = await middleware(track, this.context);
 			if (result && result !== track) Object.assign(track, result);
@@ -116,10 +168,16 @@ export class TrackLoader {
 	get recoveryPolicy(): Readonly<Required<TrackRecoveryPolicy>> {
 		return this.recovery;
 	}
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		for (const detach of this.detachRpcs) detach();
+		this.detachRpcs.length = 0;
+		this.failures.clear();
+	}
 	private async resolve(track: Track, session: PlaybackSession): Promise<StreamInfo> {
 		this.assertActive(session);
 		await this.applyMiddleware(track);
-		this.assertActive(session);
 		this.assertActive(session);
 		for (const resolver of this.resolvers) {
 			this.assertActive(session);
@@ -140,7 +198,11 @@ export class TrackLoader {
 		this.debugLog(`[TrackLoader] Reduced quality to low for recovery retry ${retry} on ${track.title}`);
 	}
 	private assertActive(session: PlaybackSession): void {
+		this.assertNotDisposed();
 		if (!session.isActive()) throw new DOMException("Playback session is no longer active", "AbortError");
+	}
+	private assertNotDisposed(): void {
+		if (this.disposed) throw new Error("TrackLoader is disposed");
 	}
 	private delay(ms: number, signal: AbortSignal): Promise<void> {
 		return new Promise((resolve, reject) => {

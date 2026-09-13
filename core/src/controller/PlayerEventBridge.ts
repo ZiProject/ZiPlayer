@@ -1,6 +1,5 @@
 import type { Player } from "../structures/Player";
 import type { PlayerEventType, PlayerBus, PlayerEvent } from "../structures/PlayerBus";
-
 import { PlayerEventDebug } from "./PlayerEventDebug";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
 
@@ -17,9 +16,8 @@ export class PlayerEventBridge {
 		private readonly bus: PlayerBus,
 		private readonly eventDebug: PlayerEventDebug,
 	) {
-		this.previousQueue = player.runtime.getQueueSnapshot();
+		this.previousQueue = player.bus.querySync("queue") ?? [];
 		this.debug("attached", { queueSize: this.previousQueue.length });
-
 		const events: PlayerEventType[] = [
 			"initialized",
 			"ready",
@@ -56,11 +54,16 @@ export class PlayerEventBridge {
 			"forwardModeEnd",
 		];
 		for (const type of events) this.detach.push(this.bus.subscribe(type, (event) => this.forward(event)));
-
 		this.detach.push(
 			this.bus.onOutput("[Connection]->[Player]:error", (event) => {
 				if (this.disposed || this.player.destroyed) return;
 				this.player.emit("connectionError", event.error);
+			}),
+			this.bus.registerRpc<{ track: any }, void>("player.emitTtsStart", ({ track }) => {
+				if (!this.disposed && !this.player.destroyed) this.player.emit("ttsStart", { track });
+			}),
+			this.bus.registerRpc<void, void>("player.emitTtsEnd", () => {
+				if (!this.disposed && !this.player.destroyed) this.player.emit("ttsEnd");
 			}),
 		);
 	}
@@ -70,14 +73,12 @@ export class PlayerEventBridge {
 			this.debug("DROP EVENT", { ...describeEvent(event), reason: this.disposed ? "disposed" : "player-destroyed" });
 			return;
 		}
-
 		const trace = traceEvent(event);
 		const publicType = this.toPublicEventName(event.type);
 		if (!publicType) {
 			this.debug("UNMAPPED BUS EVENT", { ...describeEvent(event), sequence: trace.sequence });
 			return;
 		}
-
 		const args = this.toArgs(event);
 		const previous = this.recent.get(trace.fingerprint);
 		if (previous !== undefined) {
@@ -89,14 +90,12 @@ export class PlayerEventBridge {
 			});
 		}
 		this.recent.set(trace.fingerprint, trace.sequence);
-
 		this.debug("BUS -> PLAYER", {
 			sequence: trace.sequence,
 			busEvent: event.type,
 			playerEvent: publicType,
 			args: this.describeArgs(event, args),
 		});
-
 		try {
 			this.player.emit(publicType, ...args);
 			this.emitQueueCompatibilityEvents(event);
@@ -235,7 +234,6 @@ export class PlayerEventBridge {
 		const next = event.queue;
 		const previous = this.previousQueue;
 		this.previousQueue = [...next];
-
 		if (next.length > previous.length) {
 			const added = next.filter((track) => !previous.some((old) => this.trackIdentity(old) === this.trackIdentity(track)));
 			if (added.length === 1) this.player.emit("queueAdd", added[0]);
@@ -254,20 +252,23 @@ export class PlayerEventBridge {
 	private trackIdentity(track: any): string | undefined {
 		return track?.id ?? track?.url;
 	}
-
 	private describeArgs(event: PlayerEvent, args: any[]): any {
 		if (event.type === "TRACK_ERROR") return { error: event.error?.message, track: event.session.track?.id };
-		return args;
+		return args.map((arg) => this.describeDebugArg(arg));
 	}
-
+	private describeDebugArg(arg: any): any {
+		if (arg === this.player) {
+			return { type: "Player", guildId: this.player.guildId, destroyed: this.player.destroyed };
+		}
+		return arg;
+	}
 	private debug(message: string, ...args: any[]): void {
 		try {
 			this.eventDebug.bridge("debug", `[PlayerEventBridge:${this.player.guildId}] ${message}`, ...args);
 		} catch {
-			// Debugging must never affect playback/event propagation.
+			/* Debugging must never affect playback/event propagation. */
 		}
 	}
-
 	public dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;

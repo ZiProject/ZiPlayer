@@ -22,6 +22,8 @@ export interface TrackResolverOptions {
 	streamManager: StreamManager;
 	pluginManager: PluginManager;
 	extensionManager: ExtensionManager;
+	bus?: import("../structures/PlayerBus").PlayerBus;
+	isDestroyed?: () => boolean;
 }
 
 export interface RelatedTracksOptions {
@@ -44,7 +46,7 @@ export interface SourcePlugin {
 	version: string;
 	priority?: number; // Higher = run first, default is 0. Lower priority plugins are tried first in getStream fallback.
 	canHandle(query: string): boolean;
-	search(query: string, requestedBy: string): Promise<SearchResult>;
+	search(query: string, requestedBy: string, signal?: AbortSignal): Promise<SearchResult>;
 	getStream(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
 	/** Optional direct video resolver. Plugins that only expose audio can omit it. */
 	getVideo?(track: Track, signal?: AbortSignal): Promise<StreamInfo>;

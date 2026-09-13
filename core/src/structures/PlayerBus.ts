@@ -3,6 +3,8 @@ import type {
 	PlayerActionExecutionContext,
 	PlayerBusEvents,
 	PlayerBusRequestErrorReason,
+	PlayerBusRpcContext,
+	PlayerBusRpcOptions,
 	PlayerEvent,
 	PlayerEventArgsMap,
 	PlayerEventType,
@@ -28,6 +30,8 @@ export type {
 	PlayerActionExecutionContext,
 	PlayerBusEvents,
 	PlayerBusRequestErrorReason,
+	PlayerBusRpcContext,
+	PlayerBusRpcOptions,
 	PlayerEvent,
 	PlayerEventArgsMap,
 	PlayerEventType,
@@ -87,17 +91,6 @@ export class PlayerBusRequestError extends Error {
 		super(message);
 		this.name = "PlayerBusRequestError";
 	}
-}
-
-export interface PlayerBusRpcContext {
-	readonly requestId: PlayerRequestId;
-	readonly signal: AbortSignal;
-	readonly timestamp: number;
-}
-
-export interface PlayerBusRpcOptions {
-	timeoutMs?: number;
-	signal?: AbortSignal;
 }
 
 type RpcHandler<TRequest, TResponse> = (request: TRequest, context: PlayerBusRpcContext) => TResponse | Promise<TResponse>;
@@ -281,6 +274,14 @@ export class PlayerBus {
 			if (this.latencyTrace?.enabled)
 				this.latencyTrace.record("rpc", type, start, { requestId: context.requestId, handler: handler.name || "anonymous" });
 		}
+	}
+
+	public get isDisposed(): boolean {
+		return this.disposed;
+	}
+
+	public hasRpc(type: string): boolean {
+		return this.rpcHandlers.has(type);
 	}
 
 	public registerRpc<TRequest, TResponse>(type: string, handler: RpcHandler<TRequest, TResponse>): () => void {

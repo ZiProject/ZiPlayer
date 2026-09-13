@@ -1,6 +1,6 @@
 {
 	"name": "ziplayer",
-	"version": "1.0.2",
+	"version": "1.0.3",
 	"description": "A modular Discord voice player with plugin system",
 	"keywords": [
 		"ZiPlayer",
@@ -20,7 +20,8 @@
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
 	"files": [
-		"dist"
+		"dist",
+		"AGENTS.md"
 	],
 	"scripts": {
 		"build": "tsup",

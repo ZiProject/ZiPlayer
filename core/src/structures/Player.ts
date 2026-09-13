@@ -29,7 +29,8 @@ import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { PlaybackSession } from "./PlaybackSession";
-import { PlayerRuntimeController, type PlayerRuntimeGraph } from "./PlayerRuntimeController";
+import { PlayerRuntimeController } from "./PlayerRuntimeController";
+import type { PlayerRuntimeGraph } from "../types";
 
 export class Player extends EventEmitter {
 	public readonly bus = new PlayerBus();
@@ -196,6 +197,10 @@ export class Player extends EventEmitter {
 
 	public debugSearchQuery(query: string): Promise<SearchDebugResult> {
 		return this.bus.requestRpc("search.debug", { query });
+	}
+
+	public createRelatedTracks(track?: Track | null): Promise<Track[]> {
+		return this.bus.requestRpc("playback.createRelatedTracks", { track });
 	}
 
 	public async connect(channel: VoiceChannel): Promise<VoiceConnection> {
