@@ -218,6 +218,7 @@ export interface ForwardHealthStatus {
 
 export interface PlayerStats {
 	totalPlayers: number;
+	leader: number;
 	follower: number;
 	activePlayers: number;
 	pausedPlayers: number;
