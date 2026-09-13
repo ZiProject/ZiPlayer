@@ -1243,7 +1243,7 @@ export class lavalinkExt extends BaseExtension {
 	>();
 	private isReady = false;
 	private updateTimer?: NodeJS.Timeout;
-	private debug: (message: string, ...optional: any[]) => void;
+	private lavalinkDebug: (message: string, ...optional: any[]) => void = () => {};
 
 	constructor(player: Player | null = null, opts: LavalinkExtOptions) {
 		super();
@@ -1261,7 +1261,11 @@ export class lavalinkExt extends BaseExtension {
 		};
 
 		// Initialize debug logger
-		this.debug = createDebugLogger(this.options.debug ?? false, "lavalinkExt");
+		// Legacy `options.debug: boolean` now just picks the default PRIORITY for this
+		// extension's messages; actual visibility is still governed by the player's
+		// central debugLevel via the inherited debugLog().
+		this.lavalinkDebug = (message: string, ...optional: any[]) =>
+			this.debugLog(this.options.debug ? "debug" : "verbose", message, ...optional);
 
 		// Initialize managers
 		this.nodeManager = new NodeManager(this.options);
@@ -1353,7 +1357,7 @@ export class lavalinkExt extends BaseExtension {
 	}
 
 	private async initializeNodes(): Promise<void> {
-		this.debug("Initializing nodes");
+		this.lavalinkDebug("Initializing nodes");
 		if (this.isReady) return;
 		if (!this.userId && !this.client?.user?.id) return;
 		if (!this.userId && this.client?.user?.id) {
@@ -1370,7 +1374,7 @@ export class lavalinkExt extends BaseExtension {
 		// Increase interval since WebSocket handles most updates in real-time
 		const interval = this.options.updateInterval ?? 30_000; // 30 seconds instead of 5
 		this.updateTimer = setInterval(() => {
-			this.updateAllPlayers().catch((error) => this.debug("Update loop error", error));
+			this.updateAllPlayers().catch((error) => this.lavalinkDebug("Update loop error", error));
 		}, interval);
 	}
 
@@ -1391,7 +1395,7 @@ export class lavalinkExt extends BaseExtension {
 
 		// Update position from WebSocket data
 		state.lastPosition = message.state.position ?? 0;
-		this.debug(
+		this.lavalinkDebug(
 			`WebSocket player update for guild ${message.guildId}: position=${message.state.position}, connected=${message.state.connected}`,
 		);
 	}
@@ -1408,7 +1412,7 @@ export class lavalinkExt extends BaseExtension {
 			state.playing = true;
 			state.paused = false;
 			// playRemote() in Player already emitted trackStart — do NOT re-emit
-			this.debug(`[WS] TrackStart for ${player.guildId}: ${track.title}`);
+			this.lavalinkDebug(`[WS] TrackStart for ${player.guildId}: ${track.title}`);
 		}
 	}
 
@@ -1428,7 +1432,7 @@ export class lavalinkExt extends BaseExtension {
 		if (message.reason === "finished" || message.reason === "loadFailed") {
 			if (!state.skipNext) {
 				// Let Player drive the queue — provideStream will be called again
-				void (player as any).playNext().catch((err: Error) => this.debug(`playNext error for ${player.guildId}: ${err.message}`));
+				void (player as any).playNext().catch((err: Error) => this.lavalinkDebug(`playNext error for ${player.guildId}: ${err.message}`));
 			}
 			state.skipNext = false;
 		} else if (message.reason === "stopped" || message.reason === "replaced" || message.reason === "cleanup") {
@@ -1445,7 +1449,7 @@ export class lavalinkExt extends BaseExtension {
 
 		const error = new Error(message.exception?.message || "Track exception occurred");
 		player.emit("playerError", error, state.track);
-		this.debug(`WebSocket track exception for guild ${message.guildId}:`, message.exception);
+		this.lavalinkDebug(`WebSocket track exception for guild ${message.guildId}:`, message.exception);
 	}
 
 	private handleWebSocketTrackStuck(node: any, message: any): void {
@@ -1456,7 +1460,7 @@ export class lavalinkExt extends BaseExtension {
 		if (!state || state.node !== node) return;
 
 		player.emit("playerError", new Error(`Track stuck: threshold exceeded ${message.thresholdMs}ms`), state.track);
-		this.debug(`WebSocket track stuck for guild ${message.guildId}: threshold=${message.thresholdMs}ms`);
+		this.lavalinkDebug(`WebSocket track stuck for guild ${message.guildId}: threshold=${message.thresholdMs}ms`);
 	}
 
 	private handleWebSocketClosed(node: any, message: any): void {
@@ -1467,7 +1471,7 @@ export class lavalinkExt extends BaseExtension {
 		if (!state || state.node !== node) return;
 
 		player.emit("playerError", new Error(`WebSocket closed: ${message.code} ${message.reason}`), state.track);
-		this.debug(`WebSocket closed for guild ${message.guildId}: ${message.code} ${message.reason}`);
+		this.lavalinkDebug(`WebSocket closed for guild ${message.guildId}: ${message.code} ${message.reason}`);
 	}
 
 	private async updateAllPlayers(): Promise<void> {
@@ -1478,7 +1482,7 @@ export class lavalinkExt extends BaseExtension {
 			try {
 				await this.updateNodePlayerState(player, state);
 			} catch (error) {
-				this.debug(`Failed to update player ${player.guildId}`, error);
+				this.lavalinkDebug(`Failed to update player ${player.guildId}`, error);
 			}
 		}
 	}
@@ -1603,7 +1607,7 @@ export class lavalinkExt extends BaseExtension {
 				this.options.searchPrefix,
 			);
 		} catch (error) {
-			this.debug(`provideSearch error: ${(error as Error).message}`);
+			this.lavalinkDebug(`provideSearch error: ${(error as Error).message}`);
 			return null;
 		}
 	}
@@ -1626,7 +1630,7 @@ export class lavalinkExt extends BaseExtension {
 		try {
 			await this.trackResolver.ensureTrackEncoded(player, track, track.requestedBy ?? "Unknown", this.nodeManager);
 		} catch (err) {
-			this.debug(`provideStream: encode failed for ${track.title}: ${(err as Error).message}`);
+			this.lavalinkDebug(`provideStream: encode failed for ${track.title}: ${(err as Error).message}`);
 			return null;
 		}
 
@@ -1733,7 +1737,7 @@ export class lavalinkExt extends BaseExtension {
 			if (!picked) throw new Error("No Lavalink nodes available");
 			node = picked;
 			this.playerStateManager.setPlayerNode(player, node);
-			this.debug(`Assigned node ${node.identifier} to guild ${player.guildId}`);
+			this.lavalinkDebug(`Assigned node ${node.identifier} to guild ${player.guildId}`);
 		}
 
 		return node;
@@ -1781,7 +1785,7 @@ export class lavalinkExt extends BaseExtension {
 
 			await this.nodeManager.destroyPlayer(state.node, player.guildId);
 		} catch (error) {
-			this.debug(`Failed to destroy Lavalink player for ${player.guildId}`, error);
+			this.lavalinkDebug(`Failed to destroy Lavalink player for ${player.guildId}`, error);
 		} finally {
 			state.track = null;
 			state.playing = false;

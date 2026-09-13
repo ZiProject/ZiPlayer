@@ -144,7 +144,12 @@ export interface PlayerOptions {
 }
 
 export type PlayerDebugLevel = "off" | "error" | "warn" | "info" | "debug" | "verbose" | "time";
-export type PlayerEventDebugLogger = (message: string, value?: unknown) => void;
+/**
+ * Sink invoked by {@link PlayerEventDebug} once a message has cleared its priority check.
+ * Kept variadic (rather than a single `value` payload) so every call site - controllers,
+ * plugins, extensions - can forward extra args through untouched.
+ */
+export type PlayerEventDebugLogger = (message: string, ...args: any[]) => void;
 
 export interface PlayerManagerOptions {
 	plugins?: SourcePluginLike[];

@@ -54,7 +54,11 @@ export class ExtensionManager {
 	private cacheCleanupInterval: NodeJS.Timeout | null = null;
 	private destroyed = false;
 
-	constructor(player: Player, manager: PlayerManager) {
+	constructor(
+		player: Player,
+		manager: PlayerManager,
+		private readonly debugChannel?: (message?: any, ...optionalParams: any[]) => void,
+	) {
 		this.player = player;
 		this.manager = manager;
 		this.extensions = new Map();
@@ -78,7 +82,9 @@ export class ExtensionManager {
 	}
 
 	debug(message?: any, ...optionalParams: any[]): void {
-		if (this.manager.debugEnabled) {
+		if (this.debugChannel) {
+			this.debugChannel(message, ...optionalParams);
+		} else if (this.manager.debugEnabled) {
 			this.manager.emit("debug", `[ExtensionManager] ${message}`, ...optionalParams);
 		}
 	}

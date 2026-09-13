@@ -32,7 +32,7 @@ import { ExtensionManager } from "../extensions";
 import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { SaveController } from "../controller/SaveController";
 import { PlaybackSessionController } from "../controller/PlaybackSessionController";
-import type { Track } from "../types";
+import type { Track, PlayerDebugLevel } from "../types";
 
 /** Composition root and lifecycle owner. It contains no playback workflow. */
 export class PlayerRuntimeController {
@@ -54,10 +54,15 @@ export class PlayerRuntimeController {
 		player: Player,
 		manager: PlayerManager,
 		options: PlayerOptions,
-		debug: (...args: any[]) => void,
+		debugSink: (...args: any[]) => void,
 	): PlayerRuntimeGraph {
 		if (this.disposed) throw new Error("PlayerRuntimeController is disposed");
 		const guildId = player.guildId;
+		// Every subsystem below funnels its debug output through this single tracer.
+		// `debugSink` is only the final destination (manager.emit("debug", ...)); the
+		// tracer is what applies the PRIORITY (debugLevel) gate and per-component tag.
+		const debugTracer = new PlayerEventDebug(this.bus, guildId, debugSink, manager.debugLevel ?? "info");
+		const channel = (tag: string, level: PlayerDebugLevel = "debug") => debugTracer.channel(tag, level);
 		const middleware: TrackMiddleware[] = [
 			...manager.getTrackMiddlewareChain(),
 			...(Array.isArray(options.trackMiddleware) ? options.trackMiddleware
@@ -67,9 +72,15 @@ export class PlayerRuntimeController {
 		const audioPlayer = createAudioPlayer({
 			behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: 100 },
 		});
-		const connectionController = new ConnectionController({ guildId, bus: this.bus, audioPlayer, options, debug });
-		const lifecycleController = new LifecycleController({ bus: this.bus, options, debug });
-		const forwardController = new ForwardController(player, { bus: this.bus, debug });
+		const connectionController = new ConnectionController({
+			guildId,
+			bus: this.bus,
+			audioPlayer,
+			options,
+			debug: channel("ConnectionController"),
+		});
+		const lifecycleController = new LifecycleController({ bus: this.bus, options, debug: channel("LifecycleController") });
+		const forwardController = new ForwardController(player, { bus: this.bus, debug: channel("ForwardController") });
 		const streamManager = new StreamManager({
 			maxConcurrentStreams: options.maxStreamStore ?? 4,
 			streamTimeout: 5 * 60 * 1000,
@@ -77,16 +88,23 @@ export class PlayerRuntimeController {
 			enableMetrics: true,
 			autoDestroy: true,
 		});
-		const pluginManager = new PluginManager(player, manager, { extractorTimeout: options.extractorTimeout });
+		// StreamManager is a self-contained EventEmitter that predates the tracer; bridge
+		// its own "debug" event into the same priority-gated channel instead of leaving it
+		// as a separate, ungated pathway.
+		streamManager.on("debug", channel("StreamManager"));
+		const pluginManager = new PluginManager(player, manager, {
+			extractorTimeout: options.extractorTimeout,
+			debug: channel("Plugins"),
+		});
 		pluginManager.setStreamManager(streamManager);
-		const extensionManager = new ExtensionManager(player, manager);
+		const extensionManager = new ExtensionManager(player, manager, channel("Extensions"));
 		const pluginController = new PluginController({ pluginManager, bus: this.bus });
 		const extensionController = new ExtensionController({ extensionManager, bus: this.bus });
 		const ttsController = new TTSController({
 			pluginManager,
 			extensionManager,
 			audioPlayer,
-			debug,
+			debug: channel("TTSController"),
 			maxTimeTts: options.tts?.maxTimeTts,
 			volume: options.tts?.volume ?? options.volume ?? 100,
 			bus: this.bus,
@@ -101,7 +119,7 @@ export class PlayerRuntimeController {
 		});
 		const preloadManager = new PreloadManager({
 			streamManager,
-			debug,
+			debug: channel("PreloadManager"),
 			bus: this.bus,
 			isDestroyed: () => this.disposed,
 			isEnabled: () =>
@@ -119,7 +137,7 @@ export class PlayerRuntimeController {
 					options.quality = quality;
 				},
 			},
-			debug,
+			debug: channel("TrackLoader"),
 			bus: this.bus,
 		});
 		const transitionController = new TransitionController({
@@ -154,11 +172,11 @@ export class PlayerRuntimeController {
 			middlewareContext: { player, manager },
 			resolveStream: (track) => pluginManager.getStream(track),
 			resolveVideoStream: (track) => pluginManager.getVideo(track),
-			debug,
+			debug: channel("SaveController"),
 			bus: this.bus,
 		});
 		const preloadController = new PreloadController({ loader: trackLoader, manager: preloadManager, bus: this.bus });
-		const filterController = new FilterController(undefined, debug, this.bus, {
+		const filterController = new FilterController(undefined, channel("FilterController"), this.bus, {
 			initialFilters: Array.isArray(options.filters) ? options.filters : [],
 			onFilterApplied: (filter) => this.bus.event({ type: "filterApplied", filter }),
 			onFilterRemoved: (filter) => this.bus.event({ type: "filterRemoved", filter }),
@@ -167,14 +185,23 @@ export class PlayerRuntimeController {
 				void this.bus.requestRpc("playback.reportFilterError", { error }).catch(() => undefined);
 			},
 		});
-		const playerConnectionBridge = new PlayerConnectionBridge({ player, bus: this.bus, debug, guildId });
+		const playerConnectionBridge = new PlayerConnectionBridge({
+			player,
+			bus: this.bus,
+			debug: channel("PlayerConnectionBridge"),
+			guildId,
+		});
 		const sessionController = new PlaybackSessionController(this.bus);
-		const orchestrator = new PlaybackOrchestrator(this.bus, { debug, sessionController });
+		const orchestrator = new PlaybackOrchestrator(this.bus, { debug: channel("PlaybackOrchestrator"), sessionController });
 		const resourceRefreshController = new ResourceRefreshController({
 			bus: this.bus,
 		});
-		const searchController = new SearchController({ extensionManager, pluginManager, debug, bus: this.bus });
-		const debugTracer = new PlayerEventDebug(this.bus, guildId, debug, manager.debugLevel ?? "info");
+		const searchController = new SearchController({
+			extensionManager,
+			pluginManager,
+			debug: channel("SearchController"),
+			bus: this.bus,
+		});
 		const eventBridge = new PlayerEventBridge(player, manager, this.bus, debugTracer);
 		const graph: PlayerRuntimeGraph = {
 			connectionController,

@@ -8,6 +8,7 @@ import type {
 	ExtensionStreamRequest,
 	StreamInfo,
 	ExtensionSearchRequest,
+	PlayerDebugLevel,
 } from "../types";
 import type { Player } from "../structures/Player";
 import { EventEmitter } from "events";
@@ -24,6 +25,27 @@ export abstract class BaseExtension extends EventEmitter implements SourceExtens
 		if (this.player && !this.player.destroyed) {
 			this.player.emit(event as any, ...args);
 		}
+	}
+
+	/**
+	 * Priority-aware debug logger for extensions. Routes through the owning
+	 * player's central {@link PlayerEventDebug} tracer (so it obeys the same
+	 * `debugLevel` PRIORITY threshold as everything else), tagged with the
+	 * extension's name, and - only once the level clears the threshold -
+	 * forwards a `debug` event on the player for backward-compatible listeners.
+	 */
+	protected debugLog(level: PlayerDebugLevel, message?: any, ...args: any[]): void {
+		const tracer = this.player?.runtimeGraph?.debugTracer;
+		if (tracer) {
+			if (!tracer.isEnabled(level)) return;
+			tracer.log(level, `Extension:${this.name}`, message, ...args);
+		}
+		this.forwardToPlayer("debug", `[${this.name}] ${message ?? ""}`.trimEnd(), ...args);
+	}
+
+	/** Convenience default-level (`debug`) shorthand for {@link debugLog}. */
+	protected debug(message?: any, ...args: any[]): void {
+		this.debugLog("debug", message, ...args);
 	}
 
 	// Direct player control methods

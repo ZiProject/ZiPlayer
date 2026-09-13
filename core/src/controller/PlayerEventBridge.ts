@@ -264,7 +264,7 @@ export class PlayerEventBridge {
 	}
 	private debug(message: string, ...args: any[]): void {
 		try {
-			this.eventDebug.bridge("debug", `[PlayerEventBridge:${this.player.guildId}] ${message}`, ...args);
+			this.eventDebug.bridge(`[PlayerEventBridge:${this.player.guildId}] ${message}`, ...args);
 		} catch {
 			/* Debugging must never affect playback/event propagation. */
 		}

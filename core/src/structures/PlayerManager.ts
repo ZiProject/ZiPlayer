@@ -17,6 +17,7 @@ import {
 } from "../types";
 import type { BaseExtension } from "../extensions";
 import { withTimeout } from "../utils/timeout";
+import { PlayerEventDebug } from "../controller/PlayerEventDebug";
 
 const GLOBAL_MANAGER_KEY: symbol = Symbol.for("ziplayer.PlayerManager.instance");
 /** Guild id for the internal search-only player (never stored in {@link PlayerManager.players}). */
@@ -91,7 +92,33 @@ interface ManagerCacheEntry<T> {
  * }
  */
 export class PlayerManager extends EventEmitter {
-	public debugLevel: PlayerDebugLevel = "info";
+	private _debugLevel: PlayerDebugLevel = "info";
+	/**
+	 * Manager-wide PRIORITY hub. Every `this.debug(...)` call in this class routes through
+	 * it, and each per-guild {@link Player} owns its own tracer seeded from this level.
+	 */
+	private readonly debugTracer = new PlayerEventDebug(
+		undefined,
+		"manager",
+		(message, ...args) => {
+			if (this.listenerCount("debug") > 0) {
+				this.emit("debug", message, ...args);
+				this.B_debug = true;
+			}
+		},
+		"info",
+	);
+	/** Read-only access to the manager-level debug hub, e.g. for custom log sinks. */
+	public get debugTracerInstance(): PlayerEventDebug {
+		return this.debugTracer;
+	}
+	public get debugLevel(): PlayerDebugLevel {
+		return this._debugLevel;
+	}
+	public set debugLevel(level: PlayerDebugLevel) {
+		this._debugLevel = level;
+		this.debugTracer.setDebugLevel(level);
+	}
 	private static instance: PlayerManager | null = null;
 	private players: Map<string, Player> = new Map();
 	private pendingPlayers: Map<string, Promise<Player>> = new Map();
@@ -135,12 +162,7 @@ export class PlayerManager extends EventEmitter {
 	private trackMiddlewareFromOptions: TrackMiddleware[] = [];
 
 	private debug(message?: any, ...optionalParams: any[]): void {
-		if (this.listenerCount("debug") > 0) {
-			this.emit("debug", `[PlayerManager] ${message}`, ...optionalParams);
-			if (!this.B_debug) {
-				this.B_debug = true;
-			}
-		}
+		this.debugTracer.log("debug", "PlayerManager", message, ...optionalParams);
 	}
 
 	constructor(options: PlayerManagerOptions = {}) {
@@ -434,7 +456,11 @@ export class PlayerManager extends EventEmitter {
 			const result = originalEmit(event, ...args);
 
 			if (typeof event === "string" && this.listenerCount(event as keyof ManagerEvents) > 0) {
-				(this.emit as any)(event, player, ...args);
+				if (event === "debug") {
+					(this.emit as any)(event, ...args);
+				} else {
+					(this.emit as any)(event, player, ...args);
+				}
 			}
 
 			return result;
