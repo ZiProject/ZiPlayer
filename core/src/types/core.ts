@@ -172,12 +172,13 @@ export interface SaveOptions {
 	filename?: string;
 	quality?: "high" | "low";
 	timeout?: number;
+	signal?: AbortSignal;
 	metadata?: Record<string, any>;
 	filter?: AudioFilter[];
 	seek?: number;
 }
 
-export type SaveVideoOptions = Pick<SaveOptions, "filename" | "quality" | "timeout" | "metadata">;
+export type SaveVideoOptions = Pick<SaveOptions, "filename" | "quality" | "timeout" | "metadata" | "signal">;
 
 export interface PlayerSession {
 	guildId: string;
@@ -218,92 +219,34 @@ export interface ForwardHealthStatus {
 export interface PlayerStats {
 	totalPlayers: number;
 	leader: number;
-	follower: number;
-	activePlayers: number;
-	pausedPlayers: number;
-	connectedPlayers: number;
-	totalTracksInQueue: number;
-	forwardHealthStatus: ForwardHealthStatus[];
+	followers: number;
+	playing: number;
+	paused: number;
 }
 
-export interface StreamSlot {
-	resource?: AudioResource | null;
-	streamInfo?: StreamInfo | null;
-	track: Track | null;
-	streamId: string | null;
-	processedStreamId?: string | null;
-	abortController: AbortController | null;
-	isValid: boolean;
-	isLoading: boolean;
-	loadPromise: Promise<void> | null;
+export enum LoopMode {
+	OFF = "off",
+	TRACK = "track",
+	QUEUE = "queue",
 }
 
-export type LoopMode = "off" | "track" | "queue";
-
-export interface VoiceChannel {
-	id: string;
-	guildId: string;
-	type: any;
-	guild: any;
+export interface PlayerRuntimeGraph {
+	queueController: any;
+	pluginManager: any;
+	extensionManager: any;
+	streamManager: any;
+	preloadManager: any;
+	filterController: any;
+	audioPlayer: any;
+	forwardController: any;
 }
 
-export interface ManagerEvents {
-	debug: [message: string, ...args: any[]];
-	willPlay: [player: Player, track: Track, upcomingTracks: Track[]];
-	trackStart: [player: Player, track: Track];
-	trackEnd: [player: Player, track: Track];
-	queueEnd: [player: Player];
-	playerError: [player: Player, error: Error, track?: Track];
-	connectionError: [player: Player, error: Error];
-	volumeChange: [player: Player, oldVolume: number, newVolume: number];
-	queueAdd: [player: Player, track: Track];
-	queueAddList: [player: Player, tracks: Track[]];
-	queueRemove: [player: Player, track: Track, index: number];
-	playerPause: [player: Player, track: Track];
-	playerResume: [player: Player, track: Track];
-	playerStop: [player: Player];
-	playerDestroy: [player: Player];
-	ttsStart: [player: Player, payload: { text?: string; track?: Track }];
-	ttsEnd: [player: Player];
-	filterApplied: [player: Player, filter: AudioFilter];
-	filterRemoved: [player: Player, filter: AudioFilter];
-	filtersCleared: [player: Player];
-	lyricsCreate: [player: Player, track: Track, lyrics: any];
-	lyricsChange: [player: Player, track: Track, lyrics: any];
-	voiceCreate: [player: Player, evt: any];
-	stats: [stats: PlayerStats];
-	streamError: [player: Player, error: Error, track: Track | null];
-	forwardModeStart: [player: Player, leader: Player];
-	forwardModeEnd: [player: Player, leader: Player, reason: string | undefined];
-	seek: [player: Player, payload: { track: Track; position: number }];
-	trackStuck: [player: Player, track: Track | null];
-}
-
-export interface PlayerEvents {
-	debug: [message: string, ...args: any[]];
-	willPlay: [track: Track, upcomingTracks: Track[]];
-	trackStart: [track: Track];
-	trackEnd: [track: Track];
-	queueEnd: [];
-	playerError: [error: Error, track?: Track];
-	connectionError: [error: Error];
-	volumeChange: [oldVolume: number, newVolume: number];
-	queueAdd: [track: Track];
-	queueAddList: [tracks: Track[]];
-	queueRemove: [track: Track, index: number];
-	playerPause: [track: Track];
-	playerResume: [track: Track];
-	playerStop: [];
-	playerDestroy: [];
-	seek: [payload: { track: Track; position: number }];
-	ttsStart: [payload: { text?: string; track?: Track }];
-	ttsEnd: [];
-	filterApplied: [filter: AudioFilter];
-	filterRemoved: [filter: AudioFilter];
-	filtersCleared: [];
-	trackStuck: [track: Track | null];
-	streamError: [error: Error, track: Track | null];
-	stats: [stats: PlayerStats];
-	forwardModeStart: [leader: Player];
-	forwardModeEnd: [leader: Player, reason: string | undefined];
+export interface SaveControllerOptions {
+	middleware?: TrackMiddleware[];
+	middlewareContext: TrackMiddlewareContext;
+	resolveStream: (track: Track) => Promise<StreamInfo | null>;
+	resolveVideoStream: (track: Track) => Promise<StreamInfo | null>;
+	ffmpegPath?: string | null;
+	debug?: PlayerDebugLevel extends never ? never : ((message: string, ...args: any[]) => void);
+	bus?: import("../structures/PlayerBus").PlayerBus;
 }
