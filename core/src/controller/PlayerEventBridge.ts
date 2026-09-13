@@ -254,7 +254,13 @@ export class PlayerEventBridge {
 	}
 	private describeArgs(event: PlayerEvent, args: any[]): any {
 		if (event.type === "TRACK_ERROR") return { error: event.error?.message, track: event.session.track?.id };
-		return args;
+		return args.map((arg) => this.describeDebugArg(arg));
+	}
+	private describeDebugArg(arg: any): any {
+		if (arg === this.player) {
+			return { type: "Player", guildId: this.player.guildId, destroyed: this.player.destroyed };
+		}
+		return arg;
 	}
 	private debug(message: string, ...args: any[]): void {
 		try {
