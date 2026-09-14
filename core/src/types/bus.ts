@@ -162,15 +162,16 @@ export type PlayerEventArgsMap = {
 	) ?
 		[]
 	: K extends (
-		| "TRACK_LOADING"
-		| "TRACK_LOADED"
-		| "TRACK_STARTED"
-		| "TRACK_END"
-		| "STREAM_ABORTED"
-		| "playbackStateChanged"
-		| "playbackSessionCreated"
-		| "RECOVERY_STARTED"
-		| "RECOVERY_FAILED"
+
+			| "TRACK_LOADING"
+			| "TRACK_LOADED"
+			| "TRACK_STARTED"
+			| "TRACK_END"
+			| "STREAM_ABORTED"
+			| "playbackStateChanged"
+			| "playbackSessionCreated"
+			| "RECOVERY_STARTED"
+			| "RECOVERY_FAILED"
 	) ?
 		[PlaybackSessionSnapshot]
 	: K extends "TRACK_ERROR" ? [PlaybackSessionSnapshot, Error]

@@ -81,15 +81,7 @@ export interface PlaybackSessionSnapshot {
 }
 
 export type PlaybackSessionStatus =
-	| AudioPlayerStatus
-	| "idle"
-	| "loading"
-	| "playing"
-	| "paused"
-	| "stopped"
-	| "ended"
-	| "destroyed"
-	| "buffering";
+	AudioPlayerStatus | "idle" | "loading" | "playing" | "paused" | "stopped" | "ended" | "destroyed" | "buffering";
 export interface AntiStuckControllerOptions {
 	enabled?: boolean;
 	maxRetries?: number;
