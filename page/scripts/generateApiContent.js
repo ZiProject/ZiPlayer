@@ -199,9 +199,6 @@ function publicFromOf(reflection, exportGraph) {
   const name = reflection.name;
   const source = normalizeFile(sourceFileOf(reflection));
 
-  // TypeDoc source paths can be absolute, repo-relative, page-relative, or contain
-  // a package-relative prefix. Match against normalized suffixes instead of relying
-  // on one path base.
   const candidates = new Set();
   if (source) {
     candidates.add(source);
@@ -221,9 +218,6 @@ function publicFromOf(reflection, exportGraph) {
     if (roots?.length) return [...new Set(roots)];
   }
 
-  // Last-resort name lookup. This is only used when the TypeDoc source path cannot
-  // be correlated with the compiler declaration path. Prefer unique source matches
-  // to avoid assigning a same-named symbol from an unrelated module.
   const matches = [];
   for (const [file, names] of exportGraph) {
     const roots = names.get(name);
@@ -291,10 +285,18 @@ function toApiEntry(reflection, scope, publicFrom) {
   };
 }
 
+function resolveTypeDocCli() {
+  // TypeDoc 0.28+ does not export ./bin/typedoc.js through package exports.
+  // package.json itself is exported, so resolve the package root first.
+  const packageJson = require.resolve('typedoc/package.json');
+  return path.join(path.dirname(packageJson), 'bin', 'typedoc');
+}
+
 function main() {
   fs.mkdirSync(outputDir, { recursive: true });
   console.log('📚 Generating API reflection with TypeDoc...');
-  execFileSync(require.resolve('typedoc/bin/typedoc.js'), ['--options', path.join(pageDir, 'typedoc.json')], {
+  const typedocCli = resolveTypeDocCli();
+  execFileSync(process.execPath, [typedocCli, '--options', path.join(pageDir, 'typedoc.json')], {
     cwd: pageDir,
     stdio: 'inherit',
   });
