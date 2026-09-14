@@ -1,9 +1,5 @@
 {
-	"entryPoints": [
-		"../core/src/index.ts",
-		"../extension/src/index.ts",
-		"../plugins/src/index.ts"
-	],
+	"entryPoints": ["../core/src/index.ts", "../extension/src/index.ts", "../plugins/src/index.ts"],
 	"entryPointStrategy": "resolve",
 	"tsconfig": "../core/tsconfig.json",
 	"json": "./.generated/typedoc.json",

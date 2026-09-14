@@ -24,8 +24,16 @@ function buildSections() {
 
 	for (const [key, entry] of entries) {
 		const badges = entry.badges || [];
-		const scope = badges.includes("extensions") ? "extensions" : badges.includes("plugins") ? "plugins" : "core";
-		const kind = badges.includes("class") ? "class" : badges.includes("interface") ? "interface" : badges.includes("type") ? "type" : badges.includes("function") ? "function" : "";
+		const scope =
+			badges.includes("extensions") ? "extensions"
+			: badges.includes("plugins") ? "plugins"
+			: "core";
+		const kind =
+			badges.includes("class") ? "class"
+			: badges.includes("interface") ? "interface"
+			: badges.includes("type") ? "type"
+			: badges.includes("function") ? "function"
+			: "";
 		const groupKey = kind ? `${scope}:${kind}` : scope;
 		const section = sections.find((candidate) => candidate.key === groupKey);
 		if (section) section.items.push(key);
@@ -76,15 +84,23 @@ export function ApiSidebar({ activeSection, onSectionChange }: ApiSidebarProps) 
 
 			<div className='flex-1 overflow-y-auto'>
 				{filteredSections.map((section) => (
-					<div key={section.title} className='border-b border-gray-700/30'>
+					<div
+						key={section.title}
+						className='border-b border-gray-700/30'>
 						<button
-							onClick={() => setExpandedSections((prev) => prev.includes(section.title) ? prev.filter((name) => name !== section.title) : [...prev, section.title])}
+							onClick={() =>
+								setExpandedSections((prev) =>
+									prev.includes(section.title) ? prev.filter((name) => name !== section.title) : [...prev, section.title],
+								)
+							}
 							className='w-full flex items-center justify-between px-6 py-3 text-left hover:bg-gray-700/30 transition-all duration-200'>
 							<div className='flex items-center gap-3'>
 								<section.icon className='w-4 h-4 text-green-400' />
 								<span className='text-white font-medium'>{section.title}</span>
 							</div>
-							<ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedSections.includes(section.title) ? "rotate-180" : ""}`} />
+							<ChevronDown
+								className={`w-4 h-4 text-gray-400 transition-transform ${expandedSections.includes(section.title) ? "rotate-180" : ""}`}
+							/>
 						</button>
 
 						{expandedSections.includes(section.title) && (
