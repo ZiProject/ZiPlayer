@@ -162,9 +162,6 @@ function sourceFilesOfSymbol(symbol, checker) {
 }
 
 function createExportProgram() {
-  // Use one program containing every source file behind all public roots.
-  // A single core tsconfig cannot correctly resolve the plugins/extensions
-  // projects, whose module/moduleResolution settings and imports differ.
   const sourceFiles = [];
   for (const directory of ['core/src', 'plugins/src', 'extension/src']) {
     const absoluteDirectory = path.join(repoDir, directory);
@@ -253,7 +250,7 @@ function publicFromOf(reflection, exportGraph) {
     const roots = names.get(name);
     if (roots?.length) matches.push({ file, roots });
   }
-  if (matches.length === 1) return [...new Set(matches[0].roots]);
+  if (matches.length === 1) return matches[0].roots;
 
   return [];
 }
@@ -317,8 +314,6 @@ function toApiEntry(reflection, scope, publicFrom) {
 }
 
 function resolveTypeDocCli() {
-  // TypeDoc 0.28+ does not export ./bin/typedoc.js through package exports.
-  // package.json itself is exported, so resolve the package root first.
   const packageJson = require.resolve('typedoc/package.json');
   return path.join(path.dirname(packageJson), 'bin', 'typedoc');
 }
