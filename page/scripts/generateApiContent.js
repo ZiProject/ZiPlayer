@@ -29,6 +29,7 @@ function typeString(type) {
 	if (type.type === "array") return `${typeString(type.elementType)}[]`;
 	if (type.type === "union") return (type.types || []).map(typeString).join(" | ");
 	if (type.type === "intersection") return (type.types || []).map(typeString).join(" & ");
+	if (type.type === "tuple") return `[${(type.elements || []).map(typeString).join(", ")}]`;
 	if (type.type === "literal") return typeof type.value === "string" ? JSON.stringify(type.value) : String(type.value);
 	if (type.type === "reflection") {
 		const declaration = type.declaration;
@@ -111,6 +112,23 @@ function propertiesOf(reflection) {
 		}));
 }
 
+function eventsOf(reflection) {
+	if (!reflection || !/events?$/i.test(reflection.name || "")) return [];
+	return (reflection.children || [])
+		.filter((child) => child.kindString === "Property")
+		.map((event) => {
+			const type = event.type;
+			const parameters = type?.type === "tuple"
+				? (type.elements || []).map((element) => typeString(element) || "unknown")
+				: [];
+			return {
+				name: event.name,
+				description: commentText(event.comment),
+				parameters,
+			};
+		});
+}
+
 function isPublicReflection(reflection) {
 	if (!reflection) return false;
 	if (reflection.flags?.isPrivate || reflection.flags?.isProtected || reflection.flags?.isInternal) return false;
@@ -156,7 +174,7 @@ function toApiEntry(reflection, scope) {
 		badges: [kind, scope, keyOf(reflection.name)],
 		code: exampleFromComment(reflection.comment) || (signature ? signatureString(signature) : `// ${reflection.name}`),
 		methods: methodsOf(reflection),
-		events: [],
+		events: eventsOf(reflection),
 		properties: propertiesOf(reflection),
 		params: signature?.parameters?.map((parameter) => ({
 			name: parameter.name + (parameter.flags?.isOptional ? "?" : ""),
