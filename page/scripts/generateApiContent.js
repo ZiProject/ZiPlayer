@@ -8,6 +8,12 @@ const outputDir = path.join(pageDir, ".generated");
 const reflectionPath = path.join(outputDir, "typedoc.json");
 const outputPath = path.join(outputDir, "GeneratedApiContent.ts");
 
+const EXPORT_ROOTS = [
+	{ name: "core", entry: path.join(repoDir, "core", "src", "index.ts") },
+	{ name: "plugins", entry: path.join(repoDir, "plugins", "src", "index.ts") },
+	{ name: "extensions", entry: path.join(repoDir, "extension", "src", "index.ts") },
+];
+
 function text(value) {
 	if (!value) return "";
 	if (typeof value === "string") return value.trim();
@@ -60,10 +66,18 @@ function exampleFromComment(comment) {
 
 function kindOf(reflection) { return reflection.kindString || reflection.kind || "symbol"; }
 
+function sourceFileOf(reflection) {
+	return text(reflection.sources?.[0]?.fileName || reflection.sources?.[0]?.file) || "";
+}
+
+function normalizeFile(file) {
+	return path.normalize(file).replace(/\\/g, "/");
+}
+
 function scopeOf(reflection) {
-	const file = text(reflection.sources?.[0]?.fileName || reflection.sources?.[0]?.file) || "";
-	if (file.includes("/plugins/") || file.includes("\\plugins\\")) return "plugins";
-	if (file.includes("/extension/") || file.includes("\\extension\\")) return "extensions";
+	const file = sourceFileOf(reflection);
+	if (file.includes("/plugins/")) return "plugins";
+	if (file.includes("/extension/")) return "extensions";
 	return "core";
 }
 
@@ -147,23 +161,129 @@ function collectReflections(node, result = [], seen = new Set()) {
 	return result;
 }
 
+function stripComments(source) {
+	return source
+		.replace(/\/\*[\s\S]*?\*\//g, "")
+		.replace(/(^|\s)\/\/.*$/gm, "$1");
+}
+
+function resolveModule(fromFile, specifier) {
+	if (!specifier.startsWith(".")) return null;
+	const base = path.resolve(path.dirname(fromFile), specifier);
+	const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.d.ts`, path.join(base, "index.ts"), path.join(base, "index.tsx")];
+	return candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile()) || null;
+}
+
+function parseExportEdges(file) {
+	const source = stripComments(fs.readFileSync(file, "utf8"));
+	const edges = [];
+
+	for (const match of source.matchAll(/export\s+(?:type\s+)?\*\s+from\s+["']([^"']+)["']\s*;?/g)) {
+		const target = resolveModule(file, match[1]);
+		if (target) edges.push({ target, names: null });
+	}
+
+	for (const match of source.matchAll(/export\s+(?:type\s+)?\{([\s\S]*?)\}\s+from\s+["']([^"']+)["']\s*;?/g)) {
+		const target = resolveModule(file, match[2]);
+		if (!target) continue;
+		const names = match[1]
+			.split(",")
+			.map((item) => item.trim())
+			.filter(Boolean)
+			.map((item) => {
+				const parts = item.split(/\s+as\s+/i).map((part) => part.trim());
+				return { exported: parts[1] || parts[0], imported: parts[0] };
+			});
+		edges.push({ target, names });
+	}
+
+	return edges;
+}
+
+function collectExportNames(file, cache = new Map(), stack = new Set()) {
+	const normalized = normalizeFile(file);
+	if (cache.has(normalized)) return cache.get(normalized);
+	if (stack.has(normalized)) return new Map();
+	stack.add(normalized);
+
+	const names = new Map();
+	const source = stripComments(fs.readFileSync(file, "utf8"));
+
+	for (const match of source.matchAll(/export\s+(?:declare\s+)?(?:abstract\s+)?(?:class|interface|enum|namespace|function|const|let|var|type)\s+([A-Za-z_$][\w$]*)/g)) {
+		names.set(match[1], normalized);
+	}
+
+	for (const edge of parseExportEdges(file)) {
+		const childNames = collectExportNames(edge.target, cache, new Set(stack));
+		if (edge.names === null) {
+			for (const [name, sourceFile] of childNames) if (name !== "default") names.set(name, sourceFile);
+		} else {
+			for (const item of edge.names) {
+				const sourceFile = childNames.get(item.imported);
+				if (sourceFile) names.set(item.exported, sourceFile);
+			}
+		}
+	}
+
+	cache.set(normalized, names);
+	return names;
+}
+
+function buildPublicExportGraph() {
+	const graph = new Map();
+	const cache = new Map();
+	for (const root of EXPORT_ROOTS) {
+		if (!fs.existsSync(root.entry)) throw new Error(`Public export root does not exist: ${root.entry}`);
+		const exports = collectExportNames(root.entry, cache);
+		for (const [name, sourceFile] of exports) {
+			if (!graph.has(sourceFile)) graph.set(sourceFile, new Map());
+			graph.get(sourceFile).set(name, [...(graph.get(sourceFile).get(name) || []), root.name]);
+		}
+	}
+	return graph;
+}
+
+function publicFromOf(reflection, exportGraph) {
+	const sourceFile = normalizeFile(path.resolve(repoDir, sourceFileOf(reflection)));
+	const sourceExports = exportGraph.get(sourceFile);
+	const direct = sourceExports?.get(reflection.name) || [];
+	if (direct.length) return [...new Set(direct)];
+
+	// TypeDoc may report a source path relative to the package rather than repo root.
+	const suffix = normalizeFile(sourceFileOf(reflection));
+	for (const [file, names] of exportGraph) {
+		if (!file.endsWith(suffix)) continue;
+		const roots = names.get(reflection.name);
+		if (roots?.length) return [...new Set(roots)];
+	}
+	return [];
+}
+
 function renderApiContent(reflection) {
+	const exportGraph = buildPublicExportGraph();
 	const symbols = collectReflections(reflection);
 	const apiContent = {};
 	const usedKeys = new Set();
+
 	for (const symbol of symbols) {
-		const scope = scopeOf(symbol);
+		const publicFrom = publicFromOf(symbol, exportGraph);
+		if (!publicFrom.length) continue;
+
+		// One API entry per symbol. Root ordering is intentional: core is the primary
+		// package surface when a symbol is re-exported by multiple packages.
+		const scope = publicFrom[0];
 		const baseKey = keyOf(symbol.name);
 		if (!baseKey) continue;
 		const key = `${scope}-${baseKey}`;
 		if (usedKeys.has(key)) continue;
 		usedKeys.add(key);
-		apiContent[key] = toApiEntry(symbol, scope);
+		apiContent[key] = toApiEntry(symbol, scope, publicFrom);
 	}
-	return `// Auto-generated from TypeDoc. Do not edit manually.\n// Source of truth: public exports from core/src, extension/src and plugins/src.\n\nexport const generatedApiContent = ${JSON.stringify(apiContent, null, 2)} as const;\n`;
+
+	return `// Auto-generated from TypeDoc + traced public export roots. Do not edit manually.\n// Source of truth: core/src/index.ts, extension/src/index.ts and plugins/src/index.ts.\n\nexport const generatedApiContent = ${JSON.stringify(apiContent, null, 2)} as const;\n`;
 }
 
-function toApiEntry(reflection, scope) {
+function toApiEntry(reflection, scope, publicFrom) {
 	const kind = kindOf(reflection).toLowerCase().replace("type alias", "type");
 	const description = commentText(reflection.comment) || `${reflection.name} API`;
 	const signature = reflection.signatures?.[0];
@@ -172,6 +292,7 @@ function toApiEntry(reflection, scope) {
 		description,
 		summary: description.split(/\n\n|\n/)[0] || "",
 		badges: [kind, scope, keyOf(reflection.name)],
+		publicFrom,
 		code: exampleFromComment(reflection.comment) || (signature ? signatureString(signature) : `// ${reflection.name}`),
 		methods: methodsOf(reflection),
 		events: eventsOf(reflection),
