@@ -1,0 +1,18 @@
+{
+	"entryPoints": [
+		"../core/src/index.ts",
+		"../extension/src/index.ts",
+		"../plugins/src/index.ts"
+	],
+	"entryPointStrategy": "resolve",
+	"tsconfig": "../core/tsconfig.json",
+	"json": "./.generated/typedoc.json",
+	"excludeExternals": true,
+	"excludePrivate": true,
+	"excludeProtected": true,
+	"excludeInternal": true,
+	"categorizeByGroup": true,
+	"skipErrorChecking": true,
+	"logLevel": "Error",
+	"cleanOutputDir": true
+}

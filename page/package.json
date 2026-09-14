@@ -4,34 +4,31 @@
 	"version": "0.1.0",
 	"scripts": {
 		"dev": "next dev -p 3030",
+		"predev": "node scripts/generateApiContent.js",
 		"build": "next build",
+		"prebuild": "node scripts/generateApiContent.js",
 		"start": "next start -p 3030",
 		"lint": "echo 'No lint configured'",
-		"docs:build": "node scripts/buildApiDocs.js build",
-		"docs:watch": "node scripts/buildApiDocs.js watch",
 		"docs:generate": "node scripts/generateApiContent.js",
-		"test:github-actions": "node scripts/test-github-actions.js all",
-		"test:github-actions:generate": "node scripts/test-github-actions.js generate",
-		"test:github-actions:validate": "node scripts/test-github-actions.js validate",
-		"test:github-actions:update": "node scripts/test-github-actions.js update"
+		"docs:check": "typedoc --options typedoc.json --treatWarningsAsErrors"
 	},
 	"dependencies": {
 		"@types/react-syntax-highlighter": "^15.5.13",
 		"clsx": "^2.1.1",
 		"framer-motion": "^11.18.2",
 		"lucide-react": "^0.400.0",
-		"next": "^14.2.5",
+		"next": "^16.3.5",
 		"react": "^18.2.0",
 		"react-dom": "^18.2.0",
-		"react-syntax-highlighter": "^15.6.6"
+		"react-syntax-highlighter": "^16.1.1"
 	},
 	"devDependencies": {
 		"@types/node": "^20.11.30",
 		"@types/react": "^18.2.66",
 		"autoprefixer": "^10.4.18",
-		"chokidar": "^3.6.0",
 		"postcss": "^8.4.35",
 		"tailwindcss": "^3.4.4",
+		"typedoc": "^0.28.13",
 		"typescript": "^5.4.5"
 	}
 }
