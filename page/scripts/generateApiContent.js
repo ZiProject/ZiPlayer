@@ -196,17 +196,41 @@ function buildPublicExportGraph() {
 }
 
 function publicFromOf(reflection, exportGraph) {
-  const source = sourceFileOf(reflection);
-  const sourceFile = normalizeFile(path.resolve(repoDir, source));
-  const direct = exportGraph.get(sourceFile)?.get(reflection.name) || [];
-  if (direct.length) return [...new Set(direct)];
+  const name = reflection.name;
+  const source = normalizeFile(sourceFileOf(reflection));
 
-  const suffix = normalizeFile(source);
+  // TypeDoc source paths can be absolute, repo-relative, page-relative, or contain
+  // a package-relative prefix. Match against normalized suffixes instead of relying
+  // on one path base.
+  const candidates = new Set();
+  if (source) {
+    candidates.add(source);
+    candidates.add(normalizeFile(path.resolve(repoDir, source)));
+    candidates.add(normalizeFile(path.resolve(pageDir, source)));
+  }
+
   for (const [file, names] of exportGraph) {
-    if (!file.endsWith(suffix)) continue;
-    const roots = names.get(reflection.name);
+    const normalizedFile = normalizeFile(file);
+    const fileMatch = [...candidates].some((candidate) =>
+      normalizedFile === candidate ||
+      normalizedFile.endsWith(`/${candidate}`) ||
+      candidate.endsWith(`/${normalizedFile}`),
+    );
+    if (!fileMatch) continue;
+    const roots = names.get(name);
     if (roots?.length) return [...new Set(roots)];
   }
+
+  // Last-resort name lookup. This is only used when the TypeDoc source path cannot
+  // be correlated with the compiler declaration path. Prefer unique source matches
+  // to avoid assigning a same-named symbol from an unrelated module.
+  const matches = [];
+  for (const [file, names] of exportGraph) {
+    const roots = names.get(name);
+    if (roots?.length) matches.push({ file, roots });
+  }
+  if (matches.length === 1) return [...new Set(matches[0].roots)];
+
   return [];
 }
 
@@ -215,10 +239,12 @@ function renderApiContent(reflection) {
   const symbols = collectReflections(reflection);
   const apiContent = {};
   const usedKeys = new Set();
+  let publicCount = 0;
 
   for (const symbol of symbols) {
     const publicFrom = publicFromOf(symbol, exportGraph);
     if (!publicFrom.length) continue;
+    publicCount++;
 
     const scope = publicFrom[0];
     const baseKey = keyOf(symbol.name);
@@ -227,6 +253,13 @@ function renderApiContent(reflection) {
     if (usedKeys.has(key)) continue;
     usedKeys.add(key);
     apiContent[key] = toApiEntry(symbol, scope, publicFrom);
+  }
+
+  if (!publicCount || !Object.keys(apiContent).length) {
+    throw new Error(
+      `API export tracing produced no public symbols. ` +
+      `Check TypeDoc source paths and public roots: ${EXPORT_ROOTS.map((root) => root.entry).join(', ')}`,
+    );
   }
 
   return `// Auto-generated from TypeDoc + TypeScript compiler public export graph. Do not edit manually.\n// Source of truth: core/src/index.ts, extension/src/index.ts and plugins/src/index.ts.\n\nexport const generatedApiContent = ${JSON.stringify(apiContent, null, 2)} as const;\n`;
@@ -258,25 +291,18 @@ function toApiEntry(reflection, scope, publicFrom) {
   };
 }
 
-function generate() {
+function main() {
   fs.mkdirSync(outputDir, { recursive: true });
   console.log('📚 Generating API reflection with TypeDoc...');
-  const typedocBin = process.platform === 'win32'
-    ? path.join(pageDir, 'node_modules', '.bin', 'typedoc.cmd')
-    : path.join(pageDir, 'node_modules', '.bin', 'typedoc');
-  execFileSync(typedocBin, ['--options', path.join(pageDir, 'typedoc.json')], {
+  execFileSync(require.resolve('typedoc/bin/typedoc.js'), ['--options', path.join(pageDir, 'typedoc.json')], {
     cwd: pageDir,
     stdio: 'inherit',
   });
-  if (!fs.existsSync(reflectionPath)) throw new Error(`TypeDoc did not create ${reflectionPath}`);
+  if (!fs.existsSync(reflectionPath)) throw new Error(`TypeDoc output not found: ${reflectionPath}`);
   const reflection = JSON.parse(fs.readFileSync(reflectionPath, 'utf8'));
-  fs.writeFileSync(outputPath, renderApiContent(reflection), 'utf8');
-  console.log(`✅ Generated API documentation -> ${path.relative(repoDir, outputPath)}`);
+  const generated = renderApiContent(reflection);
+  fs.writeFileSync(outputPath, generated, 'utf8');
+  console.log(`✅ Generated API documentation -> ${outputPath}`);
 }
 
-if (process.argv.includes('--check')) {
-  console.error('Use npm run docs:check for a clean TypeDoc validation; generated API output is intentionally untracked.');
-  process.exitCode = 1;
-} else {
-  generate();
-}
+if (require.main === module) main();
