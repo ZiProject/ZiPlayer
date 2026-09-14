@@ -143,9 +143,13 @@ function collectReflections(node, result = [], seen = new Set()) {
   for (const child of node?.children || []) {
     if (seen.has(child.id)) continue;
     seen.add(child.id);
-    if (!isPublicReflection(child)) continue;
     const kind = kindOf(child);
-    if (['Class', 'Interface', 'Type alias', 'Function', 'Enumeration', 'Variable'].includes(kind)) result.push(child);
+    if (isPublicReflection(child) && ['Class', 'Interface', 'Type alias', 'Function', 'Enumeration', 'Variable'].includes(kind)) {
+      result.push(child);
+    }
+    // Do not stop traversal when a container/module reflection is not marked
+    // exported. TypeDoc can mark module containers differently from the symbols
+    // they contain, while the contained declarations are still public API.
     collectReflections(child, result, seen);
   }
   return result;
