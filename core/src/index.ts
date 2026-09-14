@@ -13,6 +13,7 @@ export { VolumeController } from "./controller/VolumeController";
 export { StreamController } from "./controller/StreamController";
 export { QueueController, QueueController as Queue } from "./controller/QueueController";
 export { AntiStuckController } from "./controller/AntiStuckController";
+export { PlaybackSessionController } from "./controller/PlaybackSessionController";
 export { TransitionController } from "./controller/TransitionController";
 export { PreloadController } from "./controller/PreloadController";
 export { SaveController } from "./controller/SaveController";

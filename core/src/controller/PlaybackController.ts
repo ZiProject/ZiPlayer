@@ -230,7 +230,16 @@ export class PlaybackController {
 		this.activeSession = session ?? null;
 		this.activeResource = resource;
 		this.audioPlayer.play(resource);
+		this.retirePendingSession();
 	}
+
+	private retirePendingSession(): void {
+		if (!this.bus) return;
+		try {
+			this.bus.requestRpcSync(CONTROLLER_RPC.playbackSessionRetirePending, {});
+		} catch {}
+	}
+
 	public async fadeResourceVolume(
 		resource: AudioResource,
 		from: number,
@@ -307,6 +316,7 @@ export class PlaybackController {
 			this.fadeGain = 0;
 			this.applyTargetVolume(newResource, track, 0);
 			this.audioPlayer.play(newResource);
+			this.retirePendingSession();
 			if (session) session.setResource(newResource);
 			this.activeSession = session ?? null;
 			this.activeResource = newResource;
