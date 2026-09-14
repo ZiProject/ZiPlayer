@@ -19,9 +19,7 @@ function text(value) {
 	return String(value).trim();
 }
 
-function commentText(comment) {
-	return text(comment?.summary);
-}
+function commentText(comment) { return text(comment?.summary); }
 
 function typeString(type) {
 	if (!type) return "";
@@ -35,22 +33,18 @@ function typeString(type) {
 	if (type.type === "reflection") {
 		const declaration = type.declaration;
 		if (declaration?.signatures?.length) return signatureString(declaration.signatures[0]);
-		if (declaration?.children?.length) {
-			return `{ ${declaration.children.map((child) => `${child.name}: ${typeString(child.type)}`).join("; ")} }`;
-		}
+		if (declaration?.children?.length) return `{ ${declaration.children.map((child) => `${child.name}: ${typeString(child.type)}`).join("; ")} }`;
 	}
 	return type.name || "unknown";
 }
 
 function parameterString(parameter) {
-	const optional = parameter.flags?.isOptional ? "?" : "";
-	return `${parameter.name}${optional}: ${typeString(parameter.type) || "unknown"}`;
+	return `${parameter.name}${parameter.flags?.isOptional ? "?" : ""}: ${typeString(parameter.type) || "unknown"}`;
 }
 
 function signatureString(signature) {
 	const asyncPrefix = signature.flags?.isAsync ? "async " : "";
-	const parameters = (signature.parameters || []).map(parameterString).join(", ");
-	return `${asyncPrefix}${signature.name || ""}(${parameters}): ${typeString(signature.type) || "void"}`;
+	return `${asyncPrefix}${signature.name || ""}(${(signature.parameters || []).map(parameterString).join(", ")}): ${typeString(signature.type) || "void"}`;
 }
 
 function returnInfo(signature) {
@@ -63,9 +57,7 @@ function exampleFromComment(comment) {
 	return text(tag?.content);
 }
 
-function kindOf(reflection) {
-	return reflection.kindString || reflection.kind || "symbol";
-}
+function kindOf(reflection) { return reflection.kindString || reflection.kind || "symbol"; }
 
 function scopeOf(reflection) {
 	const file = text(reflection.sources?.[0]?.fileName || reflection.sources?.[0]?.file) || "";
@@ -156,42 +148,44 @@ function toApiEntry(reflection) {
 	};
 }
 
-function generate() {
-	fs.mkdirSync(outputDir, { recursive: true });
-	console.log("📚 Generating API reflection with TypeDoc...");
-	execFileSync(path.join(pageDir, "node_modules", ".bin", "typedoc"), ["--options", path.join(pageDir, "typedoc.json")], {
-		cwd: pageDir,
-		stdio: "inherit",
-	});
-
-	if (!fs.existsSync(reflectionPath)) throw new Error(`TypeDoc did not create ${reflectionPath}`);
-	const reflection = JSON.parse(fs.readFileSync(reflectionPath, "utf8"));
+function renderApiContent(reflection) {
 	const symbols = collectReflections(reflection);
 	const apiContent = {};
 	const usedKeys = new Set();
-
 	for (const symbol of symbols) {
 		const key = keyOf(symbol.name);
 		if (!key || usedKeys.has(key)) continue;
 		usedKeys.add(key);
 		apiContent[key] = toApiEntry(symbol);
 	}
+	return `// Auto-generated from TypeDoc. Do not edit manually.\n// Source of truth: core/src, extension/src and plugins/src.\n\nexport const generatedApiContent = ${JSON.stringify(apiContent, null, 2)} as const;\n`;
+}
 
-	const output = `// Auto-generated from TypeDoc. Do not edit manually.\n// Source of truth: core/src, extension/src and plugins/src.\n\nexport const generatedApiContent = ${JSON.stringify(apiContent, null, 2)} as const;\n`;
-	fs.writeFileSync(outputPath, output, "utf8");
-	console.log(`✅ Generated ${symbols.length} API symbols -> ${path.relative(repoDir, outputPath)}`);
+function generate(targetPath = outputPath) {
+	fs.mkdirSync(outputDir, { recursive: true });
+	console.log("📚 Generating API reflection with TypeDoc...");
+	execFileSync(path.join(pageDir, "node_modules", ".bin", "typedoc"), ["--options", path.join(pageDir, "typedoc.json")], {
+		cwd: pageDir,
+		stdio: "inherit",
+	});
+	if (!fs.existsSync(reflectionPath)) throw new Error(`TypeDoc did not create ${reflectionPath}`);
+	const reflection = JSON.parse(fs.readFileSync(reflectionPath, "utf8"));
+	fs.writeFileSync(targetPath, renderApiContent(reflection), "utf8");
+	console.log(`✅ Generated API documentation -> ${path.relative(repoDir, targetPath)}`);
 }
 
 function check() {
 	const before = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, "utf8") : "";
-	generate();
-	const after = fs.readFileSync(outputPath, "utf8");
-	if (before && before !== after) {
+	const tempPath = path.join(outputDir, "GeneratedApiContent.ts");
+	generate(tempPath);
+	const after = fs.readFileSync(tempPath, "utf8");
+	fs.rmSync(tempPath, { force: true });
+	if (before !== after) {
 		console.error("❌ API documentation is stale. Run npm run docs:generate.");
 		process.exitCode = 1;
-	} else {
-		console.log("✅ API documentation is up to date.");
+		return;
 	}
+	console.log("✅ API documentation is up to date.");
 }
 
 if (process.argv.includes("--check")) check();
