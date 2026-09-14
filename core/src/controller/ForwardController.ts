@@ -79,8 +79,8 @@ export class ForwardController {
 		if (!this.player.connection || !leader.connection) return false;
 
 		this.unsubscribeForward(`replaced by ${leader.guildId}`);
-		const leaderAudioPlayer = leader.runtime.getAudioPlayer();
-		const playerAudioPlayer = this.player.runtime.getAudioPlayer();
+		const leaderAudioPlayer = leader.bus.querySync("audioPlayer");
+		const playerAudioPlayer = this.player.bus.querySync("audioPlayer");
 		if (!leaderAudioPlayer || !playerAudioPlayer) return false;
 		this.leader = leader;
 		leaderForward.addFollower(this.player);
@@ -90,7 +90,7 @@ export class ForwardController {
 			for (const fp of [...this.followers]) fp.unsubscribeForward(`leader changed to ${leader.guildId}`);
 			this.followers.clear();
 			const track = leader.currentTrack as Track | null | undefined;
-			if (track) leader.runtime.setCurrentTrack(track);
+			if (track) leader.bus.requestRpcSync("queue.setCurrent", { track });
 			this.mode = (options?.forwardMode ?? true) ? PlaybackMode.FORWARD : PlaybackMode.NATIVE;
 			if (this.mode === PlaybackMode.FORWARD) this.player.connection.subscribe(leaderAudioPlayer);
 			this.player.volume = leader.volume;
@@ -113,7 +113,7 @@ export class ForwardController {
 		this.leader = null;
 		this.mode = PlaybackMode.NATIVE;
 		try {
-			const audioPlayer = this.player.runtime.getAudioPlayer();
+			const audioPlayer = this.player.bus.querySync("audioPlayer");
 			if (audioPlayer) this.player.connection?.subscribe(audioPlayer);
 		} catch {}
 		this.player.clearQueue();

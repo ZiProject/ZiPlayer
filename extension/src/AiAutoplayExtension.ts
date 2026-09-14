@@ -111,7 +111,7 @@ export class AiAutoplayExtension extends BaseExtension {
 	}
 
 	public onRegister(context: ExtensionContext): void {
-		this.forwardToPlayer("debug", `[AI Autoplay] Gemini Extension đã sẵn sàng (Model: gemini-2.5-flash)`);
+		this.debugLog("info", `[AI Autoplay] Gemini Extension đã sẵn sàng (Model: gemini-2.5-flash)`);
 	}
 
 	public async provideSearch(context: ExtensionContext, payload: any): Promise<SearchResult | null> {

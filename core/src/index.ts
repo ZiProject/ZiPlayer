@@ -13,10 +13,12 @@ export { VolumeController } from "./controller/VolumeController";
 export { StreamController } from "./controller/StreamController";
 export { QueueController, QueueController as Queue } from "./controller/QueueController";
 export { AntiStuckController } from "./controller/AntiStuckController";
+export { PlaybackSessionController } from "./controller/PlaybackSessionController";
 export { TransitionController } from "./controller/TransitionController";
 export { PreloadController } from "./controller/PreloadController";
 export { SaveController } from "./controller/SaveController";
 export { PlayerBusLatencyTrace } from "./controller/PlayerBusLatencyTrace";
+export { PlayerEventDebug, DEBUG_PRIORITY } from "./controller/PlayerEventDebug";
 export { StreamManager } from "./structures/StreamManager";
 
 export type {
@@ -28,10 +30,13 @@ export type {
 	PlayerQueryMap,
 } from "./structures/PlayerBus";
 
-export type { PlaybackOrchestratorOptions } from "./structures/PlaybackOrchestrator";
-export type { QueueControllerOptions } from "./controller/QueueController";
-export type { TransitionControllerOptions, TransitionPlan } from "./controller/TransitionController";
-export type { PreloadControllerOptions } from "./controller/PreloadController";
+export type {
+	PlaybackOrchestratorOptions,
+	QueueControllerOptions,
+	TransitionControllerOptions,
+	TransitionPlan,
+	PreloadControllerOptions,
+} from "./types";
 export { PreloadManager } from "./structures/PreloadManager";
 export * from "./types";
 export * from "./plugins";

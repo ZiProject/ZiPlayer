@@ -1,16 +1,13 @@
 import type { LoopMode, SearchResult, Track } from "../types";
 import type { PlayerAction, PlayerActionExecutionContext, PlayerBus } from "../structures/PlayerBus";
-
-export interface QueueControllerOptions {
-	bus?: PlayerBus;
-}
+import type { QueueControllerOptions } from "../types";
 
 type QueueInsertRequest = { query: string | Track | Track[]; index?: number; requestedBy?: string };
 
 export class QueueController {
 	private readonly bus?: PlayerBus;
 	private readonly detachAction?: () => void;
-	private readonly detachQueries: Array<() => void> = [];
+	private readonly detachBusHandlers: Array<() => void> = [];
 	private readonly detachRpcs: Array<() => void> = [];
 	private readonly MAX_HISTORY_SIZE = 200;
 	private readonly MAX_QUEUE_SIZE = 1000;
@@ -27,7 +24,7 @@ export class QueueController {
 		this.bus = options.bus;
 		if (this.bus) {
 			this.detachAction = this.bus.onAction((action, context) => this.handleAction(action, context));
-			this.detachQueries.push(
+			this.detachBusHandlers.push(
 				this.bus.registerQuery("currentTrack", () => this.current),
 				this.bus.registerQuery("queueCurrent", () => this.current),
 				this.bus.registerQuery("queue", () => this.snapshot()),
@@ -38,6 +35,7 @@ export class QueueController {
 				this.bus.registerQuery("queueLoop", () => this.loopMode),
 				this.bus.registerQuery("queueAutoPlay", () => this.autoPlayEnabled),
 				this.bus.registerQuery("relatedTracks", () => this.relatedTracks),
+				this.bus.registerQuery("queueNextTrack", () => this.nextTrack),
 			);
 			this.detachRpcs.push(
 				this.bus.registerRpc<void, Track | null>("queue.previous", () => this.previous()),
@@ -53,6 +51,10 @@ export class QueueController {
 				this.bus.registerRpc<{ track: Track | null }, void>("queue.setCurrent", ({ track }) => this.setCurrentInternal(track)),
 				this.bus.registerRpc<void, object>("queue.serialize", () => this.serializeInternal()),
 				this.bus.registerRpc<{ state: object }, void>("queue.restore", ({ state }) => this.restoreInternal(state)),
+				this.bus.registerRpc<{ previousCurrent: Track | null; nextTrack: Track | null }, void>(
+					"queue.restoreNext",
+					({ previousCurrent, nextTrack }) => this.restoreNext(previousCurrent, nextTrack),
+				),
 				this.bus.registerRpc<{ track: Track | null }, Track | null>("queue.willNext", ({ track }) => {
 					if (track) this.setWillNext(track);
 					else this.clearWillNext();
@@ -413,7 +415,7 @@ export class QueueController {
 	}
 	public dispose(): void {
 		this.detachAction?.();
-		for (const detach of this.detachQueries.splice(0)) detach();
+		for (const detach of this.detachBusHandlers.splice(0)) detach();
 		for (const detach of this.detachRpcs.splice(0)) detach();
 		this.reset();
 	}

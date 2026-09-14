@@ -4,15 +4,12 @@ import type { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
 import type { PlayerBus } from "../structures/PlayerBus";
-import type { VolumeController } from "../controller/VolumeController";
-import type { TransitionController } from "../controller/TransitionController";
-import type { AntiStuckController } from "../controller/AntiStuckController";
 
 export interface ConnectionControllerOptions {
 	guildId: string;
 	bus: PlayerBus;
 	audioPlayer?: AudioPlayer;
-	options?: Pick<PlayerOptions, "selfDeaf" | "selfMute">;
+	options?: Pick<PlayerOptions, "selfDeaf" | "selfMute" | "group">;
 	debug?: (message: string) => void;
 	readyTimeoutMs?: number;
 }
@@ -28,9 +25,6 @@ export interface ForwardControllerOptions {
 export interface PlaybackControllerOptions {
 	audioPlayer: AudioPlayer;
 	bus?: PlayerBus;
-	volumeController?: VolumeController;
-	transitionController?: TransitionController;
-	antiStuckController?: AntiStuckController;
 	stuckTimeoutMs?: number;
 }
 
@@ -87,7 +81,15 @@ export interface PlaybackSessionSnapshot {
 }
 
 export type PlaybackSessionStatus =
-	AudioPlayerStatus | "idle" | "loading" | "playing" | "paused" | "stopped" | "ended" | "destroyed" | "buffering";
+	| AudioPlayerStatus
+	| "idle"
+	| "loading"
+	| "playing"
+	| "paused"
+	| "stopped"
+	| "ended"
+	| "destroyed"
+	| "buffering";
 export interface AntiStuckControllerOptions {
 	enabled?: boolean;
 	maxRetries?: number;
@@ -126,4 +128,56 @@ export interface SearchDebugResult {
 	cacheAge?: number;
 	pluginCount: number;
 	ttsFiltered: boolean;
+}
+
+export interface ControllerCommandContext {
+	requestId: string;
+	sessionId?: string;
+	signal?: AbortSignal;
+	timestamp?: number;
+}
+export type ControllerCommandHandler<TRequest = unknown, TResponse = unknown> = (
+	request: TRequest,
+	context: ControllerCommandContext,
+) => TResponse | Promise<TResponse>;
+export interface TransitionPlanRequest {
+	from: Track | null;
+	to: Track | null;
+}
+export interface TransitionPlanResponse {
+	enabled: boolean;
+	durationMs: number;
+	waitForBeat: boolean;
+	beatAlignMaxWaitMs: number;
+}
+export interface TransitionBeatWaitRequest {
+	track: Track | null;
+	positionMs: number;
+}
+export interface VolumeTargetRequest {
+	track?: Track | null;
+}
+export interface VolumeSetRequest {
+	value: number;
+}
+export interface AntiStuckReportRequest {
+	session: PlaybackSession;
+	reason: string;
+	handlers: AntiStuckRetryHandlers;
+}
+export interface TrackLoadRequest {
+	track: Track;
+	session: PlaybackSession;
+}
+export interface TrackResetRecoveryRequest {
+	track?: Track;
+}
+export interface TrackGetRecoveryCountRequest {
+	track: Track;
+}
+export interface TtsIsTTSRequest {
+	track: Track;
+}
+export interface TtsPlayRequest {
+	track: Track;
 }

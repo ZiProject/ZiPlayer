@@ -635,8 +635,4 @@ export class lyricsExt extends BaseExtension {
 		}
 		return null;
 	}
-
-	private debug(message: string) {
-		this.player?.emit("debug", `[lyricsExt] ${message}`);
-	}
 }

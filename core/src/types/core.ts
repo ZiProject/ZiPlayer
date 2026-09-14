@@ -4,6 +4,7 @@ import type { PlayerManager } from "../structures/PlayerManager";
 import type { AudioFilter } from "./filter";
 import type { SourcePluginLike } from "./plugin";
 import type { AudioResource, StreamType } from "@discordjs/voice";
+import type { PlayerDebugLevel } from "./debug";
 
 export enum PlaybackMode {
 	NATIVE = "native",
@@ -143,9 +144,6 @@ export interface PlayerOptions {
 	maxStreamStore?: number;
 }
 
-export type PlayerDebugLevel = "off" | "error" | "warn" | "info" | "debug" | "verbose" | "time";
-export type PlayerEventDebugLogger = (message: string, value?: unknown) => void;
-
 export interface PlayerManagerOptions {
 	plugins?: SourcePluginLike[];
 	extensions?: any[];
@@ -172,12 +170,13 @@ export interface SaveOptions {
 	filename?: string;
 	quality?: "high" | "low";
 	timeout?: number;
+	signal?: AbortSignal;
 	metadata?: Record<string, any>;
 	filter?: AudioFilter[];
 	seek?: number;
 }
 
-export type SaveVideoOptions = Pick<SaveOptions, "filename" | "quality" | "timeout" | "metadata">;
+export type SaveVideoOptions = Pick<SaveOptions, "filename" | "quality" | "timeout" | "metadata" | "signal">;
 
 export interface PlayerSession {
 	guildId: string;

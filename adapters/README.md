@@ -120,7 +120,9 @@ provide(new SoundCloudPlugin());
 // Generic object with getInfo() and/or download()
 provide({
 	name: "custom",
-	getInfo: async (url) => ({/* ... */}),
+	getInfo: async (url) => ({
+		/* ... */
+	}),
 });
 
 // Array of any of the above → MultiAdapter

@@ -1,17 +1,4 @@
-import type { PlayerDebugLevel, PlayerEventDebugLogger } from "../types";
-
-export type PlayerBusLatencyKind = "action" | "rpc" | "query" | "event";
-
-export interface PlayerBusLatencyRecord {
-	readonly kind: PlayerBusLatencyKind;
-	readonly type: string;
-	readonly durationUs: number;
-	readonly requestId?: string;
-	readonly sessionId?: string;
-	readonly handler?: string;
-	readonly source?: string;
-	readonly timestamp: number;
-}
+import type { PlayerDebugLevel, PlayerEventDebugLogger, PlayerBusLatencyKind, PlayerBusLatencyRecord } from "../types";
 
 function nowMs(): number {
 	return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();

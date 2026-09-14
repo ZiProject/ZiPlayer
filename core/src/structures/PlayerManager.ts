@@ -17,6 +17,7 @@ import {
 } from "../types";
 import type { BaseExtension } from "../extensions";
 import { withTimeout } from "../utils/timeout";
+import { PlayerEventDebug } from "../controller/PlayerEventDebug";
 
 const GLOBAL_MANAGER_KEY: symbol = Symbol.for("ziplayer.PlayerManager.instance");
 /** Guild id for the internal search-only player (never stored in {@link PlayerManager.players}). */
@@ -91,7 +92,33 @@ interface ManagerCacheEntry<T> {
  * }
  */
 export class PlayerManager extends EventEmitter {
-	public debugLevel: PlayerDebugLevel = "info";
+	private _debugLevel: PlayerDebugLevel = "info";
+	/**
+	 * Manager-wide PRIORITY hub. Every `this.debug(...)` call in this class routes through
+	 * it, and each per-guild {@link Player} owns its own tracer seeded from this level.
+	 */
+	private readonly debugTracer = new PlayerEventDebug(
+		undefined,
+		"manager",
+		(message, ...args) => {
+			if (this.listenerCount("debug") > 0) {
+				this.emit("debug", message, ...args);
+				this.B_debug = true;
+			}
+		},
+		"info",
+	);
+	/** Read-only access to the manager-level debug hub, e.g. for custom log sinks. */
+	public get debugTracerInstance(): PlayerEventDebug {
+		return this.debugTracer;
+	}
+	public get debugLevel(): PlayerDebugLevel {
+		return this._debugLevel;
+	}
+	public set debugLevel(level: PlayerDebugLevel) {
+		this._debugLevel = level;
+		this.debugTracer.setDebugLevel(level);
+	}
 	private static instance: PlayerManager | null = null;
 	private players: Map<string, Player> = new Map();
 	private pendingPlayers: Map<string, Promise<Player>> = new Map();
@@ -135,12 +162,7 @@ export class PlayerManager extends EventEmitter {
 	private trackMiddlewareFromOptions: TrackMiddleware[] = [];
 
 	private debug(message?: any, ...optionalParams: any[]): void {
-		if (this.listenerCount("debug") > 0) {
-			this.emit("debug", `[PlayerManager] ${message}`, ...optionalParams);
-			if (!this.B_debug) {
-				this.B_debug = true;
-			}
-		}
+		this.debugTracer.log("debug", "PlayerManager", message, ...optionalParams);
 	}
 
 	constructor(options: PlayerManagerOptions = {}) {
@@ -301,7 +323,7 @@ export class PlayerManager extends EventEmitter {
 		for (const [guildId, player] of this.players) {
 			// Clean up players that are not playing and not connected
 			if (!player.isPlaying && !player.connection && player.queueSize === 0) {
-				const idleTime = Date.now() - (player as any)._lastActivity || Date.now();
+				const idleTime = Date.now() - ((player as any)._lastActivity || Date.now());
 				if (idleTime > this.cleanupTimeout) {
 					this.debug(`Cleaning up inactive player for guild: ${guildId}`);
 					player.destroy();
@@ -428,44 +450,23 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	private setupEventForwarding(player: Player, guildId: string): void {
-		const forwardEvents = {
-			willPlay: "willPlay",
-			trackStart: "trackStart",
-			trackEnd: "trackEnd",
-			queueEnd: "queueEnd",
-			playerError: "playerError",
-			connectionError: "connectionError",
-			volumeChange: "volumeChange",
-			queueAdd: "queueAdd",
-			queueAddList: "queueAddList",
-			queueRemove: "queueRemove",
-			playerPause: "playerPause",
-			playerResume: "playerResume",
-			playerStop: "playerStop",
-			ttsStart: "ttsStart",
-			ttsEnd: "ttsEnd",
-			streamError: "streamError",
-			forwardModeStart: "forwardModeStart",
-			forwardModeEnd: "forwardModeEnd",
-			seek: "seek",
-		} as const satisfies Record<string, keyof ManagerEvents>;
+		const originalEmit = player.emit.bind(player);
 
-		for (const [sourceEvent, targetEvent] of Object.entries(forwardEvents) as [
-			keyof typeof forwardEvents,
-			keyof ManagerEvents,
-		][]) {
-			player.on(sourceEvent, (...args: any[]) => {
-				if (sourceEvent === "trackStart") {
-					player._lastActivity = Date.now();
+		player.emit = ((event: string | symbol, ...args: any[]) => {
+			const result = originalEmit(event, ...args);
+
+			if (typeof event === "string" && this.listenerCount(event as keyof ManagerEvents) > 0) {
+				if (event === "debug") {
+					(this.emit as any)(event, ...args);
+				} else {
+					(this.emit as any)(event, player, ...args);
 				}
+			}
 
-				(this.emit as any)(targetEvent, player, ...args);
-			});
-		}
+			return result;
+		}) as Player["emit"];
 
 		player.on("playerDestroy", () => {
-			this.emit("playerDestroy", player);
-
 			// Cleanup: unsubscribe all followers when leader is destroyed
 			if (player.forwardFollowers.size > 0) {
 				this.debug(`Leader ${guildId} destroyed, cleaning up ${player.forwardFollowers.size} followers`);
@@ -489,10 +490,8 @@ export class PlayerManager extends EventEmitter {
 			this.debug(`Player destroyed for guildId: ${guildId}`);
 		});
 
-		player.on("debug", (message: string, ...rest: any[]) => {
-			if (this.listenerCount("debug") > 0) {
-				this.emit("debug", message, ...rest);
-			}
+		player.on("trackStart", () => {
+			player._lastActivity = Date.now();
 		});
 	}
 	/**

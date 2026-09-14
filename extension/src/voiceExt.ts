@@ -260,10 +260,6 @@ export class voiceExt extends BaseExtension {
 		});
 	}
 
-	private debug(message: string) {
-		this.player?.emit("debug", `[voiceExt] ${message}`);
-	}
-
 	private handleSpeakingEvent() {
 		const connection = (this.player as any)?.connection;
 		if (!connection) {

@@ -54,7 +54,11 @@ export class ExtensionManager {
 	private cacheCleanupInterval: NodeJS.Timeout | null = null;
 	private destroyed = false;
 
-	constructor(player: Player, manager: PlayerManager) {
+	constructor(
+		player: Player,
+		manager: PlayerManager,
+		private readonly debugChannel?: (message?: any, ...optionalParams: any[]) => void,
+	) {
 		this.player = player;
 		this.manager = manager;
 		this.extensions = new Map();
@@ -78,7 +82,9 @@ export class ExtensionManager {
 	}
 
 	debug(message?: any, ...optionalParams: any[]): void {
-		if (this.manager.debugEnabled) {
+		if (this.debugChannel) {
+			this.debugChannel(message, ...optionalParams);
+		} else if (this.manager.debugEnabled) {
 			this.manager.emit("debug", `[ExtensionManager] ${message}`, ...optionalParams);
 		}
 	}
@@ -283,7 +289,8 @@ export class ExtensionManager {
 		this.debug(`[Cache] Stream stored for: ${track.title}`);
 	}
 
-	async provideSearch(query: string, requestedBy: string): Promise<SearchResult | null> {
+	async provideSearch(query: string, requestedBy: string, signal?: AbortSignal): Promise<SearchResult | null> {
+		if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 		if (!query) return null;
 
 		// Check cache first
@@ -297,17 +304,19 @@ export class ExtensionManager {
 			return this.pendingSearches.get(cacheKey)!;
 		}
 
-		const request: ExtensionSearchRequest = { query, requestedBy };
+		const request: ExtensionSearchRequest = { query, requestedBy, signal };
 		const searchPromise = (async () => {
 			// Only query extensions that have provideSearch capability
 			const searchExtensions = this.findExtensionsByCapability("search");
 
 			for (const extension of searchExtensions) {
+				if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 				const hook = (extension as any).provideSearch;
 				if (typeof hook !== "function") continue;
 
 				try {
 					const result = await Promise.resolve(hook.call(extension, this.extensionContext, request));
+					if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 					if (result && Array.isArray(result.tracks) && result.tracks.length > 0) {
 						this.debug(`Extension ${extension.name} handled search for: ${query}`);
 						this.setCachedSearch(query, result as SearchResult);

@@ -478,7 +478,8 @@ export class PluginManager {
 	 * @param requestedBy User who requested the search
 	 * @returns Evaluated search result
 	 */
-	async search(query: string, requestedBy: string): Promise<SearchResult | null> {
+	async search(query: string, requestedBy: string, signal?: AbortSignal): Promise<SearchResult | null> {
+		if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 		if (this.destroyed) return null;
 		if (!query || !query.trim()) {
 			this.debug(`[Search] Empty query provided`);
@@ -503,7 +504,7 @@ export class PluginManager {
 		}
 
 		// Create new search request
-		const searchPromise = this.searchInternal(trimmedQuery, requestedBy);
+		const searchPromise = this.searchInternal(trimmedQuery, requestedBy, signal);
 		this.pendingSearches.set(dedupeKey, searchPromise);
 
 		try {
@@ -515,7 +516,7 @@ export class PluginManager {
 		}
 	}
 
-	private async searchInternal(query: string, requestedBy: string): Promise<SearchResult | null> {
+	private async searchInternal(query: string, requestedBy: string, signal?: AbortSignal): Promise<SearchResult | null> {
 		const timeoutMs = this.options.extractorTimeout ?? 15000;
 
 		const plugins = this.getAll().filter((p) => typeof p.search === "function");
@@ -525,7 +526,13 @@ export class PluginManager {
 		const settled = await Promise.allSettled(
 			plugins.map(async (plugin) => {
 				try {
-					const result = await withTimeout(plugin.search(query, requestedBy), timeoutMs, `Search timeout for ${plugin.name}`);
+					if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+					const result = await withTimeout(
+						plugin.search(query, requestedBy, signal),
+						timeoutMs,
+						`Search timeout for ${plugin.name}`,
+					);
+					if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
 					if (!result?.tracks?.length) {
 						return null;

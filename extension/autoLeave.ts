@@ -45,13 +45,12 @@ export class AutoLeaveExt extends BaseExtension {
 			if (nonBotMembers && nonBotMembers.size === 0) {
 				// No non-bot members left, leave the voice channel
 				if (this.config.pauseOnEmpty && (this.config?.leaveAfterSeconds ?? 0) > 0 && !player.isPaused) {
-					player.emit(
-						"debug",
-						`[AutoLeaveExt] Scheduling leave in ${this.config.leaveAfterSeconds} seconds for guild=${player.guildId} due to empty voice channel.`,
+					this.debug(
+						`Scheduling leave in ${this.config.leaveAfterSeconds} seconds for guild=${player.guildId} due to empty voice channel.`,
 					);
 					const timeout = setTimeout(
 						() => {
-							player.emit("debug", `[AutoLeaveExt] Leaving voice channel in guild=${player.guildId} due to empty voice channel.`);
+							this.debug(`Leaving voice channel in guild=${player.guildId} due to empty voice channel.`);
 							player.destroy();
 							this.pendingLeaves.delete(player.guildId);
 						},
@@ -63,10 +62,7 @@ export class AutoLeaveExt extends BaseExtension {
 				// There are still non-bot members, clear any pending leave timeout
 				const pendingTimeout = this.pendingLeaves.get(player.guildId);
 				if (pendingTimeout) {
-					player.emit(
-						"debug",
-						`[AutoLeaveExt] Clearing pending leave timeout for guild=${player.guildId} as members have joined.`,
-					);
+					this.debug(`Clearing pending leave timeout for guild=${player.guildId} as members have joined.`);
 					clearTimeout(pendingTimeout);
 					this.pendingLeaves.delete(player.guildId);
 				}

@@ -29,7 +29,8 @@ import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { PlaybackSession } from "./PlaybackSession";
-import { PlayerRuntimeController, type PlayerRuntimeGraph } from "./PlayerRuntimeController";
+import { PlayerRuntimeController } from "./PlayerRuntimeController";
+import type { PlayerRuntimeGraph } from "../types";
 
 export class Player extends EventEmitter {
 	public readonly bus = new PlayerBus();
@@ -67,17 +68,25 @@ export class Player extends EventEmitter {
 			tts: { createPlayer: false, interrupt: true, volume: 100, maxTimeTts: 60_000, ...(options.tts || {}) },
 		};
 		this.userdata = this.options.userdata;
-		const debug = this.debug.bind(this);
+		// Raw sink used ONLY as the final destination for PlayerEventDebug once a message
+		// has already cleared the priority (debugLevel) gate - never call this directly.
+		const debugSink = (message?: any, ...optionalParams: any[]) => {
+			if (this.manager.listenerCount("debug") > 0 || this.manager.debugEnabled)
+				this.manager.emit("debug", message, ...optionalParams);
+		};
 
 		this.runtime = new PlayerRuntimeController(this.bus);
-		this.runtimeGraph = this.runtime.initialize(this, manager, this.options, debug);
+		this.runtimeGraph = this.runtime.initialize(this, manager, this.options, debugSink);
 		this.bus.publish("initialized");
 		this.bus.publish("ready");
 	}
 
+	/**
+	 * Emits a `debug` event, gated by the player's PRIORITY threshold
+	 * ({@link PlayerManager.debugLevel}) via the central {@link PlayerEventDebug} tracer.
+	 */
 	public debug(message?: any, ...optionalParams: any[]): void {
-		if (this.manager.listenerCount("debug") > 0 || this.manager.debugEnabled)
-			this.manager.emit("debug", `[Player:${this.guildId}] ${message}`, ...optionalParams);
+		this.runtimeGraph?.debugTracer.log("debug", `Player:${this.guildId}`, message, ...optionalParams);
 	}
 
 	public get currentTrack(): Track | null {
@@ -196,6 +205,10 @@ export class Player extends EventEmitter {
 
 	public debugSearchQuery(query: string): Promise<SearchDebugResult> {
 		return this.bus.requestRpc("search.debug", { query });
+	}
+
+	public createRelatedTracks(track?: Track | null): Promise<Track[]> {
+		return this.bus.requestRpc("playback.createRelatedTracks", { track });
 	}
 
 	public async connect(channel: VoiceChannel): Promise<VoiceConnection> {
