@@ -13,5 +13,6 @@
 	"excludeInternal": true,
 	"categorizeByGroup": true,
 	"skipErrorChecking": true,
-	"logLevel": "Error"
+	"logLevel": "Error",
+	"cleanOutputDir": true
 }
