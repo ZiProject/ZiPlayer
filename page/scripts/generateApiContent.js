@@ -111,10 +111,17 @@ function propertiesOf(reflection) {
 		}));
 }
 
+function isPublicReflection(reflection) {
+	if (!reflection) return false;
+	if (reflection.flags?.isPrivate || reflection.flags?.isProtected || reflection.flags?.isInternal) return false;
+	return reflection.flags?.isExported !== false;
+}
+
 function collectReflections(node, result = [], seen = new Set()) {
 	for (const child of node?.children || []) {
 		if (seen.has(child.id)) continue;
 		seen.add(child.id);
+		if (!isPublicReflection(child)) continue;
 		const kind = kindOf(child);
 		if (["Class", "Interface", "Type alias", "Function", "Enumeration", "Variable"].includes(kind)) result.push(child);
 		collectReflections(child, result, seen);
@@ -127,16 +134,18 @@ function renderApiContent(reflection) {
 	const apiContent = {};
 	const usedKeys = new Set();
 	for (const symbol of symbols) {
-		const key = keyOf(symbol.name);
-		if (!key || usedKeys.has(key)) continue;
+		const scope = scopeOf(symbol);
+		const baseKey = keyOf(symbol.name);
+		if (!baseKey) continue;
+		const key = `${scope}-${baseKey}`;
+		if (usedKeys.has(key)) continue;
 		usedKeys.add(key);
-		apiContent[key] = toApiEntry(symbol);
+		apiContent[key] = toApiEntry(symbol, scope);
 	}
-	return `// Auto-generated from TypeDoc. Do not edit manually.\n// Source of truth: core/src, extension/src and plugins/src.\n\nexport const generatedApiContent = ${JSON.stringify(apiContent, null, 2)} as const;\n`;
+	return `// Auto-generated from TypeDoc. Do not edit manually.\n// Source of truth: public exports from core/src, extension/src and plugins/src.\n\nexport const generatedApiContent = ${JSON.stringify(apiContent, null, 2)} as const;\n`;
 }
 
-function toApiEntry(reflection) {
-	const scope = scopeOf(reflection);
+function toApiEntry(reflection, scope) {
 	const kind = kindOf(reflection).toLowerCase().replace("type alias", "type");
 	const description = commentText(reflection.comment) || `${reflection.name} API`;
 	const signature = reflection.signatures?.[0];
@@ -164,7 +173,10 @@ function toApiEntry(reflection) {
 function generate() {
 	fs.mkdirSync(outputDir, { recursive: true });
 	console.log("📚 Generating API reflection with TypeDoc...");
-	execFileSync(path.join(pageDir, "node_modules", ".bin", "typedoc"), ["--options", path.join(pageDir, "typedoc.json")], {
+	const typedocBin = process.platform === "win32"
+		? path.join(pageDir, "node_modules", ".bin", "typedoc.cmd")
+		: path.join(pageDir, "node_modules", ".bin", "typedoc");
+	execFileSync(typedocBin, ["--options", path.join(pageDir, "typedoc.json")], {
 		cwd: pageDir,
 		stdio: "inherit",
 	});
@@ -174,17 +186,9 @@ function generate() {
 	console.log(`✅ Generated API documentation -> ${path.relative(repoDir, outputPath)}`);
 }
 
-function check() {
-	const before = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, "utf8") : "";
+if (process.argv.includes("--check")) {
+	console.error("Use npm run docs:check for a clean TypeDoc validation; generated API output is intentionally untracked.");
+	process.exitCode = 1;
+} else {
 	generate();
-	const after = fs.readFileSync(outputPath, "utf8");
-	if (before !== after) {
-		console.error("❌ API documentation is stale or missing. Run npm run docs:generate.");
-		process.exitCode = 1;
-		return;
-	}
-	console.log("✅ API documentation is up to date.");
 }
-
-if (process.argv.includes("--check")) check();
-else generate();
