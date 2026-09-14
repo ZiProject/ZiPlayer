@@ -147,9 +147,6 @@ function collectReflections(node, result = [], seen = new Set()) {
     if (isPublicReflection(child) && ['Class', 'Interface', 'Type alias', 'Function', 'Enumeration', 'Variable'].includes(kind)) {
       result.push(child);
     }
-    // Do not stop traversal when a container/module reflection is not marked
-    // exported. TypeDoc can mark module containers differently from the symbols
-    // they contain, while the contained declarations are still public API.
     collectReflections(child, result, seen);
   }
   return result;
@@ -165,27 +162,51 @@ function sourceFilesOfSymbol(symbol, checker) {
 }
 
 function createExportProgram() {
-  const tsconfigPath = path.join(repoDir, 'core', 'tsconfig.json');
-  const config = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
-  if (config.error) throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'));
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, path.dirname(tsconfigPath), { noEmit: true });
-  const rootNames = [...new Set([...parsed.fileNames, ...EXPORT_ROOTS.map((root) => root.entry)])];
-  return ts.createProgram(rootNames, { ...parsed.options, noEmit: true, skipLibCheck: true });
+  // Use one program containing every source file behind all public roots.
+  // A single core tsconfig cannot correctly resolve the plugins/extensions
+  // projects, whose module/moduleResolution settings and imports differ.
+  const sourceFiles = [];
+  for (const directory of ['core/src', 'plugins/src', 'extension/src']) {
+    const absoluteDirectory = path.join(repoDir, directory);
+    if (fs.existsSync(absoluteDirectory)) {
+      sourceFiles.push(...ts.sys.readDirectory(absoluteDirectory, ['.ts', '.tsx'], undefined, undefined, undefined));
+    }
+  }
+
+  const rootNames = [...new Set([...sourceFiles, ...EXPORT_ROOTS.map((root) => root.entry)])];
+  return ts.createProgram(rootNames, {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    lib: ['lib.es2022.d.ts', 'lib.dom.d.ts'],
+    strict: true,
+    esModuleInterop: true,
+    allowSyntheticDefaultImports: true,
+    skipLibCheck: true,
+    resolveJsonModule: true,
+    noEmit: true,
+  });
 }
 
 function buildPublicExportGraph() {
   const program = createExportProgram();
   const checker = program.getTypeChecker();
   const graph = new Map();
+  const rootStats = [];
 
   for (const root of EXPORT_ROOTS) {
-    const sourceFile = program.getSourceFile(path.resolve(root.entry)) || program.getSourceFile(root.entry);
+    const rootFile = path.resolve(root.entry);
+    const sourceFile = program.getSourceFile(rootFile) || program.getSourceFile(root.entry);
     if (!sourceFile) throw new Error(`Public export root is not in TypeScript program: ${root.entry}`);
     const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
     if (!moduleSymbol) throw new Error(`Cannot resolve module symbol for public export root: ${root.entry}`);
 
-    for (const exported of checker.getExportsOfModule(moduleSymbol)) {
+    const exports = checker.getExportsOfModule(moduleSymbol);
+    let resolvedCount = 0;
+    for (const exported of exports) {
       const sourceFiles = sourceFilesOfSymbol(exported, checker);
+      if (!sourceFiles.length) continue;
+      resolvedCount++;
       for (const sourceFileName of sourceFiles) {
         if (!graph.has(sourceFileName)) graph.set(sourceFileName, new Map());
         const names = graph.get(sourceFileName);
@@ -194,6 +215,11 @@ function buildPublicExportGraph() {
         names.set(exported.name, roots);
       }
     }
+    rootStats.push(`${root.name}:${exports.length}/${resolvedCount}`);
+  }
+
+  if (!graph.size) {
+    throw new Error(`TypeScript public export graph is empty (${rootStats.join(', ')}).`);
   }
 
   return graph;
@@ -227,7 +253,7 @@ function publicFromOf(reflection, exportGraph) {
     const roots = names.get(name);
     if (roots?.length) matches.push({ file, roots });
   }
-  if (matches.length === 1) return [...new Set(matches[0].roots)];
+  if (matches.length === 1) return [...new Set(matches[0].roots]);
 
   return [];
 }
@@ -256,6 +282,7 @@ function renderApiContent(reflection) {
   if (!publicCount || !Object.keys(apiContent).length) {
     throw new Error(
       `API export tracing produced no public symbols. ` +
+      `TypeDoc reflections: ${symbols.length}; export graph files: ${exportGraph.size}. ` +
       `Check TypeDoc source paths and public roots: ${EXPORT_ROOTS.map((root) => root.entry).join(', ')}`,
     );
   }
