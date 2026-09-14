@@ -6,7 +6,7 @@ const pageDir = path.resolve(__dirname, "..");
 const repoDir = path.resolve(pageDir, "..");
 const outputDir = path.join(pageDir, ".generated");
 const reflectionPath = path.join(outputDir, "typedoc.json");
-const outputPath = path.join(pageDir, "components", "GeneratedApiContent.ts");
+const outputPath = path.join(outputDir, "GeneratedApiContent.ts");
 
 function text(value) {
 	if (!value) return "";
@@ -122,6 +122,19 @@ function collectReflections(node, result = [], seen = new Set()) {
 	return result;
 }
 
+function renderApiContent(reflection) {
+	const symbols = collectReflections(reflection);
+	const apiContent = {};
+	const usedKeys = new Set();
+	for (const symbol of symbols) {
+		const key = keyOf(symbol.name);
+		if (!key || usedKeys.has(key)) continue;
+		usedKeys.add(key);
+		apiContent[key] = toApiEntry(symbol);
+	}
+	return `// Auto-generated from TypeDoc. Do not edit manually.\n// Source of truth: core/src, extension/src and plugins/src.\n\nexport const generatedApiContent = ${JSON.stringify(apiContent, null, 2)} as const;\n`;
+}
+
 function toApiEntry(reflection) {
 	const scope = scopeOf(reflection);
 	const kind = kindOf(reflection).toLowerCase().replace("type alias", "type");
@@ -148,20 +161,7 @@ function toApiEntry(reflection) {
 	};
 }
 
-function renderApiContent(reflection) {
-	const symbols = collectReflections(reflection);
-	const apiContent = {};
-	const usedKeys = new Set();
-	for (const symbol of symbols) {
-		const key = keyOf(symbol.name);
-		if (!key || usedKeys.has(key)) continue;
-		usedKeys.add(key);
-		apiContent[key] = toApiEntry(symbol);
-	}
-	return `// Auto-generated from TypeDoc. Do not edit manually.\n// Source of truth: core/src, extension/src and plugins/src.\n\nexport const generatedApiContent = ${JSON.stringify(apiContent, null, 2)} as const;\n`;
-}
-
-function generate(targetPath = outputPath) {
+function generate() {
 	fs.mkdirSync(outputDir, { recursive: true });
 	console.log("📚 Generating API reflection with TypeDoc...");
 	execFileSync(path.join(pageDir, "node_modules", ".bin", "typedoc"), ["--options", path.join(pageDir, "typedoc.json")], {
@@ -170,18 +170,16 @@ function generate(targetPath = outputPath) {
 	});
 	if (!fs.existsSync(reflectionPath)) throw new Error(`TypeDoc did not create ${reflectionPath}`);
 	const reflection = JSON.parse(fs.readFileSync(reflectionPath, "utf8"));
-	fs.writeFileSync(targetPath, renderApiContent(reflection), "utf8");
-	console.log(`✅ Generated API documentation -> ${path.relative(repoDir, targetPath)}`);
+	fs.writeFileSync(outputPath, renderApiContent(reflection), "utf8");
+	console.log(`✅ Generated API documentation -> ${path.relative(repoDir, outputPath)}`);
 }
 
 function check() {
 	const before = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, "utf8") : "";
-	const tempPath = path.join(outputDir, "GeneratedApiContent.ts");
-	generate(tempPath);
-	const after = fs.readFileSync(tempPath, "utf8");
-	fs.rmSync(tempPath, { force: true });
+	generate();
+	const after = fs.readFileSync(outputPath, "utf8");
 	if (before !== after) {
-		console.error("❌ API documentation is stale. Run npm run docs:generate.");
+		console.error("❌ API documentation is stale or missing. Run npm run docs:generate.");
 		process.exitCode = 1;
 		return;
 	}
