@@ -10,7 +10,7 @@
 		"start": "next start -p 3030",
 		"lint": "echo 'No lint configured'",
 		"docs:generate": "node scripts/generateApiContent.js",
-		"docs:check": "node scripts/generateApiContent.js --check"
+		"docs:check": "typedoc --options typedoc.json --treatWarningsAsErrors"
 	},
 	"dependencies": {
 		"@types/react-syntax-highlighter": "^15.5.13",
