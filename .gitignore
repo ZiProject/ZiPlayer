@@ -4,5 +4,6 @@ dist
 .env
 .next
 out
+page/.generated
 
 .cursorignore
