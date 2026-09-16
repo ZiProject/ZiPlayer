@@ -32,13 +32,18 @@ import { ExtensionManager } from "../extensions";
 import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { SaveController } from "../controller/SaveController";
 import { PlaybackSessionController } from "../controller/PlaybackSessionController";
+import { globalControllerRegistry, type GlobalControllerRegistration } from "../controller/GlobalControllerRegistry";
 import type { Track, PlayerDebugLevel } from "../types";
 
-/** Composition root and lifecycle owner. It contains no playback workflow. */
+/**
+ * Per-player composition bootstrap. The controller graph itself is registered in
+ * the process-wide GlobalControllerRegistry and is addressed by guild/player id.
+ */
 export class PlayerRuntimeController {
 	private disposed = false;
 	private readonly disposables = new Map<string, () => void | Promise<void>>();
 	private readonly errors: Array<{ name: string; error: unknown }> = [];
+	private globalRegistration?: GlobalControllerRegistration<PlayerRuntimeGraph>;
 
 	public constructor(public readonly bus: PlayerBus) {}
 
@@ -58,9 +63,6 @@ export class PlayerRuntimeController {
 	): PlayerRuntimeGraph {
 		if (this.disposed) throw new Error("PlayerRuntimeController is disposed");
 		const guildId = player.guildId;
-		// Every subsystem below funnels its debug output through this single tracer.
-		// `debugSink` is only the final destination (manager.emit("debug", ...)); the
-		// tracer is what applies the PRIORITY (debugLevel) gate and per-component tag.
 		const debugTracer = new PlayerEventDebug(this.bus, guildId, debugSink, manager.debugLevel ?? "info");
 		const channel = (tag: string, level: PlayerDebugLevel = "debug") => debugTracer.channel(tag, level);
 		const middleware: TrackMiddleware[] = [
@@ -88,9 +90,6 @@ export class PlayerRuntimeController {
 			enableMetrics: true,
 			autoDestroy: true,
 		});
-		// StreamManager is a self-contained EventEmitter that predates the tracer; bridge
-		// its own "debug" event into the same priority-gated channel instead of leaving it
-		// as a separate, ungated pathway.
 		streamManager.on("debug", channel("StreamManager"));
 		const pluginManager = new PluginManager(player, manager, {
 			extractorTimeout: options.extractorTimeout,
@@ -193,9 +192,7 @@ export class PlayerRuntimeController {
 		});
 		const sessionController = new PlaybackSessionController(this.bus);
 		const orchestrator = new PlaybackOrchestrator(this.bus, { debug: channel("PlaybackOrchestrator"), sessionController });
-		const resourceRefreshController = new ResourceRefreshController({
-			bus: this.bus,
-		});
+		const resourceRefreshController = new ResourceRefreshController({ bus: this.bus });
 		const searchController = new SearchController({
 			extensionManager,
 			pluginManager,
@@ -234,6 +231,16 @@ export class PlayerRuntimeController {
 			searchController,
 			eventBridge,
 		};
+
+		// The registry is the controller owner. Player only keeps its bus and the
+		// public facade; all controller lookups are keyed by guild/player id.
+		const unregisterPing = this.bus.registerRpc("runtime.ping", ({ playerId }: { playerId: string }) => {
+			if (playerId !== guildId) throw new Error(`Player id mismatch: ${playerId}`);
+			return { playerId: guildId, timestamp: Date.now() };
+		});
+		this.monitorCleanup("globalControllerPing", unregisterPing);
+		this.globalRegistration = globalControllerRegistry.register(guildId, this.bus, graph, () => this.dispose());
+
 		const lifecycleOrder: Array<keyof PlayerRuntimeGraph> = [
 			"connectionController",
 			"lifecycleController",
@@ -311,6 +318,8 @@ export class PlayerRuntimeController {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.errors.length = 0;
+		this.globalRegistration?.unregister();
+		this.globalRegistration = undefined;
 		for (const [name, cleanup] of [...this.disposables.entries()].reverse()) {
 			try {
 				await cleanup();
