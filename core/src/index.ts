@@ -4,6 +4,16 @@ export { Player } from "./structures/Player";
 export { PlayerManager } from "./structures/PlayerManager";
 export { PlayerBus } from "./structures/PlayerBus";
 export { PlayerAction } from "./structures/PlayerAction";
+export {
+	PlayerCapabilities,
+	createPlayerCapabilities,
+	QueueCapability,
+	PluginCapability,
+	ExtensionCapability,
+	StreamCapability,
+	PreloadCapability,
+	FilterCapability,
+} from "./capabilities/PlayerCapabilities";
 export { PlaybackOrchestrator } from "./structures/PlaybackOrchestrator";
 export { PlaybackSession } from "./structures/PlaybackSession";
 export { TrackLoader } from "./structures/TrackLoader";

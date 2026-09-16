@@ -44,6 +44,11 @@ export class ConnectionController {
 			this.bus.onInput("[Player]->[Connection]:connect", (event) => this.enqueue(() => this.connect(event))),
 			this.bus.onInput("[Player]->[Connection]:disconnect", (event) => this.enqueue(() => this.disconnect(event))),
 			this.bus.onInput("[Player]->[Connection]:reconnect", (event) => this.enqueue(() => this.reconnect(event))),
+			this.bus.registerRpc<{ audioPlayer: AudioPlayer | null }, void>("connection.setAudioPlayer", ({ audioPlayer }) => {
+				this.setAudioPlayer(audioPlayer);
+			}),
+			this.bus.registerQuery("connection", () => this.connection),
+			this.bus.registerQuery("connection.state", () => this.connection?.state.status),
 		];
 		this.unsubscribe = () => unsubscribers.forEach((unsubscribe) => unsubscribe());
 	}

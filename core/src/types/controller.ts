@@ -19,6 +19,7 @@ export interface LifecycleControllerOptions {
 	debug?: (...args: any[]) => void;
 }
 export interface ForwardControllerOptions {
+	playerId?: string;
 	bus?: PlayerBus;
 	debug?: (...args: any[]) => void;
 }

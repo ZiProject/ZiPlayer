@@ -9,6 +9,7 @@ import type {
 	SearchDebugResult,
 	ForwardHealthStatus,
 	LoopMode,
+	PlaybackMode,
 	TrackLoadResult,
 	SaveOptions,
 	SaveVideoOptions,
@@ -249,6 +250,7 @@ export interface PlayerRpcMap {
 	"search.cache.clear": { request: Record<string, never>; response: void };
 	"search.cache.purge": { request: Record<string, never>; response: void };
 	"search.debug": { request: { query: string }; response: SearchDebugResult };
+	"queue.add": { request: { track: Track }; response: number };
 	"queue.previous": { request: undefined; response: Track | null };
 	"queue.shuffle": { request: undefined; response: void };
 	"queue.clear": { request: undefined; response: void };
@@ -273,6 +275,9 @@ export interface PlayerRpcMap {
 	"forward.health": { request: undefined; response: ForwardHealthStatus };
 	"forward.subscribe": { request: { leader: unknown; options?: { forwardMode?: boolean } }; response: boolean };
 	"forward.unsubscribe": { request: { reason?: string }; response: boolean };
+	"forward.addFollower": { request: { playerId: string; leaderId: string }; response: boolean };
+	"forward.removeFollower": { request: { playerId: string; leaderId: string }; response: boolean };
+	"connection.setAudioPlayer": { request: { audioPlayer: import("@discordjs/voice").AudioPlayer | null }; response: void };
 	"transition.fade": { request: { resource: AudioResource; from: number; to: number; durationMs: number }; response: void };
 	"transition.fadeIn": { request: { resource: AudioResource; track: Track }; response: void };
 	"transition.fadeOutCurrent": { request: undefined; response: void };
@@ -283,7 +288,10 @@ export interface PlayerRpcMap {
 	"resource.create": { request: { stream: Readable; track: Track; inputType?: string }; response: AudioResource };
 	"track.middleware": { request: { track: Track }; response: Track };
 	"stream.resolve": { request: { track: Track; fresh?: boolean }; response: StreamInfo | null };
+	"stream.state": { request: Record<string, never> | undefined; response: any };
+	"stream.current": { request: Record<string, never> | undefined; response: any };
 	"preload.has": { request: { track: Track }; response: boolean };
+	"preload.state": { request: Record<string, never> | undefined; response: any };
 	"preload.next": { request: undefined; response: void };
 	"preload.cancel": { request: undefined; response: void };
 	"preload.cancelSafe": { request: undefined; response: void };
@@ -294,9 +302,19 @@ export interface PlayerRpcMap {
 	};
 	"plugin.add": { request: { plugin: BasePlugin }; response: void };
 	"plugin.remove": { request: { name: string }; response: boolean };
+	"plugin.get": { request: { name: string }; response: BasePlugin | undefined };
+	"plugin.list": { request: Record<string, never> | undefined; response: BasePlugin[] };
+	"plugin.clear": { request: undefined; response: void };
+	"plugin.stats": { request: undefined; response: object };
 	"plugin.relatedTracks": { request: { track: Track; history?: Track[] }; response: Track[] };
 	"extension.add": { request: { extension: BaseExtension }; response: void };
 	"extension.remove": { request: { extension: BaseExtension }; response: boolean };
+	"extension.get": { request: { name: string }; response: BaseExtension | undefined };
+	"extension.list": { request: Record<string, never> | undefined; response: BaseExtension[] };
+	"extension.enable": { request: { name: string }; response: boolean };
+	"extension.disable": { request: { name: string }; response: boolean };
+	"filter.list": { request: Record<string, never> | undefined; response: any };
+	"filter.set": { request: { filter: string; value: unknown }; response: any };
 	save: { request: { track: Track; options?: SaveOptions | string }; response: Readable };
 	"save.video": { request: { track: Track; options?: SaveVideoOptions | string }; response: Readable };
 	"lifecycle.scheduleLeave": { request: { reason?: "track-end" | "queue-empty" | "manual" }; response: void };
@@ -309,6 +327,8 @@ export type PlayerRpcHandler<TRequest, TResponse> = (
 
 export interface PlayerQueryMap {
 	audioPlayer: import("@discordjs/voice").AudioPlayer | null;
+	connection: import("@discordjs/voice").VoiceConnection | null;
+	"connection.state": import("@discordjs/voice").VoiceConnectionStatus | undefined;
 	"tts.hasPlayer": boolean;
 	"stream.stats": {
 		active: number;
@@ -319,6 +339,8 @@ export interface PlayerQueryMap {
 		total: number;
 		bySource: Record<string, number>;
 	} | null;
+	"stream.state": any;
+	"stream.current": any;
 	ttsInterrupt: boolean;
 	currentTrack: Track | null;
 	queueCurrent: Track | null;
@@ -344,10 +366,19 @@ export interface PlayerQueryMap {
 	isBuffering: boolean;
 	filterString: string;
 	filteredStream: StreamInfo | null;
+	"filter.list": any;
+	filters: any[];
 	transitionSettings: Record<string, unknown>;
 	retryPolicy: Record<string, unknown>;
 	availablePlugins: BasePlugin[];
+	"plugin.list": BasePlugin[];
 	extensions: BaseExtension[];
+	"extension.list": BaseExtension[];
+	"preload.state": any;
+	playbackMode: PlaybackMode;
+	forwardLeader: Player | null;
+	forwardLeaderId: string | null;
+	forwardFollowers: ReadonlySet<Player> | ReadonlySet<string>;
 }
 export type PlayerQuery = keyof PlayerQueryMap;
 export type PlayerQueryHandler<K extends PlayerQuery> = () => PlayerQueryMap[K] | Promise<PlayerQueryMap[K]>;

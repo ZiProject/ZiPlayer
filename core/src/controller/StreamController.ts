@@ -37,6 +37,10 @@ export class StreamController {
 					({ streamInfo, session }) => this.replace(streamInfo, session),
 				),
 				this.bus.registerQuery("stream.stats", () => this.streamManager?.getStats() ?? null),
+				this.bus.registerQuery("stream.state", () => (this.active ? { sessionId: this.active.sessionId, track: this.active.track } : null)),
+				this.bus.registerQuery("stream.current", () => this.active),
+				this.bus.registerRpc("stream.state", () => (this.active ? { sessionId: this.active.sessionId, track: this.active.track } : null)),
+				this.bus.registerRpc("stream.current", () => this.active),
 			);
 		}
 		if (this.streamManager && this.bus) {

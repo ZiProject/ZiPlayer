@@ -38,6 +38,7 @@ export class QueueController {
 				this.bus.registerQuery("queueNextTrack", () => this.nextTrack),
 			);
 			this.detachRpcs.push(
+				this.bus.registerRpc<{ track: Track }, number>("queue.add", ({ track }) => this.add(track)),
 				this.bus.registerRpc<void, Track | null>("queue.previous", () => this.previous()),
 				this.bus.registerRpc<void, void>("queue.shuffle", () => this.shuffle()),
 				this.bus.registerRpc<void, void>("queue.clear", () => this.clear()),

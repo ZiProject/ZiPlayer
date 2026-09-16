@@ -2,7 +2,6 @@ import { EventEmitter } from "events";
 import { Stream } from "stream";
 import type { VoiceConnection } from "@discordjs/voice";
 import type { PlayerManager } from "./PlayerManager";
-import { GlobalPlayerRuntime } from "./GlobalPlayerRuntime";
 import type { PlayerOptions, StreamInfo, Track, VoiceChannel, SearchResult, ProgressBarOptions, TrackLoadResult, SaveOptions, SaveVideoOptions, SearchDebugResult } from "../types";
 import { PlaybackMode } from "../types";
 import { PlayerBus, createPlayerRequestId, type PlayerAction as PlayerActionMessage, type PlayerEvent, type PlayerEventType, type PlayerQuery, type PlayerQueryMap } from "./PlayerBus";
@@ -11,12 +10,17 @@ import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { PlaybackSession } from "./PlaybackSession";
+import {
+	PlayerCapabilities,
+	createPlayerCapabilities,
+} from "../capabilities/PlayerCapabilities";
 
 export class Player extends EventEmitter {
-	public readonly bus = new PlayerBus();
-	public readonly actionExecutor = new PlayerAction(this.bus);
+	public readonly bus: PlayerBus;
+	public readonly actionExecutor: PlayerAction;
+	public readonly capabilities: PlayerCapabilities;
 	public readonly guildId: string;
-	public readonly manager: PlayerManager;
+	public readonly manager?: PlayerManager;
 	public readonly options: PlayerOptions;
 	public connection: VoiceConnection | null = null;
 	public userdata?: Record<string, any>;
@@ -27,37 +31,52 @@ export class Player extends EventEmitter {
 	private playGeneration = 0;
 	private playAbortController: AbortController | null = null;
 
-	public constructor(guildId: string, options: PlayerOptions = {}, manager: PlayerManager) {
+	public constructor(
+		guildId: string,
+		bus: PlayerBus,
+		options: PlayerOptions = {},
+		manager?: PlayerManager,
+	) {
 		super();
 		this.guildId = guildId;
-		this.manager = manager;
-		this.options = { leaveOnEnd: true, leaveOnEmpty: true, leaveTimeout: 100000, volume: 100, quality: "high", extractorTimeout: 50000, selfDeaf: true, selfMute: false, ...options, tts: { createPlayer: false, interrupt: true, volume: 100, maxTimeTts: 60_000, ...(options.tts || {}) } };
-		this.userdata = this.options.userdata;
-		const debugSink = (message?: any, ...optionalParams: any[]) => {
-			if (this.manager.listenerCount("debug") > 0 || this.manager.debugEnabled) this.manager.emit("debug", message, ...optionalParams);
+		this.bus = bus;
+		this.options = {
+			leaveOnEnd: true,
+			leaveOnEmpty: true,
+			leaveTimeout: 100000,
+			volume: 100,
+			quality: "high",
+			extractorTimeout: 50000,
+			selfDeaf: true,
+			selfMute: false,
+			...options,
+			tts: { createPlayer: false, interrupt: true, volume: 100, maxTimeTts: 60_000, ...(options.tts || {}) },
 		};
-		// Compatibility bootstrap: GlobalPlayerRuntime owns the graph and registry;
-		// Player retains only the bus/facade. Manager-level creation will move this
-		// bootstrap completely into PlayerManager in the next decomposition step.
-		new GlobalPlayerRuntime(this.bus).initialize(this, manager, this.options, debugSink);
+		this.manager = manager;
+		this.userdata = this.options.userdata;
+		this.actionExecutor = new PlayerAction(this.bus);
+		this.capabilities = createPlayerCapabilities(this.bus);
 		this.bus.publish("initialized");
 		this.bus.publish("ready");
 	}
 
-	private get runtimeGraph(): any { return this.bus.requestRpcSync("runtime.graph", undefined); }
-	public debug(message?: any, ...optionalParams: any[]): void { const tracer = this.runtimeGraph?.debugTracer; if (tracer) tracer.log("debug", `Player:${this.guildId}`, message, ...optionalParams); else if (this.manager.listenerCount("debug") > 0 || this.manager.debugEnabled) this.manager.emit("debug", message, ...optionalParams); }
+	public get id(): string {
+		return this.guildId;
+	}
+
+	public debug(message?: any, ...optionalParams: any[]): void {
+		const manager = this.manager;
+		if (manager && (manager.listenerCount("debug") > 0 || manager.debugEnabled)) {
+			manager.emit("debug", message, ...optionalParams);
+		}
+	}
+
 	public get currentTrack(): Track | null { return this.bus.querySync("currentTrack"); }
-	public get queue() { return this.runtimeGraph.queueController; }
-	public get pluginManager() { return this.runtimeGraph.pluginManager; }
-	public get extensionManager() { return this.runtimeGraph.extensionManager; }
-	public get streamManager() { return this.runtimeGraph.streamManager; }
-	public get preloadManager() { return this.runtimeGraph.preloadManager; }
-	public get filter() { return this.runtimeGraph.filterController; }
-	public get audioPlayer() { return this.runtimeGraph.audioPlayer; }
-	public get playbackMode(): PlaybackMode { return this.runtimeGraph.forwardController.playbackMode; }
-	public get forwardLeader(): Player | null { return this.runtimeGraph.forwardController.forwardLeader; }
-	public get forwardFollowers(): ReadonlySet<Player> { return this.runtimeGraph.forwardController.forwardFollowers; }
-	public get queueSize(): number { return this.bus.querySync("queue").length; }
+	public get audioPlayer() { return this.bus.querySync("audioPlayer"); }
+	public get playbackMode(): PlaybackMode { return this.bus.querySync("playbackMode") ?? PlaybackMode.NATIVE; }
+	public get forwardLeader(): any { return this.bus.querySync("forwardLeader"); }
+	public get forwardFollowers(): ReadonlySet<any> { return this.bus.querySync("forwardFollowers") ?? new Set(); }
+	public get queueSize(): number { return this.bus.querySync("queue")?.length ?? 0; }
 	public get isPlaying(): boolean { return this.bus.querySync("isPlaying"); }
 	public get isPaused(): boolean { return this.bus.querySync("isPaused"); }
 	public get isLive(): boolean { if (this.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isLive ?? false; return Boolean(this.currentTrack?.isLive); }
@@ -66,10 +85,10 @@ export class Player extends EventEmitter {
 	public get volume(): number { return this.bus.querySync("volume"); }
 	public set volume(value: number) { this.bus.requestRpcSync<{ value: number }, number>("volume.set", { value }); }
 	public get previousTrack(): Track | null { return this.bus.querySync("previousTrack"); }
-	public get upcomingTracks(): Track[] { return this.bus.querySync("queue"); }
-	public get previousTracks(): Track[] { return this.bus.querySync("previousTracks"); }
-	public get availablePlugins(): string[] { return this.bus.querySync("availablePlugins").map((plugin) => plugin.name); }
-	public get relatedTracks(): Track[] { return this.bus.querySync("relatedTracks"); }
+	public get upcomingTracks(): Track[] { return this.bus.querySync("queue") ?? []; }
+	public get previousTracks(): Track[] { return this.bus.querySync("previousTracks") ?? []; }
+	public get availablePlugins(): string[] { return (this.bus.querySync("availablePlugins") ?? []).map((plugin) => plugin.name); }
+	public get relatedTracks(): Track[] { return this.bus.querySync("relatedTracks") ?? []; }
 	public get currentResource(): AudioResource | null { return this.bus.querySync("currentResource") as AudioResource | null; }
 	public search(query: string, requestedBy: string): Promise<SearchResult> { return this.bus.requestRpc("search", { query, requestedBy }); }
 	public getCachedSearchResult(query: string): Promise<SearchResult | null> { return this.bus.requestRpc("search.cache.get", { query }); }
@@ -148,7 +167,7 @@ export class Player extends EventEmitter {
 	public removePlugin(name: string): boolean { return this.bus.requestRpcSync<{ name: string }, boolean>("plugin.remove", { name }); }
 	public attachExtension(extension: BaseExtension): void { this.bus.requestRpcSync<{ extension: BaseExtension }, void>("extension.add", { extension }); }
 	public detachExtension(extension: BaseExtension): boolean { return this.bus.requestRpcSync<{ extension: BaseExtension }, boolean>("extension.remove", { extension }); }
-	public subscribeTo(leader: Player, options?: { forwardMode?: boolean }): boolean { return this.bus.requestRpcSync("forward.subscribe", { leader, options }); }
+	public subscribeTo(leader: Player | string, options?: { forwardMode?: boolean }): boolean { return this.bus.requestRpcSync("forward.subscribe", { leader, options }); }
 	public unsubscribeForward(reason?: string): boolean { return this.bus.requestRpcSync("forward.unsubscribe", { reason }); }
 	public getForwardHealthStatus() { return this.bus.requestRpcSync("forward.health", undefined); }
 	public destroy(): void { if (this.destroyed) return; this.destroyed = true; this.dispose(); this.emit("playerDestroy"); this.removeAllListeners(); }

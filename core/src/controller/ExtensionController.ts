@@ -11,6 +11,11 @@ export class ExtensionController {
 		const { extensionManager, bus } = options;
 		this.detachRpcs.push(
 			bus.registerQuery("extensions", () => extensionManager.getAll()),
+			bus.registerQuery("extension.list", () => extensionManager.getAll()),
+			bus.registerRpc<Record<string, never> | undefined, BaseExtension[]>("extension.list", () => extensionManager.getAll()),
+			bus.registerRpc<{ name: string }, BaseExtension | undefined>("extension.get", ({ name }) => extensionManager.get(name)),
+			bus.registerRpc<{ name: string }, boolean>("extension.enable", ({ name }) => extensionManager.enable(name)),
+			bus.registerRpc<{ name: string }, boolean>("extension.disable", ({ name }) => extensionManager.disable(name)),
 			bus.registerRpc<{ extension: BaseExtension }, void>("extension.add", ({ extension }) =>
 				extensionManager.register(extension),
 			),

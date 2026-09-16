@@ -3,7 +3,7 @@
  *
  * Controllers must not import or retain another controller. They communicate
  * through PlayerBus using stable capability names. Player remains the public
- * facade and PlayerRuntimeController remains the composition/lifecycle root.
+ * facade and GlobalPlayerRuntime remains the composition/lifecycle root.
  */
 import type { PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";

@@ -52,8 +52,18 @@ export class PreloadController {
 				this.bus.registerRpc<{ track: Track }, PromotedPreload | null>("preload.promote", ({ track }) =>
 					this.takePreloaded(track),
 				),
+				this.bus.registerQuery("preload.state", () => this.getState()),
+				this.bus.registerRpc("preload.state", () => this.getState()),
 			);
 		}
+	}
+
+	private getState(): { hasSlot: boolean; currentSlot: PreloadManager["slotState"] } {
+		const currentSlot = this.manager.slotState;
+		return {
+			hasSlot: Boolean(currentSlot.track || currentSlot.streamInfo || currentSlot.streamId || currentSlot.isLoading),
+			currentSlot,
+		};
 	}
 
 	public async preload(): Promise<void> {

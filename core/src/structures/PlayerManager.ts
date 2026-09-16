@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import { LRUCache } from "lru-cache";
 import { Player } from "./Player";
+import { GlobalPlayerRuntime } from "./GlobalPlayerRuntime";
 import {
 	PlaybackMode,
 	PlayerManagerOptions,
@@ -121,6 +122,7 @@ export class PlayerManager extends EventEmitter {
 	}
 	private static instance: PlayerManager | null = null;
 	private players: Map<string, Player> = new Map();
+	private runtimes: Map<string, GlobalPlayerRuntime> = new Map();
 	private pendingPlayers: Map<string, Promise<Player>> = new Map();
 	private searchCache: Map<string, ManagerCacheEntry<SearchResult>>;
 
@@ -296,7 +298,9 @@ export class PlayerManager extends EventEmitter {
 			return this.searchPlayer;
 		}
 
-		const player = new Player(SEARCH_PLAYER_GUILD_ID, { extractorTimeout: this.extractorTimeout }, this);
+		const runtime = GlobalPlayerRuntime.create(SEARCH_PLAYER_GUILD_ID, { extractorTimeout: this.extractorTimeout }, this);
+		const player = new Player(SEARCH_PLAYER_GUILD_ID, runtime.bus, { extractorTimeout: this.extractorTimeout }, this);
+		runtime.attachPlayer(player);
 		for (const plugin of this.plugins) {
 			player.addPlugin(plugin);
 		}
@@ -367,7 +371,13 @@ export class PlayerManager extends EventEmitter {
 			await Promise.resolve();
 			try {
 				this.debug(`Creating player for guildId: ${guildId}`);
-				const player = new Player(guildId, options, this);
+				const debugSink = (message?: any, ...optionalParams: any[]) => {
+					if (this.listenerCount("debug") > 0 || this.debugEnabled) this.emit("debug", message, ...optionalParams);
+				};
+				const runtime = GlobalPlayerRuntime.create(guildId, options, this, debugSink);
+				this.runtimes.set(guildId, runtime);
+				const player = new Player(guildId, runtime.bus, options, this);
+				runtime.attachPlayer(player);
 
 				// Add all registered plugins
 				this.plugins.forEach((plugin) => player.addPlugin(plugin));
@@ -472,20 +482,29 @@ export class PlayerManager extends EventEmitter {
 				this.debug(`Leader ${guildId} destroyed, cleaning up ${player.forwardFollowers.size} followers`);
 				for (const follower of [...player.forwardFollowers]) {
 					try {
-						follower.unsubscribeForward("Leader destroyed");
+						if (typeof follower === "string") {
+							this.get(follower)?.unsubscribeForward("Leader destroyed");
+						} else if (follower && typeof follower.unsubscribeForward === "function") {
+							follower.unsubscribeForward("Leader destroyed");
+						}
 					} catch (err) {
-						this.debug(`Failed to unsubscribe follower ${follower.guildId}:`, err);
+						this.debug(`Failed to unsubscribe follower:`, err);
 					}
 				}
 			}
 
 			// Cleanup: if this player is a follower, unsubscribe from leader
 			if (player.playbackMode === PlaybackMode.FORWARD && player.forwardLeader) {
-				this.debug(`Follower ${guildId} destroyed, unsubscribing from leader ${player.forwardLeader.guildId}`);
+				this.debug(`Follower ${guildId} destroyed, unsubscribing from leader`);
 				player.unsubscribeForward("Follower destroyed");
 			}
 
 			this.players.delete(guildId);
+			const runtime = this.runtimes.get(guildId);
+			if (runtime) {
+				void runtime.dispose().catch(() => undefined);
+				this.runtimes.delete(guildId);
+			}
 
 			this.debug(`Player destroyed for guildId: ${guildId}`);
 		});

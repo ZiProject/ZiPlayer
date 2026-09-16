@@ -32,6 +32,9 @@ export class PreloadManager {
 		isLoading: false,
 		loadPromise: null,
 	};
+	public get slotState(): StreamSlot {
+		return this.preloadSlot;
+	}
 	constructor(deps: PreloadManagerDeps) {
 		this.streamManager = deps.streamManager;
 		this.debugLog = deps.debug;

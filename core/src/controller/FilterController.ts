@@ -34,6 +34,13 @@ export class FilterController {
 			this.detachBusHandlers.push(
 				bus.registerQuery("filterString", () => this.getFilterString()),
 				bus.registerQuery("filteredStream", () => this.lastFilteredStream),
+				bus.registerQuery("filter.list", () => this.activeFilters.map((f) => f.name)),
+				bus.registerQuery("filters", () => this.activeFilters),
+				bus.registerRpc("filter.list", () => this.activeFilters.map((f) => f.name)),
+				bus.registerRpc<{ filter: string; value: unknown }, any>("filter.set", async ({ filter, value }) => {
+					if (value) return this.applyFilter(filter);
+					return this.removeFilter(filter);
+				}),
 			);
 		}
 		if (options.initialFilters?.length) {

@@ -23,15 +23,15 @@ class FakePlugin extends BasePlugin {
 test("PluginManager stream cache is not released when the player is destroyed", async () => {
 	const mgr = new PlayerManager();
 	const player = await mgr.create("leak-test-guild");
-	player.pluginManager.register(new FakePlugin());
+	player.capabilities.plugins.register(new FakePlugin());
 
 	const track = { id: "t1", title: "Track 1", url: "fake:t1", duration: 1000, source: "fake" };
-	const streamInfo = await player.pluginManager.getStream(track);
+	const streamInfo = await player.capabilities.plugins.getStream(track);
 	assert.ok(streamInfo?.stream, "expected a resolved stream to be cached");
 	const cachedStream = streamInfo.stream;
 
 	// sanity: cache actually holds this exact stream object
-	const again = await player.pluginManager.getStream(track);
+	const again = await player.capabilities.plugins.getStream(track);
 	assert.equal(again.stream, cachedStream, "second call should hit the stream cache (same object)");
 
 	player.destroy();
@@ -48,9 +48,9 @@ test("PluginManager stream cache is not released when the player is destroyed", 
 test("diagnostic: list active handles after destroy", async () => {
 	const mgr = new PlayerManager();
 	const player = await mgr.create("leak-test-guild-2");
-	player.pluginManager.register(new FakePlugin());
+	player.capabilities.plugins.register(new FakePlugin());
 	const track = { id: "t1", title: "Track 1", url: "fake:t1", duration: 1000, source: "fake" };
-	await player.pluginManager.getStream(track);
+	await player.capabilities.plugins.getStream(track);
 	player.destroy();
 	await new Promise((resolve) => setTimeout(resolve, 100));
 	const handles = process._getActiveHandles ? process._getActiveHandles() : [];
@@ -65,10 +65,10 @@ test("diagnostic: list active handles after destroy", async () => {
 test("diagnostic: PluginManager.clear() alone still does not destroy underlying streams (destroy() does)", async () => {
 	const mgr = new PlayerManager();
 	const player = await mgr.create("leak-test-guild-3");
-	player.pluginManager.register(new FakePlugin());
+	player.capabilities.plugins.register(new FakePlugin());
 	const track = { id: "t1", title: "Track 1", url: "fake:t1", duration: 1000, source: "fake" };
-	const streamInfo = await player.pluginManager.getStream(track);
-	player.pluginManager.clear();
+	const streamInfo = await player.capabilities.plugins.getStream(track);
+	player.capabilities.plugins.clear();
 	assert.equal(
 		streamInfo.stream.destroyed,
 		false,
@@ -81,15 +81,15 @@ test("diagnostic: PluginManager.clear() alone still does not destroy underlying 
 test("diagnostic: PluginManager cache/plugins are never cleared on player.destroy()", async () => {
 	const mgr = new PlayerManager();
 	const player = await mgr.create("leak-test-guild-4");
-	player.pluginManager.register(new FakePlugin());
+	player.capabilities.plugins.register(new FakePlugin());
 	const track = { id: "t1", title: "Track 1", url: "fake:t1", duration: 1000, source: "fake" };
-	await player.pluginManager.getStream(track);
-	const statsBefore = player.pluginManager.getStats ? player.pluginManager.getStats() : null;
+	await player.capabilities.plugins.getStream(track);
+	const statsBefore = player.capabilities.plugins.getStats();
 	player.destroy();
 	await new Promise((r) => setTimeout(r, 20));
-	const statsAfter = player.pluginManager.getStats ? player.pluginManager.getStats() : null;
+	const statsAfter = player.capabilities.plugins.getStats();
 	console.log("stats before:", statsBefore, "stats after destroy:", statsAfter);
-	assert.equal(player.pluginManager.get("fake"), undefined, "registered plugin should be released after destroy");
+	assert.equal(player.capabilities.plugins.get("fake"), undefined, "registered plugin should be released after destroy");
 	assert.equal(statsAfter.streamCacheSize, 0, "stream cache should be emptied after destroy");
 	mgr.destroy();
 });

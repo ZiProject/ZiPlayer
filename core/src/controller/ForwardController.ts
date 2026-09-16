@@ -1,31 +1,72 @@
 import { PlaybackMode, type Track, type ForwardControllerOptions, type ForwardHealthStatus } from "../types";
-import type { Player } from "../structures/Player";
 import { AudioPlayerStatus } from "@discordjs/voice";
+import type { PlayerBus } from "../structures/PlayerBus";
+import { globalControllerRegistry } from "./GlobalControllerRegistry";
 
 /** Owns leader/follower voice-subscription state for forward playback. */
 export class ForwardController {
-	private leader: Player | null = null;
-	private readonly followers = new Set<Player>();
+	private readonly playerId: string;
+	private readonly bus: PlayerBus;
+	private leaderId?: string;
+	private readonly followers = new Set<string>();
 	private mode: PlaybackMode = PlaybackMode.NATIVE;
 	private disposed = false;
 	private readonly debug: (...args: any[]) => void;
 	private readonly detachRpcs: Array<() => void> = [];
 
 	constructor(
-		private readonly player: Player,
+		playerOrOptions: any = {},
 		options: ForwardControllerOptions = {},
 	) {
-		this.debug = options.debug ?? (() => undefined);
-		if (options.bus) {
+		const opts: ForwardControllerOptions =
+			typeof playerOrOptions === "string"
+				? { ...options, playerId: playerOrOptions }
+				: playerOrOptions && typeof playerOrOptions === "object" && "bus" in playerOrOptions
+					? (playerOrOptions as ForwardControllerOptions)
+					: { ...options, ...playerOrOptions };
+
+		this.playerId = opts.playerId ?? (playerOrOptions as any)?.guildId ?? "";
+		this.bus = opts.bus!;
+		this.debug = opts.debug ?? (() => undefined);
+
+		if (this.bus) {
 			this.detachRpcs.push(
-				options.bus.registerRpc<void, ForwardHealthStatus>("forward.health", () => this.healthStatus()),
-				options.bus.registerRpc<{ leader: unknown; options?: { forwardMode?: boolean } }, boolean>(
+				this.bus.registerRpc<void, ForwardHealthStatus>("forward.health", () => this.healthStatus()),
+				this.bus.registerRpc<{ leader: unknown; options?: { forwardMode?: boolean } }, boolean>(
 					"forward.subscribe",
-					({ leader, options: forwardOptions }) => this.subscribeTo(leader as Player, forwardOptions),
+					({ leader, options: forwardOptions }) => this.subscribeTo(leader as any, forwardOptions),
 				),
-				options.bus.registerRpc<{ reason?: string }, boolean>("forward.unsubscribe", ({ reason }) =>
+				this.bus.registerRpc<{ reason?: string }, boolean>("forward.unsubscribe", ({ reason }) =>
 					this.unsubscribeForward(reason),
 				),
+				this.bus.registerRpc<{ playerId: string; leaderId: string }, boolean>(
+					"forward.addFollower",
+					async ({ playerId, leaderId }) => {
+						if (leaderId === this.playerId) {
+							this.addFollower(playerId);
+							return true;
+						}
+						const leaderEntry = globalControllerRegistry.get(leaderId);
+						if (!leaderEntry) return false;
+						return leaderEntry.bus.requestRpc("forward.addFollower", { playerId, leaderId });
+					},
+				),
+				this.bus.registerRpc<{ playerId: string; leaderId: string }, boolean>(
+					"forward.removeFollower",
+					async ({ playerId, leaderId }) => {
+						if (leaderId === this.playerId) {
+							this.removeFollower(playerId);
+							return true;
+						}
+						const leaderEntry = globalControllerRegistry.get(leaderId);
+						if (!leaderEntry) return false;
+						return leaderEntry.bus.requestRpc("forward.removeFollower", { playerId, leaderId });
+					},
+				),
+				this.bus.registerQuery("playbackMode", () => this.mode),
+				this.bus.registerQuery("forwardLeader", () => (this.leaderId ? ({ guildId: this.leaderId } as any) : null)),
+				this.bus.registerQuery("forwardLeaderId", () => this.leaderId ?? null),
+				this.bus.registerQuery("forwardFollowers", () => this.followers as any),
 			);
 		}
 	}
@@ -37,20 +78,25 @@ export class ForwardController {
 			: "none";
 		const issues: string[] = [];
 		if (role === "leader") {
-			for (const follower of this.followers) if (follower.destroyed || !follower.connection) issues.push(follower.guildId);
-		} else if (role === "follower" && (!this.leader || this.leader.destroyed)) issues.push("missing leader");
+			for (const followerId of this.followers) {
+				const entry = globalControllerRegistry.get(followerId);
+				if (!entry || !entry.bus.querySync("connection")) issues.push(followerId);
+			}
+		} else if (role === "follower" && !this.leaderId) {
+			issues.push("missing leader");
+		}
 		return {
-			guildId: this.player.guildId,
+			guildId: this.playerId,
 			healthy: role === "leader" ? true : issues.length === 0,
 			role,
 			issues,
 			details: {
-				leaderId: this.leader?.guildId,
+				leaderId: this.leaderId,
 				followerCount: this.followers.size,
-				connectionState: this.player.connection?.state?.status,
+				connectionState: this.bus.querySync("connection.state"),
 				audioPlayerState:
-					this.player.isPlaying ? AudioPlayerStatus.Playing
-					: this.player.isPaused ? AudioPlayerStatus.Paused
+					this.bus.querySync("isPlaying") ? AudioPlayerStatus.Playing
+					: this.bus.querySync("isPaused") ? AudioPlayerStatus.Paused
 					: AudioPlayerStatus.Idle,
 			},
 		};
@@ -59,78 +105,100 @@ export class ForwardController {
 	get playbackMode(): PlaybackMode {
 		return this.mode;
 	}
-	get forwardLeader(): Player | null {
-		return this.leader;
+	get forwardLeader(): any {
+		return this.leaderId ? { guildId: this.leaderId } : null;
 	}
-	get forwardFollowers(): ReadonlySet<Player> {
+	get forwardFollowers(): ReadonlySet<any> {
 		return this.followers;
 	}
 	get isFollower(): boolean {
-		return this.leader !== null;
+		return Boolean(this.leaderId);
 	}
 	get isLeader(): boolean {
 		return this.followers.size > 0;
 	}
 
-	subscribeTo(leader: Player, options?: { forwardMode?: boolean }): boolean {
-		if (this.disposed || !leader || leader === this.player || leader.destroyed || this.player.destroyed) return false;
-		const leaderForward = leader.runtimeGraph.forwardController;
-		if (leaderForward?.isFollower || leaderForward?.forwardLeader) return false;
-		if (!this.player.connection || !leader.connection) return false;
+	subscribeTo(leader: string | { guildId?: string; id?: string }, options?: { forwardMode?: boolean }): boolean {
+		if (this.disposed || !leader) return false;
+		const leaderId = typeof leader === "string" ? leader : leader.guildId ?? leader.id;
+		if (!leaderId || leaderId === this.playerId) return false;
 
-		this.unsubscribeForward(`replaced by ${leader.guildId}`);
-		const leaderAudioPlayer = leader.bus.querySync("audioPlayer");
-		const playerAudioPlayer = this.player.bus.querySync("audioPlayer");
+		const leaderEntry = globalControllerRegistry.get(leaderId);
+		if (!leaderEntry) return false;
+
+		const leaderBus = leaderEntry.bus;
+		const leaderMode = leaderBus.querySync("playbackMode");
+		const leaderLeader = leaderBus.querySync("forwardLeaderId") ?? leaderBus.querySync("forwardLeader");
+		if (leaderMode === PlaybackMode.FORWARD || leaderLeader) return false;
+
+		const myConn = this.bus.querySync("connection");
+		const leaderConn = leaderBus.querySync("connection");
+		if (!myConn || !leaderConn) return false;
+
+		this.unsubscribeForward(`replaced by ${leaderId}`);
+		const leaderAudioPlayer = leaderBus.querySync("audioPlayer");
+		const playerAudioPlayer = this.bus.querySync("audioPlayer");
 		if (!leaderAudioPlayer || !playerAudioPlayer) return false;
-		this.leader = leader;
-		leaderForward.addFollower(this.player);
+
+		this.leaderId = leaderId;
+		void this.bus.requestRpc("forward.addFollower", { playerId: this.playerId, leaderId });
 
 		try {
-			this.player.stop();
-			for (const fp of [...this.followers]) fp.unsubscribeForward(`leader changed to ${leader.guildId}`);
-			this.followers.clear();
-			const track = leader.currentTrack as Track | null | undefined;
-			if (track) leader.bus.requestRpcSync("queue.setCurrent", { track });
+			void this.bus.action({ type: "STOP" });
+			this.clearFollowers(`leader changed to ${leaderId}`);
+			const track = leaderBus.querySync("currentTrack") as Track | null | undefined;
+			if (track) this.bus.requestRpcSync("queue.setCurrent", { track });
 			this.mode = (options?.forwardMode ?? true) ? PlaybackMode.FORWARD : PlaybackMode.NATIVE;
-			if (this.mode === PlaybackMode.FORWARD) this.player.connection.subscribe(leaderAudioPlayer);
-			this.player.volume = leader.volume;
-			this.player.bus.event({ type: "forwardModeStart", leader });
+			if (this.mode === PlaybackMode.FORWARD) {
+				this.bus.requestRpcSync("connection.setAudioPlayer", { audioPlayer: leaderAudioPlayer });
+			}
+			const leaderVolume = leaderBus.querySync("volume");
+			if (typeof leaderVolume === "number") {
+				this.bus.requestRpcSync("volume.set", { value: leaderVolume });
+			}
+			this.bus.event({ type: "forwardModeStart", leader: leader as any });
 			return true;
 		} catch (error) {
 			this.debug("[Forward] subscribe error:", error);
-			leaderForward.removeFollower(this.player);
-			this.leader = null;
+			void this.bus.requestRpc("forward.removeFollower", { playerId: this.playerId, leaderId });
+			this.leaderId = undefined;
 			this.mode = PlaybackMode.NATIVE;
 			return false;
 		}
 	}
 
 	unsubscribeForward(reason?: string): boolean {
-		const leader = this.leader;
-		if (!leader) return false;
-		const leaderForward = leader.runtimeGraph.forwardController;
-		leaderForward.removeFollower(this.player);
-		this.leader = null;
+		const leaderId = this.leaderId;
+		if (!leaderId) return false;
+		void this.bus.requestRpc("forward.removeFollower", { playerId: this.playerId, leaderId });
+		this.leaderId = undefined;
 		this.mode = PlaybackMode.NATIVE;
 		try {
-			const audioPlayer = this.player.bus.querySync("audioPlayer");
-			if (audioPlayer) this.player.connection?.subscribe(audioPlayer);
+			const audioPlayer = this.bus.querySync("audioPlayer");
+			if (audioPlayer) {
+				this.bus.requestRpcSync("connection.setAudioPlayer", { audioPlayer });
+			}
 		} catch {}
-		this.player.clearQueue();
-		this.player.bus.event({ type: "forwardModeEnd", leader, reason });
+		this.bus.requestRpcSync("queue.clear", undefined);
+		this.bus.event({ type: "forwardModeEnd", leader: { guildId: leaderId } as any, reason });
 		return true;
 	}
 
-	addFollower(follower: Player): void {
-		if (!this.disposed && follower !== this.player) {
-			this.followers.add(follower);
+	addFollower(followerId: string): void {
+		if (!this.disposed && followerId !== this.playerId) {
+			this.followers.add(followerId);
 		}
 	}
-	removeFollower(follower: Player): void {
-		this.followers.delete(follower);
+
+	removeFollower(followerId: string): void {
+		this.followers.delete(followerId);
 	}
+
 	clearFollowers(reason = "leader destroyed"): void {
-		for (const follower of [...this.followers]) follower.unsubscribeForward(reason);
+		for (const followerId of [...this.followers]) {
+			const entry = globalControllerRegistry.get(followerId);
+			void entry?.bus.requestRpc("forward.unsubscribe", { reason });
+		}
 		this.followers.clear();
 	}
 
