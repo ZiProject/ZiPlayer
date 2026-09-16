@@ -41,7 +41,6 @@ export class GlobalPlayerRuntime {
 	private readonly disposables = new Map<string, () => void | Promise<void>>();
 	private readonly errors: Array<{ name: string; error: unknown }> = [];
 	private globalRegistration?: GlobalControllerRegistration<PlayerRuntimeGraph>;
-
 	public constructor(public readonly bus: PlayerBus) {}
 	public get isDisposed(): boolean { return this.disposed; }
 	public get disposalErrors(): ReadonlyArray<{ name: string; error: unknown }> { return this.errors; }
@@ -83,20 +82,14 @@ export class GlobalPlayerRuntime {
 		const searchController = new SearchController({ extensionManager, pluginManager, debug: channel("SearchController"), bus: this.bus });
 		const eventBridge = new PlayerEventBridge(player, manager, this.bus, debugTracer);
 		const graph: PlayerRuntimeGraph = { connectionController, lifecycleController, forwardController, audioPlayer, streamManager, preloadManager, trackResolver: resolver, pluginManager, extensionManager, pluginController, extensionController, queueController, trackLoader, playbackController, streamController, saveController, filterController, antiStuckController, transitionController, volumeController, preloadController, resourceRefreshController, playerConnectionBridge, orchestrator, sessionController, ttsController, debugTracer, searchController, eventBridge };
-
-		const unregisterPing = this.bus.registerRpc("runtime.ping", ({ playerId }: { playerId: string }) => {
-			if (playerId !== guildId) throw new Error(`Player id mismatch: ${playerId}`);
-			return { playerId: guildId, timestamp: Date.now() };
-		});
-		this.monitorCleanup("globalControllerPing", unregisterPing);
-		this.monitorCleanup("runtimeDispose", this.bus.registerRpc("runtime.dispose", () => this.dispose()));
+		this.monitorCleanup("globalControllerPing", this.bus.registerRpc("runtime.ping", ({ playerId }: { playerId: string }) => { if (playerId !== guildId) throw new Error(`Player id mismatch: ${playerId}`); return { playerId: guildId, timestamp: Date.now() }; }));
+		this.monitorCleanup("runtimeDispose", this.bus.registerRpc("runtime.dispose", () => { void this.dispose(); return true; }));
 		this.monitorCleanup("runtimeGraph", this.bus.registerRpc("runtime.graph", () => graph));
 		this.globalRegistration = globalControllerRegistry.register(guildId, this.bus, graph, () => this.dispose());
 		const lifecycleOrder: Array<keyof PlayerRuntimeGraph> = ["connectionController", "lifecycleController", "forwardController", "streamManager", "preloadManager", "trackResolver", "pluginManager", "extensionManager", "pluginController", "extensionController", "queueController", "trackLoader", "playbackController", "streamController", "saveController", "filterController", "antiStuckController", "transitionController", "volumeController", "preloadController", "playerConnectionBridge", "sessionController", "orchestrator", "resourceRefreshController", "ttsController", "debugTracer", "searchController", "eventBridge"];
 		for (const name of lifecycleOrder) this.monitor(name, graph[name]);
 		return graph;
 	}
-
 	public hasTTSPlayer(): boolean { return this.bus.querySync("tts.hasPlayer") ?? false; }
 	public getAudioPlayer(): AudioPlayer | null { return this.bus.querySync("audioPlayer") ?? null; }
 	public setCurrentTrack(track: Track | null): void { this.bus.requestRpcSync("queue.setCurrent", { track }); }
