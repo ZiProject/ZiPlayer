@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { Stream } from "stream";
 import type { VoiceConnection } from "@discordjs/voice";
 import type { PlayerManager } from "./PlayerManager";
+import { GlobalPlayerRuntime } from "./GlobalPlayerRuntime";
 import type { PlayerOptions, StreamInfo, Track, VoiceChannel, SearchResult, ProgressBarOptions, TrackLoadResult, SaveOptions, SaveVideoOptions, SearchDebugResult } from "../types";
 import { PlaybackMode } from "../types";
 import { PlayerBus, createPlayerRequestId, type PlayerAction as PlayerActionMessage, type PlayerEvent, type PlayerEventType, type PlayerQuery, type PlayerQueryMap } from "./PlayerBus";
@@ -32,15 +33,19 @@ export class Player extends EventEmitter {
 		this.manager = manager;
 		this.options = { leaveOnEnd: true, leaveOnEmpty: true, leaveTimeout: 100000, volume: 100, quality: "high", extractorTimeout: 50000, selfDeaf: true, selfMute: false, ...options, tts: { createPlayer: false, interrupt: true, volume: 100, maxTimeTts: 60_000, ...(options.tts || {}) } };
 		this.userdata = this.options.userdata;
+		const debugSink = (message?: any, ...optionalParams: any[]) => {
+			if (this.manager.listenerCount("debug") > 0 || this.manager.debugEnabled) this.manager.emit("debug", message, ...optionalParams);
+		};
+		// Compatibility bootstrap: GlobalPlayerRuntime owns the graph and registry;
+		// Player retains only the bus/facade. Manager-level creation will move this
+		// bootstrap completely into PlayerManager in the next decomposition step.
+		new GlobalPlayerRuntime(this.bus).initialize(this, manager, this.options, debugSink);
+		this.bus.publish("initialized");
+		this.bus.publish("ready");
 	}
 
 	private get runtimeGraph(): any { return this.bus.requestRpcSync("runtime.graph", undefined); }
-
-	public debug(message?: any, ...optionalParams: any[]): void {
-		const tracer = this.bus.requestRpcSync("runtime.graph", undefined)?.debugTracer;
-		if (tracer) tracer.log("debug", `Player:${this.guildId}`, message, ...optionalParams);
-		else if (this.manager.listenerCount("debug") > 0 || this.manager.debugEnabled) this.manager.emit("debug", message, ...optionalParams);
-	}
+	public debug(message?: any, ...optionalParams: any[]): void { const tracer = this.runtimeGraph?.debugTracer; if (tracer) tracer.log("debug", `Player:${this.guildId}`, message, ...optionalParams); else if (this.manager.listenerCount("debug") > 0 || this.manager.debugEnabled) this.manager.emit("debug", message, ...optionalParams); }
 	public get currentTrack(): Track | null { return this.bus.querySync("currentTrack"); }
 	public get queue() { return this.runtimeGraph.queueController; }
 	public get pluginManager() { return this.runtimeGraph.pluginManager; }
