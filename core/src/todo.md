@@ -38,7 +38,7 @@ trong hai tài liệu, mình đề xuất TODO chính thức như sau.
 
 # TODO — Global Bus + Singleton Controllers
 
-## Phase 0 — Chốt architecture/invariant
+## Chốt architecture/invariant
 
 ### Protocol
 
@@ -64,7 +64,7 @@ trong hai tài liệu, mình đề xuất TODO chính thức như sau.
 
 ---
 
-# Phase 1 — Global `PlayerBus`
+# Global `PlayerBus`
 
 ## 1. Singleton bus
 
@@ -121,7 +121,7 @@ C subscribers      ✗
 
 ---
 
-# Phase 2 — Global RPC / Query routing
+# Global RPC / Query routing
 
 ## RPC
 
@@ -150,7 +150,7 @@ queueStates.get(A)
 
 ---
 
-# Phase 3 — Global controller set
+# Global controller set
 
 Tạo một controller graph duy nhất:
 
@@ -183,7 +183,7 @@ GlobalRuntime
 
 ---
 
-# Phase 4 — Player state registry
+# Player state registry
 
 Thay:
 
@@ -217,7 +217,7 @@ PlayerStateRegistry
 
 ---
 
-# Phase 5 — Playback ownership
+# Playback ownership
 
 Đây vẫn là **P0**, không được bỏ qua chỉ vì chuyển sang singleton.
 
@@ -241,7 +241,7 @@ PlaybackSession(playerId)
 
 ---
 
-# Phase 6 — Concurrency
+# Concurrency
 
 Phải bảo đảm:
 
@@ -272,7 +272,7 @@ session B
 
 ---
 
-# Phase 7 — Resource / Stream
+# Resource / Stream
 
 - [ ] `StreamController` singleton.
 - [ ] `StreamState[playerId]`.
@@ -287,7 +287,7 @@ session B
 
 ---
 
-# Phase 8 — Action ownership
+# Action ownership
 
 Hiện có risk nhiều consumer cùng nghe action. Tài liệu đã xác định đây là vấn đề cần sửa.
 
@@ -316,7 +316,7 @@ events
 
 ---
 
-# Phase 9 — Error / Recovery
+# Error / Recovery
 
 - [ ] Chỉ một owner quyết định outcome.
 - [ ] `TrackLoader` báo lỗi.
@@ -348,7 +348,7 @@ retry skip fail
 
 ---
 
-# Phase 10 — Queue / Autoplay / Preload
+# Queue / Autoplay / Preload
 
 - [ ] `QueueController` singleton.
 - [ ] Queue state theo `playerId`.
@@ -365,7 +365,7 @@ retry skip fail
 
 ---
 
-# Phase 11 — Connection
+# Connection
 
 Tạo singleton:
 
@@ -385,7 +385,7 @@ ConnectionController
 
 ---
 
-# Phase 12 — Volume / Filter
+# Volume / Filter
 
 ## Volume
 
@@ -406,7 +406,7 @@ ConnectionController
 
 ---
 
-# Phase 13 — Plugin / Extension
+# Plugin / Extension
 
 - [ ] Plugin registry là global.
 - [ ] Player-specific plugin state nếu có → `playerId`.
@@ -425,7 +425,7 @@ TrackLoader → Player
 
 ---
 
-# Phase 14 — Remove circular dependencies
+# Remove circular dependencies
 
 Audit:
 
@@ -447,7 +447,7 @@ Player
 
 ---
 
-# Phase 15 — Lifecycle
+# Lifecycle
 
 Global lifecycle:
 
@@ -510,7 +510,7 @@ destroy QueueController
 
 ---
 
-# Phase 16 — Làm mỏng `Player.ts`
+# Làm mỏng `Player.ts`
 
 Chỉ làm sau khi các phase trên ổn định.
 
@@ -563,7 +563,7 @@ controller
 
 ---
 
-# Phase 17 — Xóa `LegacyPlayer`
+# Xóa `LegacyPlayer`
 
 - [ ] `Player` không extends `LegacyPlayer`.
 - [ ] Không import `LegacyPlayer`.
@@ -579,7 +579,7 @@ Các state cần đặc biệt audit/xóa gồm `refreshGeneration`, `playbackOp
 
 ---
 
-# Phase 18 — Test
+# Test
 
 ## Isolation
 
@@ -628,7 +628,7 @@ chỉ có **một instance thực sự**.
 
 ---
 
-# Phase 19 — Architecture scan
+# Architecture scan
 
 Cuối cùng chạy static scan để tìm:
 
