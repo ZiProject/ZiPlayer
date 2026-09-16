@@ -73,8 +73,16 @@ export interface StreamInfo {
 }
 
 export interface TrackMiddlewareContext {
-	player: Player;
-	manager: PlayerManager;
+	playerId: import("../structures/playerScope").PlayerId;
+	manager?: PlayerManager;
+	player?: Player;
+}
+
+export interface TrackResolverContext {
+	playerId: import("../structures/playerScope").PlayerId;
+	history?: Track[];
+	signal?: AbortSignal;
+	[key: string]: any;
 }
 
 export type TrackMiddleware = (track: Track, context: TrackMiddlewareContext) => void | Track | Promise<void | Track>;

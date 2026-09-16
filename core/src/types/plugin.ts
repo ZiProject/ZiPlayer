@@ -13,10 +13,13 @@ export type PluginManagerOptions = {
 };
 
 export interface TrackResolveContext {
+	playerId?: import("../structures/playerScope").PlayerId;
 	history?: Track[];
 	signal?: AbortSignal;
 	[key: string]: any;
 }
+
+export type TrackResolverContext = TrackResolveContext;
 
 export interface TrackResolverOptions {
 	streamManager: StreamManager;

@@ -24,6 +24,16 @@ import type {
 
 import { PlayerActionPriority } from "../types/bus";
 import type { PlayerBusLatencyTrace } from "../controller/PlayerBusLatencyTrace";
+import {
+	DEFAULT_PLAYER_ID,
+	PLAYER_ID_WILDCARD,
+	playerIdsMatch,
+	resolvePlayerId,
+	runWithPlayerId,
+	type PlayerId,
+	type PlayerIdScope,
+} from "./playerScope";
+import type { PlayerQueryScope } from "../types/bus";
 
 export type {
 	PlayerAction,
@@ -95,13 +105,37 @@ export class PlayerBusRequestError extends Error {
 
 type RpcHandler<TRequest, TResponse> = (request: TRequest, context: PlayerBusRpcContext) => TResponse | Promise<TResponse>;
 
+interface ScopedListener<E> {
+	playerId: PlayerIdScope;
+	handler: (event: E) => any;
+}
+
+interface ScopedActionListener {
+	playerId: PlayerIdScope;
+	handler: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>;
+}
+
+const GLOBAL_BUS_KEY = Symbol.for("ziplayer.PlayerBus.global");
+
+export function getGlobalPlayerBus(): PlayerBus {
+	const root = globalThis as typeof globalThis & { [GLOBAL_BUS_KEY]?: PlayerBus };
+	if (!root[GLOBAL_BUS_KEY] || root[GLOBAL_BUS_KEY]!.isDisposed) {
+		root[GLOBAL_BUS_KEY] = new PlayerBus();
+	}
+	return root[GLOBAL_BUS_KEY]!;
+}
+
+export function resetGlobalPlayerBus(): void {
+	const root = globalThis as typeof globalThis & { [GLOBAL_BUS_KEY]?: PlayerBus };
+	if (root[GLOBAL_BUS_KEY] && !root[GLOBAL_BUS_KEY]!.isDisposed) root[GLOBAL_BUS_KEY]!.dispose();
+	root[GLOBAL_BUS_KEY] = undefined;
+}
+
 export class PlayerBus {
-	private readonly inputListeners = new Map<PlayerInput["type"], Set<(event: PlayerInput) => void | Promise<void>>>();
-	private readonly outputListeners = new Map<PlayerOutput["type"], Set<(event: PlayerOutput) => void>>();
-	private readonly eventListeners = new Map<PlayerEventType, Set<(event: PlayerEvent) => void>>();
-	private readonly actionListeners = new Set<
-		(action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>
-	>();
+	private readonly inputListeners = new Map<PlayerInput["type"], Set<ScopedListener<PlayerInput>>>();
+	private readonly outputListeners = new Map<PlayerOutput["type"], Set<ScopedListener<PlayerOutput>>>();
+	private readonly eventListeners = new Map<PlayerEventType, Set<ScopedListener<PlayerEvent>>>();
+	private readonly actionListeners = new Set<ScopedActionListener>();
 	private readonly queryHandlers = new Map<PlayerQuery, Set<PlayerQueryHandler<any>>>();
 	private readonly rpcHandlers = new Map<string, RpcHandler<any, any>>();
 	private readonly pendingRequests = new Set<() => void>();
@@ -113,22 +147,44 @@ export class PlayerBus {
 	}
 
 	public emitInput(event: PlayerInput): void {
-		if (!this.disposed) this.dispatch(this.inputListeners, event.type, event);
+		if (!this.disposed) this.dispatch(this.inputListeners, event.type, event, (event as { playerId?: PlayerId }).playerId);
 	}
 	public emitOutput(event: PlayerOutput): void {
-		if (!this.disposed) this.dispatch(this.outputListeners, event.type, event);
+		if (!this.disposed) this.dispatch(this.outputListeners, event.type, event, (event as { playerId?: PlayerId }).playerId);
 	}
 	public onInput<K extends PlayerInput["type"]>(
 		type: K,
 		handler: (event: Extract<PlayerInput, { type: K }>) => void | Promise<void>,
+	): () => void;
+	public onInput<K extends PlayerInput["type"]>(
+		type: K,
+		playerId: PlayerIdScope,
+		handler: (event: Extract<PlayerInput, { type: K }>) => void | Promise<void>,
+	): () => void;
+	public onInput<K extends PlayerInput["type"]>(
+		type: K,
+		playerIdOrHandler: PlayerIdScope | ((event: Extract<PlayerInput, { type: K }>) => void | Promise<void>),
+		handler?: (event: Extract<PlayerInput, { type: K }>) => void | Promise<void>,
 	): () => void {
-		return this.addListener(this.inputListeners, type, handler as any);
+		const [playerId, fn] = this.normalizeSubscribeArgs(playerIdOrHandler, handler);
+		return this.addListener(this.inputListeners, type, fn as any, playerId);
 	}
 	public onOutput<K extends PlayerOutput["type"]>(
 		type: K,
 		handler: (event: Extract<PlayerOutput, { type: K }>) => void,
+	): () => void;
+	public onOutput<K extends PlayerOutput["type"]>(
+		type: K,
+		playerId: PlayerIdScope,
+		handler: (event: Extract<PlayerOutput, { type: K }>) => void,
+	): () => void;
+	public onOutput<K extends PlayerOutput["type"]>(
+		type: K,
+		playerIdOrHandler: PlayerIdScope | ((event: Extract<PlayerOutput, { type: K }>) => void),
+		handler?: (event: Extract<PlayerOutput, { type: K }>) => void,
 	): () => void {
-		return this.addListener(this.outputListeners, type, handler as any);
+		const [playerId, fn] = this.normalizeSubscribeArgs(playerIdOrHandler, handler);
+		return this.addListener(this.outputListeners, type, fn as any, playerId);
 	}
 
 	public request<K extends PlayerRequestInputType>(
@@ -226,15 +282,21 @@ export class PlayerBus {
 		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
 		if (!handler) return Promise.reject(new PlayerBusRequestError("unhandled", type, `No RPC handler registered for "${type}"`));
 		if (options.signal?.aborted) return Promise.reject(new PlayerBusRequestError("aborted", type, `RPC "${type}" was aborted`));
+		const playerId = resolvePlayerId(options.playerId, request);
 		const requestId = createPlayerRequestId();
 		const context: PlayerBusRpcContext = {
+			playerId,
 			requestId,
 			signal: options.signal ?? new AbortController().signal,
 			timestamp: Date.now(),
 		};
+		const scopedRequest =
+			request && typeof request === "object" && !Array.isArray(request) ?
+				{ ...(request as object), playerId }
+			:	request;
 		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
 		const operation = Promise.resolve()
-			.then(() => handler(request, context))
+			.then(() => runWithPlayerId(playerId, () => handler(scopedRequest as TRequest, context)))
 			.finally(() => {
 				if (this.latencyTrace?.enabled)
 					this.latencyTrace.record("rpc", type, start, { requestId, handler: handler.name || "anonymous" });
