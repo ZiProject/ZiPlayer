@@ -6,6 +6,7 @@ export interface GlobalControllerEntry<T = unknown> {
 	readonly graph: T;
 	readonly registeredAt: number;
 	lastPingAt: number;
+	unreachableSince?: number;
 }
 
 export interface GlobalControllerRegistration<T = unknown> {
@@ -28,8 +29,13 @@ export class GlobalControllerRegistry<T = unknown> {
 	private readonly timers = new Map<string, ReturnType<typeof setInterval>>();
 	private readonly heartbeatMs: number;
 	private readonly pingTimeoutMs: number;
+	private readonly staleAfterMs: number;
 
-	public static global<T = unknown>(options?: { heartbeatMs?: number; pingTimeoutMs?: number }): GlobalControllerRegistry<T> {
+	public static global<T = unknown>(options?: {
+		heartbeatMs?: number;
+		pingTimeoutMs?: number;
+		staleAfterMs?: number;
+	}): GlobalControllerRegistry<T> {
 		const root = globalThis as typeof globalThis & {
 			[GlobalControllerRegistry.GLOBAL_KEY]?: GlobalControllerRegistry<T>;
 		};
@@ -40,9 +46,10 @@ export class GlobalControllerRegistry<T = unknown> {
 		return registry;
 	}
 
-	public constructor(options: { heartbeatMs?: number; pingTimeoutMs?: number } = {}) {
+	public constructor(options: { heartbeatMs?: number; pingTimeoutMs?: number; staleAfterMs?: number } = {}) {
 		this.heartbeatMs = Math.max(1000, options.heartbeatMs ?? 2000);
 		this.pingTimeoutMs = Math.max(250, options.pingTimeoutMs ?? 1000);
+		this.staleAfterMs = Math.max(10_000, options.staleAfterMs ?? 10_000);
 	}
 
 	public register(
@@ -90,9 +97,14 @@ export class GlobalControllerRegistry<T = unknown> {
 		try {
 			await entry.bus.requestRpc("runtime.ping", { playerId }, { timeoutMs: this.pingTimeoutMs });
 			entry.lastPingAt = Date.now();
+			entry.unreachableSince = undefined;
 			return true;
 		} catch {
-			await this.disposeIfStale(playerId, entry);
+			const now = Date.now();
+			entry.unreachableSince ??= now;
+			if (now - entry.unreachableSince >= this.staleAfterMs) {
+				await this.disposeIfStale(playerId, entry);
+			}
 			return false;
 		}
 	}
