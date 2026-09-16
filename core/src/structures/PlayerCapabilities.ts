@@ -4,13 +4,7 @@ import type { Track } from "../types";
 import type { LoopMode } from "../types";
 import type { PlayerBus } from "./PlayerBus";
 
-/**
- * Bus-only capabilities exposed by Player.
- *
- * This deliberately contains no controller references. Every operation crosses
- * the PlayerBus boundary and therefore keeps controller ownership in the global
- * runtime.
- */
+/** Bus-only capabilities exposed by Player; no controller references escape the runtime. */
 export class PlayerCapabilities {
 	public readonly queue: QueueCapability;
 	public readonly plugins: PluginCapability;
@@ -18,7 +12,6 @@ export class PlayerCapabilities {
 	public readonly stream: StreamCapability;
 	public readonly preload: PreloadCapability;
 	public readonly filter: FilterCapability;
-
 	public constructor(private readonly bus: PlayerBus) {
 		this.queue = new QueueCapability(bus);
 		this.plugins = new PluginCapability(bus);
@@ -43,11 +36,13 @@ export class QueueCapability {
 	public get isEmpty(): boolean { return this.tracks.length === 0; }
 	public get loopMode(): LoopMode { return this.bus.querySync("queueLoop"); }
 	public get autoPlayEnabled(): boolean { return this.bus.querySync("queueAutoPlay"); }
-	public add(track: Track): number { return this.bus.requestRpcSync("queue.add", { track }); }
+	public add(track: Track): number { return this.bus.requestRpcSync("queue.insert", { query: track, index: this.length }); }
 	public addMultiple(tracks: Track[]): number { return this.bus.requestRpcSync("queue.addMultiple", { tracks }); }
-	public insert(track: Track, index = this.length): number { return this.bus.requestRpcSync("queue.insertTrack", { track, index }); }
+	public insert(track: Track, index = this.length): number { return this.bus.requestRpcSync("queue.insert", { query: track, index }); }
 	public remove(index: number): Track | null { return this.bus.requestRpcSync("queue.remove", { index }); }
-	public removeMultiple(indices: number[]): Track[] { return this.bus.requestRpcSync("queue.removeMultiple", { indices }); }
+	public removeMultiple(indices: number[]): Track[] {
+		return [...indices].sort((a, b) => b - a).map((index) => this.remove(index)).filter((track): track is Track => track !== null);
+	}
 	public shuffle(): void { this.bus.requestRpcSync("queue.shuffle", undefined); }
 	public clear(): void { this.bus.requestRpcSync("queue.clear", undefined); }
 	public previous(): Track | null { return this.bus.requestRpcSync("queue.previous", undefined); }
@@ -88,7 +83,4 @@ export class PreloadCapability {
 export class FilterCapability {
 	public constructor(private readonly bus: PlayerBus) {}
 	public state(): any { return this.bus.querySync("filters") ?? []; }
-	public apply(filter: any): Promise<any> { return this.bus.requestRpc("filter.apply", { filter }); }
-	public remove(filter: any): Promise<any> { return this.bus.requestRpc("filter.remove", { filter }); }
-	public clear(): Promise<any> { return this.bus.requestRpc("filter.clear", undefined); }
 }
