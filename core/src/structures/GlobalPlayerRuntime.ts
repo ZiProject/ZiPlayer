@@ -35,13 +35,7 @@ import { PlaybackSessionController } from "../controller/PlaybackSessionControll
 import { globalControllerRegistry, type GlobalControllerRegistration } from "../controller/GlobalControllerRegistry";
 import type { Track, PlayerDebugLevel } from "../types";
 
-/**
- * Global composition and lifecycle owner for one player id.
- *
- * Player is only the public facade. The runtime owns the bus, controller graph,
- * resources and lifecycle registration. Controller-to-controller communication
- * remains on PlayerBus.
- */
+/** Global owner of one guild/player controller graph and its PlayerBus. */
 export class GlobalPlayerRuntime {
 	private disposed = false;
 	private readonly disposables = new Map<string, () => void | Promise<void>>();
@@ -49,7 +43,6 @@ export class GlobalPlayerRuntime {
 	private globalRegistration?: GlobalControllerRegistration<PlayerRuntimeGraph>;
 
 	public constructor(public readonly bus: PlayerBus) {}
-
 	public get isDisposed(): boolean { return this.disposed; }
 	public get disposalErrors(): ReadonlyArray<{ name: string; error: unknown }> { return this.errors; }
 
@@ -58,10 +51,7 @@ export class GlobalPlayerRuntime {
 		const guildId = player.guildId;
 		const debugTracer = new PlayerEventDebug(this.bus, guildId, debugSink, manager.debugLevel ?? "info");
 		const channel = (tag: string, level: PlayerDebugLevel = "debug") => debugTracer.channel(tag, level);
-		const middleware: TrackMiddleware[] = [
-			...manager.getTrackMiddlewareChain(),
-			...(Array.isArray(options.trackMiddleware) ? options.trackMiddleware : options.trackMiddleware ? [options.trackMiddleware] : []),
-		];
+		const middleware: TrackMiddleware[] = [...manager.getTrackMiddlewareChain(), ...(Array.isArray(options.trackMiddleware) ? options.trackMiddleware : options.trackMiddleware ? [options.trackMiddleware] : [])];
 		const audioPlayer = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: 100 } });
 		const connectionController = new ConnectionController({ guildId, bus: this.bus, audioPlayer, options, debug: channel("ConnectionController") });
 		const lifecycleController = new LifecycleController({ bus: this.bus, options, debug: channel("LifecycleController") });
@@ -77,42 +67,15 @@ export class GlobalPlayerRuntime {
 		const queueController = new QueueController({ bus: this.bus });
 		const resolver = new TrackResolver({ streamManager, pluginManager, extensionManager, bus: this.bus, isDestroyed: () => this.disposed });
 		const preloadManager = new PreloadManager({ streamManager, debug: channel("PreloadManager"), bus: this.bus, isDestroyed: () => this.disposed, isEnabled: () => !(options.lowPerformance && options.preload?.autoDisableInLowPerformance) && (options.preload?.enabled ?? true) });
-		const trackLoader = new TrackLoader({
-			middleware,
-			context: { player, manager },
-			resolvers: [(track) => resolver.resolve(track, () => this.disposed)],
-			recovery: options.antiStuck,
-			preloadManager,
-			qualityController: { get: () => options.quality, set: (quality) => { options.quality = quality; } },
-			debug: channel("TrackLoader"),
-			bus: this.bus,
-		});
-		const transitionController = new TransitionController({
-			enabled: options.lowPerformance && options.crossfade?.autoDisableInLowPerformance ? false : (options.crossfade?.enabled ?? options.crossfade?.autoEnable ?? true),
-			durationMs: options.crossfade?.durationMs,
-			smartEnabled: options.smartTransition?.enabled ?? true,
-			genreAware: options.smartTransition?.genreAware ?? true,
-			beatAlign: options.smartTransition?.beatAlign ?? true,
-			baseDurationMs: options.smartTransition?.baseDurationMs ?? options.crossfade?.durationMs,
-			minDurationMs: options.smartTransition?.minDurationMs,
-			maxDurationMs: options.smartTransition?.maxDurationMs,
-			beatAlignMaxWaitMs: options.smartTransition?.beatAlignMaxWaitMs,
-			genreDurations: options.smartTransition?.genreDurations,
-			bus: this.bus,
-		});
+		const trackLoader = new TrackLoader({ middleware, context: { player, manager }, resolvers: [(track) => resolver.resolve(track, () => this.disposed)], recovery: options.antiStuck, preloadManager, qualityController: { get: () => options.quality, set: (quality) => { options.quality = quality; } }, debug: channel("TrackLoader"), bus: this.bus });
+		const transitionController = new TransitionController({ enabled: options.lowPerformance && options.crossfade?.autoDisableInLowPerformance ? false : (options.crossfade?.enabled ?? options.crossfade?.autoEnable ?? true), durationMs: options.crossfade?.durationMs, smartEnabled: options.smartTransition?.enabled ?? true, genreAware: options.smartTransition?.genreAware ?? true, beatAlign: options.smartTransition?.beatAlign ?? true, baseDurationMs: options.smartTransition?.baseDurationMs ?? options.crossfade?.durationMs, minDurationMs: options.smartTransition?.minDurationMs, maxDurationMs: options.smartTransition?.maxDurationMs, beatAlignMaxWaitMs: options.smartTransition?.beatAlignMaxWaitMs, genreDurations: options.smartTransition?.genreDurations, bus: this.bus });
 		const volumeController = new VolumeController(this.bus, { initialVolume: options.volume ?? 100, loudness: options.loudnessNormalization });
 		const antiStuckController = new AntiStuckController({ ...options.antiStuck, bus: this.bus });
 		const playbackController = new PlaybackController({ audioPlayer, bus: this.bus, stuckTimeoutMs: options.antiStuck?.stuckTimeoutMs });
 		const streamController = new StreamController({ streamManager, bus: this.bus });
 		const saveController = new SaveController({ middleware: [async (track) => trackLoader.applyMiddleware(track)], middlewareContext: { player, manager }, resolveStream: (track) => pluginManager.getStream(track), resolveVideoStream: (track) => pluginManager.getVideo(track), debug: channel("SaveController"), bus: this.bus });
 		const preloadController = new PreloadController({ loader: trackLoader, manager: preloadManager, bus: this.bus });
-		const filterController = new FilterController(undefined, channel("FilterController"), this.bus, {
-			initialFilters: Array.isArray(options.filters) ? options.filters : [],
-			onFilterApplied: (filter) => this.bus.event({ type: "filterApplied", filter }),
-			onFilterRemoved: (filter) => this.bus.event({ type: "filterRemoved", filter }),
-			onFiltersCleared: () => this.bus.event({ type: "filtersCleared" }),
-			onProcessingError: (error) => { void this.bus.requestRpc("playback.reportFilterError", { error }).catch(() => undefined); },
-		});
+		const filterController = new FilterController(undefined, channel("FilterController"), this.bus, { initialFilters: Array.isArray(options.filters) ? options.filters : [], onFilterApplied: (filter) => this.bus.event({ type: "filterApplied", filter }), onFilterRemoved: (filter) => this.bus.event({ type: "filterRemoved", filter }), onFiltersCleared: () => this.bus.event({ type: "filtersCleared" }), onProcessingError: (error) => { void this.bus.requestRpc("playback.reportFilterError", { error }).catch(() => undefined); } });
 		const playerConnectionBridge = new PlayerConnectionBridge({ player, bus: this.bus, debug: channel("PlayerConnectionBridge"), guildId });
 		const sessionController = new PlaybackSessionController(this.bus);
 		const orchestrator = new PlaybackOrchestrator(this.bus, { debug: channel("PlaybackOrchestrator"), sessionController });
@@ -120,11 +83,14 @@ export class GlobalPlayerRuntime {
 		const searchController = new SearchController({ extensionManager, pluginManager, debug: channel("SearchController"), bus: this.bus });
 		const eventBridge = new PlayerEventBridge(player, manager, this.bus, debugTracer);
 		const graph: PlayerRuntimeGraph = { connectionController, lifecycleController, forwardController, audioPlayer, streamManager, preloadManager, trackResolver: resolver, pluginManager, extensionManager, pluginController, extensionController, queueController, trackLoader, playbackController, streamController, saveController, filterController, antiStuckController, transitionController, volumeController, preloadController, resourceRefreshController, playerConnectionBridge, orchestrator, sessionController, ttsController, debugTracer, searchController, eventBridge };
+
 		const unregisterPing = this.bus.registerRpc("runtime.ping", ({ playerId }: { playerId: string }) => {
 			if (playerId !== guildId) throw new Error(`Player id mismatch: ${playerId}`);
 			return { playerId: guildId, timestamp: Date.now() };
 		});
 		this.monitorCleanup("globalControllerPing", unregisterPing);
+		this.monitorCleanup("runtimeDispose", this.bus.registerRpc("runtime.dispose", () => this.dispose()));
+		this.monitorCleanup("runtimeGraph", this.bus.registerRpc("runtime.graph", () => graph));
 		this.globalRegistration = globalControllerRegistry.register(guildId, this.bus, graph, () => this.dispose());
 		const lifecycleOrder: Array<keyof PlayerRuntimeGraph> = ["connectionController", "lifecycleController", "forwardController", "streamManager", "preloadManager", "trackResolver", "pluginManager", "extensionManager", "pluginController", "extensionController", "queueController", "trackLoader", "playbackController", "streamController", "saveController", "filterController", "antiStuckController", "transitionController", "volumeController", "preloadController", "playerConnectionBridge", "sessionController", "orchestrator", "resourceRefreshController", "ttsController", "debugTracer", "searchController", "eventBridge"];
 		for (const name of lifecycleOrder) this.monitor(name, graph[name]);
