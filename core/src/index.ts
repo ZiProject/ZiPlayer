@@ -19,6 +19,7 @@ export { PreloadController } from "./controller/PreloadController";
 export { SaveController } from "./controller/SaveController";
 export { PlayerBusLatencyTrace } from "./controller/PlayerBusLatencyTrace";
 export { PlayerEventDebug, DEBUG_PRIORITY } from "./controller/PlayerEventDebug";
+export { GlobalControllerRegistry, globalControllerRegistry } from "./controller/GlobalControllerRegistry";
 export { StreamManager } from "./structures/StreamManager";
 
 export type {
