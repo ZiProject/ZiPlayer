@@ -46,6 +46,7 @@ export class PlaybackPlayController {
 	): Promise<boolean> {
 		if (rpcContext.signal.aborted || this.lifecycleSignal.aborted) return false;
 		const context: PlayerMessageContext = {
+			playerId: rpcContext.playerId,
 			requestId: rpcContext.requestId,
 			source: "PlaybackPlayController:play",
 			signal: AbortSignal.any([rpcContext.signal, this.lifecycleSignal]),

@@ -112,6 +112,7 @@ export class PlaybackStartController {
 
 	private childContext(context: PlayerMessageContext, sessionId: string, sessionSignal: AbortSignal): PlayerMessageContext {
 		return {
+			playerId: context.playerId,
 			requestId: context.requestId,
 			sessionId,
 			source: context.source,

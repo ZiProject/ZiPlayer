@@ -19,8 +19,6 @@ export interface TrackResolveContext {
 	[key: string]: any;
 }
 
-export type TrackResolverContext = TrackResolveContext;
-
 export interface TrackResolverOptions {
 	streamManager: StreamManager;
 	pluginManager: PluginManager;

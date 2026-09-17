@@ -1,4 +1,5 @@
 import { createPlayerRequestId } from "../structures/PlayerBus";
+import { resolvePlayerId } from "../structures/playerScope";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, PlaybackSessionSnapshot, Track } from "../types";
 import type { PlayerBus } from "../structures/PlayerBus";
@@ -148,6 +149,7 @@ export class PlaybackTrackEndController {
 
 	private createContext(source: string): PlayerMessageContext {
 		return {
+			playerId: resolvePlayerId(),
 			requestId: createPlayerRequestId(),
 			source,
 			signal: this.lifecycleSignal,

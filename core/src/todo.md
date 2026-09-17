@@ -1,6 +1,71 @@
 **global bus + singleton controllers + state partition theo `playerId`**, đồng thời giữ lại các invariant/rủi ro đã phát hiện
 trong hai tài liệu, mình đề xuất TODO chính thức như sau.
 
+---
+
+## 📋 Audit log
+
+Đã clone branch, chạy `tsc --noEmit` + `tsup build` + `node --test tests/**/*.js` để kiểm tra thực trạng trước khi tick bất kỳ ô
+nào. Kết quả:
+
+**Thực trạng kiến trúc lúc bắt đầu (khác với những gì tên file/class gợi ý):**
+
+- `PlayerManager.runtimes: Map<guildId, GlobalPlayerRuntime>` — **mỗi guild vẫn có một `GlobalPlayerRuntime` riêng**, không phải
+  singleton toàn process dù tên gọi là "Global".
+- Bên trong `GlobalPlayerRuntime` constructor: `this.bus = new PlayerBus()` — **mỗi player tự tạo bus riêng**, hàm
+  `getGlobalPlayerBus()` đã tồn tại sẵn trong `PlayerBus.ts` nhưng không được gọi ở đâu cả (code mồ côi).
+- `createControllerGraph()` gọi `new QueueController()`, `new PlaybackController()`, v.v. **cho từng player** — không phải
+  singleton.
+- **Branch không compile được**: `npx tsc --noEmit` ra 29 lỗi thật (sau khi cài đủ `node_modules`/`@types/node`), gần hết nằm ở
+  `PlayerBus.ts` — `addListener`/`dispatch` không nhận `playerId`, thiếu hẳn method `normalizeSubscribeArgs` mà
+  `onInput`/`onOutput` gọi tới, `onAction`/`action()` dùng `ScopedActionListener` như thể gọi được trực tiếp (sai kiểu),
+  `requestRpcSync` không gắn `playerId` vào context dù type `PlayerBusRpcContext` đã bắt buộc field này, `query()`/`querySync()`
+  gọi `handler()` với 0 argument dù `PlayerQueryHandler` yêu cầu 1 (`scope: PlayerQueryScope`). Ngoài ra 1 lỗi build riêng do
+  export trùng tên `TrackResolverContext` (`types/core.ts` vs alias thừa trong `types/plugin.ts`).
+- Đã audit tất cả 45 lời gọi `registerQuery(...)` trong `controller/*.ts`: **100% đăng ký handler dạng `() => this.someField`,
+  không nhận `scope`** — do TypeScript cho phép hàm ít tham số hơn khớp kiểu hàm nhiều tham số hơn nên không bị báo lỗi, nhưng có
+  nghĩa là **chưa controller nào thực sự đọc `playerId` để phân biệt player** — điều này bắt buộc phải xong ở "Global controller
+  set" trước khi bật global bus, nếu không sẽ leak state giữa các guild.
+- Vi phạm invariant phát hiện thêm: `SaveController` tự `new FilterController(...)` riêng (không qua composition root);
+  `PlaybackSeekController`/`PlaybackStartController` gọi thẳng `PlaybackSessionController`;
+  `PlayerEventBridge`/`PlayerConnectionBridge` vẫn import type `Player` trực tiếp. Chưa sửa trong lượt này.
+
+**Đã làm (Phase 1 — chỉ trong `structures/PlayerBus.ts` + các call site literal thiếu `playerId` để build pass):**
+
+1. `addListener`/`dispatch` giờ lưu và lọc theo `ScopedListener{playerId, handler}` bằng `playerIdsMatch()` (đã có sẵn helper
+   trong `playerScope.ts`, chưa được dùng trước đó).
+2. Thêm `normalizeSubscribeArgs()` — chuẩn hoá overload `(type, handler)` / `(type, playerId, handler)` dùng chung cho `onInput`,
+   `onOutput`, `subscribe`, `onAction`.
+3. `subscribe()` và `onAction()` giờ có overload nhận `playerId` (trước đó chỉ `onInput`/`onOutput` có, còn thiếu
+   `normalizeSubscribeArgs` nên còn không compile được).
+4. `action()` resolve một `playerId` thật cho execution context, lọc `actionListeners` theo scope, chạy handler trong
+   `runWithPlayerId(playerId, ...)`.
+5. `requestRpcSync()` giờ nhận `options?: PlayerBusRpcOptions` và gắn `playerId` vào context + request giống hệt `requestRpc()`
+   (async) đã làm đúng từ trước.
+6. `query()`/`querySync()` nhận thêm `playerId?` và luôn truyền `scope: PlayerQueryScope` cho handler (trước đó gọi `handler()`
+   không tham số — sai kiểu).
+7. Vá 4 call site còn thiếu `playerId` trong `PlayerMessageContext`/`PlayerActionExecutionContext` (`PlaybackPlayController`,
+   `PlaybackStartController`, `PlaybackTrackEndController`, `PlayerAction.ts`) bằng cách truyền lại từ context cha hoặc
+   `resolvePlayerId()`.
+8. Xoá alias `TrackResolverContext` thừa trong `types/plugin.ts` (trùng tên với interface gốc trong `types/core.ts`, không ai dùng
+   alias này).
+
+**Kết quả verify:** `npx tsc --noEmit` → 0 lỗi. `npm run build` (tsup, CJS+ESM+DTS) → thành công. `node --test tests/**/*.js` →
+53/55 pass; 2 fail (`lyricsExt.test.js` thiếu package phụ thuộc, `ttsplugin.test.js` gọi network Edge TTS bị 403 trong sandbox) —
+cả hai **không liên quan** tới thay đổi, đã xác nhận bằng cách đọc lỗi.
+
+**Cố ý CHƯA làm trong lượt này (rủi ro cao nếu làm mù, cần Phase riêng):**
+
+- **Chưa** đổi `GlobalPlayerRuntime`/`PlayerManager` sang dùng `getGlobalPlayerBus()`. Nếu bật ngay bây giờ, tất cả guild sẽ dùng
+  chung 1 bus nhưng mỗi guild vẫn có instance controller riêng của mình → mỗi controller sẽ nhận sự kiện/action của **mọi** guild
+  khác (vì gọi `subscribe`/`onAction` không truyền `playerId` mặc định = wildcard) → vỡ cách ly giữa các guild ngay lập tức. Đây
+  là lý do "Singleton hoá bus" không thể tách rời "Global controller set + state partition" một cách an toàn — phải làm gần như
+  đồng thời hoặc theo đúng thứ tự: state partition trước, chuyển sang 1 controller instance sau, đổi bus cuối cùng.
+- Chưa sửa 45 `registerQuery` handler để đọc `scope.playerId`, chưa sửa RPC handler tương ứng, chưa gộp controller thành
+  singleton, chưa dọn 4 vi phạm nhỏ liệt kê ở trên (SaveController, controller gọi thẳng controller, import `Player`).
+
+---
+
 ## 🎯 Mục tiêu cuối cùng
 
 ```text
@@ -42,13 +107,17 @@ trong hai tài liệu, mình đề xuất TODO chính thức như sau.
 
 ### Protocol
 
-- [ ] Định nghĩa `PlayerId` canonical.
-- [ ] `PlayerMessageContext` bắt buộc có `playerId`.
-- [ ] Action payload/envelope bắt buộc có `playerId`.
-- [ ] Event payload/envelope bắt buộc có `playerId`.
-- [ ] RPC request bắt buộc có `playerId`.
-- [ ] Query request bắt buộc có `playerId`.
-- [ ] Không cho phép request player-scoped thiếu `playerId`.
+- [x] Định nghĩa `PlayerId` canonical. (`structures/playerScope.ts`, đã có từ trước)
+- [x] `PlayerMessageContext` bắt buộc có `playerId` trong type; toàn bộ call site tạo context trong `core/src` giờ compile đúng
+      (đã vá 4 chỗ còn thiếu).
+- [ ] Action payload/envelope bắt buộc có `playerId`. (`PlayerAction.playerId` vẫn optional ở type; `PlayerBus.action()` tự
+      resolve giá trị thật cho execution context, nhưng envelope đầu vào chưa bắt buộc)
+- [ ] Event payload/envelope bắt buộc có `playerId`. (tương tự, `PlayerEvent.playerId` vẫn optional)
+- [ ] RPC request bắt buộc có `playerId`. (context RPC luôn có `playerId` thật nhờ `resolvePlayerId()`, nhưng option đầu vào vẫn
+      optional)
+- [x] Query request bắt buộc có `playerId` khi tới tay handler — `query()`/`querySync()` giờ luôn dựng
+      `PlayerQueryScope{playerId}` trước khi gọi handler (trước đó gọi `handler()` không đối số, lỗi kiểu).
+- [ ] Không cho phép request player-scoped thiếu `playerId`. (hiện vẫn fallback im lặng về `DEFAULT_PLAYER_ID` thay vì throw)
 - [ ] Phân biệt rõ:
   - global message
   - player-scoped message
@@ -68,12 +137,15 @@ trong hai tài liệu, mình đề xuất TODO chính thức như sau.
 
 ## 1. Singleton bus
 
-- [ ] Tạo một `PlayerBus` duy nhất.
-- [ ] Loại bỏ `new PlayerBus()` khỏi `Player`.
-- [ ] Loại bỏ `new PlayerBus()` khỏi từng `GlobalPlayerRuntime`.
-- [ ] `PlayerManager`/runtime chỉ tham chiếu global bus.
-- [ ] Không có per-guild bus nữa.
-- [ ] Audit toàn bộ `new PlayerBus()` trong `core/src`.
+- [ ] Tạo một `PlayerBus` duy nhất. (`getGlobalPlayerBus()` đã có sẵn trong `PlayerBus.ts` nhưng chưa được gọi ở đâu — xem note
+      rủi ro ở audit log phía trên trước khi bật)
+- [ ] Loại bỏ `new PlayerBus()` khỏi `Player`. (chưa audit riêng `Player.ts`, cần kiểm tra ở Phase kế)
+- [ ] Loại bỏ `new PlayerBus()` khỏi từng `GlobalPlayerRuntime`. (**chưa làm** — vẫn `this.bus = new PlayerBus()` trong
+      constructor)
+- [ ] `PlayerManager`/runtime chỉ tham chiếu global bus. (**chưa làm** — `runtimes: Map<guildId, GlobalPlayerRuntime>`, mỗi
+      runtime 1 bus riêng)
+- [ ] Không có per-guild bus nữa. (**chưa làm**, xem trên)
+- [x] Audit toàn bộ `new PlayerBus()` trong `core/src` — chỉ có đúng 1 chỗ: `GlobalPlayerRuntime` constructor.
 
 **Definition:**
 
@@ -103,11 +175,16 @@ bus.subscribe("TRACK_START", playerId, handler);
 
 hoặc tương đương.
 
-- [ ] `subscribe()` hỗ trợ `playerId`.
-- [ ] `unsubscribe()` giữ đúng scope.
-- [ ] Event A không thể đến Player B.
-- [ ] Hỗ trợ wildcard/internal subscription nếu controller cần nghe toàn process.
-- [ ] Test cross-player isolation.
+- [x] `subscribe()` hỗ trợ `playerId` (overload `subscribe(type, playerId, handler)` mới thêm, dùng chung `normalizeSubscribeArgs`
+      với `onInput`/`onOutput`/`onAction`).
+- [x] `unsubscribe()` giữ đúng scope (closure trả về từ `addListener` chỉ xoá đúng `ScopedListener` entry của nó, không đụng tới
+      listener khác).
+- [ ] Event A không thể đến Player B. **Cơ chế lọc đã có** ở `dispatch()` (dùng `playerIdsMatch`), nhưng **chưa có call site nào
+      trong `controller/*.ts` thực sự truyền `playerId` khi subscribe/publish** — tất cả vẫn mặc định wildcard nên hiện tại về
+      hành vi chưa đổi gì. Cần Phase state-partition mới phát huy tác dụng.
+- [x] Hỗ trợ wildcard/internal subscription (`PLAYER_ID_WILDCARD`, mặc định khi không truyền `playerId`).
+- [ ] Test cross-player isolation. (chưa viết test — không có ý nghĩa để test tới khi có ít nhất 1 call site thật sự dùng scope
+      khác wildcard)
 
 Invariant:
 
@@ -125,11 +202,14 @@ C subscribers      ✗
 
 ## RPC
 
-- [ ] RPC registry chỉ đăng ký handler **một lần**.
-- [ ] Không còn mỗi player register cùng RPC handler.
-- [ ] RPC handler nhận `playerId`.
-- [ ] Handler lấy `state[playerId]`.
-- [ ] RPC không được access state của player khác.
+- [ ] RPC registry chỉ đăng ký handler **một lần**. (cấu trúc `Map<string, handler>` trong `rpcHandlers` vốn đã chỉ giữ 1
+      handler/type kể cả trước đây — nhưng vì mỗi player có bus riêng nên "một lần" hiện tại nghĩa là "một lần mỗi player", chưa
+      phải một lần toàn process)
+- [ ] Không còn mỗi player register cùng RPC handler. (phụ thuộc việc chuyển sang global bus — chưa làm)
+- [x] RPC handler nhận `playerId` thật trong context — `requestRpc()` đã đúng từ trước, `requestRpcSync()` vừa được vá để giống
+      hệt (trước đó thiếu hẳn field `playerId`, không compile được).
+- [ ] Handler lấy `state[playerId]`. (chưa — controller vẫn trả field đơn `this.xxx`, chưa đọc `context.playerId`)
+- [ ] RPC không được access state của player khác. (chưa áp dụng được vì handler chưa phân biệt player)
 
 Ví dụ:
 
@@ -143,10 +223,13 @@ queueStates.get(A)
 
 ## Query
 
-- [ ] `query()` có `playerId`.
-- [ ] `querySync()` có `playerId`.
-- [ ] Query handler phải explicit scope.
-- [ ] Không còn global `"currentTrack"` ambiguity.
+- [x] `query()` có `playerId` (tham số optional mới, luôn resolve trước khi gọi handler).
+- [x] `querySync()` có `playerId` (tương tự; trước đó gọi `handler()` 0 tham số — lỗi kiểu, không compile).
+- [ ] Query handler phải explicit scope. Type `PlayerQueryHandler<K> = (scope: PlayerQueryScope) => ...` đã bắt buộc ở mức kiểu,
+      và bus giờ luôn truyền `scope` thật — nhưng đã audit **cả 45/45 `registerQuery(...)` hiện có trong `controller/*.ts` đều
+      khai báo handler dạng `() => this.xxx`, bỏ qua `scope`** (TS cho phép vì hàm ít tham số hơn khớp được kiểu hàm nhiều tham số
+      hơn). Cần sửa từng controller ở Phase "Global controller set".
+- [ ] Không còn global `"currentTrack"` ambiguity. (chưa — vẫn 1 giá trị chung do controller chưa partition theo `playerId`)
 
 ---
 

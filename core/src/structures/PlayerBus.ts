@@ -315,20 +315,30 @@ export class PlayerBus {
 	}
 
 	/** Invoke a synchronous RPC handler without exposing its owner through Player. */
-	public requestRpcSync<K extends keyof PlayerRpcMap>(type: K, request: PlayerRpcMap[K]["request"]): PlayerRpcMap[K]["response"];
-	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest): TResponse;
-	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest): TResponse {
+	public requestRpcSync<K extends keyof PlayerRpcMap>(
+		type: K,
+		request: PlayerRpcMap[K]["request"],
+		options?: PlayerBusRpcOptions,
+	): PlayerRpcMap[K]["response"];
+	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest, options?: PlayerBusRpcOptions): TResponse;
+	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest, options: PlayerBusRpcOptions = {}): TResponse {
 		if (this.disposed) throw new PlayerBusRequestError("disposed", type, `PlayerBus is disposed; cannot request RPC "${type}"`);
 		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
 		if (!handler) throw new PlayerBusRequestError("unhandled", type, `No RPC handler registered for "${type}"`);
+		const playerId = resolvePlayerId(options.playerId, request);
 		const context: PlayerBusRpcContext = {
+			playerId,
 			requestId: createPlayerRequestId(),
-			signal: new AbortController().signal,
+			signal: options.signal ?? new AbortController().signal,
 			timestamp: Date.now(),
 		};
+		const scopedRequest =
+			request && typeof request === "object" && !Array.isArray(request) ?
+				{ ...(request as object), playerId }
+			:	request;
 		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
 		try {
-			const value = handler(request, context);
+			const value = runWithPlayerId(playerId, () => handler(scopedRequest as TRequest, context));
 			if (value && typeof (value as any).then === "function")
 				throw new Error(`RPC "${type}" is asynchronous; use requestRpc() instead`);
 			return value as TResponse;
@@ -356,7 +366,9 @@ export class PlayerBus {
 
 	public action(action: PlayerAction, context?: Partial<PlayerActionExecutionContext>): Promise<void> {
 		if (this.disposed) return Promise.resolve();
+		const playerId = context?.playerId ?? resolvePlayerId(action.playerId);
 		const execution: PlayerActionExecutionContext = {
+			playerId,
 			signal: context?.signal ?? new AbortController().signal,
 			priority: context?.priority ?? action.priority ?? PlayerActionPriority.NORMAL,
 			requestId: context?.requestId ?? action.requestId ?? createPlayerRequestId(),
@@ -366,18 +378,19 @@ export class PlayerBus {
 		};
 		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
 		const handlerDurations: number[] = [];
+		const listeners = [...this.actionListeners].filter((entry) => playerIdsMatch(entry.playerId, playerId));
 		return Promise.all(
-			[...this.actionListeners].map((handler) => {
+			listeners.map((entry) => {
 				const handlerStart = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
 				return Promise.resolve()
-					.then(() => handler(action, execution))
+					.then(() => runWithPlayerId(playerId, () => entry.handler(action, execution)))
 					.finally(() => {
 						if (this.latencyTrace?.enabled) {
 							const duration = this.latencyTrace.record("action", action.type, handlerStart, {
 								requestId: execution.requestId,
 								sessionId: execution.sessionId,
 								source: execution.source,
-								handler: handler.name || "anonymous",
+								handler: entry.handler.name || "anonymous",
 							});
 							handlerDurations.push(duration);
 						}
@@ -396,18 +409,41 @@ export class PlayerBus {
 			})
 			.then(() => undefined);
 	}
-	public onAction(handler: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>): () => void {
-		this.actionListeners.add(handler);
-		return () => this.actionListeners.delete(handler);
+	public onAction(handler: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>): () => void;
+	public onAction(
+		playerId: PlayerIdScope,
+		handler: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>,
+	): () => void;
+	public onAction(
+		playerIdOrHandler:
+			| PlayerIdScope
+			| ((action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>),
+		handler?: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>,
+	): () => void {
+		const [playerId, fn] = this.normalizeSubscribeArgs(playerIdOrHandler as any, handler as any);
+		const entry: ScopedActionListener = { playerId, handler: fn as any };
+		this.actionListeners.add(entry);
+		return () => this.actionListeners.delete(entry);
 	}
 	public event<K extends PlayerEventType>(event: Extract<PlayerEvent, { type: K }>): void {
-		if (!this.disposed) this.dispatch(this.eventListeners, event.type, event);
+		if (!this.disposed) this.dispatch(this.eventListeners, event.type, event, (event as { playerId?: PlayerId }).playerId);
 	}
 	public publish<K extends PlayerEventType>(type: K, ...args: PlayerEventArgsMap[K]): void {
 		this.event(this.toEvent(type, args));
 	}
-	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void {
-		return this.addListener(this.eventListeners, type, listener as any);
+	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void;
+	public subscribe<K extends PlayerEventType>(
+		type: K,
+		playerId: PlayerIdScope,
+		listener: (event: Extract<PlayerEvent, { type: K }>) => void,
+	): () => void;
+	public subscribe<K extends PlayerEventType>(
+		type: K,
+		playerIdOrListener: PlayerIdScope | ((event: Extract<PlayerEvent, { type: K }>) => void),
+		listener?: (event: Extract<PlayerEvent, { type: K }>) => void,
+	): () => void {
+		const [playerId, fn] = this.normalizeSubscribeArgs(playerIdOrListener, listener);
+		return this.addListener(this.eventListeners, type, fn as any, playerId);
 	}
 	public registerQuery<K extends PlayerQuery>(query: K, handler: PlayerQueryHandler<K>): () => void {
 		let handlers = this.queryHandlers.get(query);
@@ -418,22 +454,24 @@ export class PlayerBus {
 		handlers.add(handler);
 		return () => handlers?.delete(handler);
 	}
-	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> {
+	public query<K extends PlayerQuery>(query: K, playerId?: PlayerId): Promise<PlayerQueryMap[K]> {
 		if (this.disposed) return Promise.resolve(undefined as any);
 		const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined;
 		if (!handler) return Promise.resolve(undefined as any);
+		const scope: PlayerQueryScope = { playerId: resolvePlayerId(playerId) };
 		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
-		return Promise.resolve(handler()).finally(() => {
+		return Promise.resolve(handler(scope)).finally(() => {
 			if (this.latencyTrace?.enabled) this.latencyTrace.record("query", query, start, { handler: handler.name || "anonymous" });
 		});
 	}
-	public querySync<K extends PlayerQuery>(query: K): PlayerQueryMap[K] {
+	public querySync<K extends PlayerQuery>(query: K, playerId?: PlayerId): PlayerQueryMap[K] {
 		if (this.disposed) return undefined as any;
 		const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined;
 		if (!handler) return undefined as any;
+		const scope: PlayerQueryScope = { playerId: resolvePlayerId(playerId) };
 		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
 		try {
-			const value = handler();
+			const value = handler(scope);
 			if (value && typeof (value as any).then === "function")
 				throw new Error(`Query "${query}" is asynchronous; use query() instead`);
 			return value as PlayerQueryMap[K];
@@ -512,17 +550,43 @@ export class PlayerBus {
 				return { type, leader: args[0], reason: args[1] } as any;
 		}
 	}
-	private addListener<T extends string, E>(map: Map<T, Set<(event: E) => any>>, type: T, handler: (event: E) => any): () => void {
+	/**
+	 * Normalizes the (playerId?, handler) overload pair shared by onInput/onOutput/subscribe/onAction.
+	 * Omitting playerId scopes the listener to every player (PLAYER_ID_WILDCARD) — the correct default
+	 * for internal/global listeners and for existing call sites written before scoping existed.
+	 */
+	private normalizeSubscribeArgs<A extends (...args: any[]) => any>(
+		playerIdOrHandler: PlayerIdScope | A,
+		handler?: A,
+	): [PlayerIdScope, A] {
+		if (typeof playerIdOrHandler === "function") return [PLAYER_ID_WILDCARD, playerIdOrHandler];
+		return [playerIdOrHandler, handler as A];
+	}
+	private addListener<T extends string, E>(
+		map: Map<T, Set<ScopedListener<E>>>,
+		type: T,
+		handler: (event: E) => any,
+		playerId: PlayerIdScope = PLAYER_ID_WILDCARD,
+	): () => void {
 		let listeners = map.get(type);
 		if (!listeners) {
 			listeners = new Set();
 			map.set(type, listeners);
 		}
-		listeners.add(handler);
-		return () => listeners?.delete(handler);
+		const entry: ScopedListener<E> = { playerId, handler };
+		listeners.add(entry);
+		return () => listeners?.delete(entry);
 	}
-	private dispatch<T extends string, E>(map: Map<T, Set<(event: E) => any>>, type: T, event: E): void {
-		for (const listener of map.get(type) ?? []) void listener(event);
+	private dispatch<T extends string, E>(
+		map: Map<T, Set<ScopedListener<E>>>,
+		type: T,
+		event: E,
+		eventPlayerId?: PlayerId,
+	): void {
+		for (const listener of map.get(type) ?? []) {
+			if (!playerIdsMatch(listener.playerId, eventPlayerId)) continue;
+			void listener.handler(event);
+		}
 	}
 }
 
