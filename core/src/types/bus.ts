@@ -21,10 +21,6 @@ import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { Readable } from "stream";
 import type { Player } from "../structures/Player";
-import type { PlayerId, PlayerIdScope } from "../structures/playerScope";
-
-export type { PlayerId, PlayerIdScope } from "../structures/playerScope";
-export { DEFAULT_PLAYER_ID, PLAYER_ID_WILDCARD } from "../structures/playerScope";
 
 export type PlayerRequestId = string;
 export type PlayerSessionId = string;
@@ -37,36 +33,30 @@ export enum PlayerActionPriority {
 }
 
 export interface PlayerMessageContext {
-	readonly playerId: PlayerId;
+	readonly playerId: string;
 	readonly requestId: PlayerRequestId;
 	readonly sessionId?: PlayerSessionId;
 	readonly source?: string;
 	readonly timestamp?: number;
 	readonly signal: AbortSignal;
 	readonly priority: PlayerActionPriority;
-	readonly kind?: "global" | "player" | "internal";
-}
-
-export interface PlayerQueryScope {
-	readonly playerId: PlayerId;
 }
 
 export type PlayerActionExecutionContext = PlayerMessageContext;
 
 export type PlayerAction =
-	| { type: "PLAY"; playerId?: PlayerId; track?: Track; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "PAUSE"; playerId?: PlayerId; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "RESUME"; playerId?: PlayerId; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "SEEK"; playerId?: PlayerId; position: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "STOP"; playerId?: PlayerId; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "SKIP"; playerId?: PlayerId; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "SET_VOLUME"; playerId?: PlayerId; volume: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "QUEUE_NEXT"; playerId?: PlayerId; ignoreLoop?: boolean; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "QUEUE_SET_CURRENT"; playerId?: PlayerId; track: Track | null; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "FILTER_SET_SOURCE_TYPE"; playerId?: PlayerId; streamType: string; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "PLAY"; track?: Track; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "PAUSE"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "RESUME"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "SEEK"; position: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "STOP"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "SKIP"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "SET_VOLUME"; volume: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "QUEUE_NEXT"; ignoreLoop?: boolean; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "QUEUE_SET_CURRENT"; track: Track | null; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "FILTER_SET_SOURCE_TYPE"; streamType: string; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| {
 			type: "FILTER_APPLY_AND_SEEK";
-			playerId?: PlayerId;
 			streamInfo: StreamInfo;
 			position?: number;
 			priority?: PlayerActionPriority;
@@ -75,29 +65,20 @@ export type PlayerAction =
 export type PlayerActionType = PlayerAction["type"];
 
 export type PlayerConnectionInput =
-	| { type: "[Player]->[Connection]:connect"; playerId?: PlayerId; requestId: PlayerRequestId; channel: VoiceChannel }
-	| { type: "[Player]->[Connection]:disconnect"; playerId?: PlayerId; requestId: PlayerRequestId; reason?: string }
-	| { type: "[Player]->[Connection]:reconnect"; playerId?: PlayerId; requestId: PlayerRequestId; channel: VoiceChannel };
-export type PlayerPreloadInput = {
-	type: "[Player]->[Preload]:request";
-	playerId?: PlayerId;
-	requestId: PlayerRequestId;
-	track: Track;
-};
+	| { type: "[Player]->[Connection]:connect"; requestId: PlayerRequestId; channel: VoiceChannel }
+	| { type: "[Player]->[Connection]:disconnect"; requestId: PlayerRequestId; reason?: string }
+	| { type: "[Player]->[Connection]:reconnect"; requestId: PlayerRequestId; channel: VoiceChannel };
+export type PlayerPreloadInput = { type: "[Player]->[Preload]:request"; requestId: PlayerRequestId; track: Track };
 export type PlayerRecoveryInput = {
 	type: "[Player]->[Recovery]:recover";
-	playerId?: PlayerId;
 	requestId: PlayerRequestId;
 	session: PlaybackSessionSnapshot;
 	reason: string;
 };
-export type PlayerResourceInput = {
-	type: "[Player]->[Resource]:refresh";
-	playerId?: PlayerId;
-	requestId: PlayerRequestId;
-	position?: number;
+export type PlayerResourceInput = { type: "[Player]->[Resource]:refresh"; requestId: PlayerRequestId; position?: number };
+export type PlayerInput = (PlayerConnectionInput | PlayerPreloadInput | PlayerRecoveryInput | PlayerResourceInput) & {
+	readonly playerId: string;
 };
-export type PlayerInput = PlayerConnectionInput | PlayerPreloadInput | PlayerRecoveryInput | PlayerResourceInput;
 
 export type PlayerConnectionOutput =
 	| { type: "[Connection]->[Player]:connecting"; requestId: PlayerRequestId; sessionId: PlayerSessionId; channel: VoiceChannel }
@@ -127,13 +108,12 @@ export type PlayerRecoveryOutput =
 export type PlayerResourceOutput =
 	| { type: "[Resource]->[Player]:refreshed"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot }
 	| { type: "[Resource]->[Player]:error"; requestId: PlayerRequestId; error: Error };
-export type PlayerOutput = PlayerConnectionOutput | PlayerPreloadOutput | PlayerRecoveryOutput | PlayerResourceOutput;
+export type PlayerOutput = (PlayerConnectionOutput | PlayerPreloadOutput | PlayerRecoveryOutput | PlayerResourceOutput) & {
+	readonly playerId: string;
+};
 export type PlayerBusEvents = PlayerInput | PlayerOutput;
 
-export type PlayerLifecycleEvents =
-	| { type: "initialized"; playerId?: PlayerId }
-	| { type: "ready"; playerId?: PlayerId }
-	| { type: "destroyed"; playerId?: PlayerId };
+export type PlayerLifecycleEvents = { type: "initialized" } | { type: "ready" } | { type: "destroyed" };
 export type PlayerPlaybackEvents =
 	| { type: "TRACK_LOADING"; session: PlaybackSessionSnapshot }
 	| { type: "TRACK_LOADED"; session: PlaybackSessionSnapshot }
@@ -172,7 +152,7 @@ export type PlayerPreloadEvents =
 	| { type: "preloadCancelled" };
 export type PlayerQueueEvents = { type: "queueChanged"; queue: Track[] };
 export type PlayerVolumeEvents = { type: "volumeRequested"; volume: number; oldVolume: number; newVolume: number };
-export type PlayerEventBase =
+export type PlayerEvent =
 	| PlayerLifecycleEvents
 	| PlayerPlaybackEvents
 	| PlayerPublicEvents
@@ -180,7 +160,6 @@ export type PlayerEventBase =
 	| PlayerPreloadEvents
 	| PlayerQueueEvents
 	| PlayerVolumeEvents;
-export type PlayerEvent = PlayerEventBase & { playerId?: PlayerId };
 export type PlayerEventType = PlayerEvent["type"];
 
 export type PlayerEventArgsMap = {
@@ -259,7 +238,7 @@ export interface PlayerRpcOptions {
 	priority?: PlayerActionPriority;
 }
 export interface PlayerBusRpcContext {
-	readonly playerId: PlayerId;
+	readonly playerId: string;
 	readonly requestId: PlayerRequestId;
 	readonly signal: AbortSignal;
 	readonly timestamp: number;
@@ -267,7 +246,6 @@ export interface PlayerBusRpcContext {
 export interface PlayerBusRpcOptions {
 	timeoutMs?: number;
 	signal?: AbortSignal;
-	playerId?: PlayerId;
 }
 export interface PlayerRpcMap {
 	play: { request: { query: string | Track | SearchResult | null; requestedBy?: string }; response: boolean };
@@ -410,7 +388,7 @@ export interface PlayerQueryMap {
 }
 export type PlayerQuery = keyof PlayerQueryMap;
 export type PlayerQueryHandler<K extends PlayerQuery> = (
-	scope: PlayerQueryScope,
+	playerId: string,
 ) => PlayerQueryMap[K] | Promise<PlayerQueryMap[K]>;
 
 export const SEARCH_RPC_TYPES = {

@@ -24,16 +24,6 @@ import type {
 
 import { PlayerActionPriority } from "../types/bus";
 import type { PlayerBusLatencyTrace } from "../controller/PlayerBusLatencyTrace";
-import {
-	DEFAULT_PLAYER_ID,
-	PLAYER_ID_WILDCARD,
-	playerIdsMatch,
-	resolvePlayerId,
-	runWithPlayerId,
-	type PlayerId,
-	type PlayerIdScope,
-} from "./playerScope";
-import type { PlayerQueryScope } from "../types/bus";
 
 export type {
 	PlayerAction,
@@ -105,37 +95,24 @@ export class PlayerBusRequestError extends Error {
 
 type RpcHandler<TRequest, TResponse> = (request: TRequest, context: PlayerBusRpcContext) => TResponse | Promise<TResponse>;
 
-interface ScopedListener<E> {
-	playerId: PlayerIdScope;
-	handler: (event: E) => any;
-}
-
-interface ScopedActionListener {
-	playerId: PlayerIdScope;
-	handler: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>;
-}
-
-const GLOBAL_BUS_KEY = Symbol.for("ziplayer.PlayerBus.global");
-
-export function getGlobalPlayerBus(): PlayerBus {
-	const root = globalThis as typeof globalThis & { [GLOBAL_BUS_KEY]?: PlayerBus };
-	if (!root[GLOBAL_BUS_KEY] || root[GLOBAL_BUS_KEY]!.isDisposed) {
-		root[GLOBAL_BUS_KEY] = new PlayerBus();
-	}
-	return root[GLOBAL_BUS_KEY]!;
-}
-
-export function resetGlobalPlayerBus(): void {
-	const root = globalThis as typeof globalThis & { [GLOBAL_BUS_KEY]?: PlayerBus };
-	if (root[GLOBAL_BUS_KEY] && !root[GLOBAL_BUS_KEY]!.isDisposed) root[GLOBAL_BUS_KEY]!.dispose();
-	root[GLOBAL_BUS_KEY] = undefined;
-}
-
-export class PlayerBus {
-	private readonly inputListeners = new Map<PlayerInput["type"], Set<ScopedListener<PlayerInput>>>();
-	private readonly outputListeners = new Map<PlayerOutput["type"], Set<ScopedListener<PlayerOutput>>>();
-	private readonly eventListeners = new Map<PlayerEventType, Set<ScopedListener<PlayerEvent>>>();
-	private readonly actionListeners = new Set<ScopedActionListener>();
+/**
+ * GlobalPlayerBus is the single, process-wide message bus shared by every player.
+ *
+ * Controllers are singletons: they register their RPC/query/action handlers on this
+ * bus exactly once (at bootstrap), and every call carries an explicit `playerId` so a
+ * handler can route to the right per-player state slice it keeps internally.
+ *
+ * `Player` instances never touch this class directly — they get a small `PlayerBus`
+ * facade (see below) that already knows its own `playerId` and exposes the same
+ * ergonomic, no-playerId-argument API the rest of the codebase is used to.
+ */
+export class GlobalPlayerBus {
+	private readonly inputListeners = new Map<PlayerInput["type"], Set<(event: PlayerInput) => void | Promise<void>>>();
+	private readonly outputListeners = new Map<PlayerOutput["type"], Set<(event: PlayerOutput) => void>>();
+	private readonly eventListeners = new Map<PlayerEventType, Map<string, Set<(event: PlayerEvent) => void>>>();
+	private readonly actionListeners = new Set<
+		(action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>
+	>();
 	private readonly queryHandlers = new Map<PlayerQuery, Set<PlayerQueryHandler<any>>>();
 	private readonly rpcHandlers = new Map<string, RpcHandler<any, any>>();
 	private readonly pendingRequests = new Set<() => void>();
@@ -146,48 +123,34 @@ export class PlayerBus {
 		this.latencyTrace = trace;
 	}
 
+	// ---------------------------------------------------------------------
+	// Input / output bridge used by `request()`. Dispatch stays global/flat:
+	// each in-flight request is disambiguated by its own unique requestId, so
+	// broadcasting to every listener is both correct and simple. Handlers on
+	// the controller side read `event.playerId` to know which player's state
+	// to act on.
+	// ---------------------------------------------------------------------
 	public emitInput(event: PlayerInput): void {
-		if (!this.disposed) this.dispatch(this.inputListeners, event.type, event, (event as { playerId?: PlayerId }).playerId);
+		if (!this.disposed) this.dispatchFlat(this.inputListeners, event.type, event);
 	}
 	public emitOutput(event: PlayerOutput): void {
-		if (!this.disposed) this.dispatch(this.outputListeners, event.type, event, (event as { playerId?: PlayerId }).playerId);
+		if (!this.disposed) this.dispatchFlat(this.outputListeners, event.type, event);
 	}
 	public onInput<K extends PlayerInput["type"]>(
 		type: K,
 		handler: (event: Extract<PlayerInput, { type: K }>) => void | Promise<void>,
-	): () => void;
-	public onInput<K extends PlayerInput["type"]>(
-		type: K,
-		playerId: PlayerIdScope,
-		handler: (event: Extract<PlayerInput, { type: K }>) => void | Promise<void>,
-	): () => void;
-	public onInput<K extends PlayerInput["type"]>(
-		type: K,
-		playerIdOrHandler: PlayerIdScope | ((event: Extract<PlayerInput, { type: K }>) => void | Promise<void>),
-		handler?: (event: Extract<PlayerInput, { type: K }>) => void | Promise<void>,
 	): () => void {
-		const [playerId, fn] = this.normalizeSubscribeArgs(playerIdOrHandler, handler);
-		return this.addListener(this.inputListeners, type, fn as any, playerId);
+		return this.addFlatListener(this.inputListeners, type, handler as any);
 	}
 	public onOutput<K extends PlayerOutput["type"]>(
 		type: K,
 		handler: (event: Extract<PlayerOutput, { type: K }>) => void,
-	): () => void;
-	public onOutput<K extends PlayerOutput["type"]>(
-		type: K,
-		playerId: PlayerIdScope,
-		handler: (event: Extract<PlayerOutput, { type: K }>) => void,
-	): () => void;
-	public onOutput<K extends PlayerOutput["type"]>(
-		type: K,
-		playerIdOrHandler: PlayerIdScope | ((event: Extract<PlayerOutput, { type: K }>) => void),
-		handler?: (event: Extract<PlayerOutput, { type: K }>) => void,
 	): () => void {
-		const [playerId, fn] = this.normalizeSubscribeArgs(playerIdOrHandler, handler);
-		return this.addListener(this.outputListeners, type, fn as any, playerId);
+		return this.addFlatListener(this.outputListeners, type, handler as any);
 	}
 
 	public request<K extends PlayerRequestInputType>(
+		playerId: string,
 		input: Extract<PlayerInput, { type: K }>,
 		options: PlayerRequestOptions<K> = {},
 	): Promise<PlayerRequestReply<K>["success"]> {
@@ -245,12 +208,12 @@ export class PlayerBus {
 			}
 			cleanups.push(
 				this.onOutput(contract.success, (event) => {
-					if (event.requestId === requestId) settle(() => resolve(event as PlayerRequestReply<K>["success"]));
+					if (event.requestId === requestId && event.playerId === playerId) settle(() => resolve(event as PlayerRequestReply<K>["success"]));
 				}),
 			);
 			cleanups.push(
 				this.onOutput(contract.error, (event: any) => {
-					if (event.requestId === requestId)
+					if (event.requestId === requestId && event.playerId === playerId)
 						settle(() =>
 							reject(
 								event.error instanceof Error ?
@@ -263,26 +226,42 @@ export class PlayerBus {
 			if (contract.progress && options.onProgress)
 				cleanups.push(
 					this.onOutput(contract.progress, (event) => {
-						if (event.requestId === requestId && !settled) options.onProgress!(event as PlayerRequestProgress<K>);
+						if (event.requestId === requestId && event.playerId === playerId && !settled)
+							options.onProgress!(event as PlayerRequestProgress<K>);
 					}),
 				);
 			this.emitInput(input);
 		});
 	}
 
+	// ---------------------------------------------------------------------
+	// RPC: one handler per type, shared by every player. `playerId` travels
+	// inside the execution context so a shared controller can look up its own
+	// per-player state.
+	// ---------------------------------------------------------------------
 	public requestRpc<K extends keyof PlayerRpcMap>(
+		playerId: string,
 		type: K,
 		request: PlayerRpcMap[K]["request"],
 		options?: PlayerBusRpcOptions,
 	): Promise<PlayerRpcMap[K]["response"]>;
-	public requestRpc<TRequest, TResponse>(type: string, request: TRequest, options?: PlayerBusRpcOptions): Promise<TResponse>;
-	public requestRpc<TRequest, TResponse>(type: string, request: TRequest, options: PlayerBusRpcOptions = {}): Promise<TResponse> {
+	public requestRpc<TRequest, TResponse>(
+		playerId: string,
+		type: string,
+		request: TRequest,
+		options?: PlayerBusRpcOptions,
+	): Promise<TResponse>;
+	public requestRpc<TRequest, TResponse>(
+		playerId: string,
+		type: string,
+		request: TRequest,
+		options: PlayerBusRpcOptions = {},
+	): Promise<TResponse> {
 		if (this.disposed)
 			return Promise.reject(new PlayerBusRequestError("disposed", type, `PlayerBus is disposed; cannot request RPC "${type}"`));
 		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
 		if (!handler) return Promise.reject(new PlayerBusRequestError("unhandled", type, `No RPC handler registered for "${type}"`));
 		if (options.signal?.aborted) return Promise.reject(new PlayerBusRequestError("aborted", type, `RPC "${type}" was aborted`));
-		const playerId = resolvePlayerId(options.playerId, request);
 		const requestId = createPlayerRequestId();
 		const context: PlayerBusRpcContext = {
 			playerId,
@@ -290,13 +269,9 @@ export class PlayerBus {
 			signal: options.signal ?? new AbortController().signal,
 			timestamp: Date.now(),
 		};
-		const scopedRequest =
-			request && typeof request === "object" && !Array.isArray(request) ?
-				{ ...(request as object), playerId }
-			:	request;
 		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
 		const operation = Promise.resolve()
-			.then(() => runWithPlayerId(playerId, () => handler(scopedRequest as TRequest, context)))
+			.then(() => handler(request, context))
 			.finally(() => {
 				if (this.latencyTrace?.enabled)
 					this.latencyTrace.record("rpc", type, start, { requestId, handler: handler.name || "anonymous" });
@@ -316,29 +291,24 @@ export class PlayerBus {
 
 	/** Invoke a synchronous RPC handler without exposing its owner through Player. */
 	public requestRpcSync<K extends keyof PlayerRpcMap>(
+		playerId: string,
 		type: K,
 		request: PlayerRpcMap[K]["request"],
-		options?: PlayerBusRpcOptions,
 	): PlayerRpcMap[K]["response"];
-	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest, options?: PlayerBusRpcOptions): TResponse;
-	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest, options: PlayerBusRpcOptions = {}): TResponse {
+	public requestRpcSync<TRequest, TResponse>(playerId: string, type: string, request: TRequest): TResponse;
+	public requestRpcSync<TRequest, TResponse>(playerId: string, type: string, request: TRequest): TResponse {
 		if (this.disposed) throw new PlayerBusRequestError("disposed", type, `PlayerBus is disposed; cannot request RPC "${type}"`);
 		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
 		if (!handler) throw new PlayerBusRequestError("unhandled", type, `No RPC handler registered for "${type}"`);
-		const playerId = resolvePlayerId(options.playerId, request);
 		const context: PlayerBusRpcContext = {
 			playerId,
 			requestId: createPlayerRequestId(),
-			signal: options.signal ?? new AbortController().signal,
+			signal: new AbortController().signal,
 			timestamp: Date.now(),
 		};
-		const scopedRequest =
-			request && typeof request === "object" && !Array.isArray(request) ?
-				{ ...(request as object), playerId }
-			:	request;
 		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
 		try {
-			const value = runWithPlayerId(playerId, () => handler(scopedRequest as TRequest, context));
+			const value = handler(request, context);
 			if (value && typeof (value as any).then === "function")
 				throw new Error(`RPC "${type}" is asynchronous; use requestRpc() instead`);
 			return value as TResponse;
@@ -356,6 +326,7 @@ export class PlayerBus {
 		return this.rpcHandlers.has(type);
 	}
 
+	/** Registered once by a shared (singleton) controller, never per player. */
 	public registerRpc<TRequest, TResponse>(type: string, handler: RpcHandler<TRequest, TResponse>): () => void {
 		if (this.disposed) return () => undefined;
 		this.rpcHandlers.set(type, handler);
@@ -364,9 +335,12 @@ export class PlayerBus {
 		};
 	}
 
-	public action(action: PlayerAction, context?: Partial<PlayerActionExecutionContext>): Promise<void> {
+	// ---------------------------------------------------------------------
+	// Actions: broadcast to every registered (shared) controller listener;
+	// `context.playerId` tells each listener which player's state to touch.
+	// ---------------------------------------------------------------------
+	public action(playerId: string, action: PlayerAction, context?: Partial<PlayerActionExecutionContext>): Promise<void> {
 		if (this.disposed) return Promise.resolve();
-		const playerId = context?.playerId ?? resolvePlayerId(action.playerId);
 		const execution: PlayerActionExecutionContext = {
 			playerId,
 			signal: context?.signal ?? new AbortController().signal,
@@ -378,19 +352,18 @@ export class PlayerBus {
 		};
 		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
 		const handlerDurations: number[] = [];
-		const listeners = [...this.actionListeners].filter((entry) => playerIdsMatch(entry.playerId, playerId));
 		return Promise.all(
-			listeners.map((entry) => {
+			[...this.actionListeners].map((handler) => {
 				const handlerStart = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
 				return Promise.resolve()
-					.then(() => runWithPlayerId(playerId, () => entry.handler(action, execution)))
+					.then(() => handler(action, execution))
 					.finally(() => {
 						if (this.latencyTrace?.enabled) {
 							const duration = this.latencyTrace.record("action", action.type, handlerStart, {
 								requestId: execution.requestId,
 								sessionId: execution.sessionId,
 								source: execution.source,
-								handler: entry.handler.name || "anonymous",
+								handler: handler.name || "anonymous",
 							});
 							handlerDurations.push(duration);
 						}
@@ -409,42 +382,35 @@ export class PlayerBus {
 			})
 			.then(() => undefined);
 	}
-	public onAction(handler: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>): () => void;
-	public onAction(
-		playerId: PlayerIdScope,
-		handler: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>,
-	): () => void;
-	public onAction(
-		playerIdOrHandler:
-			| PlayerIdScope
-			| ((action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>),
-		handler?: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>,
-	): () => void {
-		const [playerId, fn] = this.normalizeSubscribeArgs(playerIdOrHandler as any, handler as any);
-		const entry: ScopedActionListener = { playerId, handler: fn as any };
-		this.actionListeners.add(entry);
-		return () => this.actionListeners.delete(entry);
+	/** Registered once by a shared (singleton) controller, never per player. */
+	public onAction(handler: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>): () => void {
+		this.actionListeners.add(handler);
+		return () => this.actionListeners.delete(handler);
 	}
-	public event<K extends PlayerEventType>(event: Extract<PlayerEvent, { type: K }>): void {
-		if (!this.disposed) this.dispatch(this.eventListeners, event.type, event, (event as { playerId?: PlayerId }).playerId);
+
+	// ---------------------------------------------------------------------
+	// Events: scoped per (type, playerId) so a Player never observes another
+	// guild's events even though every controller instance is shared.
+	// ---------------------------------------------------------------------
+	public event<K extends PlayerEventType>(playerId: string, event: Extract<PlayerEvent, { type: K }>): void {
+		if (!this.disposed) this.dispatchScoped(this.eventListeners, event.type, playerId, event);
 	}
-	public publish<K extends PlayerEventType>(type: K, ...args: PlayerEventArgsMap[K]): void {
-		this.event(this.toEvent(type, args));
+	public publish<K extends PlayerEventType>(playerId: string, type: K, ...args: PlayerEventArgsMap[K]): void {
+		this.event(playerId, this.toEvent(type, args));
 	}
-	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void;
 	public subscribe<K extends PlayerEventType>(
+		playerId: string,
 		type: K,
-		playerId: PlayerIdScope,
 		listener: (event: Extract<PlayerEvent, { type: K }>) => void,
-	): () => void;
-	public subscribe<K extends PlayerEventType>(
-		type: K,
-		playerIdOrListener: PlayerIdScope | ((event: Extract<PlayerEvent, { type: K }>) => void),
-		listener?: (event: Extract<PlayerEvent, { type: K }>) => void,
 	): () => void {
-		const [playerId, fn] = this.normalizeSubscribeArgs(playerIdOrListener, listener);
-		return this.addListener(this.eventListeners, type, fn as any, playerId);
+		return this.addScopedListener(this.eventListeners, type, playerId, listener as any);
 	}
+
+	// ---------------------------------------------------------------------
+	// Queries: one handler per query type, shared by every player; the
+	// handler receives `playerId` and looks up its own state.
+	// ---------------------------------------------------------------------
+	/** Registered once by a shared (singleton) controller, never per player. */
 	public registerQuery<K extends PlayerQuery>(query: K, handler: PlayerQueryHandler<K>): () => void {
 		let handlers = this.queryHandlers.get(query);
 		if (!handlers) {
@@ -454,24 +420,22 @@ export class PlayerBus {
 		handlers.add(handler);
 		return () => handlers?.delete(handler);
 	}
-	public query<K extends PlayerQuery>(query: K, playerId?: PlayerId): Promise<PlayerQueryMap[K]> {
+	public query<K extends PlayerQuery>(playerId: string, query: K): Promise<PlayerQueryMap[K]> {
 		if (this.disposed) return Promise.resolve(undefined as any);
 		const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined;
 		if (!handler) return Promise.resolve(undefined as any);
-		const scope: PlayerQueryScope = { playerId: resolvePlayerId(playerId) };
 		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
-		return Promise.resolve(handler(scope)).finally(() => {
+		return Promise.resolve(handler(playerId)).finally(() => {
 			if (this.latencyTrace?.enabled) this.latencyTrace.record("query", query, start, { handler: handler.name || "anonymous" });
 		});
 	}
-	public querySync<K extends PlayerQuery>(query: K, playerId?: PlayerId): PlayerQueryMap[K] {
+	public querySync<K extends PlayerQuery>(playerId: string, query: K): PlayerQueryMap[K] {
 		if (this.disposed) return undefined as any;
 		const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined;
 		if (!handler) return undefined as any;
-		const scope: PlayerQueryScope = { playerId: resolvePlayerId(playerId) };
 		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
 		try {
-			const value = handler(scope);
+			const value = handler(playerId);
 			if (value && typeof (value as any).then === "function")
 				throw new Error(`Query "${query}" is asynchronous; use query() instead`);
 			return value as PlayerQueryMap[K];
@@ -479,6 +443,14 @@ export class PlayerBus {
 			if (this.latencyTrace?.enabled) this.latencyTrace.record("query", query, start, { handler: handler.name || "anonymous" });
 		}
 	}
+
+	/** Drop everything scoped to a single player (its event subscriptions). Shared, global
+	 * controller registrations (rpc/query/action) are untouched — controllers themselves
+	 * drop their per-player state slice via GlobalControllerRegistry. */
+	public disposePlayer(playerId: string): void {
+		for (const byPlayer of this.eventListeners.values()) byPlayer.delete(playerId);
+	}
+
 	public clear(): void {
 		for (const cancel of [...this.pendingRequests]) cancel();
 		this.inputListeners.clear();
@@ -550,43 +522,116 @@ export class PlayerBus {
 				return { type, leader: args[0], reason: args[1] } as any;
 		}
 	}
-	/**
-	 * Normalizes the (playerId?, handler) overload pair shared by onInput/onOutput/subscribe/onAction.
-	 * Omitting playerId scopes the listener to every player (PLAYER_ID_WILDCARD) — the correct default
-	 * for internal/global listeners and for existing call sites written before scoping existed.
-	 */
-	private normalizeSubscribeArgs<A extends (...args: any[]) => any>(
-		playerIdOrHandler: PlayerIdScope | A,
-		handler?: A,
-	): [PlayerIdScope, A] {
-		if (typeof playerIdOrHandler === "function") return [PLAYER_ID_WILDCARD, playerIdOrHandler];
-		return [playerIdOrHandler, handler as A];
-	}
-	private addListener<T extends string, E>(
-		map: Map<T, Set<ScopedListener<E>>>,
+	private addFlatListener<T extends string, E>(
+		map: Map<T, Set<(event: E) => any>>,
 		type: T,
 		handler: (event: E) => any,
-		playerId: PlayerIdScope = PLAYER_ID_WILDCARD,
 	): () => void {
 		let listeners = map.get(type);
 		if (!listeners) {
 			listeners = new Set();
 			map.set(type, listeners);
 		}
-		const entry: ScopedListener<E> = { playerId, handler };
-		listeners.add(entry);
-		return () => listeners?.delete(entry);
+		listeners.add(handler);
+		return () => listeners?.delete(handler);
 	}
-	private dispatch<T extends string, E>(
-		map: Map<T, Set<ScopedListener<E>>>,
+	private dispatchFlat<T extends string, E>(map: Map<T, Set<(event: E) => any>>, type: T, event: E): void {
+		for (const listener of map.get(type) ?? []) void listener(event);
+	}
+	private addScopedListener<T extends string, E>(
+		map: Map<T, Map<string, Set<(event: E) => any>>>,
 		type: T,
-		event: E,
-		eventPlayerId?: PlayerId,
-	): void {
-		for (const listener of map.get(type) ?? []) {
-			if (!playerIdsMatch(listener.playerId, eventPlayerId)) continue;
-			void listener.handler(event);
+		playerId: string,
+		handler: (event: E) => any,
+	): () => void {
+		let byPlayer = map.get(type);
+		if (!byPlayer) {
+			byPlayer = new Map();
+			map.set(type, byPlayer);
 		}
+		let listeners = byPlayer.get(playerId);
+		if (!listeners) {
+			listeners = new Set();
+			byPlayer.set(playerId, listeners);
+		}
+		listeners.add(handler);
+		return () => listeners?.delete(handler);
+	}
+	private dispatchScoped<T extends string, E>(
+		map: Map<T, Map<string, Set<(event: E) => any>>>,
+		type: T,
+		playerId: string,
+		event: E,
+	): void {
+		for (const listener of map.get(type)?.get(playerId) ?? []) void listener(event);
+	}
+}
+
+/**
+ * Per-player facade over the shared `GlobalPlayerBus`. `Player`, its action
+ * executor and its capabilities object all consume the bus through this
+ * facade so they keep the exact same call syntax they always had (no
+ * `playerId` argument to pass around) while every call is transparently
+ * routed to the single global bus with `playerId` bound.
+ */
+export class PlayerBus {
+	public constructor(
+		private readonly global: GlobalPlayerBus,
+		private readonly playerId: string,
+	) {}
+
+	public get globalBus(): GlobalPlayerBus {
+		return this.global;
+	}
+
+	public request<K extends PlayerRequestInputType>(
+		input: Omit<Extract<PlayerInput, { type: K }>, "playerId">,
+		options?: PlayerRequestOptions<K>,
+	): Promise<PlayerRequestReply<K>["success"]> {
+		return this.global.request(this.playerId, { ...input, playerId: this.playerId } as Extract<PlayerInput, { type: K }>, options);
+	}
+	public requestRpc<K extends keyof PlayerRpcMap>(
+		type: K,
+		request: PlayerRpcMap[K]["request"],
+		options?: PlayerBusRpcOptions,
+	): Promise<PlayerRpcMap[K]["response"]>;
+	public requestRpc<TRequest, TResponse>(type: string, request: TRequest, options?: PlayerBusRpcOptions): Promise<TResponse>;
+	public requestRpc<TRequest, TResponse>(type: string, request: TRequest, options?: PlayerBusRpcOptions): Promise<TResponse> {
+		return this.global.requestRpc(this.playerId, type as any, request as any, options) as Promise<TResponse>;
+	}
+	public requestRpcSync<K extends keyof PlayerRpcMap>(type: K, request: PlayerRpcMap[K]["request"]): PlayerRpcMap[K]["response"];
+	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest): TResponse;
+	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest): TResponse {
+		return this.global.requestRpcSync(this.playerId, type as any, request as any) as TResponse;
+	}
+	public action(action: PlayerAction, context?: Partial<PlayerActionExecutionContext>): Promise<void> {
+		return this.global.action(this.playerId, action, context);
+	}
+	public event<K extends PlayerEventType>(event: Extract<PlayerEvent, { type: K }>): void {
+		this.global.event(this.playerId, event);
+	}
+	public publish<K extends PlayerEventType>(type: K, ...args: PlayerEventArgsMap[K]): void {
+		this.global.publish(this.playerId, type, ...args);
+	}
+	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void {
+		return this.global.subscribe(this.playerId, type, listener);
+	}
+	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> {
+		return this.global.query(this.playerId, query);
+	}
+	public querySync<K extends PlayerQuery>(query: K): PlayerQueryMap[K] {
+		return this.global.querySync(this.playerId, query);
+	}
+	public get isDisposed(): boolean {
+		return this.global.isDisposed;
+	}
+	/** Detach this player from the shared bus (its event subscriptions only — shared
+	 * controllers drop their per-player state slice separately via the controller registry). */
+	public clear(): void {
+		this.global.disposePlayer(this.playerId);
+	}
+	public dispose(): void {
+		this.clear();
 	}
 }
 
