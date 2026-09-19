@@ -1,34 +1,50 @@
-import type { PlayerBus, PlayerBusRpcContext } from "../structures/PlayerBus";
+import type { GlobalPlayerBus, PlayerBus, PlayerBusRpcContext } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, SearchResult, Track } from "../types";
 import type { PlaybackPlayControllerOptions } from "../types";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 
+// playback.play must be registered exactly once on the shared GlobalPlayerBus; each
+// per-player PlaybackPlayController registers itself here.
+const playControllers = new Map<string, PlaybackPlayController>();
+const playRpcRegistered = new WeakSet<GlobalPlayerBus>();
+function ensurePlayRpcBridge(bus: GlobalPlayerBus): void {
+	if (playRpcRegistered.has(bus)) return;
+	playRpcRegistered.add(bus);
+	bus.registerRpc<{ query: string | Track | SearchResult | null; requestedBy?: string }, boolean>(
+		CONTROLLER_RPC.play,
+		(request, context) => {
+			const controller = playControllers.get(context.playerId);
+			if (!controller) return Promise.resolve(false);
+			return controller.play(request.query, request.requestedBy, context);
+		},
+	);
+}
+
 /** Owns the public play RPC: search, queue insertion, TTS interrupt, and initial skip.
  * Talks to sibling playback controllers only through PlayerBus queries/actions —
- * never by holding a direct reference to them. */
+ * never by holding a direct reference to them. One instance per player. */
 export class PlaybackPlayController {
-	private readonly detachRpc: () => void;
+	private readonly playerId: string;
 	private readonly bus: PlayerBus;
 	private readonly isWaitingForQueue: PlaybackPlayControllerOptions["isWaitingForQueue"];
 	private readonly debug: PlaybackPlayControllerOptions["debug"];
 	private readonly lifecycleSignal: AbortSignal;
 	private readonly adapters: PlaybackPlayControllerOptions["adapters"];
 
-	public constructor(options: PlaybackPlayControllerOptions) {
+	public constructor(playerId: string, options: PlaybackPlayControllerOptions) {
+		this.playerId = playerId;
 		this.bus = options.bus;
 		this.isWaitingForQueue = options.isWaitingForQueue;
 		this.debug = options.debug;
 		this.lifecycleSignal = options.lifecycleSignal;
 		this.adapters = options.adapters;
-		this.detachRpc = this.bus.registerRpc<{ query: string | Track | SearchResult | null; requestedBy?: string }, boolean>(
-			CONTROLLER_RPC.play,
-			(request, context) => this.play(request.query, request.requestedBy, context),
-		);
+		ensurePlayRpcBridge(this.bus.globalBus);
+		playControllers.set(playerId, this);
 	}
 
 	public dispose(): void {
-		this.detachRpc();
+		if (playControllers.get(this.playerId) === this) playControllers.delete(this.playerId);
 	}
 
 	private currentSession(): PlaybackSession | null {
@@ -39,14 +55,14 @@ export class PlaybackPlayController {
 		await this.bus.action({ type: "SKIP", requestId: context.requestId }, context);
 	}
 
-	private async play(
+	public async play(
 		query: string | Track | SearchResult | null,
 		requestedBy: string | undefined,
 		rpcContext: PlayerBusRpcContext,
 	): Promise<boolean> {
 		if (rpcContext.signal.aborted || this.lifecycleSignal.aborted) return false;
 		const context: PlayerMessageContext = {
-			playerId: rpcContext.playerId,
+			playerId: this.playerId,
 			requestId: rpcContext.requestId,
 			source: "PlaybackPlayController:play",
 			signal: AbortSignal.any([rpcContext.signal, this.lifecycleSignal]),

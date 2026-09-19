@@ -1,20 +1,23 @@
 import type { Player } from "../structures/Player";
-import type { PlayerBus } from "../structures/PlayerBus";
-import type { PlayerConnectionBridgeOptions } from "../types";
+import type { GlobalPlayerBus } from "../structures/PlayerBus";
 
-/** Syncs voice connection state from ConnectionController to the public Player facade. */
+/** Syncs voice connection state from ConnectionController to the public Player facade.
+ *  One instance per player (cheap, not a shared controller); filters the shared bus's
+ *  flat connection output stream down to this player's own events. */
 export class PlayerConnectionBridge {
 	private readonly detach: () => void;
 	private player: Player | null = null;
 
-	constructor(options: { player?: Player | null; bus: PlayerBus; debug?: any; guildId: string }) {
+	constructor(options: { player?: Player | null; bus: GlobalPlayerBus; debug?: any; guildId: string }) {
 		const { player, bus, debug, guildId } = options;
 		this.player = player ?? null;
 		const detachConnected = bus.onOutput("[Connection]->[Player]:connected", (event) => {
+			if (event.playerId !== guildId) return;
 			if (this.player) this.player.connection = event.connection;
 			debug?.(`[Player] Connection set guild=${guildId} session=${event.sessionId}`);
 		});
 		const detachDisconnected = bus.onOutput("[Connection]->[Player]:disconnected", (event) => {
+			if (event.playerId !== guildId) return;
 			if (this.player) this.player.connection = null;
 			debug?.(`[Player] Connection cleared guild=${guildId} reason=${event.reason ?? "unknown"}`);
 		});

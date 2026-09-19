@@ -21,7 +21,7 @@ export { PlaybackController } from "./controller/PlaybackController";
 export { ConnectionController } from "./controller/ConnectionController";
 export { VolumeController } from "./controller/VolumeController";
 export { StreamController } from "./controller/StreamController";
-export { QueueController, QueueController as Queue } from "./controller/QueueController";
+export { QueueController, QueueState, QueueState as Queue } from "./controller/QueueController";
 export { AntiStuckController } from "./controller/AntiStuckController";
 export { PlaybackSessionController } from "./controller/PlaybackSessionController";
 export { TransitionController } from "./controller/TransitionController";

@@ -8,8 +8,8 @@ import type {
 	TrackMiddleware,
 	TrackMiddlewareContext,
 } from "../types";
-import { FilterController } from "./FilterController";
-import type { PlayerBus } from "../structures/PlayerBus";
+import { FilterEngine } from "./FilterController";
+import { PlayerBus, type GlobalPlayerBus } from "../structures/PlayerBus";
 import type { PlayerBusRpcContext } from "../types";
 import type { SaveControllerOptions } from "../types";
 
@@ -19,10 +19,10 @@ import type { SaveControllerOptions } from "../types";
  * Save deliberately resolves a fresh provider stream instead of reusing the
  * active playback/preload stream. This keeps saving isolated from playback.
  */
-export class SaveController {
+class SaveWorker {
 	private readonly lifecycleAbort = new AbortController();
 	private disposed = false;
-	private readonly activeFilterControllers = new Set<FilterController>();
+	private readonly activeFilterEngines = new Set<FilterEngine>();
 	private readonly middleware: TrackMiddleware[];
 	private readonly context: TrackMiddlewareContext;
 	private readonly resolveStream: SaveControllerOptions["resolveStream"];
@@ -38,27 +38,14 @@ export class SaveController {
 		this.resolveVideoStream = options.resolveVideoStream;
 		this.ffmpegPath = options.ffmpegPath;
 		this.debug = options.debug ?? (() => undefined);
-		if (options.bus) {
-			this.detachRpcs.push(
-				options.bus.registerRpc<{ track: Track; options?: SaveOptions | string }, Readable>(
-					"save",
-					({ track, options: saveOptions }, rpcContext) => this.save(track, saveOptions, rpcContext.signal),
-				),
-				options.bus.registerRpc<{ track: Track; options?: SaveVideoOptions | string }, Readable>(
-					"save.video",
-					({ track, options: saveOptions }, rpcContext) => this.saveVideo(track, saveOptions, rpcContext.signal),
-				),
-			);
-		}
 	}
 
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.lifecycleAbort.abort();
-		for (const controller of this.activeFilterControllers) controller.destroy();
-		this.activeFilterControllers.clear();
-		for (const detach of this.detachRpcs.splice(0)) detach();
+		for (const controller of this.activeFilterEngines) controller.destroy();
+		this.activeFilterEngines.clear();
 	}
 
 	public async save(track: Track, options?: SaveOptions | string, signal?: AbortSignal): Promise<Readable> {
@@ -84,10 +71,10 @@ export class SaveController {
 			return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions);
 		}
 
-		const filterController = new FilterController({ refreshPlayerResource: async () => true }, this.debug, undefined, {
+		const filterController = new FilterEngine({ refreshPlayerResource: async () => true }, this.debug, undefined, {
 			ffmpegPath: this.ffmpegPath,
 		});
-		this.activeFilterControllers.add(filterController);
+		this.activeFilterEngines.add(filterController);
 		const cleanupAbort = this.bindAbortToFilter(filterController, operationSignal);
 
 		try {
@@ -105,7 +92,7 @@ export class SaveController {
 			return this.decorateStream(this.bindAbortToStream(output, operationSignal), saveOptions);
 		} catch (error) {
 			cleanupAbort();
-			this.activeFilterControllers.delete(filterController);
+			this.activeFilterEngines.delete(filterController);
 			filterController.destroy();
 			throw error;
 		}
@@ -192,7 +179,7 @@ export class SaveController {
 		}
 	}
 
-	private bindAbortToFilter(controller: FilterController, signal?: AbortSignal): () => void {
+	private bindAbortToFilter(controller: FilterEngine, signal?: AbortSignal): () => void {
 		const onLifecycleAbort = () => controller.destroy();
 		const onOperationAbort = () => controller.destroy();
 		this.lifecycleAbort.signal.addEventListener("abort", onLifecycleAbort, { once: true });
@@ -215,9 +202,9 @@ export class SaveController {
 		return stream;
 	}
 
-	private disposeFilterOnStreamEnd(controller: FilterController, stream: Readable): void {
+	private disposeFilterOnStreamEnd(controller: FilterEngine, stream: Readable): void {
 		const cleanup = () => {
-			this.activeFilterControllers.delete(controller);
+			this.activeFilterEngines.delete(controller);
 			controller.destroy();
 		};
 		stream.once("close", cleanup);
@@ -237,5 +224,41 @@ export class SaveController {
 		const error = new Error("Save operation was aborted");
 		error.name = "AbortError";
 		return error;
+	}
+}
+
+/** Shared, singleton controller: owns the non-playback stream export pipeline for
+ *  every player, keyed by playerId.
+ *
+ * Save deliberately resolves a fresh provider stream instead of reusing the active
+ * playback/preload stream. This keeps saving isolated from playback. */
+export class SaveController {
+	private readonly workers = new Map<string, SaveWorker>();
+
+	public constructor(bus: GlobalPlayerBus) {
+		bus.registerRpc<{ track: Track; options?: SaveOptions | string }, Readable>(
+			"save",
+			({ track, options: saveOptions }, rpcContext) => {
+				const worker = this.workers.get(rpcContext.playerId);
+				if (!worker) throw new Error("SaveController is disposed");
+				return worker.save(track, saveOptions, rpcContext.signal);
+			},
+		);
+		bus.registerRpc<{ track: Track; options?: SaveVideoOptions | string }, Readable>(
+			"save.video",
+			({ track, options: saveOptions }, rpcContext) => {
+				const worker = this.workers.get(rpcContext.playerId);
+				if (!worker) throw new Error("SaveController is disposed");
+				return worker.saveVideo(track, saveOptions, rpcContext.signal);
+			},
+		);
+	}
+
+	attach(playerId: string, options: Omit<SaveControllerOptions, "bus">): void {
+		this.workers.set(playerId, new SaveWorker(options));
+	}
+	detach(playerId: string): void {
+		this.workers.get(playerId)?.dispose();
+		this.workers.delete(playerId);
 	}
 }

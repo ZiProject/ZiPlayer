@@ -51,6 +51,8 @@ export type {
 
 export { PlayerActionPriority } from "../types/bus";
 
+type DistributiveOmit<T, K extends PropertyKey> = T extends any ? Omit<T, K> : never;
+
 interface RequestContract {
 	success: PlayerOutput["type"];
 	error: PlayerOutput["type"];
@@ -584,11 +586,11 @@ export class PlayerBus {
 		return this.global;
 	}
 
-	public request<K extends PlayerRequestInputType>(
-		input: Omit<Extract<PlayerInput, { type: K }>, "playerId">,
-		options?: PlayerRequestOptions<K>,
-	): Promise<PlayerRequestReply<K>["success"]> {
-		return this.global.request(this.playerId, { ...input, playerId: this.playerId } as Extract<PlayerInput, { type: K }>, options);
+	public request<T extends DistributiveOmit<PlayerInput, "playerId">>(
+		input: T,
+		options?: PlayerRequestOptions<T["type"]>,
+	): Promise<PlayerRequestReply<T["type"]>["success"]> {
+		return this.global.request(this.playerId, { ...input, playerId: this.playerId } as unknown as PlayerInput, options as any);
 	}
 	public requestRpc<K extends keyof PlayerRpcMap>(
 		type: K,
@@ -616,6 +618,27 @@ export class PlayerBus {
 	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void {
 		return this.global.subscribe(this.playerId, type, listener);
 	}
+	/** Convenience for per-player helper objects that need to emit an output event
+	 * (e.g. resolving a `request()` promise) without importing GlobalPlayerBus. */
+	public emitOutput<T extends DistributiveOmit<PlayerOutput, "playerId">>(event: T): void {
+		this.global.emitOutput({ ...event, playerId: this.playerId } as unknown as PlayerOutput);
+	}
+	public onOutput<K extends PlayerOutput["type"]>(
+		type: K,
+		handler: (event: Extract<PlayerOutput, { type: K }>) => void,
+	): () => void {
+		return this.global.onOutput(type, (event) => {
+			if (event.playerId === this.playerId) handler(event);
+		});
+	}
+	public onInput<K extends PlayerInput["type"]>(
+		type: K,
+		handler: (event: Extract<PlayerInput, { type: K }>) => void | Promise<void>,
+	): () => void {
+		return this.global.onInput(type, (event) => {
+			if (event.playerId === this.playerId) return handler(event);
+		});
+	}
 	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> {
 		return this.global.query(this.playerId, query);
 	}
@@ -624,6 +647,9 @@ export class PlayerBus {
 	}
 	public get isDisposed(): boolean {
 		return this.global.isDisposed;
+	}
+	public hasRpc(type: string): boolean {
+		return this.global.hasRpc(type);
 	}
 	/** Detach this player from the shared bus (its event subscriptions only — shared
 	 * controllers drop their per-player state slice separately via the controller registry). */

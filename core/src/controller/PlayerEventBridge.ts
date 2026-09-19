@@ -1,9 +1,27 @@
 import type { Player } from "../structures/Player";
-import type { PlayerEventType, PlayerBus, PlayerEvent } from "../structures/PlayerBus";
+import type { PlayerEventType, GlobalPlayerBus, PlayerEvent } from "../structures/PlayerBus";
 import { PlayerEventDebug } from "./PlayerEventDebug";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
 
-/** Bridges canonical PlayerBus events to the public Player event API. */
+// The tts.emitStart/End RPCs are registered once per shared GlobalPlayerBus (not once
+// per player) and routed to whichever Player is currently attached for that playerId.
+const ttsBridgeRegistered = new WeakSet<GlobalPlayerBus>();
+const ttsPlayers = new Map<string, Player>();
+function ensureTtsRpcBridge(bus: GlobalPlayerBus): void {
+	if (ttsBridgeRegistered.has(bus)) return;
+	ttsBridgeRegistered.add(bus);
+	bus.registerRpc<{ track: any }, void>("player.emitTtsStart", ({ track }, ctx) => {
+		const player = ttsPlayers.get(ctx.playerId);
+		if (player && !player.destroyed) player.emit("ttsStart", { track });
+	});
+	bus.registerRpc<void, void>("player.emitTtsEnd", (_req, ctx) => {
+		const player = ttsPlayers.get(ctx.playerId);
+		if (player && !player.destroyed) player.emit("ttsEnd");
+	});
+}
+
+/** Bridges canonical PlayerBus events to the public Player event API. One instance per
+ *  player (cheap; not a shared controller). */
 export class PlayerEventBridge {
 	private readonly detach: Array<() => void> = [];
 	private disposed = false;
@@ -13,10 +31,13 @@ export class PlayerEventBridge {
 	public constructor(
 		private player: Player | null = null,
 		private readonly manager: any,
-		private readonly bus: PlayerBus,
+		private readonly bus: GlobalPlayerBus,
 		private readonly eventDebug: PlayerEventDebug,
+		private readonly playerId: string,
 	) {
-		this.previousQueue = bus.querySync("queue") ?? [];
+		ensureTtsRpcBridge(bus);
+		if (this.player) ttsPlayers.set(this.playerId, this.player);
+		this.previousQueue = bus.querySync(playerId, "queue") ?? [];
 		this.debug("attached", { queueSize: this.previousQueue.length });
 		const events: PlayerEventType[] = [
 			"initialized",
@@ -53,23 +74,18 @@ export class PlayerEventBridge {
 			"forwardModeStart",
 			"forwardModeEnd",
 		];
-		for (const type of events) this.detach.push(this.bus.subscribe(type, (event) => this.forward(event)));
+		for (const type of events) this.detach.push(this.bus.subscribe(this.playerId, type, (event) => this.forward(event)));
 		this.detach.push(
 			this.bus.onOutput("[Connection]->[Player]:error", (event) => {
-				if (this.disposed || (this.player && this.player.destroyed)) return;
+				if (event.playerId !== this.playerId || this.disposed || (this.player && this.player.destroyed)) return;
 				this.player?.emit("connectionError", event.error);
-			}),
-			this.bus.registerRpc<{ track: any }, void>("player.emitTtsStart", ({ track }) => {
-				if (!this.disposed && this.player && !this.player.destroyed) this.player.emit("ttsStart", { track });
-			}),
-			this.bus.registerRpc<void, void>("player.emitTtsEnd", () => {
-				if (!this.disposed && this.player && !this.player.destroyed) this.player.emit("ttsEnd");
 			}),
 		);
 	}
 
 	public attachPlayer(player: Player): void {
 		this.player = player;
+		ttsPlayers.set(this.playerId, player);
 	}
 
 	private forward(event: PlayerEvent): void {
@@ -276,6 +292,7 @@ export class PlayerEventBridge {
 	public dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		ttsPlayers.delete(this.playerId);
 		for (const unsubscribe of this.detach.splice(0)) {
 			try {
 				unsubscribe();

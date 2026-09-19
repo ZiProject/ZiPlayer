@@ -11,7 +11,7 @@ import type {
 } from "../types";
 import type { PlaybackSession } from "./PlaybackSession";
 import type { PreloadManager } from "./PreloadManager";
-import type { PlayerBus } from "./PlayerBus";
+import { PlayerBus, type GlobalPlayerBus } from "./PlayerBus";
 import { CONTROLLER_RPC } from "../controller/ControllerBusContract";
 
 const TRACK_LOADER_RPC = {
@@ -20,6 +20,59 @@ const TRACK_LOADER_RPC = {
 	resetRecovery: "controller.track.resetRecovery",
 	getRecoveryCount: "controller.track.getRecoveryCount",
 } as const;
+
+// TrackLoader is owned per-player (it's injected directly into that player's
+// PreloadController worker), but the RPC endpoints below must be registered exactly
+// once on the shared GlobalPlayerBus. Register once, guarded by bus identity, and
+// dispatch to whichever TrackLoader is currently registered for that playerId.
+const trackLoaderRpcRegistered = new WeakSet<GlobalPlayerBus>();
+const trackLoaders = new Map<string, TrackLoader>();
+function ensureTrackLoaderRpcBridge(bus: GlobalPlayerBus): void {
+	if (trackLoaderRpcRegistered.has(bus)) return;
+	trackLoaderRpcRegistered.add(bus);
+	const forward = <TReq, TRes>(handler: (loader: TrackLoader, request: TReq, playerId: string) => TRes) => {
+		return (request: TReq, context: { playerId: string }): TRes => {
+			const loader = trackLoaders.get(context.playerId);
+			if (!loader) throw new Error("No TrackLoader registered for this player");
+			return handler(loader, request, context.playerId);
+		};
+	};
+	bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+		CONTROLLER_RPC.playbackRecover,
+		forward((loader, { track, session }, playerId) =>
+			bus.requestRpc(playerId, CONTROLLER_RPC.trackLoadWithRecovery, { track, session }),
+		),
+	);
+	bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+		CONTROLLER_RPC.playbackLoadFresh,
+		forward((loader, { track, session }, playerId) => bus.requestRpc(playerId, CONTROLLER_RPC.trackLoad, { track, session })),
+	);
+	bus.registerRpc<{ track: Track }, TrackLoadResult | null>(
+		CONTROLLER_RPC.playbackLoadFreshCurrent,
+		forward((loader, { track }, playerId) => {
+			const session = bus.querySync(playerId, "playbackSessionInternal");
+			if (!session) return null;
+			return bus.requestRpc(playerId, CONTROLLER_RPC.trackLoad, { track, session });
+		}),
+	);
+	bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+		TRACK_LOADER_RPC.load,
+		forward((loader, { track, session }) => loader.load(track, session)),
+	);
+	bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+		TRACK_LOADER_RPC.loadWithRecovery,
+		forward((loader, { track, session }) => loader.loadWithRecovery(track, session)),
+	);
+	bus.registerRpc<{ track?: Track }, void>(
+		TRACK_LOADER_RPC.resetRecovery,
+		forward((loader, { track }) => loader.resetRecovery(track)),
+	);
+	bus.registerRpc<{ track: Track }, number>(
+		TRACK_LOADER_RPC.getRecoveryCount,
+		forward((loader, { track }) => loader.getRecoveryCount(track)),
+	);
+	bus.registerRpc<{ track: Track }, Track>("track.middleware", forward((loader, { track }) => loader.applyMiddleware(track)));
+}
 
 export class TrackLoader {
 	private disposed = false;
@@ -33,7 +86,8 @@ export class TrackLoader {
 	private readonly bus?: PlayerBus;
 	private readonly detachRpcs: Array<() => void> = [];
 	private readonly failures = new Map<string, number>();
-	constructor(options: TrackLoaderOptions) {
+	private readonly playerId?: string;
+	constructor(options: TrackLoaderOptions & { playerId?: string }) {
 		this.middleware = [...(options.middleware ?? [])];
 		this.context = options.context;
 		this.resolvers = [...(options.resolvers ?? [])];
@@ -49,40 +103,10 @@ export class TrackLoader {
 		this.qualityController = options.qualityController;
 		this.debugLog = options.debug ?? (() => undefined);
 		this.bus = options.bus;
-		if (this.bus) {
-			this.detachRpcs.push(
-				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
-					CONTROLLER_RPC.playbackRecover,
-					({ track, session }, context) =>
-						this.bus!.requestRpc(CONTROLLER_RPC.trackLoadWithRecovery, { track, session }, { signal: context.signal }),
-				),
-				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
-					CONTROLLER_RPC.playbackLoadFresh,
-					({ track, session }, context) =>
-						this.bus!.requestRpc(CONTROLLER_RPC.trackLoad, { track, session }, { signal: context.signal }),
-				),
-				this.bus.registerRpc<{ track: Track }, TrackLoadResult | null>(
-					CONTROLLER_RPC.playbackLoadFreshCurrent,
-					({ track }, context) => {
-						const session = this.bus!.querySync("playbackSessionInternal");
-						if (!session) return null;
-						return this.bus!.requestRpc(CONTROLLER_RPC.trackLoad, { track, session }, { signal: context.signal });
-					},
-				),
-				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
-					TRACK_LOADER_RPC.load,
-					({ track, session }) => this.load(track, session),
-				),
-				this.bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
-					TRACK_LOADER_RPC.loadWithRecovery,
-					({ track, session }) => this.loadWithRecovery(track, session),
-				),
-				this.bus.registerRpc<{ track?: Track }, void>(TRACK_LOADER_RPC.resetRecovery, ({ track }) => this.resetRecovery(track)),
-				this.bus.registerRpc<{ track: Track }, number>(TRACK_LOADER_RPC.getRecoveryCount, ({ track }) =>
-					this.getRecoveryCount(track),
-				),
-				this.bus.registerRpc<{ track: Track }, Track>("track.middleware", ({ track }) => this.applyMiddleware(track)),
-			);
+		this.playerId = options.playerId;
+		if (this.bus && this.playerId) {
+			ensureTrackLoaderRpcBridge(this.bus.globalBus);
+			trackLoaders.set(this.playerId, this);
 		}
 	}
 	addResolver(resolver: TrackStreamResolver): () => void {
@@ -171,8 +195,7 @@ export class TrackLoader {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		for (const detach of this.detachRpcs) detach();
-		this.detachRpcs.length = 0;
+		if (this.playerId && trackLoaders.get(this.playerId) === this) trackLoaders.delete(this.playerId);
 		this.failures.clear();
 	}
 	private async resolve(track: Track, session: PlaybackSession): Promise<StreamInfo> {

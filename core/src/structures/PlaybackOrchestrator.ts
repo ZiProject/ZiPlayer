@@ -29,19 +29,20 @@ export class PlaybackOrchestrator {
 	private readonly playController: PlaybackPlayController;
 
 	constructor(
+		private readonly playerId: string,
 		private readonly bus: PlayerBus,
-		options: PlaybackOrchestratorOptions = {},
+		options: PlaybackOrchestratorOptions & { sessionController: PlaybackSessionController },
 	) {
 		this.debug = options.debug ?? (() => undefined);
 		this.adapters = options.adapters;
-		this.sessionController = options.sessionController ?? new PlaybackSessionController(bus);
-		this.preparationController = new PlaybackPreparationController({
+		this.sessionController = options.sessionController;
+		this.preparationController = new PlaybackPreparationController(playerId, {
 			bus,
 			isCurrentSession: (session, context) => this.matchesContext(session, context),
 			queueSnapshot: () => this.queueSnapshot(),
 			setQueueRelated: (tracks) => this.setQueueRelated(tracks),
 		});
-		this.startController = new PlaybackStartController({
+		this.startController = new PlaybackStartController(playerId, {
 			bus,
 			sessionController: this.sessionController,
 			transitionEnabled: () => this.transitionEnabled(),
@@ -49,8 +50,8 @@ export class PlaybackOrchestrator {
 			prepareTrack: (session, context) => this.preparationController.prepareTrack(session, context),
 			adapters: this.adapters,
 		});
-		this.seekController = new PlaybackSeekController(bus, this.sessionController);
-		this.trackEndController = new PlaybackTrackEndController({
+		this.seekController = new PlaybackSeekController(bus.globalBus, this.sessionController);
+		this.trackEndController = new PlaybackTrackEndController(playerId, {
 			bus,
 			nextThroughBus: (ignoreLoop, context) => this.nextThroughBus(ignoreLoop, context),
 			stopPlayback: (signal) => this.stopPlayback(signal),
@@ -65,18 +66,21 @@ export class PlaybackOrchestrator {
 			publishState: () => this.publishState(),
 			setWaitingForQueue: (waiting) => this.trackEndController.setWaitingForQueue(waiting),
 		});
-		this.playController = new PlaybackPlayController({
+		this.playController = new PlaybackPlayController(playerId, {
 			bus,
 			isWaitingForQueue: () => this.trackEndController.isWaitingForQueue,
 			debug: this.debug,
 			lifecycleSignal: this.lifecycleAbort.signal,
 			adapters: this.adapters,
 		});
-		this.detachAction = bus.onAction((a, c) => this.handleAction(a, c));
+		this.detachAction = bus.globalBus.onAction((a, c) => {
+			if (c.playerId === this.playerId) return this.handleAction(a, c);
+		});
 		this.detachTrackEnd = bus.subscribe("TRACK_END", (event) => {
 			const session = event.session;
 			if (!session || session.status === "ended" || session.status === "stopped") return;
-			if (!this.sessionController.current || this.sessionController.current.id !== session.id) return;
+			const current = this.sessionController.current(this.playerId);
+			if (!current || current.id !== session.id) return;
 			void this.trackEndController.onTrackEnd(session);
 		});
 		this.detachQueueEnd = bus.subscribe("queueEnd", () => {
@@ -89,7 +93,7 @@ export class PlaybackOrchestrator {
 	}
 
 	get currentSession() {
-		return this.sessionController.current;
+		return this.sessionController.current(this.playerId);
 	}
 
 	get transitionPolicy() {
@@ -102,7 +106,8 @@ export class PlaybackOrchestrator {
 	}
 
 	private isCurrentSession(sessionId: number): boolean {
-		return !!this.sessionController.current && this.sessionController.current.owns(sessionId);
+		const current = this.sessionController.current(this.playerId);
+		return !!current && current.owns(sessionId);
 	}
 
 	private queueSnapshot(): Track[] {
@@ -129,7 +134,7 @@ export class PlaybackOrchestrator {
 		this.detachQueueChanged();
 		this.detachQueueEnd();
 		for (const d of this.detachRpcs.splice(0)) d();
-		this.sessionController.clear();
+		this.sessionController.clear(this.playerId);
 		this.trackEndController.dispose();
 		this.playController.dispose();
 		this.preparationController.dispose();
@@ -149,7 +154,7 @@ export class PlaybackOrchestrator {
 				await this.skipController.skip(context);
 				break;
 			case "PAUSE": {
-				const session = this.sessionController.current;
+				const session = this.sessionController.current(this.playerId);
 				if (
 					session?.isActive() &&
 					this.matchesContext(session, context) &&
@@ -162,7 +167,7 @@ export class PlaybackOrchestrator {
 				break;
 			}
 			case "RESUME": {
-				const session = this.sessionController.current;
+				const session = this.sessionController.current(this.playerId);
 				if (
 					session?.isActive() &&
 					this.matchesContext(session, context) &&
@@ -175,7 +180,7 @@ export class PlaybackOrchestrator {
 				break;
 			}
 			case "STOP": {
-				const session = this.sessionController.current;
+				const session = this.sessionController.current(this.playerId);
 				if (session && !this.matchesContext(session, context)) break;
 				this.stopPlayback(context.signal);
 				if (session?.isActive()) session.markStopped();
@@ -213,6 +218,6 @@ export class PlaybackOrchestrator {
 	}
 
 	private publishState(): void {
-		this.bus.event({ type: "playbackStateChanged", session: this.sessionController.current?.snapshot() ?? null });
+		this.bus.event({ type: "playbackStateChanged", session: this.sessionController.current(this.playerId)?.snapshot() ?? null });
 	}
 }

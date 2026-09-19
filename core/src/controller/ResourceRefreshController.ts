@@ -1,31 +1,20 @@
 import type { AudioResource, StreamType } from "@discordjs/voice";
-import type { PlayerBus, PlayerInput } from "../structures/PlayerBus";
+import { PlayerBus, type GlobalPlayerBus, type PlayerInput } from "../structures/PlayerBus";
 import type { PlayerBusRpcContext } from "../types";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlaybackSessionSnapshot, StreamInfo, Track } from "../types";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
-import type { ResourceRefreshControllerOptions } from "../types";
 
-/** Owns resource refresh workflow and bridges Player refresh requests to it. */
-export class ResourceRefreshController {
-	private readonly detach: () => void;
-	private readonly detachRpc: () => void;
-	private readonly bus: PlayerBus;
+/** Per-player resource-refresh workflow. Owned by the shared `ResourceRefreshController`
+ *  below, one instance per active player, talking to the shared bus through a
+ *  player-scoped `PlayerBus` facade. */
+class ResourceRefreshWorker {
 	private readonly lifecycleAbort = new AbortController();
 	private refreshSequence = 0;
 	private refreshAbortController: AbortController | null = null;
 	private disposed = false;
 
-	constructor(options: ResourceRefreshControllerOptions) {
-		this.bus = options.bus;
-		this.detachRpc = this.bus.registerRpc<{ position: number }, PlaybackSessionSnapshot>(
-			"playback.refreshResource",
-			({ position }, context) => this.refreshResource(position, context),
-		);
-		this.detach = options.bus.onInput("[Player]->[Resource]:refresh", (event) => {
-			void this.handleRefresh(event);
-		});
-	}
+	constructor(private readonly bus: PlayerBus) {}
 
 	dispose(): void {
 		if (this.disposed) return;
@@ -34,11 +23,9 @@ export class ResourceRefreshController {
 		this.refreshSequence++;
 		this.refreshAbortController?.abort();
 		this.refreshAbortController = null;
-		this.detachRpc();
-		this.detach();
 	}
 
-	private async refreshResource(position: number, rpcContext: PlayerBusRpcContext): Promise<PlaybackSessionSnapshot> {
+	async refreshResource(position: number, rpcContext: PlayerBusRpcContext): Promise<PlaybackSessionSnapshot> {
 		const session = this.bus.querySync("playbackSessionInternal");
 		if (this.disposed || !session?.track || !session.isActive()) throw new Error("No active playback session");
 		const sessionId = session.id;
@@ -96,7 +83,7 @@ export class ResourceRefreshController {
 		}
 	}
 
-	private async handleRefresh(event: Extract<PlayerInput, { type: "[Player]->[Resource]:refresh" }>): Promise<void> {
+	async handleRefresh(event: Extract<PlayerInput, { type: "[Player]->[Resource]:refresh" }>): Promise<void> {
 		const { bus } = this;
 		try {
 			const session = await bus.requestRpc(
@@ -114,5 +101,30 @@ export class ResourceRefreshController {
 				error: error instanceof Error ? error : new Error(String(error)),
 			});
 		}
+	}
+}
+
+/** Shared, singleton controller: owns the resource-refresh workflow and bridges Player
+ *  refresh requests for every player, keyed by playerId. */
+export class ResourceRefreshController {
+	private readonly workers = new Map<string, ResourceRefreshWorker>();
+
+	constructor(private readonly bus: GlobalPlayerBus) {
+		bus.registerRpc<{ position: number }, PlaybackSessionSnapshot>("playback.refreshResource", ({ position }, context) => {
+			const worker = this.workers.get(context.playerId);
+			if (!worker) throw new Error("No active playback session");
+			return worker.refreshResource(position, context);
+		});
+		bus.onInput("[Player]->[Resource]:refresh", (event) => {
+			void this.workers.get(event.playerId)?.handleRefresh(event);
+		});
+	}
+
+	attach(playerId: string): void {
+		this.workers.set(playerId, new ResourceRefreshWorker(new PlayerBus(this.bus, playerId)));
+	}
+	detach(playerId: string): void {
+		this.workers.get(playerId)?.dispose();
+		this.workers.delete(playerId);
 	}
 }

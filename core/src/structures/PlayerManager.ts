@@ -1,7 +1,7 @@
 import { EventEmitter } from "events";
 import { LRUCache } from "lru-cache";
 import { Player } from "./Player";
-import { GlobalPlayerRuntime } from "./GlobalPlayerRuntime";
+import { GlobalPlayerRuntime, ensureSharedControllers } from "./GlobalPlayerRuntime";
 import {
 	PlaybackMode,
 	PlayerManagerOptions,
@@ -169,6 +169,11 @@ export class PlayerManager extends EventEmitter {
 
 	constructor(options: PlayerManagerOptions = {}) {
 		super();
+		// The shared controller graph (one global PlayerBus + singleton controllers,
+		// keyed internally by playerId) is created here, as soon as the manager
+		// exists — not lazily on the first player. Every Player created by this
+		// manager talks to these same controller instances.
+		ensureSharedControllers();
 		this.plugins = [];
 		this.searchCache = new Map();
 

@@ -2,30 +2,46 @@ import type { StreamInfo, Track, TrackResolveContext, TrackResolverOptions } fro
 import type { StreamManager } from "./StreamManager";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
+import type { GlobalPlayerBus } from "./PlayerBus";
 
-/** Resolves a Track through the existing extension/plugin chain without owning playback. */
+// "stream.resolve" must be registered exactly once on the shared GlobalPlayerBus;
+// each per-player TrackResolver instance registers itself here so the shared handler
+// can route by playerId.
+const streamResolveRpcRegistered = new WeakSet<GlobalPlayerBus>();
+const trackResolvers = new Map<string, TrackResolver>();
+function ensureStreamResolveRpcBridge(bus: GlobalPlayerBus): void {
+	if (streamResolveRpcRegistered.has(bus)) return;
+	streamResolveRpcRegistered.add(bus);
+	bus.registerRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>("stream.resolve", ({ track, fresh }, ctx) => {
+		const resolver = trackResolvers.get(ctx.playerId);
+		if (!resolver) throw new Error("No TrackResolver registered for this player");
+		return resolver.resolve(track, resolver.isDestroyed, { fresh });
+	});
+}
+
+/** Resolves a Track through the existing extension/plugin chain without owning playback.
+ *  One instance per player (holds that player's StreamManager/PluginManager/ExtensionManager). */
 export class TrackResolver {
 	private readonly streamManager: StreamManager;
 	private readonly pluginManager: PluginManager;
 	private readonly extensionManager: ExtensionManager;
-	private readonly isDestroyed: () => boolean;
-	private readonly detachRpcs: Array<() => void> = [];
+	public readonly isDestroyed: () => boolean;
+	private readonly playerId?: string;
+
 	public constructor(options: TrackResolverOptions) {
 		this.streamManager = options.streamManager;
 		this.pluginManager = options.pluginManager;
 		this.extensionManager = options.extensionManager;
 		this.isDestroyed = options.isDestroyed ?? (() => false);
-		if (options.bus) {
-			this.detachRpcs.push(
-				options.bus.registerRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>("stream.resolve", ({ track, fresh }) =>
-					this.resolve(track, this.isDestroyed, { fresh }),
-				),
-			);
+		this.playerId = options.playerId;
+		if (options.bus && this.playerId) {
+			ensureStreamResolveRpcBridge(options.bus.globalBus);
+			trackResolvers.set(this.playerId, this);
 		}
 	}
 
 	dispose(): void {
-		for (const detach of this.detachRpcs.splice(0)) detach();
+		if (this.playerId && trackResolvers.get(this.playerId) === this) trackResolvers.delete(this.playerId);
 	}
 
 	public async resolve(

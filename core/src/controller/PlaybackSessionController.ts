@@ -1,57 +1,79 @@
-import type { PlayerBus } from "../structures/PlayerBus";
+import type { GlobalPlayerBus } from "../structures/PlayerBus";
 import { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track } from "../types";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 
-/** Owns the active PlaybackSession and exposes it only through the internal Bus capability. */
+interface SessionState {
+	session: PlaybackSession | null;
+	pendingRetire: PlaybackSession | null;
+}
+
+/** Shared, singleton controller: owns the active PlaybackSession per player, exposed
+ *  only through the internal Bus capability. */
 export class PlaybackSessionController {
-	private session: PlaybackSession | null = null;
-	private pendingRetire: PlaybackSession | null = null;
-	private readonly detachQuery: () => void;
-	private readonly detachRetireRpc: () => void;
+	private readonly states = new Map<string, SessionState>();
 	private disposed = false;
 
-	public constructor(private readonly bus: PlayerBus) {
-		this.detachQuery = bus.registerQuery("playbackSessionInternal", () => this.session);
-		this.detachRetireRpc = bus.registerRpc<void, void>(CONTROLLER_RPC.playbackSessionRetirePending, () =>
-			this.retirePendingPrevious(),
+	public constructor(bus: GlobalPlayerBus) {
+		bus.registerQuery("playbackSessionInternal", (playerId) => this.states.get(playerId)?.session ?? null);
+		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackSessionRetirePending, (_req, ctx) =>
+			this.retirePendingPrevious(ctx.playerId),
 		);
 	}
 
-	public get current(): PlaybackSession | null {
-		return this.session;
+	attach(playerId: string): void {
+		this.states.set(playerId, { session: null, pendingRetire: null });
+	}
+	detach(playerId: string): void {
+		this.clear(playerId);
+		this.states.delete(playerId);
+	}
+	private state(playerId: string): SessionState {
+		let state = this.states.get(playerId);
+		if (!state) {
+			state = { session: null, pendingRetire: null };
+			this.states.set(playerId, state);
+		}
+		return state;
 	}
 
-	public replace(track: Track, options?: { destroyPrevious?: boolean }): PlaybackSession {
+	public current(playerId: string): PlaybackSession | null {
+		return this.states.get(playerId)?.session ?? null;
+	}
+
+	public replace(playerId: string, track: Track, options?: { destroyPrevious?: boolean }): PlaybackSession {
 		if (this.disposed) throw new Error("PlaybackSessionController is disposed");
-		const previous = this.session;
+		const state = this.state(playerId);
+		const previous = state.session;
 		previous?.markStopped();
 		if (options?.destroyPrevious ?? true) {
 			previous?.destroy();
 		} else if (previous) {
-			this.pendingRetire = previous;
+			state.pendingRetire = previous;
 		}
 		const session = new PlaybackSession();
 		session.begin(track);
-		this.session = session;
+		state.session = session;
 		return session;
 	}
-	public retirePendingPrevious(): void {
-		const pending = this.pendingRetire;
-		this.pendingRetire = null;
+	public retirePendingPrevious(playerId: string): void {
+		const state = this.states.get(playerId);
+		if (!state) return;
+		const pending = state.pendingRetire;
+		state.pendingRetire = null;
 		pending?.destroy();
 	}
-	public clear(): void {
-		this.retirePendingPrevious();
-		this.session?.destroy();
-		this.session = null;
+	public clear(playerId: string): void {
+		this.retirePendingPrevious(playerId);
+		const state = this.states.get(playerId);
+		state?.session?.destroy();
+		if (state) state.session = null;
 	}
 
 	public dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.clear();
-		this.detachRetireRpc();
-		this.detachQuery();
+		for (const playerId of [...this.states.keys()]) this.clear(playerId);
+		this.states.clear();
 	}
 }

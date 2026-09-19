@@ -8,9 +8,25 @@ import {
 	type PlayerSubscription,
 } from "@discordjs/voice";
 import type { PlayerOptions, VoiceChannel, PlayerConnectionInput, ConnectionControllerOptions } from "../types";
-import { PlayerBus, createPlayerSessionId, type PlayerRequestId, type PlayerSessionId } from "../structures/PlayerBus";
+import { PlayerBus, createPlayerSessionId, type GlobalPlayerBus, type PlayerRequestId, type PlayerSessionId } from "../structures/PlayerBus";
 
-/** Owns Discord voice connection state and lifecycle behind PlayerBus. */
+// connection.setAudioPlayer / connection / connection.state must be registered exactly
+// once on the shared GlobalPlayerBus; each ConnectionController instance (one per
+// player) registers itself here so the shared handlers can route by playerId.
+const connectionRpcRegistered = new WeakSet<GlobalPlayerBus>();
+const connectionControllers = new Map<string, ConnectionController>();
+function ensureConnectionRpcBridge(bus: GlobalPlayerBus): void {
+	if (connectionRpcRegistered.has(bus)) return;
+	connectionRpcRegistered.add(bus);
+	bus.registerRpc<{ audioPlayer: AudioPlayer | null }, void>("connection.setAudioPlayer", ({ audioPlayer }, ctx) =>
+		connectionControllers.get(ctx.playerId)?.setAudioPlayer(audioPlayer),
+	);
+	bus.registerQuery("connection", (playerId) => connectionControllers.get(playerId)?.active ?? null);
+	bus.registerQuery("connection.state", (playerId) => connectionControllers.get(playerId)?.active?.state.status);
+}
+
+/** Owns Discord voice connection state and lifecycle behind PlayerBus. One instance
+ *  per player (a Discord voice connection is inherently per-guild). */
 export class ConnectionController {
 	private readonly guildId: string;
 	private readonly bus: PlayerBus;
@@ -40,15 +56,12 @@ export class ConnectionController {
 		this.debug = options.debug;
 		this.readyTimeoutMs = options.readyTimeoutMs ?? 15_000;
 
+		ensureConnectionRpcBridge(this.bus.globalBus);
+		connectionControllers.set(this.guildId, this);
 		const unsubscribers = [
 			this.bus.onInput("[Player]->[Connection]:connect", (event) => this.enqueue(() => this.connect(event))),
 			this.bus.onInput("[Player]->[Connection]:disconnect", (event) => this.enqueue(() => this.disconnect(event))),
 			this.bus.onInput("[Player]->[Connection]:reconnect", (event) => this.enqueue(() => this.reconnect(event))),
-			this.bus.registerRpc<{ audioPlayer: AudioPlayer | null }, void>("connection.setAudioPlayer", ({ audioPlayer }) => {
-				this.setAudioPlayer(audioPlayer);
-			}),
-			this.bus.registerQuery("connection", () => this.connection),
-			this.bus.registerQuery("connection.state", () => this.connection?.state.status),
 		];
 		this.unsubscribe = () => unsubscribers.forEach((unsubscribe) => unsubscribe());
 	}
@@ -120,6 +133,7 @@ export class ConnectionController {
 	public async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
+		if (connectionControllers.get(this.guildId) === this) connectionControllers.delete(this.guildId);
 		this.unsubscribe();
 		await this.operation.catch(() => undefined);
 		this.cleanupSubscription();

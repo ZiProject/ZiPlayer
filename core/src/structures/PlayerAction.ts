@@ -5,7 +5,6 @@ import {
 	type PlayerActionExecutionContext,
 	type PlayerBus,
 } from "./PlayerBus";
-import { resolvePlayerId } from "./playerScope";
 
 interface PendingAction {
 	action: PlayerActionMessage;
@@ -86,8 +85,7 @@ export class PlayerAction {
 
 	private runCritical(action: PlayerActionMessage): Promise<void> {
 		const controller = new AbortController();
-		const context: PlayerActionExecutionContext = {
-			playerId: resolvePlayerId(action.playerId),
+		const context: Partial<PlayerActionExecutionContext> = {
 			signal: controller.signal,
 			priority: action.priority ?? PlayerActionPriority.CRITICAL,
 			requestId: action.requestId ?? createPlayerRequestId(),
@@ -118,8 +116,7 @@ export class PlayerAction {
 
 		const pending = this.pending.shift()!;
 		const controller = new AbortController();
-		const context: PlayerActionExecutionContext = {
-			playerId: resolvePlayerId(pending.action.playerId),
+		const context: Partial<PlayerActionExecutionContext> = {
 			signal: controller.signal,
 			priority: pending.priority,
 			requestId: pending.action.requestId ?? createPlayerRequestId(),

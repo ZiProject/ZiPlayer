@@ -13,7 +13,6 @@ export type PluginManagerOptions = {
 };
 
 export interface TrackResolveContext {
-	playerId?: import("../structures/playerScope").PlayerId;
 	history?: Track[];
 	signal?: AbortSignal;
 	[key: string]: any;
@@ -24,6 +23,7 @@ export interface TrackResolverOptions {
 	pluginManager: PluginManager;
 	extensionManager: ExtensionManager;
 	bus?: import("../structures/PlayerBus").PlayerBus;
+	playerId?: string;
 	isDestroyed?: () => boolean;
 }
 

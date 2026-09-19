@@ -1,36 +1,47 @@
-import type { PlayerBus } from "../structures/PlayerBus";
+import type { GlobalPlayerBus, PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, Track } from "../types";
 import type { PlaybackPreparationControllerOptions } from "../types";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 
-/** Owns related-track and autoplay preparation after a track starts. */
+// playback.prepareAutoplay / playback.createRelatedTracks must be registered exactly
+// once on the shared GlobalPlayerBus; each per-player instance registers itself here.
+const preparationControllers = new Map<string, PlaybackPreparationController>();
+const preparationRpcRegistered = new WeakSet<GlobalPlayerBus>();
+function ensurePreparationRpcBridge(bus: GlobalPlayerBus): void {
+	if (preparationRpcRegistered.has(bus)) return;
+	preparationRpcRegistered.add(bus);
+	bus.registerRpc<{ session: PlaybackSession; context: PlayerMessageContext }, Promise<Track | null>>(
+		CONTROLLER_RPC.playbackPrepareAutoplay,
+		({ session, context }, ctx) => preparationControllers.get(ctx.playerId)?.prepareAutoplay(session, context) ?? Promise.resolve(null),
+	);
+	bus.registerRpc<{ track?: Track | null }, Promise<Track[]>>(
+		CONTROLLER_RPC.playbackCreateRelatedTracks,
+		({ track }, ctx) => preparationControllers.get(ctx.playerId)?.createRelatedTracks(track) ?? Promise.resolve([]),
+	);
+}
+
+/** Owns related-track and autoplay preparation after a track starts. One instance per
+ *  player. */
 export class PlaybackPreparationController {
+	private readonly playerId: string;
 	private readonly bus: PlayerBus;
 	private readonly isCurrentSession: PlaybackPreparationControllerOptions["isCurrentSession"];
 	private readonly queueSnapshot: PlaybackPreparationControllerOptions["queueSnapshot"];
 	private readonly setQueueRelated: PlaybackPreparationControllerOptions["setQueueRelated"];
-	private readonly detachRpc: () => void;
-	private readonly detachRelatedRpc: () => void;
 
-	constructor(options: PlaybackPreparationControllerOptions) {
+	constructor(playerId: string, options: PlaybackPreparationControllerOptions) {
+		this.playerId = playerId;
 		this.bus = options.bus;
 		this.isCurrentSession = options.isCurrentSession;
 		this.queueSnapshot = options.queueSnapshot;
 		this.setQueueRelated = options.setQueueRelated;
-		this.detachRpc = this.bus.registerRpc<{ session: PlaybackSession; context: PlayerMessageContext }, Promise<Track | null>>(
-			CONTROLLER_RPC.playbackPrepareAutoplay,
-			({ session, context }) => this.prepareAutoplay(session, context),
-		);
-		this.detachRelatedRpc = this.bus.registerRpc<{ track?: Track | null }, Promise<Track[]>>(
-			CONTROLLER_RPC.playbackCreateRelatedTracks,
-			({ track }) => this.createRelatedTracks(track),
-		);
+		ensurePreparationRpcBridge(this.bus.globalBus);
+		preparationControllers.set(playerId, this);
 	}
 
 	public dispose(): void {
-		this.detachRpc();
-		this.detachRelatedRpc();
+		if (preparationControllers.get(this.playerId) === this) preparationControllers.delete(this.playerId);
 	}
 
 	public async prepareTrack(session: PlaybackSession, context: PlayerMessageContext): Promise<void> {

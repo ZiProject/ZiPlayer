@@ -1,16 +1,28 @@
 import { createPlayerRequestId } from "../structures/PlayerBus";
-import { resolvePlayerId } from "../structures/playerScope";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, PlaybackSessionSnapshot, Track } from "../types";
-import type { PlayerBus } from "../structures/PlayerBus";
+import { type GlobalPlayerBus, type PlayerBus } from "../structures/PlayerBus";
 import type { PlaybackTrackEndControllerOptions } from "../types";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 import { PlayerActionPriority } from "../types";
 
+// playback.transitionLock must be registered exactly once on the shared
+// GlobalPlayerBus; each per-player PlaybackTrackEndController registers itself here.
+const transitionLockRpcRegistered = new WeakSet<GlobalPlayerBus>();
+const trackEndControllers = new Map<string, PlaybackTrackEndController>();
+function ensureTransitionLockRpcBridge(bus: GlobalPlayerBus): void {
+	if (transitionLockRpcRegistered.has(bus)) return;
+	transitionLockRpcRegistered.add(bus);
+	bus.registerRpc<{ active: boolean }, void>(CONTROLLER_RPC.playbackTransitionLock, ({ active }, ctx) =>
+		trackEndControllers.get(ctx.playerId)?.setTrackEndTransition(active),
+	);
+}
+
 /** Owns TRACK_END, queue refill, autoplay fallback, and queue-end transitions.
  * Talks to sibling playback controllers only through PlayerBus queries/RPCs —
- * never by holding a direct reference to them. */
+ * never by holding a direct reference to them. One instance per player. */
 export class PlaybackTrackEndController {
+	private readonly playerId: string;
 	private readonly bus: PlayerBus;
 	private readonly nextThroughBus: PlaybackTrackEndControllerOptions["nextThroughBus"];
 	private readonly stopPlayback: PlaybackTrackEndControllerOptions["stopPlayback"];
@@ -23,18 +35,16 @@ export class PlaybackTrackEndController {
 	private queueStartGeneration = 0;
 	private readonly detachRpcs: Array<() => void> = [];
 
-	public constructor(options: PlaybackTrackEndControllerOptions) {
+	public constructor(playerId: string, options: PlaybackTrackEndControllerOptions) {
+		this.playerId = playerId;
 		this.bus = options.bus;
 		this.nextThroughBus = options.nextThroughBus;
 		this.stopPlayback = options.stopPlayback;
 		this.publishState = options.publishState;
 		this.queueSnapshot = options.queueSnapshot;
 		this.lifecycleSignal = options.lifecycleSignal;
-		this.detachRpcs.push(
-			this.bus.registerRpc<{ active: boolean }, void>(CONTROLLER_RPC.playbackTransitionLock, ({ active }) => {
-				if (!this.lifecycleSignal.aborted) this.trackEndTransition = active;
-			}),
-		);
+		ensureTransitionLockRpcBridge(this.bus.globalBus);
+		trackEndControllers.set(playerId, this);
 	}
 
 	private currentSession(): PlaybackSession | null {
@@ -125,11 +135,11 @@ export class PlaybackTrackEndController {
 	}
 
 	public dispose(): void {
+		if (trackEndControllers.get(this.playerId) === this) trackEndControllers.delete(this.playerId);
 		this.queueStartGeneration++;
 		this.queueStartPromise = null;
 		this.trackEndTransition = false;
 		this.waitingForQueue = false;
-		for (const detach of this.detachRpcs.splice(0)) detach();
 	}
 
 	private async startQueuedTrackAfterEnd(): Promise<void> {
@@ -149,7 +159,7 @@ export class PlaybackTrackEndController {
 
 	private createContext(source: string): PlayerMessageContext {
 		return {
-			playerId: resolvePlayerId(),
+			playerId: this.playerId,
 			requestId: createPlayerRequestId(),
 			source,
 			signal: this.lifecycleSignal,

@@ -3,7 +3,7 @@ import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
 import type { PlayerOptions, TrackMiddleware, PlayerRuntimeGraph } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 import type { Player } from "./Player";
-import { PlayerBus } from "./PlayerBus";
+import { GlobalPlayerBus, PlayerBus } from "./PlayerBus";
 import { TrackLoader } from "./TrackLoader";
 import { TrackResolver } from "./TrackResolver";
 import { PlaybackController } from "../controller/PlaybackController";
@@ -43,7 +43,76 @@ export interface CreateControllerGraphParams {
 	debugSink?: (...args: any[]) => void;
 }
 
-/** Global owner of one guild/player controller graph and its PlayerBus. */
+/**
+ * Controllers shared by every player in the process. Created exactly once (lazily,
+ * the first time a player is created, or eagerly by calling `ensureSharedControllers()`
+ * from PlayerManager's constructor) and reused for every guild afterwards. Each
+ * controller keeps its own per-player state internally, keyed by playerId, and is wired
+ * up for a given player through its `attach(playerId, ...)` method.
+ */
+export interface SharedControllerGraph {
+	readonly bus: GlobalPlayerBus;
+	readonly extensionController: ExtensionController;
+	readonly pluginController: PluginController;
+	readonly queueController: QueueController;
+	readonly volumeController: VolumeController;
+	readonly transitionController: TransitionController;
+	readonly antiStuckController: AntiStuckController;
+	readonly searchController: SearchController;
+	readonly ttsController: TTSController;
+	readonly saveController: SaveController;
+	readonly filterController: FilterController;
+	readonly streamController: StreamController;
+	readonly lifecycleController: LifecycleController;
+	readonly resourceRefreshController: ResourceRefreshController;
+	readonly sessionController: PlaybackSessionController;
+	readonly forwardController: ForwardController;
+}
+
+let sharedControllerGraph: SharedControllerGraph | null = null;
+const runtimeInstances = new Map<string, GlobalPlayerRuntime>();
+
+/** Creates the shared controller graph on first use (or returns the existing one).
+ * PlayerManager calls this eagerly in its constructor so the controllers exist as soon
+ * as the manager does, before any player is created. */
+export function ensureSharedControllers(): SharedControllerGraph {
+	if (sharedControllerGraph) return sharedControllerGraph;
+	const bus = new GlobalPlayerBus();
+	sharedControllerGraph = {
+		bus,
+		extensionController: new ExtensionController(bus),
+		pluginController: new PluginController(bus),
+		queueController: new QueueController(bus),
+		volumeController: new VolumeController(bus),
+		transitionController: new TransitionController(bus),
+		antiStuckController: new AntiStuckController(bus),
+		searchController: new SearchController(bus),
+		ttsController: new TTSController(bus),
+		saveController: new SaveController(bus),
+		filterController: new FilterController(bus),
+		streamController: new StreamController(bus),
+		lifecycleController: new LifecycleController(bus),
+		resourceRefreshController: new ResourceRefreshController(bus),
+		sessionController: new PlaybackSessionController(bus),
+		forwardController: new ForwardController(bus),
+	};
+	// runtime.ping / runtime.dispose are the only two RPCs owned directly by
+	// GlobalPlayerRuntime itself; registered once here and routed to whichever
+	// runtime instance is currently registered for that playerId.
+	bus.registerRpc<{ playerId: string }, { playerId: string; timestamp: number }>("runtime.ping", ({ playerId: pingId }, ctx) => {
+		if (pingId !== ctx.playerId || !runtimeInstances.has(ctx.playerId)) throw new Error(`Player id mismatch: ${pingId}`);
+		return { playerId: ctx.playerId, timestamp: Date.now() };
+	});
+	bus.registerRpc<void, boolean>("runtime.dispose", (_req, ctx) => {
+		void runtimeInstances.get(ctx.playerId)?.dispose();
+		return true;
+	});
+	return sharedControllerGraph;
+}
+
+/** Owner of one guild/player's per-player resources (voice connection, audio player,
+ * queue/playback state slice, etc.) against the shared, process-wide controller graph
+ * and PlayerBus. */
 export class GlobalPlayerRuntime {
 	readonly bus: PlayerBus;
 	controllers!: PlayerRuntimeGraph;
@@ -60,7 +129,7 @@ export class GlobalPlayerRuntime {
 		debugSink?: (...args: any[]) => void,
 	) {
 		this.playerId = playerId;
-		this.bus = new PlayerBus();
+		this.bus = new PlayerBus(ensureSharedControllers().bus, playerId);
 		this.controllers = this.createControllerGraph({
 			playerId: this.playerId,
 			bus: this.bus,
@@ -113,7 +182,8 @@ export class GlobalPlayerRuntime {
 	public createControllerGraph(params: CreateControllerGraphParams): PlayerRuntimeGraph {
 		if (this.disposed) throw new Error("GlobalPlayerRuntime is disposed");
 		const { playerId, bus, manager, options = {}, debugSink } = params;
-		const debugTracer = new PlayerEventDebug(bus, playerId, debugSink ?? (() => undefined), manager?.debugLevel ?? "info");
+		const shared = ensureSharedControllers();
+		const debugTracer = new PlayerEventDebug(bus.globalBus, playerId, debugSink ?? (() => undefined), manager?.debugLevel ?? "info");
 		const channel = (tag: string, level: PlayerDebugLevel = "debug") => debugTracer.channel(tag, level);
 		const middleware: TrackMiddleware[] = [
 			...(manager?.getTrackMiddlewareChain() ?? []),
@@ -129,8 +199,8 @@ export class GlobalPlayerRuntime {
 			options,
 			debug: channel("ConnectionController"),
 		});
-		const lifecycleController = new LifecycleController({ bus, options, debug: channel("LifecycleController") });
-		const forwardController = new ForwardController({ playerId, bus, debug: channel("ForwardController") });
+		shared.lifecycleController.attach(playerId, options, channel("LifecycleController"));
+		shared.forwardController.attach(playerId);
 		const streamManager = new StreamManager({
 			maxConcurrentStreams: options.maxStreamStore ?? 4,
 			streamTimeout: 5 * 60 * 1000,
@@ -145,23 +215,23 @@ export class GlobalPlayerRuntime {
 		});
 		pluginManager.setStreamManager(streamManager);
 		const extensionManager = new ExtensionManager(null as any, manager ?? (null as any), channel("Extensions"));
-		const pluginController = new PluginController({ pluginManager, bus });
-		const extensionController = new ExtensionController({ extensionManager, bus });
-		const ttsController = new TTSController({
+		shared.pluginController.attach(playerId, pluginManager);
+		shared.extensionController.attach(playerId, extensionManager);
+		shared.ttsController.attach(playerId, {
 			pluginManager,
 			extensionManager,
 			audioPlayer,
 			debug: channel("TTSController"),
 			maxTimeTts: options.tts?.maxTimeTts,
 			volume: options.tts?.volume ?? options.volume ?? 100,
-			bus,
 		});
-		const queueController = new QueueController({ bus });
+		shared.queueController.attach(playerId);
 		const resolver = new TrackResolver({
 			streamManager,
 			pluginManager,
 			extensionManager,
 			bus,
+			playerId,
 			isDestroyed: () => this.disposed,
 		});
 		const preloadManager = new PreloadManager({
@@ -186,8 +256,9 @@ export class GlobalPlayerRuntime {
 			},
 			debug: channel("TrackLoader"),
 			bus,
+			playerId,
 		});
-		const transitionController = new TransitionController({
+		shared.transitionController.attach(playerId, {
 			enabled:
 				options.lowPerformance && options.crossfade?.autoDisableInLowPerformance ?
 					false
@@ -201,29 +272,32 @@ export class GlobalPlayerRuntime {
 			maxDurationMs: options.smartTransition?.maxDurationMs,
 			beatAlignMaxWaitMs: options.smartTransition?.beatAlignMaxWaitMs,
 			genreDurations: options.smartTransition?.genreDurations,
-			bus,
 		});
-		const volumeController = new VolumeController(bus, {
+		shared.volumeController.attach(playerId, {
 			initialVolume: options.volume ?? 100,
 			loudness: options.loudnessNormalization,
 		});
-		const antiStuckController = new AntiStuckController({ ...options.antiStuck, bus });
-		const playbackController = new PlaybackController({
+		shared.antiStuckController.attach(playerId, { ...options.antiStuck });
+		const playbackController = new PlaybackController(playerId, {
 			audioPlayer,
 			bus,
 			stuckTimeoutMs: options.antiStuck?.stuckTimeoutMs,
 		});
-		const streamController = new StreamController({ streamManager, bus });
-		const saveController = new SaveController({
+		shared.streamController.attach(playerId, streamManager);
+		shared.saveController.attach(playerId, {
 			middleware: [async (track) => trackLoader.applyMiddleware(track)],
 			middlewareContext: { playerId, manager } as any,
 			resolveStream: (track) => pluginManager.getStream(track),
 			resolveVideoStream: (track) => pluginManager.getVideo(track),
 			debug: channel("SaveController"),
-			bus,
 		});
-		const preloadController = new PreloadController({ loader: trackLoader, manager: preloadManager, bus });
-		const filterController = new FilterController(undefined, channel("FilterController"), bus, {
+		const preloadController = new PreloadController({
+			loader: trackLoader,
+			manager: preloadManager,
+			bus,
+			playerId,
+		});
+		shared.filterController.attach(playerId, undefined, channel("FilterController"), {
 			initialFilters: Array.isArray(options.filters) ? options.filters : [],
 			onFilterApplied: (filter) => bus.event({ type: "filterApplied", filter }),
 			onFilterRemoved: (filter) => bus.event({ type: "filterRemoved", filter }),
@@ -233,96 +307,95 @@ export class GlobalPlayerRuntime {
 			},
 		});
 		const playerConnectionBridge = new PlayerConnectionBridge({
-			bus,
+			bus: bus.globalBus,
 			debug: channel("PlayerConnectionBridge"),
 			guildId: playerId,
 		});
-		const sessionController = new PlaybackSessionController(bus);
-		const orchestrator = new PlaybackOrchestrator(bus, { debug: channel("PlaybackOrchestrator"), sessionController });
-		const resourceRefreshController = new ResourceRefreshController({ bus });
-		const searchController = new SearchController({
+		shared.sessionController.attach(playerId);
+		const orchestrator = new PlaybackOrchestrator(playerId, bus, {
+			debug: channel("PlaybackOrchestrator"),
+			sessionController: shared.sessionController,
+		});
+		shared.resourceRefreshController.attach(playerId);
+		shared.searchController.attach(playerId, {
 			extensionManager,
 			pluginManager,
 			debug: channel("SearchController"),
-			bus,
 		});
-		const eventBridge = new PlayerEventBridge(null, manager, bus, debugTracer);
+		const eventBridge = new PlayerEventBridge(null, manager, bus.globalBus, debugTracer, playerId);
 		const graph: PlayerRuntimeGraph = {
 			connectionController,
-			lifecycleController,
-			forwardController,
+			lifecycleController: shared.lifecycleController,
+			forwardController: shared.forwardController,
 			audioPlayer,
 			streamManager,
 			preloadManager,
 			trackResolver: resolver,
 			pluginManager,
 			extensionManager,
-			pluginController,
-			extensionController,
-			queueController,
+			pluginController: shared.pluginController,
+			extensionController: shared.extensionController,
+			queueController: shared.queueController,
 			trackLoader,
 			playbackController,
-			streamController,
-			saveController,
-			filterController,
-			antiStuckController,
-			transitionController,
-			volumeController,
+			streamController: shared.streamController,
+			saveController: shared.saveController,
+			filterController: shared.filterController,
+			antiStuckController: shared.antiStuckController,
+			transitionController: shared.transitionController,
+			volumeController: shared.volumeController,
 			preloadController,
-			resourceRefreshController,
+			resourceRefreshController: shared.resourceRefreshController,
 			playerConnectionBridge,
 			orchestrator,
-			sessionController,
-			ttsController,
+			sessionController: shared.sessionController,
+			ttsController: shared.ttsController,
 			debugTracer,
-			searchController,
+			searchController: shared.searchController,
 			eventBridge,
 		};
 
-		this.monitorCleanup(
-			"globalControllerPing",
-			bus.registerRpc("runtime.ping", ({ playerId: pingId }: { playerId: string }) => {
-				if (pingId !== playerId) throw new Error(`Player id mismatch: ${pingId}`);
-				return { playerId, timestamp: Date.now() };
-			}),
-		);
-		this.monitorCleanup(
-			"runtimeDispose",
-			bus.registerRpc("runtime.dispose", () => {
-				void this.dispose();
-				return true;
-			}),
-		);
+		runtimeInstances.set(playerId, this);
+		this.monitorCleanup("globalRuntimeRegistration", () => {
+			if (runtimeInstances.get(playerId) === this) runtimeInstances.delete(playerId);
+		});
+		// Detach this player's slice from every shared controller on dispose. Order
+		// mirrors lifecycleOrder below (reversed at disposal time), so a shared
+		// controller's per-player state disappears before its process-wide
+		// registration would ever be touched (which never happens: shared
+		// controllers are never destroyed, only detached per player).
+		this.monitorCleanup("sharedControllers", () => {
+			shared.lifecycleController.detach(playerId);
+			shared.forwardController.detach(playerId);
+			shared.pluginController.detach(playerId);
+			shared.extensionController.detach(playerId);
+			shared.ttsController.detach(playerId);
+			shared.queueController.detach(playerId);
+			shared.transitionController.detach(playerId);
+			shared.volumeController.detach(playerId);
+			shared.antiStuckController.detach(playerId);
+			shared.streamController.detach(playerId);
+			shared.saveController.detach(playerId);
+			shared.filterController.detach(playerId);
+			shared.resourceRefreshController.detach(playerId);
+			shared.searchController.detach(playerId);
+			shared.sessionController.detach(playerId);
+		});
 
 		this.globalRegistration = globalControllerRegistry.register(playerId, bus, graph, () => this.dispose());
 		const lifecycleOrder: Array<keyof PlayerRuntimeGraph> = [
 			"connectionController",
-			"lifecycleController",
-			"forwardController",
 			"streamManager",
 			"preloadManager",
 			"trackResolver",
 			"pluginManager",
 			"extensionManager",
-			"pluginController",
-			"extensionController",
-			"queueController",
 			"trackLoader",
 			"playbackController",
-			"streamController",
-			"saveController",
-			"filterController",
-			"antiStuckController",
-			"transitionController",
-			"volumeController",
 			"preloadController",
 			"playerConnectionBridge",
-			"sessionController",
 			"orchestrator",
-			"resourceRefreshController",
-			"ttsController",
 			"debugTracer",
-			"searchController",
 			"eventBridge",
 		];
 		for (const name of lifecycleOrder) this.monitor(name, graph[name]);

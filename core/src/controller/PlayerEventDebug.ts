@@ -1,4 +1,4 @@
-import type { PlayerBus, PlayerEvent, PlayerAction, PlayerEventType } from "../structures/PlayerBus";
+import type { GlobalPlayerBus, PlayerEvent, PlayerAction, PlayerEventType, PlayerActionExecutionContext } from "../structures/PlayerBus";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
 import { PlayerBusLatencyTrace } from "./PlayerBusLatencyTrace";
 import type { PlayerDebugLevel, PlayerEventDebugLogger } from "../types";
@@ -44,7 +44,7 @@ export class PlayerEventDebug {
 	private level: PlayerDebugLevel;
 
 	constructor(
-		private readonly bus: PlayerBus | undefined,
+		private readonly bus: GlobalPlayerBus | undefined,
 		private readonly id = "unknown",
 		private readonly logger?: PlayerEventDebugLogger,
 		level: PlayerDebugLevel = "info",
@@ -53,6 +53,8 @@ export class PlayerEventDebug {
 		this.internalTag = `PlayerEventDebug:${id}`;
 		this.latencyTrace = new PlayerBusLatencyTrace(logger, level);
 		if (this.bus) {
+			// Latency tracing is a bus-wide (not per-player) diagnostic knob on the
+			// shared GlobalPlayerBus; the most recently attached tracer wins.
 			this.bus.setLatencyTrace(this.latencyTrace);
 			const eventTypes: PlayerEventType[] = [
 				"initialized",
@@ -89,8 +91,12 @@ export class PlayerEventDebug {
 				"forwardModeStart",
 				"forwardModeEnd",
 			];
-			for (const type of eventTypes) this.detach.push(this.bus.subscribe(type, (event) => this.event(event)));
-			this.detach.push(this.bus.onAction((action, context) => this.action(action, context)));
+			for (const type of eventTypes) this.detach.push(this.bus.subscribe(this.id, type, (event) => this.event(event)));
+			this.detach.push(
+				this.bus.onAction((action, context) => {
+					if (context.playerId === this.id) this.action(action, context);
+				}),
+			);
 		}
 		this.log("info", this.internalTag, "ATTACHED");
 	}
@@ -167,7 +173,7 @@ export class PlayerEventDebug {
 		this.log("verbose", this.internalTag, "EVENT", data);
 	}
 
-	private action(action: PlayerAction, context: { requestId: string; priority: number; signal: AbortSignal }) {
+	private action(action: PlayerAction, context: PlayerActionExecutionContext) {
 		if (!this.enabled("debug")) return;
 		this.log("debug", this.internalTag, "ACTION", {
 			type: action.type,
