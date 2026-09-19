@@ -19,7 +19,7 @@ import type { SaveControllerOptions } from "../types";
  * Save deliberately resolves a fresh provider stream instead of reusing the
  * active playback/preload stream. This keeps saving isolated from playback.
  */
-class SaveWorker {
+export class SaveWorker {
 	private readonly lifecycleAbort = new AbortController();
 	private disposed = false;
 	private readonly activeFilterEngines = new Set<FilterEngine>();

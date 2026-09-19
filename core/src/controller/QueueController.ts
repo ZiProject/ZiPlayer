@@ -300,7 +300,7 @@ export class QueueState {
 		this.currentTrack = track;
 		this.publishChanged();
 	}
-	private serializeInternal(): object {
+	public serializeInternal(): object {
 		return {
 			tracks: this.tracks,
 			current: this.currentTrack,
@@ -312,7 +312,7 @@ export class QueueState {
 			relatedTracks: this.related,
 		};
 	}
-	private restoreInternal(state: any): void {
+	public restoreInternal(state: any): void {
 		if (!state || typeof state !== "object") throw new TypeError("Invalid queue state");
 		const tracks =
 			Array.isArray(state.tracks) ?
@@ -390,7 +390,7 @@ export class QueueController {
 		bus.registerQuery("currentTrack", (playerId) => this.states.get(playerId)?.current ?? null);
 		bus.registerQuery("queueCurrent", (playerId) => this.states.get(playerId)?.current ?? null);
 		bus.registerQuery("queue", (playerId) => this.states.get(playerId)?.snapshot() ?? []);
-		bus.registerQuery("queueSerialized", (playerId) => this.states.get(playerId)?.toJSON() ?? {});
+		bus.registerQuery("queueSerialized", (playerId) => this.states.get(playerId)?.serializeInternal() ?? {});
 		bus.registerQuery("previousTracks", (playerId) => this.states.get(playerId)?.previousTracks ?? []);
 		bus.registerQuery("previousTrack", (playerId) => this.states.get(playerId)?.previousTracks.at(-1) ?? null);
 		bus.registerQuery("willNext", (playerId) => this.states.get(playerId)?.willNext ?? null);
@@ -414,8 +414,8 @@ export class QueueController {
 		bus.registerRpc<{ mode: LoopMode }, LoopMode>("queue.loop", ({ mode }, ctx) => state(ctx.playerId).setLoop(mode));
 		bus.registerRpc<{ enabled: boolean }, boolean>("queue.autoPlay", ({ enabled }, ctx) => state(ctx.playerId).setAutoPlay(enabled));
 		bus.registerRpc<{ track: Track | null }, void>("queue.setCurrent", ({ track }, ctx) => state(ctx.playerId).setCurrentInternal(track));
-		bus.registerRpc<void, object>("queue.serialize", (_req, ctx) => state(ctx.playerId).toJSON());
-		bus.registerRpc<{ state: object }, void>("queue.restore", ({ state: value }, ctx) => state(ctx.playerId).fromJSON(value));
+		bus.registerRpc<void, object>("queue.serialize", (_req, ctx) => state(ctx.playerId).serializeInternal());
+		bus.registerRpc<{ state: object }, void>("queue.restore", ({ state: value }, ctx) => state(ctx.playerId).restoreInternal(value));
 		bus.registerRpc<{ previousCurrent: Track | null; nextTrack: Track | null }, void>(
 			"queue.restoreNext",
 			({ previousCurrent, nextTrack }, ctx) => state(ctx.playerId).restoreNext(previousCurrent, nextTrack),

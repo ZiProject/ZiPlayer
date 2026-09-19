@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { Readable } = require("node:stream");
 
-const { Player, PlayerBus, PlaybackOrchestrator, PlaybackSession, QueueController, TrackLoader } = require("../core/dist");
+const { Player, PlayerBus, GlobalPlayerBus, PlaybackOrchestrator, PlaybackSession, QueueController, PlaybackSessionController, TrackLoader } = require("../core/dist");
 
 const waitFor = async (predicate) => {
 	for (let attempt = 0; attempt < 50; attempt++) {
@@ -13,20 +13,26 @@ const waitFor = async (predicate) => {
 };
 
 const createOrchestrator = ({ autoPlay, related, relatedResolver, loop = "off", preloadController } = {}) => {
-	const bus = new PlayerBus();
-	const queueController = new QueueController({ bus });
+	const playerId = "test-guild";
+	const globalBus = new GlobalPlayerBus();
+	const queueController = new QueueController(globalBus);
+	const queue = queueController.attach(playerId);
+	const sessionController = new PlaybackSessionController(globalBus);
+	sessionController.attach(playerId);
+	const bus = new PlayerBus(globalBus, playerId);
 	const played = [];
 	const errors = [];
 	const trackLoader = new TrackLoader({
 		context: {},
 		bus,
+		playerId,
 		resolvers: [async (track) => ({ stream: new Readable({ read() {} }), type: "arbitrary" })],
 	});
-	bus.registerQuery("filterString", () => "");
-	bus.registerRpc("preload.has", ({ track }) => Boolean(preloadController?.has?.(track)));
-	bus.registerRpc("preload.cancel", () => undefined);
-	bus.registerRpc("resource.create", ({ stream, track }) => ({ stream, metadata: track }));
-	bus.registerRpc("controller.stream.replace", ({ streamInfo, session }) => ({
+	globalBus.registerQuery("filterString", () => "");
+	globalBus.registerRpc("preload.has", ({ track }) => Boolean(preloadController?.has?.(track)));
+	globalBus.registerRpc("preload.cancel", () => undefined);
+	globalBus.registerRpc("resource.create", ({ stream, track }) => ({ stream, metadata: track }));
+	globalBus.registerRpc("controller.stream.replace", ({ streamInfo, session }) => ({
 		sessionId: session.id,
 		session,
 		track: session.track,
@@ -34,21 +40,21 @@ const createOrchestrator = ({ autoPlay, related, relatedResolver, loop = "off", 
 		streamId: null,
 		inputType: streamInfo.inputType,
 	}));
-	bus.registerRpc("controller.playback.stop", () => true);
-	bus.registerRpc("controller.track.resetRecovery", () => undefined);
-	bus.registerRpc("controller.playback.play", ({ session }) => {
+	globalBus.registerRpc("controller.playback.stop", () => true);
+	globalBus.registerRpc("controller.track.resetRecovery", () => undefined);
+	globalBus.registerRpc("controller.playback.play", ({ session }) => {
 		played.push(session.track.id);
 		return undefined;
 	});
-	bus.registerRpc("plugin.relatedTracks", relatedResolver ?? (async () => related ?? []));
+	globalBus.registerRpc("plugin.relatedTracks", relatedResolver ?? (async () => related ?? []));
 	bus.subscribe("TRACK_ERROR", (event) => errors.push(event.error?.message ?? String(event.error)));
-	bus.onInput("[Player]->[Preload]:request", (event) => {
-		bus.emitOutput({ type: "[Preload]->[Player]:ready", requestId: event.requestId, track: event.track });
+	globalBus.onInput("[Player]->[Preload]:request", (event) => {
+		globalBus.emitOutput({ type: "[Preload]->[Player]:ready", requestId: event.requestId, track: event.track, playerId: event.playerId });
 	});
-	queueController.setAutoPlay(autoPlay);
-	queueController.setLoop(loop);
-	const orchestrator = new PlaybackOrchestrator(bus);
-	return { bus, queueController, orchestrator, played, errors, trackLoader };
+	queue.setAutoPlay(autoPlay);
+	queue.setLoop(loop);
+	const orchestrator = new PlaybackOrchestrator(playerId, bus, { sessionController });
+	return { bus, queueController: queue, orchestrator, played, errors, trackLoader };
 };
 
 const context = () => ({
@@ -219,14 +225,15 @@ test("TrackLoader rejects new loads after dispose", async () => {
 });
 
 test("Player.getTime follows the active session across track transitions and seek", () => {
-	const bus = new PlayerBus();
+	const globalBus = new GlobalPlayerBus();
+	const bus = new PlayerBus(globalBus, "test-guild");
 	let activeSession = new PlaybackSession();
 	const track1 = { id: "track-1", title: "Track 1", duration: 180000 };
 	const track2 = { id: "track-2", title: "Track 2", duration: 240000 };
 
-	bus.registerQuery("playbackSession", () => activeSession.snapshot());
-	bus.registerQuery("position", () => activeSession.position);
-	bus.registerQuery("currentTrack", () => activeSession.track);
+	globalBus.registerQuery("playbackSession", () => activeSession.snapshot());
+	globalBus.registerQuery("position", () => activeSession.position);
+	globalBus.registerQuery("currentTrack", () => activeSession.track);
 
 	activeSession.begin(track1);
 	activeSession.markPlaying();
@@ -246,8 +253,9 @@ test("Player.getTime follows the active session across track transitions and see
 });
 
 test("stop invalidates an in-flight play RPC", async () => {
-	const bus = new PlayerBus();
-	bus.registerRpc("play", async () => {
+	const globalBus = new GlobalPlayerBus();
+	const bus = new PlayerBus(globalBus, "test-guild");
+	globalBus.registerRpc("play", async () => {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		return true;
 	});
@@ -274,7 +282,8 @@ test("stop invalidates an in-flight play RPC", async () => {
 });
 
 test("PlayerBus materializes seek and queueEnd public events", () => {
-	const bus = new PlayerBus();
+	const globalBus = new GlobalPlayerBus();
+	const bus = new PlayerBus(globalBus, "test-guild");
 	const events = [];
 	bus.subscribe("seek", (event) => events.push(event));
 	bus.subscribe("queueEnd", (event) => events.push(event));

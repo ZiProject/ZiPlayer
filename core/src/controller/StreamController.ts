@@ -8,7 +8,7 @@ import { CONTROLLER_RPC } from "./ControllerBusContract";
 const STREAM_RPC_REPLACE = "controller.stream.replace";
 
 /** Per-player active-stream tracking, owned by the shared `StreamController` below. */
-class StreamWorker {
+export class StreamWorker {
 	private active: ActiveStream | null = null;
 	private readonly streamManager?: StreamManager;
 	private readonly bus?: PlayerBus;

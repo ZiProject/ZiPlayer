@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { PlayerBus, PlaybackOrchestrator, QueueController } = require("../core/dist");
+const { PlayerBus, GlobalPlayerBus, PlaybackOrchestrator, QueueController, PlaybackSessionController } = require("../core/dist");
 
 const waitFor = async (predicate) => {
 	for (let attempt = 0; attempt < 50; attempt++) {
@@ -12,43 +12,48 @@ const waitFor = async (predicate) => {
 };
 
 const createOrchestrator = ({ autoPlay, related } = {}) => {
-	const bus = new PlayerBus();
-	const queueController = new QueueController({ bus });
+	const playerId = "test-guild";
+	const globalBus = new GlobalPlayerBus();
+	const queueController = new QueueController(globalBus);
+	const queue = queueController.attach(playerId);
+	const sessionController = new PlaybackSessionController(globalBus);
+	sessionController.attach(playerId);
+	const bus = new PlayerBus(globalBus, playerId);
 	const played = [];
 	const trackLoader = {
 		loadWithRecovery: async (track) => ({ track, stream: { stream: null, remote: false } }),
 	};
-	bus.registerQuery("filterString", () => "");
-	bus.registerQuery("transitionSettings", () => ({ enabled: false, durationMs: 0 }));
-	bus.registerQuery("ttsInterrupt", () => false);
-	bus.registerQuery("previousTracks", () => []);
-	bus.registerRpc("resource.create", () => ({}));
-	bus.registerRpc("preload.has", () => false);
-	bus.registerRpc("preload.cancel", () => {});
-	bus.registerRpc("controller.stream.replace", ({ streamInfo }) => ({
+	globalBus.registerQuery("filterString", () => "");
+	globalBus.registerQuery("transitionSettings", () => ({ enabled: false, durationMs: 0 }));
+	globalBus.registerQuery("ttsInterrupt", () => false);
+	globalBus.registerQuery("previousTracks", () => []);
+	globalBus.registerRpc("resource.create", () => ({}));
+	globalBus.registerRpc("preload.has", () => false);
+	globalBus.registerRpc("preload.cancel", () => {});
+	globalBus.registerRpc("controller.stream.replace", ({ streamInfo }) => ({
 		stream: streamInfo.stream,
 		inputType: streamInfo.inputType,
 	}));
-	bus.registerRpc("controller.track.loadWithRecovery", trackLoader.loadWithRecovery);
-	bus.registerRpc("controller.track.resetRecovery", () => {});
-	bus.registerRpc("controller.transition.plan", () => ({
+	globalBus.registerRpc("controller.track.loadWithRecovery", trackLoader.loadWithRecovery);
+	globalBus.registerRpc("controller.track.resetRecovery", () => {});
+	globalBus.registerRpc("controller.transition.plan", () => ({
 		enabled: false,
 		durationMs: 0,
 		waitForBeat: false,
 		beatAlignMaxWaitMs: 0,
 	}));
-	bus.registerRpc("controller.volume.target", () => 1);
-	bus.registerRpc("controller.playback.play", ({ session }) => {
+	globalBus.registerRpc("controller.volume.target", () => 1);
+	globalBus.registerRpc("controller.playback.play", ({ session }) => {
 		played.push(session.track.id);
 	});
-	bus.registerRpc("controller.playback.stop", () => {});
-	bus.registerRpc("plugin.relatedTracks", async () => related ?? []);
-	bus.onInput("[Player]->[Preload]:request", (event) => {
-		bus.emitOutput({ type: "[Preload]->[Player]:ready", requestId: event.requestId, track: event.track });
+	globalBus.registerRpc("controller.playback.stop", () => {});
+	globalBus.registerRpc("plugin.relatedTracks", async () => related ?? []);
+	globalBus.onInput("[Player]->[Preload]:request", (event) => {
+		globalBus.emitOutput({ type: "[Preload]->[Player]:ready", requestId: event.requestId, track: event.track, playerId: event.playerId });
 	});
-	queueController.setAutoPlay(autoPlay);
-	const orchestrator = new PlaybackOrchestrator(bus);
-	return { bus, queueController, orchestrator, played };
+	queue.setAutoPlay(autoPlay);
+	const orchestrator = new PlaybackOrchestrator(playerId, bus, { sessionController });
+	return { bus, queue, orchestrator, played };
 };
 
 const context = () => ({
@@ -64,7 +69,7 @@ test("manual SKIP should also trigger autoplay fallback like natural TRACK_END",
 
 	await harness.bus.action({ type: "PLAY", track: trackA }, context());
 	await new Promise((resolve) => setTimeout(resolve, 20));
-	assert.deepEqual(harness.queueController.relatedTracks, [trackB]);
+	assert.deepEqual(harness.queue.relatedTracks, [trackB]);
 
 	await harness.bus.action({ type: "SKIP" }, context());
 
@@ -72,5 +77,5 @@ test("manual SKIP should also trigger autoplay fallback like natural TRACK_END",
 
 	assert.deepEqual(harness.played, ["track-a", "track-b"], "autoplay should have started track-b after manual skip");
 	harness.orchestrator.dispose();
-	harness.queueController.dispose();
+	harness.queue.dispose();
 });

@@ -2,7 +2,7 @@ import { PlayerManager, getGlobalManager } from "./structures/PlayerManager";
 
 export { Player } from "./structures/Player";
 export { PlayerManager } from "./structures/PlayerManager";
-export { PlayerBus } from "./structures/PlayerBus";
+export { PlayerBus, GlobalPlayerBus } from "./structures/PlayerBus";
 export { PlayerAction } from "./structures/PlayerAction";
 export {
 	PlayerCapabilities,
@@ -20,13 +20,13 @@ export { TrackLoader } from "./structures/TrackLoader";
 export { PlaybackController } from "./controller/PlaybackController";
 export { ConnectionController } from "./controller/ConnectionController";
 export { VolumeController } from "./controller/VolumeController";
-export { StreamController } from "./controller/StreamController";
+export { StreamController, StreamWorker } from "./controller/StreamController";
 export { QueueController, QueueState, QueueState as Queue } from "./controller/QueueController";
 export { AntiStuckController } from "./controller/AntiStuckController";
 export { PlaybackSessionController } from "./controller/PlaybackSessionController";
 export { TransitionController } from "./controller/TransitionController";
 export { PreloadController } from "./controller/PreloadController";
-export { SaveController } from "./controller/SaveController";
+export { SaveController, SaveWorker } from "./controller/SaveController";
 export { PlayerBusLatencyTrace } from "./controller/PlayerBusLatencyTrace";
 export { PlayerEventDebug, DEBUG_PRIORITY } from "./controller/PlayerEventDebug";
 export { GlobalControllerRegistry, globalControllerRegistry } from "./controller/GlobalControllerRegistry";
