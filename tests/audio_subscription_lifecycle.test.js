@@ -116,7 +116,7 @@ test("Bus PLAY replaces the previous stream through StreamController", async () 
 	// Stream A should have been destroyed by streamController.replace -> abortCurrent
 	assert.equal(streamA.destroyed, true);
 
-	orchestrator.dispose();
+	await orchestrator.dispose();
 	streamController.detach(playerId);
 	trackLoader.dispose();
 	queueController.detach(playerId);

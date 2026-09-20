@@ -568,11 +568,18 @@ export class Player extends EventEmitter {
 		} catch {
 			// ignore
 		}
-		this.dispose();
+		this.disposeBus();
 		this.emit("playerDestroy");
 		this.removeAllListeners();
 	}
+	/**
+	 * Alias of {@link destroy}. It used to publish "destroyed" and drop the bus subscriptions on its
+	 * own, which skipped the controller detach that `PlayerManager` performs first.
+	 */
 	public dispose(): void {
+		this.destroy();
+	}
+	private disposeBus(): void {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.invalidatePlay();

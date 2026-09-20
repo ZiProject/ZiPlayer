@@ -209,12 +209,20 @@ export class PlaybackOrchestrator {
 		await worker.dispose();
 	}
 
-	/** Global shutdown: releases every player's worker and the shared `onAction` subscription. */
-	public dispose(): void {
-		for (const playerId of [...this.workers.keys()]) {
-			void this.detach(playerId);
-		}
+	/**
+	 * Global shutdown: releases every player's worker and the shared `onAction` subscription.
+	 *
+	 * Resolves only once every worker finished its async cleanup, so callers can await it before
+	 * disposing the Bus. All detaches start immediately (each drops its bus subscriptions
+	 * synchronously) and run concurrently; one failing worker never blocks the others. The
+	 * shared `onAction` subscription is always released, and failures are rethrown afterwards.
+	 */
+	public async dispose(): Promise<void> {
+		const playerIds = [...this.workers.keys()];
+		const results = await Promise.allSettled(playerIds.map((playerId) => this.detach(playerId)));
 		this.detachAction();
+		const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+		if (errors.length > 0) throw new AggregateError(errors, "PlaybackOrchestrator failed to dispose some workers");
 	}
 
 	public has(playerId: string): boolean {

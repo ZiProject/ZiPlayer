@@ -81,6 +81,6 @@ test("manual SKIP should also trigger autoplay fallback like natural TRACK_END",
 	await waitFor(() => harness.played.length === 2 && harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackB);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b"], "autoplay should have started track-b after manual skip");
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queue.dispose();
 });

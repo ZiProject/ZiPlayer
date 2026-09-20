@@ -89,7 +89,7 @@ test("autoplay starts the related track after TRACK_END", async () => {
 	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackB);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b"], harness.errors.join("; "));
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -106,7 +106,7 @@ test("the next session keeps a valid signal after the ended session is destroyed
 	const nextSession = harness.orchestrator.getCurrentSession(harness.playerId);
 	assert.equal(endedSession.signal.aborted, true);
 	assert.equal(nextSession.signal.aborted, false);
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -131,7 +131,7 @@ test("related tracks resolve without setting willNext when autoplay is disabled"
 	harness.bus.event(harness.playerId, { type: "TRACK_END", session: harness.orchestrator.getCurrentSession(harness.playerId).snapshot() });
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	assert.equal(harness.orchestrator.getCurrentSession(harness.playerId).track, trackA);
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -147,7 +147,7 @@ test("loop off advances to the queued track after TRACK_END", async () => {
 	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackB);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b"], harness.errors.join("; "));
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -164,7 +164,7 @@ test("loop track repeats the current track without retaining an autoplay hint", 
 
 	assert.equal(harness.orchestrator.getCurrentSession(harness.playerId).track, trackA);
 	assert.equal(harness.queueController.willNext, null);
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -184,7 +184,7 @@ test("loop queue cycles back to the first track after the queue ends", async () 
 	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackA);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b", "track-a"]);
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -197,7 +197,7 @@ test("Bus PLAY starts a replacement track without legacy orchestrator arguments"
 	await play(harness, trackB);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b"], harness.errors.join("; "));
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 

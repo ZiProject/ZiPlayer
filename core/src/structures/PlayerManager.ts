@@ -203,6 +203,8 @@ export class PlayerManager extends EventEmitter {
 	>();
 	private disposed = false;
 	private pendingPlayers: Map<string, Promise<Player>> = new Map();
+	/** Teardowns still running; {@link dispose} waits for them before the Bus goes away. */
+	private readonly pendingTeardowns = new Set<Promise<void>>();
 	private searchCache: Map<string, ManagerCacheEntry<SearchResult>>;
 
 	public get sharedControllers(): SharedControllerSet {
@@ -392,10 +394,15 @@ export class PlayerManager extends EventEmitter {
 	 * Lazy internal player used only for {@link search}.
 	 * Not added to {@link players} and does not forward manager events.
 	 */
+	private assertNotDisposed(): void {
+		if (this.disposed) throw new Error("PlayerManager is disposed");
+	}
+
 	private getSearchPlayer(): Player {
 		if (this.searchPlayer && !this.searchPlayer.destroyed) {
 			return this.searchPlayer;
 		}
+		this.assertNotDisposed();
 
 		this.attachPlayerControllers(SEARCH_PLAYER_GUILD_ID, { extractorTimeout: this.extractorTimeout });
 		const player = new Player(SEARCH_PLAYER_GUILD_ID, this.bus, { extractorTimeout: this.extractorTimeout }, this);
@@ -564,6 +571,7 @@ export class PlayerManager extends EventEmitter {
 	 */
 	async create(guildOrId: string | { id: string }, options?: PlayerOptions): Promise<Player> {
 		const guildId = this.resolveGuildId(guildOrId);
+		this.assertNotDisposed();
 
 		if (guildId === SEARCH_PLAYER_GUILD_ID) {
 			throw new Error(`Guild id "${SEARCH_PLAYER_GUILD_ID}" is reserved for internal search.`);
@@ -582,14 +590,20 @@ export class PlayerManager extends EventEmitter {
 
 		const creationPromise = (async () => {
 			await Promise.resolve();
+			// What has been attached so far, so a failed or aborted creation can release exactly that.
+			let controllersAttached = false;
+			let created: Player | null = null;
 			try {
+				this.assertNotDisposed();
 				this.debug(`Creating player for guildId: ${guildId}`);
 				const playerId = guildId;
 				const bus = this.createPlayerBus(playerId);
 
+				controllersAttached = true;
 				this.attachPlayerControllers(playerId, options);
 
 				const player = new Player(playerId, bus, options, this);
+				created = player;
 				this.perPlayerResources.get(playerId)?.extensionManager.attachPlayer(player);
 				this.controllers.eventBridge?.attachPlayer(playerId, player);
 
@@ -618,6 +632,8 @@ export class PlayerManager extends EventEmitter {
 				}
 
 				for (const ext of extsToActivate) {
+					// Extension activation awaits: dispose() may have started in the meantime.
+					this.assertNotDisposed();
 					let instance = ext;
 					if (typeof ext === "function") {
 						try {
@@ -655,6 +671,9 @@ export class PlayerManager extends EventEmitter {
 					}
 				}
 
+				// Last check before the player becomes visible: from here on dispose() sees it and tears it down.
+				this.assertNotDisposed();
+
 				// Forward all player events to manager
 				this.setupEventForwarding(player, guildId);
 
@@ -664,6 +683,14 @@ export class PlayerManager extends EventEmitter {
 				this.players.set(guildId, player);
 				this.debug(`Player created for guildId: ${guildId}`);
 				return player;
+			} catch (error) {
+				// Not registered in `players`, so nobody else will release what was attached.
+				if (controllersAttached) {
+					await this.runTeardown(guildId, created).catch((err) =>
+						this.debug(`Error rolling back player creation for ${guildId}:`, err),
+					);
+				}
+				throw error;
 			} finally {
 				this.pendingPlayers.delete(guildId);
 			}
@@ -1018,10 +1045,26 @@ export class PlayerManager extends EventEmitter {
 		}
 		const player = this.players.get(playerId);
 
-		if (!player) return;
+		if (!player) {
+			// create() still running: let it finish, then destroy what it produced.
+			const creating = this.pendingPlayers.get(playerId);
+			if (!creating) return;
+			const createdPlayer = await creating.catch(() => null);
+			return createdPlayer ? this.destroy(playerId) : undefined;
+		}
 
 		this.players.delete(playerId);
-		return this.teardownPlayer(playerId, player);
+		return this.runTeardown(playerId, player);
+	}
+
+	/** Starts {@link teardownPlayer} and tracks it until it settles. */
+	private runTeardown(playerId: string, player: Player | null): Promise<void> {
+		const teardown = this.teardownPlayer(playerId, player);
+		this.pendingTeardowns.add(teardown);
+		void teardown
+			.finally(() => this.pendingTeardowns.delete(teardown))
+			.catch(() => undefined);
+		return teardown;
 	}
 
 	/**
@@ -1048,14 +1091,17 @@ export class PlayerManager extends EventEmitter {
 	 * Steps 1-3 and the start of 4 run synchronously, so `players.has()` / `player.destroyed` are
 	 * already up to date when the caller gets the promise back.
 	 */
-	private async teardownPlayer(playerId: string, player: Player): Promise<void> {
+	private async teardownPlayer(playerId: string, player: Player | null): Promise<void> {
 		try {
-			this.releaseForwardLinks(playerId, player);
-			player.abortWorkflow();
+			// `player` is null only when creation failed before the Player existed.
+			if (player) {
+				this.releaseForwardLinks(playerId, player);
+				player.abortWorkflow();
 
-			for (const ext of this.extensions) {
-				if (ext && typeof ext === "object" && ext.player === player) {
-					ext.player = null;
+				for (const ext of this.extensions) {
+					if (ext && typeof ext === "object" && ext.player === player) {
+						ext.player = null;
+					}
 				}
 			}
 
@@ -1071,7 +1117,7 @@ export class PlayerManager extends EventEmitter {
 		} finally {
 			// Bus disposal is last, and must happen even if a detach failed.
 			try {
-				player.completeDestroy();
+				player?.completeDestroy();
 			} catch (error) {
 				this.debug(`Error destroying player ${playerId}:`, error);
 			}
@@ -1192,6 +1238,10 @@ export class PlayerManager extends EventEmitter {
 			}
 		}
 
+		// A create() still running sees `disposed`, rolls back what it attached and rejects. Wait for
+		// it so no controller state is attached after the players below have been torn down.
+		await Promise.allSettled([...this.pendingPlayers.values()]);
+
 		const playerEntries = [...this.players.entries()];
 		this.players.clear();
 
@@ -1199,26 +1249,46 @@ export class PlayerManager extends EventEmitter {
 		this.searchPlayer = null;
 		if (searchPlayer && !searchPlayer.destroyed) playerEntries.push([SEARCH_PLAYER_GUILD_ID, searchPlayer]);
 
-		await Promise.all(
-			playerEntries.map(([playerId, player]) =>
-				this.teardownPlayer(playerId, player).catch((err) => this.debug(`Error destroying player ${playerId}:`, err)),
-			),
-		);
+		for (const [playerId, player] of playerEntries) {
+			this.runTeardown(playerId, player).catch((err) => this.debug(`Error destroying player ${playerId}:`, err));
+		}
+		// Includes teardowns started earlier by destroy(playerId)/player.destroy(): none may still be
+		// running when the shared controllers and the Bus are disposed below.
+		await Promise.allSettled([...this.pendingTeardowns]);
 
 		this.searchCache.clear();
 		this.cache.clear();
 
-		this.controllers.orchestrator.dispose();
-		this.controllers.preload.dispose();
-		this.controllers.preloadManager.dispose();
-		this.controllers.playback.dispose();
-		this.controllers.connection.dispose();
-		this.controllers.trackLoader.dispose();
-		this.controllers.trackResolver.dispose();
+		await this.disposeSharedControllers();
 		this.bus.dispose();
 
 		this.removeAllListeners();
 		this.debug(`PlayerManager disposed`);
+	}
+
+	/**
+	 * Disposes the shared controllers one after another, awaiting the async ones (orchestrator,
+	 * connection) so nothing is still cleaning up when the Bus is disposed. A failing dispose is
+	 * logged and never keeps the Bus (or the remaining controllers) from being disposed.
+	 */
+	private async disposeSharedControllers(): Promise<void> {
+		const c = this.controllers;
+		const steps: Array<[string, () => void | Promise<void>]> = [
+			["orchestrator", () => c.orchestrator.dispose()],
+			["preload", () => c.preload.dispose()],
+			["preloadManager", () => c.preloadManager.dispose()],
+			["playback", () => c.playback.dispose()],
+			["connection", () => c.connection.dispose()],
+			["trackLoader", () => c.trackLoader.dispose()],
+			["trackResolver", () => c.trackResolver.dispose()],
+		];
+		for (const [name, dispose] of steps) {
+			try {
+				await dispose();
+			} catch (error) {
+				this.debug(`Error disposing ${name} controller:`, error);
+			}
+		}
 	}
 
 	/**

@@ -167,3 +167,187 @@ test("player.queue throws after the player is destroyed", async (t) => {
 	assert.throws(() => player.queue, /Queue is not available/);
 	assert.equal(player.queueSize, 0);
 });
+
+test("PlaybackOrchestrator.dispose() resolves only after every worker finished its cleanup", async () => {
+	const { Bus, PlaybackSessionController, createPlaybackOrchestrator } = require("../core/dist");
+	const bus = new Bus();
+	const sessionController = new PlaybackSessionController(bus);
+	const orchestrator = createPlaybackOrchestrator(bus, { sessionController });
+	const cleaned = [];
+	for (const playerId of ["orch-a", "orch-b", "orch-c"]) {
+		sessionController.attach(playerId);
+		orchestrator.attach(playerId);
+		const worker = orchestrator.workers.get(playerId);
+		worker.trackEnd.dispose = async () => {
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			cleaned.push(playerId);
+		};
+	}
+
+	const pending = orchestrator.dispose();
+	assert.ok(pending instanceof Promise);
+	assert.deepEqual(cleaned, [], "cleanup is asynchronous");
+
+	await pending;
+	assert.deepEqual([...cleaned].sort(), ["orch-a", "orch-b", "orch-c"]);
+	for (const playerId of ["orch-a", "orch-b", "orch-c"]) assert.equal(orchestrator.has(playerId), false);
+});
+
+test("PlaybackOrchestrator.dispose() cleans the other workers when one fails, then reports the failure", async () => {
+	const { Bus, PlaybackSessionController, createPlaybackOrchestrator } = require("../core/dist");
+	const bus = new Bus();
+	const sessionController = new PlaybackSessionController(bus);
+	const orchestrator = createPlaybackOrchestrator(bus, { sessionController });
+	const cleaned = [];
+	for (const playerId of ["fail", "ok"]) {
+		sessionController.attach(playerId);
+		orchestrator.attach(playerId);
+	}
+	orchestrator.workers.get("fail").trackEnd.dispose = async () => {
+		throw new Error("boom");
+	};
+	orchestrator.workers.get("ok").trackEnd.dispose = async () => {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		cleaned.push("ok");
+	};
+
+	await assert.rejects(() => orchestrator.dispose(), (error) => error instanceof AggregateError && error.errors[0].message === "boom");
+	assert.deepEqual(cleaned, ["ok"]);
+	assert.equal(orchestrator.has("fail"), false);
+	assert.equal(orchestrator.has("ok"), false);
+});
+
+test("PlayerManager.dispose() finishes the orchestrator cleanup before the Bus is disposed", async () => {
+	const mgr = new PlayerManager();
+	await mgr.create("g-shutdown");
+	const order = [];
+	const orchestrator = mgr.controllers.orchestrator;
+	const disposeOrchestrator = orchestrator.dispose.bind(orchestrator);
+	orchestrator.dispose = async () => {
+		await disposeOrchestrator();
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		order.push("orchestrator.dispose done");
+	};
+	const disposeBus = mgr.bus.dispose.bind(mgr.bus);
+	mgr.bus.dispose = () => {
+		order.push("bus.dispose");
+		return disposeBus();
+	};
+
+	await mgr.destroy();
+
+	assert.deepEqual(order, ["orchestrator.dispose done", "bus.dispose"]);
+});
+
+test("PlayerManager.dispose() waits for a destroy(playerId) that is still detaching", async () => {
+	const mgr = new PlayerManager();
+	await mgr.create("g-race");
+	const order = [];
+	const connection = mgr.controllers.connection;
+	const detachConnection = connection.detach.bind(connection);
+	connection.detach = async (playerId) => {
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		await detachConnection(playerId);
+		if (playerId === "g-race") order.push("connection.detached");
+	};
+	const disposeBus = mgr.bus.dispose.bind(mgr.bus);
+	mgr.bus.dispose = () => {
+		order.push("bus.dispose");
+		return disposeBus();
+	};
+
+	const destroying = mgr.destroy("g-race"); // teardown still in flight...
+	await mgr.destroy(); // ...when the whole manager is disposed
+	await destroying;
+
+	assert.deepEqual(order, ["connection.detached", "bus.dispose"]);
+});
+
+test("Player.dispose() cannot skip the controller detach", async (t) => {
+	const mgr = new PlayerManager();
+	t.after(() => mgr.destroy());
+	const player = await mgr.create("g-dispose");
+	const order = traceTeardown(mgr, player);
+
+	player.dispose();
+
+	await waitFor(() => order.includes("bus.disposePlayer"));
+	assertOrdered(order, "abortWorkflow", "detach:orchestrator", "detach:connection", "bus.disposePlayer");
+});
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Extension whose activation is slow, which keeps `PlayerManager.create()` in flight for a while. */
+const slowExtension = (ms) => ({
+	name: "slow-ext",
+	version: "0.0.0",
+	player: null,
+	async active() {
+		await sleep(ms);
+		return true;
+	},
+});
+
+const assertNothingAttached = (mgr, playerId) => {
+	assert.equal(mgr.has(playerId), false);
+	assert.equal(mgr.controllers.queue.states.has(playerId), false, "queue state released");
+	assert.equal(mgr.controllers.orchestrator.has(playerId), false, "orchestrator worker released");
+	assert.equal(mgr.controllers.connection.slots.has(playerId), false, "connection slot released");
+	assert.equal(mgr.perPlayerResources.has(playerId), false, "per-player resources released");
+};
+
+test("dispose() during create() rolls the creation back instead of leaking its controllers", async () => {
+	const mgr = new PlayerManager({ extensions: [slowExtension(60)], autoCleanup: false });
+	const creating = mgr.create("g-create-race", { extensions: ["slow-ext"] });
+	creating.catch(() => undefined);
+	await sleep(15); // controllers attached, extension activation still pending
+
+	assert.equal(mgr.controllers.queue.states.has("g-create-race"), true);
+	await mgr.destroy();
+
+	await assert.rejects(creating, /disposed/);
+	assertNothingAttached(mgr, "g-create-race");
+	assert.equal(mgr.size, 0);
+	assert.equal(mgr.pendingPlayers.size, 0);
+});
+
+test("create() after dispose() is rejected", async () => {
+	const mgr = new PlayerManager({ autoCleanup: false });
+	await mgr.destroy();
+
+	await assert.rejects(() => mgr.create("g-late"), /disposed/);
+	await assert.rejects(() => mgr.search("dummy:late", "tester"), /disposed/);
+});
+
+test("destroy(playerId) during create() destroys the player once it exists", async (t) => {
+	const mgr = new PlayerManager({ extensions: [slowExtension(40)], autoCleanup: false });
+	t.after(() => mgr.destroy());
+	const creating = mgr.create("g-destroy-race", { extensions: ["slow-ext"] });
+	await sleep(10);
+
+	const destroying = mgr.destroy("g-destroy-race");
+	const player = await creating;
+	await destroying;
+
+	assert.equal(player.destroyed, true);
+	assertNothingAttached(mgr, "g-destroy-race");
+});
+
+test("a failed create() releases what it attached and the guild can be created again", async (t) => {
+	const mgr = new PlayerManager({ autoCleanup: false });
+	t.after(() => mgr.destroy());
+	const eventBridge = mgr.controllers.eventBridge;
+	const attachPlayer = eventBridge.attachPlayer.bind(eventBridge);
+	eventBridge.attachPlayer = () => {
+		throw new Error("boom");
+	};
+
+	await assert.rejects(() => mgr.create("g-fail"), /boom/);
+	assertNothingAttached(mgr, "g-fail");
+	assert.equal(mgr.pendingPlayers.size, 0);
+
+	eventBridge.attachPlayer = attachPlayer;
+	const player = await mgr.create("g-fail");
+	assert.equal(mgr.get("g-fail"), player);
+	assert.equal(player.destroyed, false);
+});
