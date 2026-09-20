@@ -67,6 +67,9 @@ export interface SharedControllerGraph {
 	readonly resourceRefreshController: ResourceRefreshController;
 	readonly sessionController: PlaybackSessionController;
 	readonly forwardController: ForwardController;
+	readonly playerConnectionBridge: PlayerConnectionBridge;
+	readonly eventBridge: PlayerEventBridge;
+	readonly connectionController: ConnectionController;
 }
 
 let sharedControllerGraph: SharedControllerGraph | null = null;
@@ -95,6 +98,9 @@ export function ensureSharedControllers(): SharedControllerGraph {
 		resourceRefreshController: new ResourceRefreshController(bus),
 		sessionController: new PlaybackSessionController(bus),
 		forwardController: new ForwardController(bus),
+		playerConnectionBridge: new PlayerConnectionBridge(bus),
+		eventBridge: new PlayerEventBridge(bus),
+		connectionController: new ConnectionController(bus),
 	};
 	// runtime.ping / runtime.dispose are the only two RPCs owned directly by
 	// GlobalPlayerRuntime itself; registered once here and routed to whichever
@@ -158,8 +164,9 @@ export class GlobalPlayerRuntime {
 
 	public attachPlayer(player: Player): void {
 		this.controllers?.extensionManager?.attachPlayer(player);
-		this.controllers?.playerConnectionBridge?.attachPlayer(player);
-		this.controllers?.eventBridge?.attachPlayer(player);
+		const shared = ensureSharedControllers();
+		shared.playerConnectionBridge.attach(this.playerId, player, this.controllers?.debugTracer?.channel("PlayerConnectionBridge"));
+		shared.eventBridge.attachPlayer(this.playerId, player);
 	}
 
 	public initialize(params: {
@@ -192,9 +199,7 @@ export class GlobalPlayerRuntime {
 			: []),
 		];
 		const audioPlayer = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause, maxMissedFrames: 100 } });
-		const connectionController = new ConnectionController({
-			guildId: playerId,
-			bus,
+		shared.connectionController.attach(playerId, {
 			audioPlayer,
 			options,
 			debug: channel("ConnectionController"),
@@ -306,11 +311,6 @@ export class GlobalPlayerRuntime {
 				void bus.requestRpc(playerId, "playback.reportFilterError", { error }).catch(() => undefined);
 			},
 		});
-		const playerConnectionBridge = new PlayerConnectionBridge({
-			bus,
-			debug: channel("PlayerConnectionBridge"),
-			guildId: playerId,
-		});
 		shared.sessionController.attach(playerId);
 		const orchestrator = new PlaybackOrchestrator(playerId, bus, {
 			debug: channel("PlaybackOrchestrator"),
@@ -322,9 +322,9 @@ export class GlobalPlayerRuntime {
 			pluginManager,
 			debug: channel("SearchController"),
 		});
-		const eventBridge = new PlayerEventBridge(null, manager, bus, debugTracer, playerId);
+		shared.eventBridge.attach(playerId, debugTracer);
 		const graph: PlayerRuntimeGraph = {
-			connectionController,
+			connectionController: shared.connectionController,
 			lifecycleController: shared.lifecycleController,
 			forwardController: shared.forwardController,
 			audioPlayer,
@@ -346,13 +346,11 @@ export class GlobalPlayerRuntime {
 			volumeController: shared.volumeController,
 			preloadController,
 			resourceRefreshController: shared.resourceRefreshController,
-			playerConnectionBridge,
 			orchestrator,
 			sessionController: shared.sessionController,
 			ttsController: shared.ttsController,
 			debugTracer,
 			searchController: shared.searchController,
-			eventBridge,
 		};
 
 		runtimeInstances.set(playerId, this);
@@ -364,7 +362,8 @@ export class GlobalPlayerRuntime {
 		// controller's per-player state disappears before its process-wide
 		// registration would ever be touched (which never happens: shared
 		// controllers are never destroyed, only detached per player).
-		this.monitorCleanup("sharedControllers", () => {
+		this.monitorCleanup("sharedControllers", async () => {
+			await shared.connectionController.detach(playerId);
 			shared.lifecycleController.detach(playerId);
 			shared.forwardController.detach(playerId);
 			shared.pluginController.detach(playerId);
@@ -380,6 +379,8 @@ export class GlobalPlayerRuntime {
 			shared.resourceRefreshController.detach(playerId);
 			shared.searchController.detach(playerId);
 			shared.sessionController.detach(playerId);
+			shared.playerConnectionBridge.detach(playerId);
+			shared.eventBridge.detach(playerId);
 		});
 
 		this.globalRegistration = globalControllerRegistry.register(playerId, bus, graph, () => this.dispose());
@@ -393,10 +394,8 @@ export class GlobalPlayerRuntime {
 			"trackLoader",
 			"playbackController",
 			"preloadController",
-			"playerConnectionBridge",
 			"orchestrator",
 			"debugTracer",
-			"eventBridge",
 		];
 		for (const name of lifecycleOrder) this.monitor(name, graph[name]);
 		return graph;

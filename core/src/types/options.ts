@@ -1,6 +1,5 @@
 import type { AudioPlayer, AudioResource } from "@discordjs/voice";
 import type { VoiceConnection } from "@discordjs/voice";
-import type { Player } from "../structures/Player";
 import type { PlayerManager } from "../structures/PlayerManager";
 import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
@@ -12,8 +11,6 @@ import type { ConnectionController } from "../controller/ConnectionController";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
 import type { PlayerEventDebug } from "../controller/PlayerEventDebug";
-import type { PlayerConnectionBridge } from "../controller/PlayerConnectionBridge";
-import type { PlayerEventBridge } from "../controller/PlayerEventBridge";
 import type { PlaybackController } from "../controller/PlaybackController";
 import type { PlaybackSessionController } from "../controller/PlaybackSessionController";
 import type { StreamController } from "../controller/StreamController";
@@ -146,12 +143,6 @@ export interface PluginControllerOptions {
 	pluginManager: PluginManager;
 	bus: Bus;
 }
-export interface PlayerConnectionBridgeOptions {
-	player: Player;
-	bus: Bus;
-	debug?: (...args: any[]) => void;
-	guildId: string;
-}
 /**
  * Optional fallback adapters used when the corresponding controller RPC is not
  * registered on the bus (e.g. PreloadController / TTSController not wired up,
@@ -193,13 +184,11 @@ export interface PlayerRuntimeGraph {
 	volumeController: VolumeController;
 	preloadController: PreloadController;
 	resourceRefreshController: ResourceRefreshController;
-	playerConnectionBridge: PlayerConnectionBridge;
 	orchestrator: PlaybackOrchestrator;
 	sessionController: PlaybackSessionController;
 	ttsController: TTSController;
 	debugTracer: PlayerEventDebug;
 	searchController: SearchController;
-	eventBridge: PlayerEventBridge;
 }
 export interface PromotedPreload {
 	track: Track;

@@ -1,38 +1,45 @@
 import type { Player } from "../structures/Player";
 import type { Bus } from "../structures/Bus";
 
-/** Syncs voice connection state from ConnectionController to the public Player facade.
- *  One instance per player (cheap, not a shared controller); filters the shared bus's
- *  flat connection output stream down to this player's own events. */
+/**
+ * Syncs voice connection state from ConnectionController to the public Player facade.
+ *
+ * Singleton — created exactly once in `ensureSharedControllers()` and shared by every
+ * player in the process (see `SharedControllerGraph`). `Bus.onOutput()` dispatch is
+ * already global (not player-scoped), so the two listeners below are registered a
+ * single time for the whole process; per-player wiring is just an entry in the
+ * internal `playerId -> Player` registry via `attach()`/`detach()`, not a new bus
+ * subscription or a new bridge instance.
+ */
 export class PlayerConnectionBridge {
-	private readonly detach: () => void;
-	private player: Player | null = null;
+	private readonly players = new Map<string, { player: Player; debug?: (...args: any[]) => void }>();
 
-	constructor(options: { player?: Player | null; bus: Bus; debug?: any; guildId: string }) {
-		const { player, bus, debug, guildId } = options;
-		this.player = player ?? null;
-		const detachConnected = bus.onOutput("[Connection]->[Player]:connected", (event) => {
-			if (event.playerId !== guildId) return;
-			if (this.player) this.player.connection = event.connection;
-			debug?.(`[Player] Connection set guild=${guildId} session=${event.sessionId}`);
+	public constructor(bus: Bus) {
+		bus.onOutput("[Connection]->[Player]:connected", (event) => {
+			const entry = this.players.get(event.playerId);
+			if (!entry) return;
+			entry.player.connection = event.connection;
+			entry.debug?.(`[Player] Connection set guild=${event.playerId} session=${event.sessionId}`);
 		});
-		const detachDisconnected = bus.onOutput("[Connection]->[Player]:disconnected", (event) => {
-			if (event.playerId !== guildId) return;
-			if (this.player) this.player.connection = null;
-			debug?.(`[Player] Connection cleared guild=${guildId} reason=${event.reason ?? "unknown"}`);
+		bus.onOutput("[Connection]->[Player]:disconnected", (event) => {
+			const entry = this.players.get(event.playerId);
+			if (!entry) return;
+			entry.player.connection = null;
+			entry.debug?.(`[Player] Connection cleared guild=${event.playerId} reason=${event.reason ?? "unknown"}`);
 		});
-		this.detach = () => {
-			detachConnected();
-			detachDisconnected();
-			if (this.player) this.player.connection = null;
-		};
 	}
 
-	public attachPlayer(player: Player): void {
-		this.player = player;
+	/** Registers `player` as the current facade for `playerId`. Called once the Player
+	 *  instance exists (after the runtime/controller graph, which is created first). */
+	public attach(playerId: string, player: Player, debug?: (...args: any[]) => void): void {
+		this.players.set(playerId, { player, debug });
 	}
 
-	dispose(): void {
-		this.detach();
+	/** Drops `playerId`'s entry. No bus unsubscription needed (there is none to undo —
+	 *  the two onOutput listeners above live for the whole process). */
+	public detach(playerId: string): void {
+		const entry = this.players.get(playerId);
+		if (entry) entry.player.connection = null;
+		this.players.delete(playerId);
 	}
 }
