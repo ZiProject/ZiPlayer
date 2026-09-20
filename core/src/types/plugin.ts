@@ -18,12 +18,11 @@ export interface TrackResolveContext {
 	[key: string]: any;
 }
 
+/** Per-player resources handed to the shared `TrackResolver` via `attach(playerId, options)`. */
 export interface TrackResolverOptions {
 	streamManager: StreamManager;
 	pluginManager: PluginManager;
 	extensionManager: ExtensionManager;
-	bus?: import("../structures/Bus").Bus;
-	playerId?: string;
 	isDestroyed?: () => boolean;
 }
 

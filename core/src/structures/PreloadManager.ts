@@ -1,74 +1,100 @@
 import type { Track, StreamInfo, StreamSlot, PromotedPreload } from "../types";
 import type { StreamManager } from "./StreamManager";
 import type { Bus } from "./Bus";
-interface PreloadManagerDeps {
+
+/** Per-player resources handed to the shared `PreloadManager` via `attach(playerId, deps)`. */
+export interface PreloadManagerDeps {
 	streamManager: StreamManager;
 	debug: (message?: any, ...optionalParams: any[]) => void;
-	bus?: Bus;
-	playerId?: string;
+	isDestroyed: () => boolean;
+	isEnabled: () => boolean;
+	/** Optional overrides for standalone/unit-test use. By default everything goes through the Bus. */
 	getNextTrack?: () => Track | null;
 	getStream?: (track: Track) => Promise<StreamInfo | null>;
 	removeTrackFromQueue?: (track: Track) => boolean;
-	isDestroyed: () => boolean;
-	isEnabled: () => boolean;
 }
+
+/** Everything the manager keeps for ONE player. Lives only inside `PreloadManager.slots`. */
+interface PreloadPlayerSlot {
+	readonly playerId: string;
+	readonly deps: PreloadManagerDeps;
+	preloadLock: boolean;
+	preloadNext: boolean;
+	readonly preloadSlot: StreamSlot;
+}
+
+const newStreamSlot = (): StreamSlot => ({
+	streamInfo: null,
+	track: null,
+	streamId: null,
+	processedStreamId: null,
+	abortController: null,
+	isValid: false,
+	isLoading: false,
+	loadPromise: null,
+});
+
+/**
+ * Owns every player's single "next track" preload slot.
+ *
+ * Shared, singleton — created once in `ensureSharedControllers()`. Each player's slot,
+ * lock flags and StreamManager reference live in an internal `Map<playerId, ...>`,
+ * opened by `attach(playerId, deps)` and released by `detach(playerId)`.
+ */
 export class PreloadManager {
-	private readonly streamManager: StreamManager;
-	private readonly debugLog: (message?: any, ...optionalParams: any[]) => void;
-	private readonly bus?: Bus;
-	private readonly playerId?: string;
-	private readonly getNextTrackFallback?: () => Track | null;
-	private readonly getStreamFallback?: (track: Track) => Promise<StreamInfo | null>;
-	private readonly removeTrackFromQueue?: (track: Track) => boolean;
-	private readonly isDestroyed: () => boolean;
-	private readonly isEnabled: () => boolean;
-	private preloadLock = false;
-	private preloadNext = false;
-	private readonly preloadSlot: StreamSlot = {
-		streamInfo: null,
-		track: null,
-		streamId: null,
-		processedStreamId: null,
-		abortController: null,
-		isValid: false,
-		isLoading: false,
-		loadPromise: null,
-	};
-	public get slotState(): StreamSlot {
-		return this.preloadSlot;
+	private readonly slots = new Map<string, PreloadPlayerSlot>();
+
+	public constructor(private readonly bus: Bus) {}
+
+	public attach(playerId: string, deps: PreloadManagerDeps): void {
+		if (this.slots.has(playerId)) this.detach(playerId);
+		this.slots.set(playerId, { playerId, deps, preloadLock: false, preloadNext: false, preloadSlot: newStreamSlot() });
 	}
-	constructor(deps: PreloadManagerDeps) {
-		this.streamManager = deps.streamManager;
-		this.debugLog = deps.debug;
-		this.bus = deps.bus;
-		this.playerId = deps.playerId;
-		this.getNextTrackFallback = deps.getNextTrack;
-		this.getStreamFallback = deps.getStream;
-		this.removeTrackFromQueue = deps.removeTrackFromQueue;
-		this.isDestroyed = deps.isDestroyed;
-		this.isEnabled = deps.isEnabled;
+
+	/** Cancels any in-flight preload, destroys the buffered stream and forgets `playerId`. */
+	public detach(playerId: string): void {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
+		this.cancelPreload(playerId);
+		this.clearPreloadSlot(playerId);
+		this.slots.delete(playerId);
 	}
-	private getNextTrack(): Track | null {
-		if (this.bus && this.playerId)
-			return this.bus.querySync(this.playerId, "queueLoop") === "track" ?
-					this.bus.querySync(this.playerId, "queueCurrent")
-				:	this.bus.querySync(this.playerId, "queueNextTrack");
-		return this.getNextTrackFallback?.() ?? null;
+
+	/** Global shutdown: releases every player's slot. */
+	public dispose(): void {
+		for (const playerId of [...this.slots.keys()]) this.detach(playerId);
 	}
-	private getStream(track: Track): Promise<StreamInfo | null> {
-		if (this.bus && this.playerId) return this.bus.requestRpc(this.playerId, "stream.resolve", { track });
-		return this.getStreamFallback?.(track) ?? Promise.resolve(null);
+
+	public has(playerId: string): boolean {
+		return this.slots.has(playerId);
 	}
-	private removeTrack(track: Track): boolean {
-		if (this.bus && this.playerId) {
-			const next = this.bus.querySync(this.playerId, "queueNextTrack");
-			const same =
-				next === track ||
-				(next?.id !== undefined && track.id !== undefined && next.id === track.id) ||
-				(next?.url !== undefined && track.url !== undefined && next.url === track.url);
-			return same ? this.bus.requestRpcSync(this.playerId, "queue.remove", { index: 0 }) !== null : false;
-		}
-		return this.removeTrackFromQueue?.(track) ?? false;
+
+	public slotState(playerId: string): StreamSlot {
+		return this.slots.get(playerId)?.preloadSlot ?? newStreamSlot();
+	}
+
+	// ---------------------------------------------------------------------
+	// Bus / fallback plumbing
+	// ---------------------------------------------------------------------
+
+	private getNextTrack(slot: PreloadPlayerSlot): Track | null {
+		if (slot.deps.getNextTrack) return slot.deps.getNextTrack() ?? null;
+		return this.bus.querySync(slot.playerId, "queueLoop") === "track" ?
+				this.bus.querySync(slot.playerId, "queueCurrent")
+			:	this.bus.querySync(slot.playerId, "queueNextTrack");
+	}
+	private getStream(slot: PreloadPlayerSlot, track: Track): Promise<StreamInfo | null> {
+		if (slot.deps.getStream) return slot.deps.getStream(track);
+		return this.bus.requestRpc(slot.playerId, "stream.resolve", { track });
+	}
+	private removeTrack(slot: PreloadPlayerSlot, track: Track): boolean {
+		if (slot.deps.removeTrackFromQueue) return slot.deps.removeTrackFromQueue(track);
+		const next = this.bus.querySync(slot.playerId, "queueNextTrack");
+		const same =
+			next === track ||
+			(next?.id !== undefined && track.id !== undefined && next.id === track.id) ||
+			(next?.url !== undefined && track.url !== undefined && next.url === track.url);
+		return same ? this.bus.requestRpcSync(slot.playerId, "queue.remove", { index: 0 }) !== null : false;
 	}
 	private trackMatches(a: Track | null, b: Track | null): boolean {
 		if (!a || !b) return false;
@@ -76,140 +102,153 @@ export class PreloadManager {
 		if (a.id !== undefined && b.id !== undefined) return a.id === b.id;
 		return a.url === b.url && a.url !== undefined;
 	}
-	public hasValidPreload(track: Track): boolean {
-		const stream = this.preloadSlot.streamInfo?.stream;
+
+	// ---------------------------------------------------------------------
+	// Preload operations (all keyed by playerId)
+	// ---------------------------------------------------------------------
+
+	public hasValidPreload(playerId: string, track: Track): boolean {
+		const slot = this.slots.get(playerId);
+		return slot ? this.slotHasValidPreload(slot, track) : false;
+	}
+	private slotHasValidPreload(slot: PreloadPlayerSlot, track: Track): boolean {
+		const stream = slot.preloadSlot.streamInfo?.stream;
 		const isStreamAlive = !stream || (!stream.destroyed && (stream as any).readable !== false);
 		return !!(
-			this.preloadSlot.isValid &&
-			this.trackMatches(this.preloadSlot.track, track) &&
-			this.preloadSlot.streamInfo &&
+			slot.preloadSlot.isValid &&
+			this.trackMatches(slot.preloadSlot.track, track) &&
+			slot.preloadSlot.streamInfo &&
 			isStreamAlive
 		);
 	}
-	public takePreloaded(track: Track): PromotedPreload | null {
-		if (!this.hasValidPreload(track)) return null;
-		const streamInfo = this.preloadSlot.streamInfo;
+	public takePreloaded(playerId: string, track: Track): PromotedPreload | null {
+		const slot = this.slots.get(playerId);
+		if (!slot || !this.slotHasValidPreload(slot, track)) return null;
+		const preloadSlot = slot.preloadSlot;
+		const streamInfo = preloadSlot.streamInfo;
 		if (!streamInfo) return null;
 		const stream = (streamInfo.stream ?? null) as NodeJS.ReadableStream;
-		const streamId = this.preloadSlot.streamId;
+		const streamId = preloadSlot.streamId;
 		// Transfer ownership to active playback without unregistering from StreamManager
-		this.debugLog(`[Preload] Promoting preloaded track: ${track.title} (Stream ID: ${streamId ?? "none"})`);
-		this.preloadSlot.streamInfo = null;
-		this.preloadSlot.track = null;
-		this.preloadSlot.streamId = null;
-		this.preloadSlot.abortController = null;
-		this.preloadSlot.isValid = false;
-		this.preloadSlot.isLoading = false;
-		this.preloadSlot.loadPromise = null;
+		slot.deps.debug(`[Preload] Promoting preloaded track: ${track.title} (Stream ID: ${streamId ?? "none"})`);
+		preloadSlot.streamInfo = null;
+		preloadSlot.track = null;
+		preloadSlot.streamId = null;
+		preloadSlot.abortController = null;
+		preloadSlot.isValid = false;
+		preloadSlot.isLoading = false;
+		preloadSlot.loadPromise = null;
 		return { track, stream, streamInfo, streamId };
 	}
-	public async preloadNextTrack(): Promise<void> {
-		if (this.isDestroyed()) return;
-		if (!this.isEnabled()) {
-			this.debugLog(`[Preload] Disabled by options/runtime profile`);
+	public async preloadNextTrack(playerId: string): Promise<void> {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
+		const { debug, isDestroyed, isEnabled } = slot.deps;
+		const preloadSlot = slot.preloadSlot;
+		if (isDestroyed()) return;
+		if (!isEnabled()) {
+			debug(`[Preload] Disabled by options/runtime profile`);
 			return;
 		}
-		if (this.preloadLock) {
-			this.debugLog(`[Preload] Already preloading, skipping`);
+		if (slot.preloadLock) {
+			debug(`[Preload] Already preloading, skipping`);
 			return;
 		}
-		const nextTrack = this.getNextTrack();
+		const nextTrack = this.getNextTrack(slot);
 		if (!nextTrack) {
-			this.debugLog(`[Preload] No next track to preload`);
+			debug(`[Preload] No next track to preload`);
 			return;
 		}
-		if (this.hasValidPreload(nextTrack)) {
-			this.debugLog(`[Preload] Already have valid preload for: ${nextTrack.title}`);
+		if (this.slotHasValidPreload(slot, nextTrack)) {
+			debug(`[Preload] Already have valid preload for: ${nextTrack.title}`);
 			return;
 		}
-		if (this.preloadSlot.isLoading && this.trackMatches(this.preloadSlot.track, nextTrack)) {
-			if (this.preloadSlot.loadPromise) await this.preloadSlot.loadPromise;
+		if (preloadSlot.isLoading && this.trackMatches(preloadSlot.track, nextTrack)) {
+			if (preloadSlot.loadPromise) await preloadSlot.loadPromise;
 			return;
 		}
-		if (this.preloadSlot.isValid && !this.trackMatches(this.preloadSlot.track, nextTrack)) await this.safeCancelPreload();
-		this.preloadLock = true;
-		this.preloadNext = false;
+		if (preloadSlot.isValid && !this.trackMatches(preloadSlot.track, nextTrack)) await this.safeCancelPreload(playerId);
+		slot.preloadLock = true;
+		slot.preloadNext = false;
 		const abortController = new AbortController();
-		this.preloadSlot.track = nextTrack;
-		this.preloadSlot.abortController = abortController;
-		this.preloadSlot.isLoading = true;
-		const loadPromise = this.executePreload(nextTrack, abortController);
-		this.preloadSlot.loadPromise = loadPromise;
+		preloadSlot.track = nextTrack;
+		preloadSlot.abortController = abortController;
+		preloadSlot.isLoading = true;
+		const loadPromise = this.executePreload(slot, nextTrack, abortController);
+		preloadSlot.loadPromise = loadPromise;
 		try {
 			await loadPromise;
 		} catch (err) {
-			if (err instanceof Error && err.message === "PRELOAD_CANCELLED")
-				this.debugLog(`[Preload] Cancelled for ${nextTrack.title}`);
+			if (err instanceof Error && err.message === "PRELOAD_CANCELLED") debug(`[Preload] Cancelled for ${nextTrack.title}`);
 			else if (err instanceof Error && err.message === "No stream available") {
-				this.debugLog(`[Preload] Skipped unplayable track: ${nextTrack.title}`);
-				this.clearPreloadSlot();
-				this.preloadNext = true;
+				debug(`[Preload] Skipped unplayable track: ${nextTrack.title}`);
+				this.clearPreloadSlot(playerId);
+				slot.preloadNext = true;
 			} else {
-				this.debugLog(`[Preload] Failed for ${nextTrack.title}:`, err);
-				this.clearPreloadSlot();
+				debug(`[Preload] Failed for ${nextTrack.title}:`, err);
+				this.clearPreloadSlot(playerId);
 			}
 		} finally {
-			this.preloadLock = false;
-			this.preloadSlot.isLoading = false;
-			this.preloadSlot.loadPromise = null;
+			slot.preloadLock = false;
+			preloadSlot.isLoading = false;
+			preloadSlot.loadPromise = null;
 		}
-		if (this.preloadNext && !this.isDestroyed() && this.isEnabled()) await this.preloadNextTrack();
+		if (slot.preloadNext && !isDestroyed() && isEnabled()) await this.preloadNextTrack(playerId);
 	}
-	public async safeCancelPreload(): Promise<void> {
-		if (!this.preloadSlot.abortController && !this.preloadSlot.streamInfo && !this.preloadSlot.streamId) return;
-		this.debugLog(`[Preload] Safely cancelling preload for: ${this.preloadSlot.track?.title || "unknown"}`);
-		this.preloadSlot.abortController?.abort();
-		this.preloadSlot.abortController = null;
-		if (this.preloadSlot.streamId) this.streamManager.unregisterStream(this.preloadSlot.streamId, true);
-		if (this.preloadSlot.streamInfo) {
-			this.destroyStreamInfo(this.preloadSlot.streamInfo);
+	public async safeCancelPreload(playerId: string): Promise<void> {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
+		const preloadSlot = slot.preloadSlot;
+		if (!preloadSlot.abortController && !preloadSlot.streamInfo && !preloadSlot.streamId) return;
+		slot.deps.debug(`[Preload] Safely cancelling preload for: ${preloadSlot.track?.title || "unknown"}`);
+		preloadSlot.abortController?.abort();
+		preloadSlot.abortController = null;
+		if (preloadSlot.streamId) slot.deps.streamManager.unregisterStream(preloadSlot.streamId, true);
+		if (preloadSlot.streamInfo) {
+			this.destroyStreamInfo(slot, preloadSlot.streamInfo);
 		}
-		this.clearPreloadSlot();
+		this.clearPreloadSlot(playerId);
 	}
-	public cancelPreload(): void {
-		this.preloadSlot.abortController?.abort();
-		if (this.preloadSlot.streamId) this.streamManager.unregisterStream(this.preloadSlot.streamId, true);
-		this.clearPreloadSlot();
+	public cancelPreload(playerId: string): void {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
+		slot.preloadSlot.abortController?.abort();
+		if (slot.preloadSlot.streamId) slot.deps.streamManager.unregisterStream(slot.preloadSlot.streamId, true);
+		this.clearPreloadSlot(playerId);
 	}
-	public clearPreloadSlot(): void {
-		if (this.preloadSlot.streamInfo) {
-			this.destroyStreamInfo(this.preloadSlot.streamInfo);
+	public clearPreloadSlot(playerId: string): void {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
+		const preloadSlot = slot.preloadSlot;
+		if (preloadSlot.streamInfo) {
+			this.destroyStreamInfo(slot, preloadSlot.streamInfo);
 		}
-		if (this.preloadSlot.streamId) this.streamManager.unregisterStream(this.preloadSlot.streamId, true);
-		this.preloadSlot.streamInfo = null;
-		this.preloadSlot.track = null;
-		this.preloadSlot.streamId = null;
-		this.preloadSlot.abortController = null;
-		this.preloadSlot.isValid = false;
-		this.preloadSlot.isLoading = false;
-		this.preloadSlot.loadPromise = null;
+		if (preloadSlot.streamId) slot.deps.streamManager.unregisterStream(preloadSlot.streamId, true);
+		preloadSlot.streamInfo = null;
+		preloadSlot.track = null;
+		preloadSlot.streamId = null;
+		preloadSlot.abortController = null;
+		preloadSlot.isValid = false;
+		preloadSlot.isLoading = false;
+		preloadSlot.loadPromise = null;
 	}
-	/**
-	 * Full teardown hook so PlayerRuntimeController's generic `.dispose()`/`.destroy()`
-	 * duck-typed resolver can find and call this. Without a method matching that
-	 * exact name, any in-flight or already-buffered preloaded track (a whole
-	 * AudioResource + its underlying ffmpeg/yt-dlp Readable stream) is never
-	 * destroyed when the player is destroyed, leaking that memory indefinitely.
-	 */
-	public dispose(): void {
-		this.cancelPreload();
-		this.clearPreloadSlot();
-	}
-	private async executePreload(track: Track, abortController: AbortController): Promise<void> {
-		if (this.isDestroyed()) throw new Error("PLAYER_DESTROYED");
-		this.debugLog(`[Preload] Starting preload for: ${track.title}`);
-		if (abortController.signal.aborted || !this.trackMatches(this.getNextTrack(), track)) throw new Error("PRELOAD_CANCELLED");
-		const streamInfo = await this.getStreamWithCancel(track, abortController.signal);
-		if (abortController.signal.aborted || this.isDestroyed()) {
-			this.destroyStreamInfo(streamInfo);
+	private async executePreload(slot: PreloadPlayerSlot, track: Track, abortController: AbortController): Promise<void> {
+		const { debug, isDestroyed, streamManager } = slot.deps;
+		const preloadSlot = slot.preloadSlot;
+		if (isDestroyed()) throw new Error("PLAYER_DESTROYED");
+		debug(`[Preload] Starting preload for: ${track.title}`);
+		if (abortController.signal.aborted || !this.trackMatches(this.getNextTrack(slot), track)) throw new Error("PRELOAD_CANCELLED");
+		const streamInfo = await this.getStreamWithCancel(slot, track, abortController.signal);
+		if (abortController.signal.aborted || isDestroyed()) {
+			this.destroyStreamInfo(slot, streamInfo);
 			throw new Error("PRELOAD_CANCELLED");
 		}
-		if (!this.trackMatches(this.getNextTrack(), track)) {
-			this.destroyStreamInfo(streamInfo);
+		if (!this.trackMatches(this.getNextTrack(slot), track)) {
+			this.destroyStreamInfo(slot, streamInfo);
 			throw new Error("PRELOAD_CANCELLED");
 		}
 		if (!streamInfo?.stream && !streamInfo?.url && !streamInfo?.recreate) {
-			if (this.removeTrack(track)) this.debugLog(`[Preload] Removed unplayable track from queue: ${track.title}`);
+			if (this.removeTrack(slot, track)) debug(`[Preload] Removed unplayable track from queue: ${track.title}`);
 			throw new Error("No stream available");
 		}
 
@@ -222,42 +261,43 @@ export class PreloadManager {
 
 		let streamId: string | null = null;
 		if (streamInfo.stream) {
-			streamId = this.streamManager.registerStream(streamInfo.stream, track, {
+			streamId = streamManager.registerStream(streamInfo.stream, track, {
 				source: track.source || "preload",
 				isPreload: true,
 				priority: 5,
 			});
 		}
-		this.preloadSlot.streamId = streamId;
+		preloadSlot.streamId = streamId;
 
-		if (abortController.signal.aborted || this.isDestroyed()) {
-			this.destroyStreamInfo(streamInfo);
-			if (streamId) this.streamManager.unregisterStream(streamId, true);
+		if (abortController.signal.aborted || isDestroyed()) {
+			this.destroyStreamInfo(slot, streamInfo);
+			if (streamId) streamManager.unregisterStream(streamId, true);
 			throw new Error("PRELOAD_CANCELLED");
 		}
 
 		if (streamInfo.stream && (streamInfo.stream.destroyed || (streamInfo.stream as any).readable === false)) {
-			if (streamId) this.streamManager.unregisterStream(streamId, true);
-			this.preloadSlot.streamId = null;
+			if (streamId) streamManager.unregisterStream(streamId, true);
+			preloadSlot.streamId = null;
 			throw new Error("Resource not readable");
 		}
 
-		this.preloadSlot.streamInfo = streamInfo;
-		this.preloadSlot.isValid = true;
-		this.preloadSlot.track = track;
-		this.debugLog(`[Preload] Successfully preloaded: ${track.title} (Stream ID: ${streamId})`);
+		preloadSlot.streamInfo = streamInfo;
+		preloadSlot.isValid = true;
+		preloadSlot.track = track;
+		debug(`[Preload] Successfully preloaded: ${track.title} (Stream ID: ${streamId})`);
 	}
-	private destroyStreamInfo(streamInfo: StreamInfo | null): void {
+	private destroyStreamInfo(slot: PreloadPlayerSlot, streamInfo: StreamInfo | null): void {
 		const stream = streamInfo?.stream;
 		if (!stream) return;
 		try {
 			if (typeof stream.destroy === "function" && !stream.destroyed) stream.destroy();
 		} catch (error) {
-			this.debugLog(`[Preload] Error destroying abandoned stream:`, error);
+			slot.deps.debug(`[Preload] Error destroying abandoned stream:`, error);
 		}
 	}
-	private async getStreamWithCancel(track: Track, signal: AbortSignal): Promise<StreamInfo | null> {
-		if (this.isDestroyed()) throw new Error("PLAYER_DESTROYED");
+	private async getStreamWithCancel(slot: PreloadPlayerSlot, track: Track, signal: AbortSignal): Promise<StreamInfo | null> {
+		const { isDestroyed, streamManager } = slot.deps;
+		if (isDestroyed()) throw new Error("PLAYER_DESTROYED");
 		let abortHandler: (() => void) | null = null;
 		let settled = false;
 		const abortPromise = new Promise<never>((_, reject) => {
@@ -268,15 +308,15 @@ export class PreloadManager {
 			abortHandler = () => reject(new Error("PRELOAD_CANCELLED"));
 			signal.addEventListener("abort", abortHandler, { once: true });
 		});
-		const existingStream = this.streamManager.getStreamByTrack(track.id || track.title);
+		const existingStream = streamManager.getStreamByTrack(track.id || track.title);
 		if (existingStream && !existingStream.destroyed && existingStream.readable !== false) {
 			if (abortHandler) signal.removeEventListener("abort", abortHandler);
 			return { stream: existingStream, type: "arbitrary" };
 		}
-		const streamPromise = this.getStream(track);
+		const streamPromise = this.getStream(slot, track);
 		void streamPromise.then(
 			(result) => {
-				if (signal.aborted || this.isDestroyed()) this.destroyStreamInfo(result);
+				if (signal.aborted || isDestroyed()) this.destroyStreamInfo(slot, result);
 			},
 			() => undefined,
 		);

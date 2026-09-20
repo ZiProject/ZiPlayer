@@ -43,6 +43,7 @@ export type {
 
 export type {
 	PlaybackOrchestratorOptions,
+	PlaybackOrchestratorAttachOptions,
 	QueueControllerOptions,
 	TransitionControllerOptions,
 	TransitionPlan,

@@ -13,222 +13,325 @@ import type { Track, PlaybackControllerOptions } from "../types";
 import type { AntiStuckRetryHandlers } from "../types";
 import { CONTROLLER_RPC, type TransitionPlanResponse } from "./ControllerBusContract";
 
-// Every RPC/query below must be registered exactly once on the shared Bus;
-// each per-player PlaybackController (it owns that player's discord.js AudioPlayer)
-// registers itself here so the shared handlers can route by playerId.
-const playbackControllers = new Map<string, PlaybackController>();
-const playbackRpcRegistered = new WeakSet<Bus>();
-function ensurePlaybackRpcBridge(bus: Bus): void {
-	if (playbackRpcRegistered.has(bus)) return;
-	playbackRpcRegistered.add(bus);
-	const at = (playerId: string) => playbackControllers.get(playerId);
-	bus.registerRpc<{ resource: AudioResource; from: number; to: number; durationMs: number }, void>(
-		"transition.fade",
-		({ resource, from, to, durationMs }, ctx) => at(ctx.playerId)?.fadeResourceVolume(resource, from, to, durationMs),
-	);
-	bus.registerRpc<{ resource: AudioResource; track: Track }, void>("transition.fadeIn", ({ resource, track }, ctx) =>
-		at(ctx.playerId)?.applyCrossfadeIn(resource, track),
-	);
-	bus.registerRpc<void, void>("transition.fadeOutCurrent", (_req, ctx) => at(ctx.playerId)?.applyCrossfadeOutCurrent());
-	bus.registerRpc<void, void>("transition.skipAndStop", (_req, ctx) => at(ctx.playerId)?.crossfadeSkipAndStop());
-	bus.registerRpc<{ resource: AudioResource; session?: PlaybackSession; from?: Track | null; to?: Track }, void>(
-		CONTROLLER_RPC.playbackPlay,
-		({ resource, session, from, to }, ctx) => at(ctx.playerId)?.play(resource, session, from, to),
-	);
-	bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackPause, (_req, ctx) => at(ctx.playerId)?.pause() ?? false);
-	bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackResume, (_req, ctx) => at(ctx.playerId)?.resume() ?? false);
-	bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackStop, (_req, ctx) => at(ctx.playerId)?.stop() ?? false);
-	bus.registerRpc<void, void>(CONTROLLER_RPC.playbackBeginResourceRefresh, (_req, ctx) =>
-		at(ctx.playerId)?.beginResourceRefresh(),
-	);
-	bus.registerRpc<void, void>(CONTROLLER_RPC.playbackEndResourceRefresh, (_req, ctx) => at(ctx.playerId)?.endResourceRefresh());
-	bus.registerRpc<{ error: Error }, void>("playback.reportFilterError", ({ error }, ctx) =>
-		at(ctx.playerId)?.reportFilterError(error),
-	);
-	bus.registerRpc<{ stream: Readable; track: Track; inputType?: StreamType }, AudioResource>(
-		"resource.create",
-		({ stream, track, inputType }, ctx) => {
-			const controller = at(ctx.playerId);
-			if (!controller) throw new Error("No PlaybackController registered for this player");
-			return controller.createResource(stream, track, inputType);
-		},
-	);
-	bus.registerQuery("audioPlayer", (playerId) => at(playerId)?.audioPlayer as any);
-	bus.registerQuery("currentResource", (playerId) => at(playerId)?.currentResource ?? null);
-	bus.registerQuery("playbackSession", (playerId) => at(playerId)?.currentSessionSnapshot ?? null);
-	bus.registerQuery("playerState", (playerId) => at(playerId)?.status ?? AudioPlayerStatus.Idle);
-	bus.registerQuery("isPlaying", (playerId) => at(playerId)?.status === AudioPlayerStatus.Playing);
-	bus.registerQuery("isPaused", (playerId) => at(playerId)?.status === AudioPlayerStatus.Paused);
-	bus.registerQuery("isIdle", (playerId) => at(playerId)?.status === AudioPlayerStatus.Idle);
-	bus.registerQuery("isBuffering", (playerId) => at(playerId)?.status === AudioPlayerStatus.Buffering);
-	bus.registerQuery("isLive", (playerId) => Boolean((at(playerId)?.currentSessionTrack as Track | undefined)?.isLive));
-	bus.registerQuery("position", (playerId) => at(playerId)?.position ?? null);
+/** Everything the controller keeps for ONE player. Lives only inside `PlaybackController.slots`. */
+interface PlaybackSlot {
+	readonly playerId: string;
+	readonly audioPlayer: AudioPlayer;
+	readonly stuckTimeoutMs: number;
+	readonly recoveryHandlers: AntiStuckRetryHandlers;
+	readonly lifecycleAbort: AbortController;
+	readonly detachBusHandlers: Array<() => void>;
+	readonly onStateChange: (oldState: AudioPlayerState, newState: AudioPlayerState) => void;
+	readonly onError: (error: Error) => void;
+	activeResource: AudioResource | null;
+	activeSession: PlaybackSession | null;
+	transitionTimer: ReturnType<typeof setTimeout> | null;
+	fadeTimer: ReturnType<typeof setInterval> | null;
+	stuckTimer: ReturnType<typeof setTimeout> | null;
+	resourceRefreshInProgress: boolean;
+	fadeGain: number | null;
+	disposed: boolean;
 }
 
-export class PlaybackController {
-	private readonly playerId: string;
-	public readonly audioPlayer: AudioPlayer;
-	public activeResource: AudioResource | null = null;
-	private activeSession: PlaybackSession | null = null;
-	private readonly bus?: Bus;
-	private readonly stuckTimeoutMs: number;
-	private transitionTimer: ReturnType<typeof setTimeout> | null = null;
-	private fadeTimer: ReturnType<typeof setInterval> | null = null;
-	private stuckTimer: ReturnType<typeof setTimeout> | null = null;
-	private resourceRefreshInProgress = false;
-	private readonly recoveryHandlers: AntiStuckRetryHandlers;
-	private readonly lifecycleAbort = new AbortController();
-	private disposed = false;
-	private fadeGain: number | null = null;
-	private readonly detachBusHandlers: Array<() => void> = [];
-	private readonly onStateChange: (oldState: AudioPlayerState, newState: AudioPlayerState) => void;
-	private readonly onError: (error: Error) => void;
+const NO_TRANSITION: TransitionPlanResponse = { enabled: false, durationMs: 0, waitForBeat: false, beatAlignMaxWaitMs: 0 };
 
-	constructor(playerId: string, o: PlaybackControllerOptions) {
-		this.playerId = playerId;
-		this.audioPlayer = o.audioPlayer;
-		this.bus = o.bus;
-		this.stuckTimeoutMs = Math.max(0, o.stuckTimeoutMs ?? 10000);
-		this.recoveryHandlers = {
-			retry: async ({ session }) => {
-				if (!this.bus || !session.isActive()) return false;
-				try {
-					await this.bus.requestRpc(
-						this.playerId,
-						"playback.refreshResource",
-						{ position: session.position },
-						{ signal: session.signal, timeoutMs: 30000 },
-					);
-					return session.isActive();
-				} catch {
-					return false;
+/**
+ * Owns every player's discord.js `AudioPlayer` playback state behind the Bus.
+ *
+ * Shared, singleton controller — created once in `ensureSharedControllers()`. Each
+ * player's `AudioPlayer`, active resource/session, fade/stuck timers and listeners live
+ * in an internal `Map<playerId, PlaybackSlot>` (opened by `attach(playerId, ...)`,
+ * released by `detach(playerId)`). All RPC handlers and queries below are registered
+ * exactly once, in the constructor, and route by `ctx.playerId` / the query's `playerId`.
+ */
+export class PlaybackController {
+	private readonly slots = new Map<string, PlaybackSlot>();
+
+	public constructor(private readonly bus: Bus) {
+		const at = (playerId: string) => this.slots.get(playerId);
+		bus.registerRpc<{ resource: AudioResource; from: number; to: number; durationMs: number }, void>(
+			"transition.fade",
+			({ resource, from, to, durationMs }, ctx) => this.fadeResourceVolume(ctx.playerId, resource, from, to, durationMs),
+		);
+		bus.registerRpc<{ resource: AudioResource; track: Track }, void>("transition.fadeIn", ({ resource, track }, ctx) =>
+			this.applyCrossfadeIn(ctx.playerId, resource, track),
+		);
+		bus.registerRpc<void, void>("transition.fadeOutCurrent", (_req, ctx) => this.applyCrossfadeOutCurrent(ctx.playerId));
+		bus.registerRpc<void, void>("transition.skipAndStop", (_req, ctx) => this.crossfadeSkipAndStop(ctx.playerId));
+		bus.registerRpc<{ resource: AudioResource; session?: PlaybackSession; from?: Track | null; to?: Track }, void>(
+			CONTROLLER_RPC.playbackPlay,
+			({ resource, session, from, to }, ctx) => this.play(ctx.playerId, resource, session, from, to),
+		);
+		bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackPause, (_req, ctx) => this.pause(ctx.playerId));
+		bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackResume, (_req, ctx) => this.resume(ctx.playerId));
+		bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackStop, (_req, ctx) => this.stop(ctx.playerId));
+		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackBeginResourceRefresh, (_req, ctx) => this.beginResourceRefresh(ctx.playerId));
+		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackEndResourceRefresh, (_req, ctx) => this.endResourceRefresh(ctx.playerId));
+		bus.registerRpc<{ error: Error }, void>("playback.reportFilterError", ({ error }, ctx) =>
+			this.reportFilterError(ctx.playerId, error),
+		);
+		bus.registerRpc<{ stream: Readable; track: Track; inputType?: StreamType }, AudioResource>(
+			"resource.create",
+			({ stream, track, inputType }, ctx) => {
+				if (!this.slots.has(ctx.playerId)) throw new Error("No PlaybackController registered for this player");
+				return this.createResource(stream, track, inputType);
+			},
+		);
+		bus.registerQuery("audioPlayer", (playerId) => at(playerId)?.audioPlayer as any);
+		bus.registerQuery("currentResource", (playerId) => this.currentResource(playerId));
+		bus.registerQuery("playbackSession", (playerId) => this.currentSessionSnapshot(playerId));
+		bus.registerQuery("playerState", (playerId) => this.status(playerId) ?? AudioPlayerStatus.Idle);
+		bus.registerQuery("isPlaying", (playerId) => this.status(playerId) === AudioPlayerStatus.Playing);
+		bus.registerQuery("isPaused", (playerId) => this.status(playerId) === AudioPlayerStatus.Paused);
+		bus.registerQuery("isIdle", (playerId) => this.status(playerId) === AudioPlayerStatus.Idle);
+		bus.registerQuery("isBuffering", (playerId) => this.status(playerId) === AudioPlayerStatus.Buffering);
+		bus.registerQuery("isLive", (playerId) => Boolean(this.currentSessionTrack(playerId)?.isLive));
+		bus.registerQuery("position", (playerId) => this.position(playerId));
+	}
+
+	// ---------------------------------------------------------------------
+	// Per-player lifecycle
+	// ---------------------------------------------------------------------
+
+	/** Opens a slot for `playerId` around its `AudioPlayer`. Re-attaching replaces (and releases) the old slot. */
+	public attach(playerId: string, options: PlaybackControllerOptions): void {
+		if (this.slots.has(playerId)) this.detach(playerId);
+		const slot: PlaybackSlot = {
+			playerId,
+			audioPlayer: options.audioPlayer,
+			stuckTimeoutMs: Math.max(0, options.stuckTimeoutMs ?? 10000),
+			lifecycleAbort: new AbortController(),
+			detachBusHandlers: [],
+			activeResource: null,
+			activeSession: null,
+			transitionTimer: null,
+			fadeTimer: null,
+			stuckTimer: null,
+			resourceRefreshInProgress: false,
+			fadeGain: null,
+			disposed: false,
+			recoveryHandlers: {
+				retry: async ({ session }) => {
+					if (!session.isActive()) return false;
+					try {
+						await this.bus.requestRpc(
+							playerId,
+							"playback.refreshResource",
+							{ position: session.position },
+							{ signal: session.signal, timeoutMs: 30000 },
+						);
+						return session.isActive();
+					} catch {
+						return false;
+					}
+				},
+				skip: ({ session }) => this.bus.action(playerId, { type: "SKIP" }, { signal: session.signal, sessionId: session.sessionId }),
+			},
+			onStateChange: (a, b) => {
+				this.bus.publish(playerId, "stateChanged", a, b);
+				if (b.status === AudioPlayerStatus.Buffering) this.armStuckWatchdog(slot);
+				else this.clearStuckWatchdog(slot);
+				if (b.status === AudioPlayerStatus.Idle && a.status !== AudioPlayerStatus.Idle) {
+					const previousResource = "resource" in a ? a.resource : undefined;
+					if (previousResource && slot.activeResource && previousResource !== slot.activeResource) return;
+					const session = slot.activeSession;
+					if (session?.isActive()) this.bus.event(playerId, { type: "TRACK_END", session: session.snapshot() });
+					slot.activeSession = null;
+					slot.activeResource = null;
 				}
 			},
-			skip: ({ session }) =>
-				this.bus?.action(this.playerId, { type: "SKIP" }, { signal: session.signal, sessionId: session.sessionId }),
+			onError: (error) => {
+				const normalized = error instanceof Error ? error : new Error(String(error));
+				const session = slot.activeSession;
+				if (session?.isActive()) {
+					this.bus.event(playerId, { type: "TRACK_ERROR", session: session.snapshot(), error: normalized });
+					void this.reportStuck(slot, session, `audio player error: ${normalized.message}`);
+				} else {
+					this.bus.event(playerId, { type: "streamError", error: normalized, track: null });
+				}
+			},
 		};
-		if (this.bus) {
-			ensurePlaybackRpcBridge(this.bus);
-			playbackControllers.set(this.playerId, this);
-			this.detachBusHandlers.push(
-				this.bus.subscribe(this.playerId, "volumeRequested", () => {
-					if (!this.activeResource) return;
-					const track = this.activeSession?.track ?? (this.activeResource.metadata as Track | undefined);
-					this.applyTargetVolume(this.activeResource, track, this.fadeGain ?? 1);
-				}),
-			);
-		}
-		this.onStateChange = (a, b) => {
-			this.bus?.publish(this.playerId, "stateChanged", a, b);
-			if (b.status === AudioPlayerStatus.Buffering) this.armStuckWatchdog();
-			else this.clearStuckWatchdog();
-			if (b.status === AudioPlayerStatus.Idle && a.status !== AudioPlayerStatus.Idle) {
-				const previousResource = "resource" in a ? a.resource : undefined;
-				if (previousResource && this.activeResource && previousResource !== this.activeResource) return;
-				const session = this.activeSession;
-				if (session?.isActive()) this.bus?.event(this.playerId, { type: "TRACK_END", session: session.snapshot() });
-				this.activeSession = null;
-				this.activeResource = null;
-			}
-		};
-		this.onError = (error) => {
-			const normalized = error instanceof Error ? error : new Error(String(error));
-			const session = this.activeSession;
-			if (session?.isActive()) {
-				this.bus?.event(this.playerId, { type: "TRACK_ERROR", session: session.snapshot(), error: normalized });
-				void this.reportStuck(session, `audio player error: ${normalized.message}`);
-			} else {
-				this.bus?.event(this.playerId, { type: "streamError", error: normalized, track: null });
-			}
-		};
-		this.audioPlayer.on("stateChange", this.onStateChange);
-		this.audioPlayer.on("error", this.onError);
+		slot.detachBusHandlers.push(
+			this.bus.subscribe(playerId, "volumeRequested", () => {
+				if (!slot.activeResource) return;
+				const track = slot.activeSession?.track ?? (slot.activeResource.metadata as Track | undefined);
+				this.applyTargetVolume(slot, slot.activeResource, track, slot.fadeGain ?? 1);
+			}),
+		);
+		slot.audioPlayer.on("stateChange", slot.onStateChange);
+		slot.audioPlayer.on("error", slot.onError);
+		this.slots.set(playerId, slot);
 	}
 
-	private requestTransitionPlan(from: Track | null, to: Track | null): TransitionPlanResponse {
-		if (!this.bus) return { enabled: false, durationMs: 0, waitForBeat: false, beatAlignMaxWaitMs: 0 };
+	/** Releases `playerId`'s slot: cancels timers, drops listeners and stops its AudioPlayer. */
+	public detach(playerId: string): void {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
+		this.slots.delete(playerId);
+		slot.resourceRefreshInProgress = false;
+		slot.disposed = true;
+		slot.lifecycleAbort.abort();
+		this.cancelTransition(slot);
+		this.clearStuckWatchdog(slot);
+		slot.activeSession?.destroy();
+		slot.activeSession = null;
+		for (const detach of slot.detachBusHandlers.splice(0)) detach();
+		slot.audioPlayer.removeListener("stateChange", slot.onStateChange);
+		slot.audioPlayer.removeListener("error", slot.onError);
+		slot.audioPlayer.stop(true);
+		slot.activeResource = null;
+	}
+
+	/** Global shutdown: releases every player's slot. */
+	public dispose(): void {
+		for (const playerId of [...this.slots.keys()]) this.detach(playerId);
+	}
+
+	public has(playerId: string): boolean {
+		return this.slots.has(playerId);
+	}
+
+	// ---------------------------------------------------------------------
+	// Per-player state accessors
+	// ---------------------------------------------------------------------
+
+	public getAudioPlayer(playerId: string): AudioPlayer | null {
+		return this.slots.get(playerId)?.audioPlayer ?? null;
+	}
+	public state(playerId: string): AudioPlayerState | null {
+		return this.slots.get(playerId)?.audioPlayer.state ?? null;
+	}
+	public status(playerId: string): AudioPlayerStatus | undefined {
+		return this.slots.get(playerId)?.audioPlayer.state.status;
+	}
+	public currentResource(playerId: string): AudioResource | null {
+		const slot = this.slots.get(playerId);
+		return slot?.activeSession?.resource ?? slot?.activeResource ?? null;
+	}
+	public currentSessionSnapshot(playerId: string) {
+		return this.slots.get(playerId)?.activeSession?.snapshot() ?? null;
+	}
+	public currentSessionTrack(playerId: string): Track | null | undefined {
+		return this.slots.get(playerId)?.activeSession?.track;
+	}
+	public position(playerId: string): number | null {
+		const session = this.slots.get(playerId)?.activeSession;
+		if (!session) return null;
+		const duration = Number(session.resource?.playbackDuration);
+		if (Number.isFinite(duration) && (duration > 0 || session.position === 0))
+			session.updatePosition(session.getPlaybackOffset() + duration);
+		return session.position;
+	}
+	public volumeValue(playerId: string): number {
+		return this.bus.querySync(playerId, "volume") ?? 100;
+	}
+
+	// ---------------------------------------------------------------------
+	// Bus helpers (controller-to-controller traffic always goes through the Bus)
+	// ---------------------------------------------------------------------
+
+	private requestTransitionPlan(playerId: string, from: Track | null, to: Track | null): TransitionPlanResponse {
 		try {
-			return this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.transitionPlan, { from, to });
+			return this.bus.requestRpcSync(playerId, CONTROLLER_RPC.transitionPlan, { from, to });
 		} catch {
-			return { enabled: false, durationMs: 0, waitForBeat: false, beatAlignMaxWaitMs: 0 };
+			return NO_TRANSITION;
 		}
 	}
 
-	private requestBeatWait(track: Track | null, positionMs: number): number {
-		if (!this.bus) return 0;
+	private requestBeatWait(playerId: string, track: Track | null, positionMs: number): number {
 		try {
-			return this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.transitionBeatWait, { track, positionMs });
+			return this.bus.requestRpcSync(playerId, CONTROLLER_RPC.transitionBeatWait, { track, positionMs });
 		} catch {
 			return 0;
 		}
 	}
 
-	private requestVolumeTarget(track?: Track | null): number {
-		if (!this.bus) return 1;
+	private requestVolumeTarget(playerId: string, track?: Track | null): number {
 		try {
-			return this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.volumeTarget, { track });
+			return this.bus.requestRpcSync(playerId, CONTROLLER_RPC.volumeTarget, { track });
 		} catch {
 			return 1;
 		}
 	}
 
-	private applyTargetVolume(resource: AudioResource | null, track?: Track | null, gain = 1): void {
+	private applyTargetVolume(slot: PlaybackSlot, resource: AudioResource | null, track?: Track | null, gain = 1): void {
 		if (!resource?.volume) return;
-		const target = this.requestVolumeTarget(track);
+		const target = this.requestVolumeTarget(slot.playerId, track);
 		resource.volume.setVolume(target * Math.max(0, Number.isFinite(gain) ? gain : 1));
 	}
 
-	private reportStuck(session: PlaybackSession, reason: string): Promise<boolean> {
-		if (!this.bus || !session.isActive()) return Promise.resolve(false);
+	private retirePendingSession(playerId: string): void {
+		try {
+			this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackSessionRetirePending, {});
+		} catch {}
+	}
+
+	// ---------------------------------------------------------------------
+	// Stuck watchdog / resource refresh / filter errors
+	// ---------------------------------------------------------------------
+
+	private reportStuck(slot: PlaybackSlot, session: PlaybackSession, reason: string): Promise<boolean> {
+		if (!session.isActive()) return Promise.resolve(false);
 		return this.bus.requestRpc(
-			this.playerId,
+			slot.playerId,
 			CONTROLLER_RPC.antiStuckReport,
-			{ session, reason, handlers: this.recoveryHandlers },
+			{ session, reason, handlers: slot.recoveryHandlers },
 			{ signal: session.signal },
 		);
 	}
 
-	private armStuckWatchdog(): void {
-		this.clearStuckWatchdog();
-		if (this.resourceRefreshInProgress || this.stuckTimeoutMs <= 0 || !this.activeSession?.isActive()) return;
-		const resource = this.activeResource;
-		const session = this.activeSession;
+	private armStuckWatchdog(slot: PlaybackSlot): void {
+		this.clearStuckWatchdog(slot);
+		if (slot.resourceRefreshInProgress || slot.stuckTimeoutMs <= 0 || !slot.activeSession?.isActive()) return;
+		const resource = slot.activeResource;
+		const session = slot.activeSession;
 		const initialDuration = Number(resource?.playbackDuration ?? session.position);
-		this.stuckTimer = setTimeout(() => {
-			this.stuckTimer = null;
+		slot.stuckTimer = setTimeout(() => {
+			slot.stuckTimer = null;
 			if (
-				this.resourceRefreshInProgress ||
-				this.status !== AudioPlayerStatus.Buffering ||
-				this.activeResource !== resource ||
-				this.activeSession !== session
+				slot.resourceRefreshInProgress ||
+				slot.audioPlayer.state.status !== AudioPlayerStatus.Buffering ||
+				slot.activeResource !== resource ||
+				slot.activeSession !== session
 			)
 				return;
 			const currentDuration = Number(resource?.playbackDuration ?? session.position);
-			if (currentDuration === initialDuration) void this.reportStuck(session, `buffering stalled for ${this.stuckTimeoutMs}ms`);
-			else this.armStuckWatchdog();
-		}, this.stuckTimeoutMs);
+			if (currentDuration === initialDuration) void this.reportStuck(slot, session, `buffering stalled for ${slot.stuckTimeoutMs}ms`);
+			else this.armStuckWatchdog(slot);
+		}, slot.stuckTimeoutMs);
 	}
-	public beginResourceRefresh(): void {
-		this.resourceRefreshInProgress = true;
-		this.clearStuckWatchdog();
+	private clearStuckWatchdog(slot: PlaybackSlot): void {
+		if (slot.stuckTimer) clearTimeout(slot.stuckTimer);
+		slot.stuckTimer = null;
 	}
-	public endResourceRefresh(): void {
-		this.resourceRefreshInProgress = false;
-		if (this.status === AudioPlayerStatus.Buffering) this.armStuckWatchdog();
+	public beginResourceRefresh(playerId: string): void {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
+		slot.resourceRefreshInProgress = true;
+		this.clearStuckWatchdog(slot);
 	}
-	public reportFilterError(error: Error): void {
-		const session = this.activeSession;
-		if (!session?.isActive() || this.resourceRefreshInProgress) {
-			if (session?.isActive()) void this.reportStuck(session, `filter processing failed: ${error.message}`);
+	public endResourceRefresh(playerId: string): void {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
+		slot.resourceRefreshInProgress = false;
+		if (slot.audioPlayer.state.status === AudioPlayerStatus.Buffering) this.armStuckWatchdog(slot);
+	}
+	public reportFilterError(playerId: string, error: Error): void {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
+		const session = slot.activeSession;
+		if (!session?.isActive() || slot.resourceRefreshInProgress) {
+			if (session?.isActive()) void this.reportStuck(slot, session, `filter processing failed: ${error.message}`);
 			return;
 		}
-		void this.reportStuck(session, `filter processing failed: ${error.message}`);
-	}
-	private clearStuckWatchdog(): void {
-		if (this.stuckTimer) clearTimeout(this.stuckTimer);
-		this.stuckTimer = null;
+		void this.reportStuck(slot, session, `filter processing failed: ${error.message}`);
 	}
 
+	// ---------------------------------------------------------------------
+	// Playback operations
+	// ---------------------------------------------------------------------
+
+	/** Pure factory (no per-player state involved). */
 	public createResource(stream: Readable, track: Track, inputType?: StreamType): AudioResource {
 		const resolvedInputType = inputType ?? (stream as Readable & { inputType?: StreamType }).inputType;
 		return createAudioResource(stream, {
@@ -237,223 +340,185 @@ export class PlaybackController {
 			...(resolvedInputType ? { inputType: resolvedInputType } : {}),
 		});
 	}
-	public play(resource: AudioResource, session?: PlaybackSession, from?: Track | null, to?: Track): void {
+
+	public play(playerId: string, resource: AudioResource, session?: PlaybackSession, from?: Track | null, to?: Track): void {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
 		if (session && !session.isActive()) return;
-		this.cancelTransition();
+		this.cancelTransition(slot);
 		const track = session?.track ?? to ?? (resource.metadata as Track | undefined);
-		const plan = from && to ? this.requestTransitionPlan(from, to) : undefined;
-		if (plan?.enabled && this.activeResource && this.audioPlayer.state.status !== AudioPlayerStatus.Idle) {
-			this.fadeTransition(this.activeResource, resource, plan, session, track);
+		const plan = from && to ? this.requestTransitionPlan(playerId, from, to) : undefined;
+		if (plan?.enabled && slot.activeResource && slot.audioPlayer.state.status !== AudioPlayerStatus.Idle) {
+			this.fadeTransition(slot, slot.activeResource, resource, plan, session, track);
 			return;
 		}
-		this.fadeGain = null;
-		this.applyTargetVolume(resource, track, 1);
+		slot.fadeGain = null;
+		this.applyTargetVolume(slot, resource, track, 1);
 		if (session) session.setResource(resource);
-		this.activeSession = session ?? null;
-		this.activeResource = resource;
-		this.audioPlayer.play(resource);
-		this.retirePendingSession();
-	}
-
-	private retirePendingSession(): void {
-		if (!this.bus) return;
-		try {
-			this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackSessionRetirePending, {});
-		} catch {}
+		slot.activeSession = session ?? null;
+		slot.activeResource = resource;
+		slot.audioPlayer.play(resource);
+		this.retirePendingSession(playerId);
 	}
 
 	public async fadeResourceVolume(
+		playerId: string,
 		resource: AudioResource,
 		from: number,
 		to: number,
 		durationMs: number,
-		signal: AbortSignal = this.lifecycleAbort.signal,
+		signal?: AbortSignal,
 	): Promise<void> {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
+		const abortSignal = signal ?? slot.lifecycleAbort.signal;
 		if (!resource?.volume) return;
 		const duration = Math.max(0, durationMs);
 		if (duration === 0) {
-			if (!signal.aborted && !this.disposed) resource.volume.setVolume(to);
+			if (!abortSignal.aborted && !slot.disposed) resource.volume.setVolume(to);
 			return;
 		}
 		const start = Date.now();
-		while (!signal.aborted && !this.disposed) {
+		while (!abortSignal.aborted && !slot.disposed) {
 			const progress = Math.min(1, (Date.now() - start) / duration);
 			resource.volume.setVolume(from + (to - from) * progress);
 			if (progress >= 1) return;
 			await new Promise<void>((resolve) => setTimeout(resolve, 25));
 		}
 	}
-	public async applyCrossfadeIn(resource: AudioResource, track: Track): Promise<void> {
-		if (!resource?.volume || this.disposed) return;
-		this.applyTargetVolume(resource, track, 1);
+	public async applyCrossfadeIn(playerId: string, resource: AudioResource, track: Track): Promise<void> {
+		const slot = this.slots.get(playerId);
+		if (!slot || !resource?.volume || slot.disposed) return;
+		this.applyTargetVolume(slot, resource, track, 1);
 		const target = resource.volume.volume;
 		resource.volume.setVolume(0);
 		await this.fadeResourceVolume(
+			playerId,
 			resource,
 			0,
 			target,
-			this.requestTransitionPlan(this.activeSession?.track ?? null, track).durationMs,
-			this.lifecycleAbort.signal,
+			this.requestTransitionPlan(playerId, slot.activeSession?.track ?? null, track).durationMs,
+			slot.lifecycleAbort.signal,
 		);
 	}
-	public async applyCrossfadeOutCurrent(): Promise<void> {
-		if (this.disposed) return;
-		const resource = this.activeResource;
+	public async applyCrossfadeOutCurrent(playerId: string): Promise<void> {
+		const slot = this.slots.get(playerId);
+		if (!slot || slot.disposed) return;
+		const resource = slot.activeResource;
 		if (!resource?.volume) return;
-		const track = this.activeSession?.track ?? (resource.metadata as Track | undefined);
+		const track = slot.activeSession?.track ?? (resource.metadata as Track | undefined);
 		const current = Number(resource.volume.volume ?? 0);
 		await this.fadeResourceVolume(
+			playerId,
 			resource,
 			current,
 			0,
-			this.requestTransitionPlan(track ?? null, track ?? null).durationMs,
-			this.lifecycleAbort.signal,
+			this.requestTransitionPlan(playerId, track ?? null, track ?? null).durationMs,
+			slot.lifecycleAbort.signal,
 		);
 	}
-	public async crossfadeSkipAndStop(): Promise<void> {
-		await this.applyCrossfadeOutCurrent();
-		if (!this.disposed) this.stop();
+	public async crossfadeSkipAndStop(playerId: string): Promise<void> {
+		await this.applyCrossfadeOutCurrent(playerId);
+		const slot = this.slots.get(playerId);
+		if (slot && !slot.disposed) this.stop(playerId);
 	}
-	public getTrackTargetVolume(track?: Track | null): number {
-		return this.requestVolumeTarget(track);
+	public getTrackTargetVolume(playerId: string, track?: Track | null): number {
+		return this.requestVolumeTarget(playerId, track);
 	}
 	private fadeTransition(
+		slot: PlaybackSlot,
 		oldResource: AudioResource,
 		newResource: AudioResource,
 		plan: TransitionPlanResponse,
 		session?: PlaybackSession,
 		track?: Track,
 	): void {
-		this.fadeGain = 0;
-		this.applyTargetVolume(newResource, track, 0);
-		const outgoingTrack = this.activeSession?.track ?? (oldResource.metadata as Track | undefined) ?? null;
-		const outgoingPosition = this.activeSession?.position ?? 0;
-		const wait = plan.waitForBeat ? this.requestBeatWait(outgoingTrack, outgoingPosition) : 0;
+		slot.fadeGain = 0;
+		this.applyTargetVolume(slot, newResource, track, 0);
+		const outgoingTrack = slot.activeSession?.track ?? (oldResource.metadata as Track | undefined) ?? null;
+		const outgoingPosition = slot.activeSession?.position ?? 0;
+		const wait = plan.waitForBeat ? this.requestBeatWait(slot.playerId, outgoingTrack, outgoingPosition) : 0;
 		const begin = () => {
-			this.transitionTimer = null;
-			if (this.disposed || (session && !session.isActive())) {
-				this.cancelFade();
+			slot.transitionTimer = null;
+			if (slot.disposed || (session && !session.isActive())) {
+				this.cancelFade(slot);
 				return;
 			}
-			this.fadeGain = 0;
-			this.applyTargetVolume(newResource, track, 0);
-			this.audioPlayer.play(newResource);
-			this.retirePendingSession();
+			slot.fadeGain = 0;
+			this.applyTargetVolume(slot, newResource, track, 0);
+			slot.audioPlayer.play(newResource);
+			this.retirePendingSession(slot.playerId);
 			if (session) session.setResource(newResource);
-			this.activeSession = session ?? null;
-			this.activeResource = newResource;
+			slot.activeSession = session ?? null;
+			slot.activeResource = newResource;
 			const start = Date.now();
-			this.fadeTimer = setInterval(() => {
+			slot.fadeTimer = setInterval(() => {
 				if (session && !session.isActive()) {
-					this.cancelFade();
+					this.cancelFade(slot);
 					return;
 				}
 				const p = Math.min(1, (Date.now() - start) / Math.max(1, plan.durationMs));
-				this.fadeGain = p;
-				this.applyTargetVolume(newResource, track, p);
+				slot.fadeGain = p;
+				this.applyTargetVolume(slot, newResource, track, p);
 				if (p >= 1) {
-					this.cancelFade();
-					this.applyTargetVolume(newResource, track, 1);
+					this.cancelFade(slot);
+					this.applyTargetVolume(slot, newResource, track, 1);
 				}
 			}, 25);
 		};
-		if (wait > 0) this.transitionTimer = setTimeout(begin, wait);
+		if (wait > 0) slot.transitionTimer = setTimeout(begin, wait);
 		else begin();
 	}
-	private cancelFade(): void {
-		if (this.fadeTimer) {
-			clearInterval(this.fadeTimer);
-			this.fadeTimer = null;
+	private cancelFade(slot: PlaybackSlot): void {
+		if (slot.fadeTimer) {
+			clearInterval(slot.fadeTimer);
+			slot.fadeTimer = null;
 		}
-		if (this.fadeGain !== null) {
-			this.fadeGain = null;
-			if (this.activeResource) {
-				const track = this.activeSession?.track ?? (this.activeResource.metadata as Track | undefined);
-				this.applyTargetVolume(this.activeResource, track, 1);
+		if (slot.fadeGain !== null) {
+			slot.fadeGain = null;
+			if (slot.activeResource) {
+				const track = slot.activeSession?.track ?? (slot.activeResource.metadata as Track | undefined);
+				this.applyTargetVolume(slot, slot.activeResource, track, 1);
 			}
 		}
 	}
-	private cancelTransition() {
-		if (this.transitionTimer) {
-			clearTimeout(this.transitionTimer);
-			this.transitionTimer = null;
+	private cancelTransition(slot: PlaybackSlot): void {
+		if (slot.transitionTimer) {
+			clearTimeout(slot.transitionTimer);
+			slot.transitionTimer = null;
 		}
-		this.cancelFade();
+		this.cancelFade(slot);
 	}
-	public pause(): boolean {
-		return this.audioPlayer.pause(true);
+	public pause(playerId: string): boolean {
+		return this.slots.get(playerId)?.audioPlayer.pause(true) ?? false;
 	}
-	public resume(): boolean {
-		return this.audioPlayer.unpause();
+	public resume(playerId: string): boolean {
+		return this.slots.get(playerId)?.audioPlayer.unpause() ?? false;
 	}
-	public stop(): boolean {
-		this.cancelTransition();
-		this.activeSession = null;
-		this.activeResource = null;
-		return this.audioPlayer.stop(true);
+	public stop(playerId: string): boolean {
+		const slot = this.slots.get(playerId);
+		if (!slot) return false;
+		this.cancelTransition(slot);
+		slot.activeSession = null;
+		slot.activeResource = null;
+		return slot.audioPlayer.stop(true);
 	}
-	public async seek(position: number, session?: PlaybackSession): Promise<boolean> {
+	public async seek(playerId: string, position: number, session?: PlaybackSession): Promise<boolean> {
+		if (!this.slots.has(playerId)) return false;
 		if (!Number.isFinite(position) || position < 0) return false;
 		if (session && !session.isActive()) return false;
-		if (!this.bus) {
-			if (!session) return false;
-			session.updatePosition(position);
-			return true;
-		}
 		try {
-			await this.bus.requestRpc(this.playerId, "playback.refreshResource", { position });
+			await this.bus.requestRpc(playerId, "playback.refreshResource", { position });
 			return !session || session.isActive();
 		} catch {
 			return false;
 		}
 	}
-	public setVolume(value: number): number {
-		if (!this.bus) return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 100;
+	public setVolume(playerId: string, value: number): number {
 		try {
-			return this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.volumeSet, { value });
+			return this.bus.requestRpcSync(playerId, CONTROLLER_RPC.volumeSet, { value });
 		} catch {
-			return this.volumeValue;
+			return this.volumeValue(playerId);
 		}
-	}
-	public get volumeValue(): number {
-		return this.bus?.querySync(this.playerId, "volume") ?? 100;
-	}
-	public get position(): number | null {
-		const session = this.activeSession;
-		if (!session) return null;
-		const duration = Number(session.resource?.playbackDuration);
-		if (Number.isFinite(duration) && (duration > 0 || session.position === 0))
-			session.updatePosition(session.getPlaybackOffset() + duration);
-		return session.position;
-	}
-	public get state(): AudioPlayerState {
-		return this.audioPlayer.state;
-	}
-	public get status(): AudioPlayerStatus {
-		return this.audioPlayer.state.status;
-	}
-	public get currentResource(): AudioResource | null {
-		return this.activeSession?.resource ?? this.activeResource;
-	}
-	public get currentSessionSnapshot() {
-		return this.activeSession?.snapshot() ?? null;
-	}
-	public get currentSessionTrack(): Track | null | undefined {
-		return this.activeSession?.track;
-	}
-	public dispose(): void {
-		if (playbackControllers.get(this.playerId) === this) playbackControllers.delete(this.playerId);
-		this.resourceRefreshInProgress = false;
-		this.disposed = true;
-		this.lifecycleAbort.abort();
-		this.cancelTransition();
-		this.clearStuckWatchdog();
-		this.activeSession?.destroy();
-		this.activeSession = null;
-		for (const detach of this.detachBusHandlers.splice(0)) detach();
-		this.audioPlayer.removeListener("stateChange", this.onStateChange);
-		this.audioPlayer.removeListener("error", this.onError);
-		this.audioPlayer.stop(true);
-		this.activeResource = null;
 	}
 }

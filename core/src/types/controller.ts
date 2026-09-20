@@ -23,9 +23,9 @@ export interface ForwardControllerOptions {
 	bus?: Bus;
 	debug?: (...args: any[]) => void;
 }
+/** Per-player resources handed to the shared `PlaybackController` via `attach(playerId, options)`. */
 export interface PlaybackControllerOptions {
 	audioPlayer: AudioPlayer;
-	bus?: Bus;
 	stuckTimeoutMs?: number;
 }
 

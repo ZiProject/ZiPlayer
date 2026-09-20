@@ -87,10 +87,10 @@ export interface SearchControllerOptions {
 export interface QueueControllerOptions {
 	bus?: Bus;
 }
+/** Collaborators of the shared `PreloadController` (both are process-wide singletons too). */
 export interface PreloadControllerOptions {
 	loader: TrackLoader;
 	manager: PreloadManager;
-	bus?: Bus;
 }
 export interface TransitionControllerOptions {
 	enabled?: boolean;
@@ -156,9 +156,13 @@ export interface PlaybackOrchestratorAdapters {
 	isTTS?: (track: Track) => boolean;
 	playTTS?: (track: Track) => void | Promise<void>;
 }
+/** Collaborators of the shared `PlaybackOrchestrator` singleton. */
 export interface PlaybackOrchestratorOptions {
+	sessionController: PlaybackSessionController;
+}
+/** Per-player configuration handed to the shared `PlaybackOrchestrator` via `attach(playerId, options)`. */
+export interface PlaybackOrchestratorAttachOptions {
 	debug?: (...args: any[]) => void;
-	sessionController?: PlaybackSessionController;
 	adapters?: PlaybackOrchestratorAdapters;
 }
 export interface PlayerRuntimeGraph {

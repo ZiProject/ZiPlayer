@@ -231,38 +231,9 @@ export class GlobalPlayerRuntime {
 			volume: options.tts?.volume ?? options.volume ?? 100,
 		});
 		shared.queueController.attach(playerId);
-		const resolver = new TrackResolver({
-			streamManager,
-			pluginManager,
-			extensionManager,
-			bus,
-			playerId,
-			isDestroyed: () => this.disposed,
-		});
-		const preloadManager = new PreloadManager({
-			streamManager,
-			debug: channel("PreloadManager"),
-			bus,
-			isDestroyed: () => this.disposed,
-			isEnabled: () =>
-				!(options.lowPerformance && options.preload?.autoDisableInLowPerformance) && (options.preload?.enabled ?? true),
-		});
-		const trackLoader = new TrackLoader({
-			middleware,
-			context: { playerId, manager } as any,
-			resolvers: [(track) => resolver.resolve(track, () => this.disposed)],
-			recovery: options.antiStuck,
-			preloadManager,
-			qualityController: {
-				get: () => options.quality,
-				set: (quality) => {
-					options.quality = quality;
-				},
-			},
-			debug: channel("TrackLoader"),
-			bus,
-			playerId,
-		});
+		const resolver = new TrackResolver(bus);
+		const preloadManager = new PreloadManager(bus);
+		const trackLoader = new TrackLoader(bus, preloadManager);
 		shared.transitionController.attach(playerId, {
 			enabled:
 				options.lowPerformance && options.crossfade?.autoDisableInLowPerformance ?
@@ -283,14 +254,10 @@ export class GlobalPlayerRuntime {
 			loudness: options.loudnessNormalization,
 		});
 		shared.antiStuckController.attach(playerId, { ...options.antiStuck });
-		const playbackController = new PlaybackController(playerId, {
-			audioPlayer,
-			bus,
-			stuckTimeoutMs: options.antiStuck?.stuckTimeoutMs,
-		});
+		const playbackController = new PlaybackController(bus);
 		shared.streamController.attach(playerId, streamManager);
 		shared.saveController.attach(playerId, {
-			middleware: [async (track) => trackLoader.applyMiddleware(track)],
+			middleware: [async (track) => trackLoader.applyMiddleware(playerId, track)],
 			middlewareContext: { playerId, manager } as any,
 			resolveStream: (track) => pluginManager.getStream(track),
 			resolveVideoStream: (track) => pluginManager.getVideo(track),
@@ -299,7 +266,6 @@ export class GlobalPlayerRuntime {
 		const preloadController = new PreloadController({
 			loader: trackLoader,
 			manager: preloadManager,
-			bus,
 			playerId,
 		});
 		shared.filterController.attach(playerId, undefined, channel("FilterController"), {
@@ -313,7 +279,6 @@ export class GlobalPlayerRuntime {
 		});
 		shared.sessionController.attach(playerId);
 		const orchestrator = new PlaybackOrchestrator(playerId, bus, {
-			debug: channel("PlaybackOrchestrator"),
 			sessionController: shared.sessionController,
 		});
 		shared.resourceRefreshController.attach(playerId);

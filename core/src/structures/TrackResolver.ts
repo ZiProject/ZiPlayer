@@ -1,60 +1,63 @@
 import type { StreamInfo, Track, TrackResolveContext, TrackResolverOptions } from "../types";
-import type { StreamManager } from "./StreamManager";
-import type { PluginManager } from "../plugins";
-import type { ExtensionManager } from "../extensions";
 import type { Bus } from "./Bus";
 
-// "stream.resolve" must be registered exactly once on the shared Bus;
-// each per-player TrackResolver instance registers itself here so the shared handler
-// can route by playerId.
-const streamResolveRpcRegistered = new WeakSet<Bus>();
-const trackResolvers = new Map<string, TrackResolver>();
-function ensureStreamResolveRpcBridge(bus: Bus): void {
-	if (streamResolveRpcRegistered.has(bus)) return;
-	streamResolveRpcRegistered.add(bus);
-	bus.registerRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>("stream.resolve", ({ track, fresh }, ctx) => {
-		const resolver = trackResolvers.get(ctx.playerId);
-		if (!resolver) throw new Error("No TrackResolver registered for this player");
-		return resolver.resolve(track, resolver.isDestroyed, { fresh });
-	});
-}
-
-/** Resolves a Track through the existing extension/plugin chain without owning playback.
- *  One instance per player (holds that player's StreamManager/PluginManager/ExtensionManager). */
+/**
+ * Resolves a Track to a playable stream through the extension/plugin chain, without owning playback.
+ *
+ * Shared, singleton — created once in `ensureSharedControllers()`. Each player's
+ * StreamManager / PluginManager / ExtensionManager live in an internal
+ * `Map<playerId, TrackResolverOptions>` (opened by `attach(playerId, ...)`, released by
+ * `detach(playerId)`). `"stream.resolve"` is registered exactly once, in the constructor,
+ * and routes by `ctx.playerId`.
+ */
 export class TrackResolver {
-	private readonly streamManager: StreamManager;
-	private readonly pluginManager: PluginManager;
-	private readonly extensionManager: ExtensionManager;
-	public readonly isDestroyed: () => boolean;
-	private readonly playerId?: string;
+	private readonly slots = new Map<string, TrackResolverOptions>();
 
-	public constructor(options: TrackResolverOptions) {
-		this.streamManager = options.streamManager;
-		this.pluginManager = options.pluginManager;
-		this.extensionManager = options.extensionManager;
-		this.isDestroyed = options.isDestroyed ?? (() => false);
-		this.playerId = options.playerId;
-		if (options.bus && this.playerId) {
-			ensureStreamResolveRpcBridge(options.bus);
-			trackResolvers.set(this.playerId, this);
-		}
+	public constructor(bus: Bus) {
+		bus.registerRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>("stream.resolve", ({ track, fresh }, ctx) =>
+			this.resolve(ctx.playerId, track, { fresh }),
+		);
 	}
 
-	dispose(): void {
-		if (this.playerId && trackResolvers.get(this.playerId) === this) trackResolvers.delete(this.playerId);
+	/** Opens a slot for `playerId`. Re-attaching replaces the previous slot. */
+	public attach(playerId: string, options: TrackResolverOptions): void {
+		this.slots.set(playerId, options);
+	}
+
+	public detach(playerId: string): void {
+		this.slots.delete(playerId);
+	}
+
+	/** Global shutdown: releases every player's slot. */
+	public dispose(): void {
+		this.slots.clear();
+	}
+
+	public has(playerId: string): boolean {
+		return this.slots.has(playerId);
+	}
+
+	/** True once `playerId` has been detached (or was never attached) or its own `isDestroyed()` says so. */
+	public isDestroyed(playerId: string): boolean {
+		const slot = this.slots.get(playerId);
+		return !slot || (slot.isDestroyed?.() ?? false);
 	}
 
 	public async resolve(
+		playerId: string,
 		track: Track,
-		isDestroyed: () => boolean,
 		options?: { fresh?: boolean; context?: TrackResolveContext },
 	): Promise<StreamInfo | null> {
+		const slot = this.slots.get(playerId);
+		if (!slot) throw new Error("No TrackResolver registered for this player");
+		const { streamManager, pluginManager, extensionManager } = slot;
+		const isDestroyed = () => this.isDestroyed(playerId);
 		if (isDestroyed()) throw new Error("PLAYER_DESTROYED");
 		const trackId = track.id || track.url || track.title;
-		const existing = options?.fresh ? null : this.streamManager.getStreamByTrack(trackId);
+		const existing = options?.fresh ? null : streamManager.getStreamByTrack(trackId);
 		if (existing && !existing.destroyed) return { stream: existing, type: "arbitrary" };
 
-		let stream = await this.extensionManager.provideStream(track);
+		let stream = await extensionManager.provideStream(track);
 		if (isDestroyed()) {
 			stream?.stream?.destroy?.();
 			throw new Error("PLAYER_DESTROYED");
@@ -62,14 +65,14 @@ export class TrackResolver {
 		if (stream?.remote && stream.handle) return stream;
 		if (stream?.stream || stream?.url || stream?.recreate) return stream;
 
-		stream = await this.pluginManager.getStream(track, options);
+		stream = await pluginManager.getStream(track, options);
 		if (isDestroyed()) {
 			stream?.stream?.destroy?.();
 			throw new Error("PLAYER_DESTROYED");
 		}
 		if (stream?.stream || stream?.url || stream?.recreate) {
 			if (stream.stream) {
-				const existingAgain = options?.fresh ? null : this.streamManager.getStreamByTrack(trackId);
+				const existingAgain = options?.fresh ? null : streamManager.getStreamByTrack(trackId);
 				if (existingAgain && !existingAgain.destroyed) {
 					stream.stream.destroy?.();
 					return { stream: existingAgain, type: "arbitrary" };
@@ -77,7 +80,7 @@ export class TrackResolver {
 			}
 			return stream;
 		}
-		if (!this.pluginManager.hasStreamCandidate(track)) throw new Error(`UNRECOVERABLE_NO_PLUGIN:${track.title}`);
+		if (!pluginManager.hasStreamCandidate(track)) throw new Error(`UNRECOVERABLE_NO_PLUGIN:${track.title}`);
 		throw new Error(`No stream available for track: ${track.title}`);
 	}
 }

@@ -21,119 +21,196 @@ const TRACK_LOADER_RPC = {
 	getRecoveryCount: "controller.track.getRecoveryCount",
 } as const;
 
-// TrackLoader is owned per-player (it's injected directly into that player's
-// PreloadController worker), but the RPC endpoints below must be registered exactly
-// once on the shared Bus. Register once, guarded by bus identity, and
-// dispatch to whichever TrackLoader is currently registered for that playerId.
-const trackLoaderRpcRegistered = new WeakSet<Bus>();
-const trackLoaders = new Map<string, TrackLoader>();
-function ensureTrackLoaderRpcBridge(bus: Bus): void {
-	if (trackLoaderRpcRegistered.has(bus)) return;
-	trackLoaderRpcRegistered.add(bus);
-	const forward = <TReq, TRes>(handler: (loader: TrackLoader, request: TReq, playerId: string) => TRes) => {
-		return (request: TReq, context: { playerId: string }): TRes => {
-			const loader = trackLoaders.get(context.playerId);
-			if (!loader) throw new Error("No TrackLoader registered for this player");
-			return handler(loader, request, context.playerId);
-		};
-	};
-	bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
-		CONTROLLER_RPC.playbackRecover,
-		forward((loader, { track, session }, playerId) =>
-			bus.requestRpc(playerId, CONTROLLER_RPC.trackLoadWithRecovery, { track, session }),
-		),
-	);
-	bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
-		CONTROLLER_RPC.playbackLoadFresh,
-		forward((loader, { track, session }, playerId) => bus.requestRpc(playerId, CONTROLLER_RPC.trackLoad, { track, session })),
-	);
-	bus.registerRpc<{ track: Track }, TrackLoadResult | null>(
-		CONTROLLER_RPC.playbackLoadFreshCurrent,
-		forward((loader, { track }, playerId) => {
-			const session = bus.querySync(playerId, "playbackSessionInternal");
-			if (!session) return null;
-			return bus.requestRpc(playerId, CONTROLLER_RPC.trackLoad, { track, session });
-		}),
-	);
-	bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
-		TRACK_LOADER_RPC.load,
-		forward((loader, { track, session }) => loader.load(track, session)),
-	);
-	bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
-		TRACK_LOADER_RPC.loadWithRecovery,
-		forward((loader, { track, session }) => loader.loadWithRecovery(track, session)),
-	);
-	bus.registerRpc<{ track?: Track }, void>(
-		TRACK_LOADER_RPC.resetRecovery,
-		forward((loader, { track }) => loader.resetRecovery(track)),
-	);
-	bus.registerRpc<{ track: Track }, number>(
-		TRACK_LOADER_RPC.getRecoveryCount,
-		forward((loader, { track }) => loader.getRecoveryCount(track)),
-	);
-	bus.registerRpc<{ track: Track }, Track>(
-		"track.middleware",
-		forward((loader, { track }) => loader.applyMiddleware(track)),
-	);
+/** Everything the loader keeps for ONE player. Lives only inside `TrackLoader.slots`. */
+interface TrackLoaderSlot {
+	readonly playerId: string;
+	readonly middleware: TrackMiddleware[];
+	readonly context: TrackLoaderContext;
+	readonly resolvers: TrackStreamResolver[];
+	readonly recovery: Required<TrackRecoveryPolicy>;
+	readonly qualityController?: TrackAttemptQualityController;
+	readonly debugLog: (message?: any, ...optionalParams: any[]) => void;
+	readonly failures: Map<string, number>;
+	disposed: boolean;
 }
 
+/**
+ * Loads (and, on failure, recovers) the stream for a track on behalf of every player.
+ *
+ * Shared, singleton — created once in `ensureSharedControllers()`. Each player's
+ * middleware chain, resolver list, recovery policy and failure counters live in an
+ * internal `Map<playerId, TrackLoaderSlot>` (opened by `attach(playerId, ...)`, released
+ * by `detach(playerId)`). Every RPC below is registered exactly once, in the constructor,
+ * and routes by `ctx.playerId`.
+ *
+ * The only collaborator it holds is the (also shared) `PreloadManager`, used to reuse an
+ * already-buffered stream before resolving a fresh one.
+ */
 export class TrackLoader {
-	private disposed = false;
-	private readonly middleware: TrackMiddleware[];
-	private readonly context: TrackLoaderContext;
-	private readonly resolvers: TrackStreamResolver[];
-	private readonly preloadManager?: PreloadManager;
-	private readonly recovery: Required<TrackRecoveryPolicy>;
-	private readonly qualityController?: TrackAttemptQualityController;
-	private readonly debugLog: (message?: any, ...optionalParams: any[]) => void;
-	private readonly bus?: Bus;
-	private readonly detachRpcs: Array<() => void> = [];
-	private readonly failures = new Map<string, number>();
-	private readonly playerId?: string;
-	constructor(options: TrackLoaderOptions & { playerId?: string }) {
-		this.middleware = [...(options.middleware ?? [])];
-		this.context = options.context;
-		this.resolvers = [...(options.resolvers ?? [])];
-		this.preloadManager = options.preloadManager;
-		this.recovery = {
-			enabled: options.recovery?.enabled ?? true,
-			maxRetries: Math.max(0, options.recovery?.maxRetries ?? 2),
-			retryDelayMs: Math.max(0, options.recovery?.retryDelayMs ?? 900),
-			reusePreloadFirst: options.recovery?.reusePreloadFirst ?? true,
-			reduceQualityOnRetry: options.recovery?.reduceQualityOnRetry ?? true,
-			controlledSkipThreshold: Math.max(1, options.recovery?.controlledSkipThreshold ?? 3),
+	private readonly slots = new Map<string, TrackLoaderSlot>();
+
+	public constructor(
+		private readonly bus: Bus,
+		private readonly preloadManager?: PreloadManager,
+	) {
+		const bridge = <TReq, TRes>(handler: (slot: TrackLoaderSlot, request: TReq) => TRes) => {
+			return (request: TReq, context: { playerId: string }): TRes => {
+				const slot = this.slots.get(context.playerId);
+				if (!slot) throw new Error("No TrackLoader registered for this player");
+				return handler(slot, request);
+			};
 		};
-		this.qualityController = options.qualityController;
-		this.debugLog = options.debug ?? (() => undefined);
-		this.bus = options.bus;
-		this.playerId = options.playerId;
-		if (this.bus && this.playerId) {
-			ensureTrackLoaderRpcBridge(this.bus);
-			trackLoaders.set(this.playerId, this);
-		}
+		bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+			CONTROLLER_RPC.playbackRecover,
+			bridge((slot, { track, session }) => bus.requestRpc(slot.playerId, CONTROLLER_RPC.trackLoadWithRecovery, { track, session })),
+		);
+		bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+			CONTROLLER_RPC.playbackLoadFresh,
+			bridge((slot, { track, session }) => bus.requestRpc(slot.playerId, CONTROLLER_RPC.trackLoad, { track, session })),
+		);
+		bus.registerRpc<{ track: Track }, TrackLoadResult | null>(
+			CONTROLLER_RPC.playbackLoadFreshCurrent,
+			bridge((slot, { track }) => {
+				const session = bus.querySync(slot.playerId, "playbackSessionInternal");
+				if (!session) return null;
+				return bus.requestRpc(slot.playerId, CONTROLLER_RPC.trackLoad, { track, session });
+			}),
+		);
+		bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+			TRACK_LOADER_RPC.load,
+			bridge((slot, { track, session }) => this.loadSlot(slot, track, session)),
+		);
+		bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+			TRACK_LOADER_RPC.loadWithRecovery,
+			bridge((slot, { track, session }) => this.loadWithRecoverySlot(slot, track, session)),
+		);
+		bus.registerRpc<{ track?: Track }, void>(
+			TRACK_LOADER_RPC.resetRecovery,
+			bridge((slot, { track }) => this.resetRecoverySlot(slot, track)),
+		);
+		bus.registerRpc<{ track: Track }, number>(
+			TRACK_LOADER_RPC.getRecoveryCount,
+			bridge((slot, { track }) => slot.failures.get(this.key(track)) ?? 0),
+		);
+		bus.registerRpc<{ track: Track }, Track>(
+			"track.middleware",
+			bridge((slot, { track }) => this.applyMiddlewareSlot(slot, track)),
+		);
 	}
-	addResolver(resolver: TrackStreamResolver): () => void {
-		this.resolvers.push(resolver);
+
+	// ---------------------------------------------------------------------
+	// Per-player lifecycle
+	// ---------------------------------------------------------------------
+
+	/** Opens a slot for `playerId`. Re-attaching replaces the previous slot. */
+	public attach(playerId: string, options: TrackLoaderOptions): void {
+		if (this.slots.has(playerId)) this.detach(playerId);
+		this.slots.set(playerId, {
+			playerId,
+			middleware: [...(options.middleware ?? [])],
+			context: options.context,
+			resolvers: [...(options.resolvers ?? [])],
+			recovery: {
+				enabled: options.recovery?.enabled ?? true,
+				maxRetries: Math.max(0, options.recovery?.maxRetries ?? 2),
+				retryDelayMs: Math.max(0, options.recovery?.retryDelayMs ?? 900),
+				reusePreloadFirst: options.recovery?.reusePreloadFirst ?? true,
+				reduceQualityOnRetry: options.recovery?.reduceQualityOnRetry ?? true,
+				controlledSkipThreshold: Math.max(1, options.recovery?.controlledSkipThreshold ?? 3),
+			},
+			qualityController: options.qualityController,
+			debugLog: options.debug ?? (() => undefined),
+			failures: new Map(),
+			disposed: false,
+		});
+	}
+
+	public detach(playerId: string): void {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
+		slot.disposed = true;
+		slot.failures.clear();
+		this.slots.delete(playerId);
+	}
+
+	/** Global shutdown: releases every player's slot. */
+	public dispose(): void {
+		for (const playerId of [...this.slots.keys()]) this.detach(playerId);
+	}
+
+	public has(playerId: string): boolean {
+		return this.slots.has(playerId);
+	}
+
+	// ---------------------------------------------------------------------
+	// Public API (every call names the player it acts for)
+	// ---------------------------------------------------------------------
+
+	public addResolver(playerId: string, resolver: TrackStreamResolver): () => void {
+		const slot = this.requireSlot(playerId);
+		slot.resolvers.push(resolver);
 		return () => {
-			const i = this.resolvers.indexOf(resolver);
-			if (i >= 0) this.resolvers.splice(i, 1);
+			const i = slot.resolvers.indexOf(resolver);
+			if (i >= 0) slot.resolvers.splice(i, 1);
 		};
 	}
-	async load(track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
-		this.assertNotDisposed();
-		const stream = await this.resolve(track, session);
+	public async load(playerId: string, track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
+		return this.loadSlot(this.requireSlot(playerId), track, session);
+	}
+	public async loadWithRecovery(playerId: string, track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
+		return this.loadWithRecoverySlot(this.requireSlot(playerId), track, session);
+	}
+	public async preloadNext(playerId: string): Promise<void> {
+		this.requireSlot(playerId);
+		if (this.preloadManager) await this.preloadManager.preloadNextTrack(playerId);
+	}
+	public async applyMiddleware(playerId: string, track: Track): Promise<Track> {
+		return this.applyMiddlewareSlot(this.requireSlot(playerId), track);
+	}
+	public hasPreload(playerId: string, track: Track): boolean {
+		return this.preloadManager?.hasValidPreload(playerId, track) ?? false;
+	}
+	public cancelPreload(playerId: string): void {
+		this.preloadManager?.cancelPreload(playerId);
+	}
+	public async cancelPreloadSafely(playerId: string): Promise<void> {
+		await this.preloadManager?.safeCancelPreload(playerId);
+	}
+	public resetRecovery(playerId: string, track?: Track): void {
+		const slot = this.slots.get(playerId);
+		if (slot) this.resetRecoverySlot(slot, track);
+	}
+	public getRecoveryCount(playerId: string, track: Track): number {
+		return this.slots.get(playerId)?.failures.get(this.key(track)) ?? 0;
+	}
+	public recoveryPolicy(playerId: string): Readonly<Required<TrackRecoveryPolicy>> {
+		return this.requireSlot(playerId).recovery;
+	}
+
+	// ---------------------------------------------------------------------
+	// Slot-level implementation
+	// ---------------------------------------------------------------------
+
+	private requireSlot(playerId: string): TrackLoaderSlot {
+		const slot = this.slots.get(playerId);
+		if (!slot || slot.disposed) throw new Error("TrackLoader is disposed");
+		return slot;
+	}
+	private async loadSlot(slot: TrackLoaderSlot, track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
+		this.assertNotDisposed(slot);
+		const stream = await this.resolve(slot, track, session);
 		return { track, stream, sessionId: session.id, retry: 0, usedFallback: false };
 	}
-	async loadWithRecovery(track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
-		this.assertNotDisposed();
-		this.assertActive(session);
+	private async loadWithRecoverySlot(slot: TrackLoaderSlot, track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
+		this.assertNotDisposed(slot);
+		this.assertActive(slot, session);
 		const key = this.key(track);
-		let retry = this.failures.get(key) ?? 0;
+		let retry = slot.failures.get(key) ?? 0;
 		let lastError: unknown;
-		if (this.recovery.reusePreloadFirst) {
-			const preload = this.preloadManager?.takePreloaded(track);
+		if (slot.recovery.reusePreloadFirst) {
+			const preload = this.preloadManager?.takePreloaded(slot.playerId, track);
 			if (preload) {
-				this.debugLog(`[TrackLoader] Using preloaded stream for: ${track.title}`);
+				slot.debugLog(`[TrackLoader] Using preloaded stream for: ${track.title}`);
 				return {
 					track,
 					stream: preload.streamInfo ?? { stream: preload.stream as any, type: "arbitrary" },
@@ -143,92 +220,67 @@ export class TrackLoader {
 				};
 			}
 		}
-		const attempts = this.recovery.enabled ? this.recovery.maxRetries + 1 : 1;
+		const attempts = slot.recovery.enabled ? slot.recovery.maxRetries + 1 : 1;
 		for (let attempt = 0; attempt < attempts; attempt++) {
-			this.assertActive(session);
+			this.assertActive(slot, session);
 			try {
-				const stream = await this.resolve(track, session);
-				this.failures.delete(key);
+				const stream = await this.resolve(slot, track, session);
+				slot.failures.delete(key);
 				return { track, stream, sessionId: session.id, retry, usedFallback: retry > 0 };
 			} catch (error) {
 				lastError = error;
-				if (this.isAbort(error) || !this.recovery.enabled || attempt >= this.recovery.maxRetries) break;
+				if (this.isAbort(error) || !slot.recovery.enabled || attempt >= slot.recovery.maxRetries) break;
 				retry++;
-				this.failures.set(key, retry);
-				if (this.recovery.reduceQualityOnRetry) this.reduceQualityForRetry(track, retry);
-				this.debugLog(`[TrackLoader] Recovery attempt ${retry}/${this.recovery.maxRetries} for ${track.title}`, error);
-				if (this.recovery.retryDelayMs > 0) await this.delay(this.recovery.retryDelayMs, session.signal);
+				slot.failures.set(key, retry);
+				if (slot.recovery.reduceQualityOnRetry) this.reduceQualityForRetry(slot, track, retry);
+				slot.debugLog(`[TrackLoader] Recovery attempt ${retry}/${slot.recovery.maxRetries} for ${track.title}`, error);
+				if (slot.recovery.retryDelayMs > 0) await this.delay(slot.recovery.retryDelayMs, session.signal);
 			}
 		}
-		if (retry >= this.recovery.controlledSkipThreshold)
-			this.debugLog(`[TrackLoader] Controlled skip threshold reached for ${track.title}`);
+		if (retry >= slot.recovery.controlledSkipThreshold)
+			slot.debugLog(`[TrackLoader] Controlled skip threshold reached for ${track.title}`);
 		throw lastError instanceof Error ? lastError : new Error(String(lastError ?? `Unable to load track: ${track.title}`));
 	}
-	async preloadNext(): Promise<void> {
-		this.assertNotDisposed();
-		if (this.preloadManager) await this.preloadManager.preloadNextTrack();
-	}
-	async applyMiddleware(track: Track): Promise<Track> {
-		this.assertNotDisposed();
-		for (const middleware of this.middleware) {
-			const result = await middleware(track, this.context);
+	private async applyMiddlewareSlot(slot: TrackLoaderSlot, track: Track): Promise<Track> {
+		this.assertNotDisposed(slot);
+		for (const middleware of slot.middleware) {
+			const result = await middleware(track, slot.context);
 			if (result && result !== track) Object.assign(track, result);
 		}
 		return track;
 	}
-	hasPreload(track: Track): boolean {
-		return this.preloadManager?.hasValidPreload(track) ?? false;
+	private resetRecoverySlot(slot: TrackLoaderSlot, track?: Track): void {
+		if (track) slot.failures.delete(this.key(track));
+		else slot.failures.clear();
 	}
-	cancelPreload(): void {
-		this.preloadManager?.cancelPreload();
-	}
-	async cancelPreloadSafely(): Promise<void> {
-		await this.preloadManager?.safeCancelPreload();
-	}
-	resetRecovery(track?: Track): void {
-		if (track) this.failures.delete(this.key(track));
-		else this.failures.clear();
-	}
-	getRecoveryCount(track: Track): number {
-		return this.failures.get(this.key(track)) ?? 0;
-	}
-	get recoveryPolicy(): Readonly<Required<TrackRecoveryPolicy>> {
-		return this.recovery;
-	}
-	dispose(): void {
-		if (this.disposed) return;
-		this.disposed = true;
-		if (this.playerId && trackLoaders.get(this.playerId) === this) trackLoaders.delete(this.playerId);
-		this.failures.clear();
-	}
-	private async resolve(track: Track, session: PlaybackSession): Promise<StreamInfo> {
-		this.assertActive(session);
-		await this.applyMiddleware(track);
-		this.assertActive(session);
-		for (const resolver of this.resolvers) {
-			this.assertActive(session);
+	private async resolve(slot: TrackLoaderSlot, track: Track, session: PlaybackSession): Promise<StreamInfo> {
+		this.assertActive(slot, session);
+		await this.applyMiddlewareSlot(slot, track);
+		this.assertActive(slot, session);
+		for (const resolver of slot.resolvers) {
+			this.assertActive(slot, session);
 			const stream = await resolver(track, session);
 			if (!stream) continue;
-			this.assertActive(session);
+			this.assertActive(slot, session);
 			return stream;
 		}
 		throw new Error(`No stream resolver could load track: ${track.title}`);
 	}
-	private reduceQualityForRetry(track: Track, retry: number): void {
-		if (!this.qualityController) {
-			this.debugLog(`[TrackLoader] reduceQualityOnRetry enabled but no quality controller is configured for ${track.title}`);
+	private reduceQualityForRetry(slot: TrackLoaderSlot, track: Track, retry: number): void {
+		if (!slot.qualityController) {
+			slot.debugLog(`[TrackLoader] reduceQualityOnRetry enabled but no quality controller is configured for ${track.title}`);
 			return;
 		}
-		if (this.qualityController.get() === "low") return;
-		this.qualityController.set("low");
-		this.debugLog(`[TrackLoader] Reduced quality to low for recovery retry ${retry} on ${track.title}`);
+		if (slot.qualityController.get() === "low") return;
+		slot.qualityController.set("low");
+		slot.debugLog(`[TrackLoader] Reduced quality to low for recovery retry ${retry} on ${track.title}`);
 	}
-	private assertActive(session: PlaybackSession): void {
-		this.assertNotDisposed();
+	private assertActive(slot: TrackLoaderSlot, session: PlaybackSession): void {
+		this.assertNotDisposed(slot);
 		if (!session.isActive()) throw new DOMException("Playback session is no longer active", "AbortError");
 	}
-	private assertNotDisposed(): void {
-		if (this.disposed) throw new Error("TrackLoader is disposed");
+	private assertNotDisposed(slot: TrackLoaderSlot): void {
+		if (slot.disposed) throw new Error("TrackLoader is disposed");
 	}
 	private delay(ms: number, signal: AbortSignal): Promise<void> {
 		return new Promise((resolve, reject) => {
