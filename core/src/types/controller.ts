@@ -5,9 +5,8 @@ import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
 import type { Bus } from "../structures/Bus";
 
+/** Per-player configuration handed to the shared `ConnectionController` via `attach(playerId, options)`. */
 export interface ConnectionControllerOptions {
-	guildId: string;
-	bus: Bus;
 	audioPlayer?: AudioPlayer;
 	options?: Pick<PlayerOptions, "selfDeaf" | "selfMute" | "group">;
 	debug?: (message: string) => void;

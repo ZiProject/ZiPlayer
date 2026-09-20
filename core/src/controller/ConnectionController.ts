@@ -46,13 +46,8 @@ interface ConnectionSlot {
 export class ConnectionController {
 	private readonly bus?: Bus;
 	private readonly slots = new Map<string, ConnectionSlot>();
-	private defaultPlayerId?: string;
 
-	public constructor(bus: Bus);
-	public constructor(options: ConnectionControllerOptions);
-	public constructor(busOrOptions: Bus | ConnectionControllerOptions) {
-		const isBus = busOrOptions && typeof (busOrOptions as any).registerRpc === "function";
-		const bus: Bus | undefined = isBus ? (busOrOptions as Bus) : (busOrOptions as any).bus;
+	public constructor(bus?: Bus) {
 		this.bus = bus;
 
 		if (bus) {
@@ -71,93 +66,49 @@ export class ConnectionController {
 				this.enqueue(event.playerId, () => this.reconnect(event.playerId, event)),
 			);
 		}
-
-		if (!isBus) {
-			const options = busOrOptions as ConnectionControllerOptions;
-			const playerId = options.guildId ?? "default";
-			this.defaultPlayerId = playerId;
-			this.attach(playerId, options);
-		}
 	}
 
-	/** Opens a slot for `playerId`. Mirrors the old per-instance constructor options
-	 *  (minus `guildId`/`bus`, which are now `playerId`/the shared bus). */
-	public attach(playerId: string, options: Omit<ConnectionControllerOptions, "guildId" | "bus"> | ConnectionControllerOptions): void {
-		const opt = (options as any).options ?? options;
+	/** Opens a slot for `playerId`. */
+	public attach(playerId: string, options: ConnectionControllerOptions): void {
+		const opt = options.options ?? {};
 		this.slots.set(playerId, {
 			group: opt.group,
 			selfDeaf: opt.selfDeaf ?? true,
 			selfMute: opt.selfMute ?? false,
-			debug: (options as any).debug,
-			readyTimeoutMs: (options as any).readyTimeoutMs ?? 15_000,
+			debug: options.debug,
+			readyTimeoutMs: options.readyTimeoutMs ?? 15_000,
 			connection: null,
 			channel: null,
 			sessionId: null,
 			requestId: null,
-			audioPlayer: (options as any).audioPlayer ?? null,
+			audioPlayer: options.audioPlayer ?? null,
 			subscription: null,
 			disposed: false,
 			operation: Promise.resolve(),
 		});
 	}
 
-	public get active(): VoiceConnection | null {
-		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
-		return id ? (this.slots.get(id)?.connection ?? null) : null;
-	}
 	public getActive(playerId: string): VoiceConnection | null {
 		return this.slots.get(playerId)?.connection ?? null;
-	}
-
-	public get activeChannel(): VoiceChannel | null {
-		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
-		return id ? (this.slots.get(id)?.channel ?? null) : null;
 	}
 	public getActiveChannel(playerId: string): VoiceChannel | null {
 		return this.slots.get(playerId)?.channel ?? null;
 	}
-
-	public get activeSessionId(): PlayerSessionId | null {
-		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
-		return id ? (this.slots.get(id)?.sessionId ?? null) : null;
-	}
 	public getActiveSessionId(playerId: string): PlayerSessionId | null {
 		return this.slots.get(playerId)?.sessionId ?? null;
-	}
-
-	public get activeSubscription(): PlayerSubscription | null {
-		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
-		return id ? (this.slots.get(id)?.subscription ?? null) : null;
 	}
 	public getActiveSubscription(playerId: string): PlayerSubscription | null {
 		return this.slots.get(playerId)?.subscription ?? null;
 	}
-
-	public get isReady(): boolean {
-		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
-		return id ? this.slots.get(id)?.connection?.state.status === VoiceConnectionStatus.Ready : false;
-	}
 	public getIsReady(playerId: string): boolean {
 		return this.slots.get(playerId)?.connection?.state.status === VoiceConnectionStatus.Ready;
-	}
-
-	public get isSubscribed(): boolean {
-		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
-		if (!id) return false;
-		const slot = this.slots.get(id);
-		return Boolean(slot?.subscription && slot.connection?.state.status === VoiceConnectionStatus.Ready);
 	}
 	public getIsSubscribed(playerId: string): boolean {
 		const slot = this.slots.get(playerId);
 		return Boolean(slot?.subscription && slot.connection?.state.status === VoiceConnectionStatus.Ready);
 	}
 
-	public setAudioPlayer(playerId: string, audioPlayer: AudioPlayer | null): void;
-	public setAudioPlayer(audioPlayer: AudioPlayer | null): void;
-	public setAudioPlayer(arg1: string | AudioPlayer | null, arg2?: AudioPlayer | null): void {
-		const isFirstArgString = typeof arg1 === "string";
-		const playerId = isFirstArgString ? arg1 : (this.defaultPlayerId ?? this.slots.keys().next().value ?? "default");
-		const audioPlayer = (isFirstArgString ? arg2 : arg1) as AudioPlayer | null;
+	public setAudioPlayer(playerId: string, audioPlayer: AudioPlayer | null): void {
 		const slot = this.slots.get(playerId);
 		if (!slot || slot.audioPlayer === audioPlayer) return;
 		this.cleanupSubscription(playerId);
@@ -167,12 +118,7 @@ export class ConnectionController {
 		}
 	}
 
-	public ensureSubscription(playerId: string, connection?: VoiceConnection | null): PlayerSubscription | null;
-	public ensureSubscription(connection?: VoiceConnection | null): PlayerSubscription | null;
-	public ensureSubscription(arg1?: string | VoiceConnection | null, arg2?: VoiceConnection | null): PlayerSubscription | null {
-		const isFirstArgString = typeof arg1 === "string";
-		const playerId = isFirstArgString ? arg1 : (this.defaultPlayerId ?? this.slots.keys().next().value ?? "default");
-		const connection = isFirstArgString ? arg2 : arg1;
+	public ensureSubscription(playerId: string, connection?: VoiceConnection | null): PlayerSubscription | null {
 		const slot = this.slots.get(playerId);
 		if (!slot) return null;
 		const target = connection === undefined ? slot.connection : connection;
@@ -201,15 +147,14 @@ export class ConnectionController {
 		return slot.subscription;
 	}
 
-	public cleanupSubscription(playerId?: string): void {
-		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value ?? "default";
-		const slot = this.slots.get(id);
+	public cleanupSubscription(playerId: string): void {
+		const slot = this.slots.get(playerId);
 		if (!slot?.subscription) return;
 		try {
 			slot.subscription.unsubscribe();
 		} catch {}
 		slot.subscription = null;
-		slot.debug?.(`[ConnectionController] AudioPlayer unsubscribed guild=${id}`);
+		slot.debug?.(`[ConnectionController] AudioPlayer unsubscribed guild=${playerId}`);
 	}
 
 	public async dispose(playerId?: string): Promise<void> {

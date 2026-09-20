@@ -83,26 +83,15 @@ export class PreloadController {
 		for (const playerId of [...this.states.keys()]) this.detach(playerId);
 	}
 
-	public has(playerId: string, track: Track): boolean;
-	public has(track: Track): boolean;
-	public has(arg1: string | Track, arg2?: Track): boolean {
-		if (typeof arg1 === "string") {
-			return this.loader.hasPreload(arg1, arg2!);
-		}
-		const playerId = this.states.keys().next().value ?? "default";
-		return this.loader.hasPreload(playerId, arg1);
+	public has(playerId: string, track: Track): boolean {
+		return this.loader.hasPreload(playerId, track);
 	}
 
 	// ---------------------------------------------------------------------
 	// Preload operations (all keyed by playerId)
 	// ---------------------------------------------------------------------
 
-	public promotePreload(playerId: string, track: Track): AudioResource | null;
-	public promotePreload(track: Track): AudioResource | null;
-	public promotePreload(arg1: string | Track, arg2?: Track): AudioResource | null {
-		const isFirstArgString = typeof arg1 === "string";
-		const playerId = isFirstArgString ? arg1 : (this.states.keys().next().value ?? "default");
-		const track = (isFirstArgString ? arg2 : arg1) as Track;
+	public promotePreload(playerId: string, track: Track): AudioResource | null {
 		if (!this.bus) return null;
 		const session = this.bus.querySync(playerId, "playbackSessionInternal");
 		if (!session) return null;
@@ -124,19 +113,17 @@ export class PreloadController {
 		return resource;
 	}
 
-	public getState(playerId?: string): { hasSlot: boolean; currentSlot: StreamSlot } {
-		const id = playerId ?? this.states.keys().next().value ?? "default";
-		const currentSlot = this.manager.slotState(id);
+	public getState(playerId: string): { hasSlot: boolean; currentSlot: StreamSlot } {
+		const currentSlot = this.manager.slotState(playerId);
 		return {
 			hasSlot: Boolean(currentSlot.track || currentSlot.streamInfo || currentSlot.streamId || currentSlot.isLoading),
 			currentSlot,
 		};
 	}
 
-	public async preload(playerId?: string): Promise<void> {
-		const id = playerId ?? this.states.keys().next().value ?? "default";
-		await this.loader.preloadNext(id);
-		if (this.bus) this.bus.publish(id, "preloadStateChanged", { requestedTrack: null, valid: false });
+	public async preload(playerId: string): Promise<void> {
+		await this.loader.preloadNext(playerId);
+		if (this.bus) this.bus.publish(playerId, "preloadStateChanged", { requestedTrack: null, valid: false });
 	}
 
 	/**
@@ -178,40 +165,27 @@ export class PreloadController {
 		}
 	}
 
-	public request(playerId: string, track: Track): Promise<Track>;
-	public request(track: Track): Promise<Track>;
-	public request(arg1: string | Track, arg2?: Track): Promise<Track> {
-		const isFirstArgString = typeof arg1 === "string";
-		const playerId = isFirstArgString ? arg1 : (this.states.keys().next().value ?? "default");
-		const track = (isFirstArgString ? arg2 : arg1) as Track;
+	public request(playerId: string, track: Track): Promise<Track> {
 		if (!this.bus) return Promise.resolve(track);
 		return this.bus
 			.request(playerId, { type: "[Player]->[Preload]:request", requestId: createPlayerRequestId(), track })
 			.then((event) => event.track);
 	}
 
-	public takePreloaded(playerId: string, track: Track): PromotedPreload | null;
-	public takePreloaded(track: Track): PromotedPreload | null;
-	public takePreloaded(arg1: string | Track, arg2?: Track): PromotedPreload | null {
-		const isFirstArgString = typeof arg1 === "string";
-		const playerId = isFirstArgString ? arg1 : (this.states.keys().next().value ?? "default");
-		const track = (isFirstArgString ? arg2 : arg1) as Track;
+	public takePreloaded(playerId: string, track: Track): PromotedPreload | null {
 		const promoted = this.manager.takePreloaded(playerId, track);
 		if (promoted && this.bus) this.bus.publish(playerId, "preloadPromoted", track);
 		return promoted;
 	}
-	public cancel(playerId?: string): void {
-		const id = playerId ?? this.states.keys().next().value ?? "default";
-		this.loader.cancelPreload(id);
-		if (this.bus) this.bus.publish(id, "preloadCancelled");
+	public cancel(playerId: string): void {
+		this.loader.cancelPreload(playerId);
+		if (this.bus) this.bus.publish(playerId, "preloadCancelled");
 	}
-	public async cancelSafely(playerId?: string): Promise<void> {
-		const id = playerId ?? this.states.keys().next().value ?? "default";
-		await this.loader.cancelPreloadSafely(id);
-		if (this.bus) this.bus.publish(id, "preloadCancelled");
+	public async cancelSafely(playerId: string): Promise<void> {
+		await this.loader.cancelPreloadSafely(playerId);
+		if (this.bus) this.bus.publish(playerId, "preloadCancelled");
 	}
-	public clear(playerId?: string): void {
-		const id = playerId ?? this.states.keys().next().value ?? "default";
-		this.manager.clearPreloadSlot(id);
+	public clear(playerId: string): void {
+		this.manager.clearPreloadSlot(playerId);
 	}
 }

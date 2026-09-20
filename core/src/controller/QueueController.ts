@@ -221,6 +221,10 @@ export class QueueState {
 		this.publishChanged();
 	}
 	public reset(): void {
+		this.clearState();
+		this.publishChanged();
+	}
+	private clearState(): void {
 		this.tracks.length = 0;
 		this.history.length = 0;
 		this.currentTrack = null;
@@ -228,7 +232,6 @@ export class QueueState {
 		this.related.length = 0;
 		this.loopMode = "off";
 		this.autoPlayEnabled = false;
-		this.publishChanged();
 	}
 	public snapshot(): Track[] {
 		return this.tracks.slice();
@@ -376,10 +379,20 @@ export class QueueState {
 	private publishChanged(): void {
 		if (this.bus && this.playerId) this.bus.publish(this.playerId, "queueChanged", this.snapshot());
 	}
+	/** Releases the state without publishing: subscribers of a player that is being torn down must not see a final "queueChanged". */
 	public dispose(): void {
-		this.reset();
+		this.clearState();
 	}
 }
+
+/**
+ * What `Player.queue` exposes: the queue operations of `QueueState` without the members that only
+ * `QueueController` (bus actions/RPCs, lifecycle) should call.
+ */
+export type PlayerQueue = Omit<
+	QueueState,
+	"dispose" | "handleAction" | "insertRequest" | "setCurrentInternal" | "serializeInternal" | "restoreInternal"
+>;
 
 /** Shared, singleton controller: owns queue state for every player, keyed by playerId. */
 export class QueueController {
@@ -392,6 +405,7 @@ export class QueueController {
 		bus.registerQuery("currentTrack", (playerId) => this.states.get(playerId)?.current ?? null);
 		bus.registerQuery("queueCurrent", (playerId) => this.states.get(playerId)?.current ?? null);
 		bus.registerQuery("queue", (playerId) => this.states.get(playerId)?.snapshot() ?? []);
+		bus.registerQuery("queueState", (playerId) => this.states.get(playerId) ?? null);
 		bus.registerQuery("queueSerialized", (playerId) => this.states.get(playerId)?.serializeInternal() ?? {});
 		bus.registerQuery("previousTracks", (playerId) => this.states.get(playerId)?.previousTracks ?? []);
 		bus.registerQuery("previousTrack", (playerId) => this.states.get(playerId)?.previousTracks.at(-1) ?? null);

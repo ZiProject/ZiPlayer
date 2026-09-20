@@ -30,6 +30,7 @@ import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { PlaybackSession } from "./PlaybackSession";
 import { PlayerCapabilities, createPlayerCapabilities } from "../capabilities/PlayerCapabilities";
+import type { PlayerQueue } from "../controller/QueueController";
 
 export class Player extends EventEmitter {
 	public readonly bus: Bus;
@@ -101,6 +102,18 @@ export class Player extends EventEmitter {
 	}
 	public get forwardFollowers(): ReadonlySet<any> {
 		return this.bus.querySync(this.playerId, "forwardFollowers") ?? new Set();
+	}
+	/**
+	 * Queue of this player (add / insert / remove / move / swap / shuffle / loop / history ...).
+	 *
+	 * Resolved through the Bus on every access, so it always points at the state the shared
+	 * `QueueController` keeps for this `playerId`; the Player never stores a queue of its own.
+	 * Throws once the player has been destroyed (its queue state is released).
+	 */
+	public get queue(): PlayerQueue {
+		const queue = this.bus.querySync(this.playerId, "queueState");
+		if (!queue) throw new Error(`Queue is not available for player "${this.playerId}" (destroyed or not attached)`);
+		return queue;
 	}
 	public get queueSize(): number {
 		return this.bus.querySync(this.playerId, "queue")?.length ?? 0;
@@ -514,8 +527,36 @@ export class Player extends EventEmitter {
 	public getForwardHealthStatus() {
 		return this.bus.requestRpcSync(this.playerId, "forward.health", undefined);
 	}
+	/**
+	 * Teardown step 1 — abort workflow. Marks the player destroyed and cancels everything the facade
+	 * itself owns (pending `play()` calls, queued/running actions) so nothing new reaches the
+	 * controllers while `PlayerManager` detaches them. Idempotent.
+	 */
+	public abortWorkflow(): void {
+		this.destroyed = true;
+		this.invalidatePlay();
+		this.actionExecutor.dispose();
+	}
+	/**
+	 * Destroys the player.
+	 *
+	 * A managed player is torn down by `PlayerManager.destroy(playerId)` so the order is always
+	 * abort workflow -> controllers detach -> `completeDestroy()` (bus disposal last). Only a player
+	 * without a manager (or one the manager no longer tracks) finishes the teardown itself.
+	 */
 	public destroy(): void {
 		if (this.destroyed) return;
+		if (this.manager?.requestDestroy(this)) return;
+		this.abortWorkflow();
+		this.completeDestroy();
+	}
+	/**
+	 * Final teardown step: releases extension back-references, publishes "destroyed" and drops this
+	 * player's bus subscriptions. `PlayerManager` calls it after every controller has detached;
+	 * call `destroy()` instead of this method.
+	 */
+	public completeDestroy(): void {
+		if (this.disposed) return;
 		this.destroyed = true;
 		try {
 			const exts = this.getExtensions();

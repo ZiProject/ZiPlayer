@@ -221,18 +221,8 @@ export class PlaybackOrchestrator {
 		return this.workers.has(playerId);
 	}
 
-	public get currentSession(): PlaybackSession | null {
-		const id = this.workers.keys().next().value;
-		return id ? this.sessionController.current(id) : null;
-	}
-
 	public getCurrentSession(playerId: string): PlaybackSession | null {
 		return this.sessionController.current(playerId);
-	}
-
-	public get transitionPolicy() {
-		const id = this.workers.keys().next().value;
-		return id ? this.bus.querySync(id, "transitionSettings") : undefined;
 	}
 
 	public getTransitionPolicy(playerId: string) {

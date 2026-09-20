@@ -30,14 +30,13 @@ const createOrchestrator = ({ autoPlay, related, relatedResolver, loop = "off", 
 	sessionController.attach(playerId);
 	const played = [];
 	const errors = [];
-	const trackLoader = new TrackLoader({
+	const trackLoader = new TrackLoader(globalBus);
+	trackLoader.attach(playerId, {
 		context: {},
-		bus: globalBus,
-		playerId,
 		resolvers: [async (track) => ({ stream: new Readable({ read() {} }), type: "arbitrary" })],
 	});
 	globalBus.registerQuery("filterString", () => "");
-	globalBus.registerRpc("preload.has", ({ track }) => Boolean(preloadController?.has?.(track)));
+	globalBus.registerRpc("preload.has", ({ track }) => Boolean(preloadController?.has?.(playerId, track)));
 	globalBus.registerRpc("preload.cancel", () => undefined);
 	globalBus.registerRpc("resource.create", ({ stream, track }) => ({ stream, metadata: track }));
 	globalBus.registerRpc("controller.stream.replace", ({ streamInfo, session }) => ({
@@ -85,9 +84,9 @@ test("autoplay starts the related track after TRACK_END", async () => {
 	const harness = createOrchestrator({ autoPlay: true, related: [trackB] });
 
 	await play(harness, trackA);
-	const endedSession = harness.orchestrator.currentSession;
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
 	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
-	await waitFor(() => harness.orchestrator.currentSession?.track === trackB);
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackB);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b"], harness.errors.join("; "));
 	harness.orchestrator.dispose();
@@ -100,11 +99,11 @@ test("the next session keeps a valid signal after the ended session is destroyed
 	const harness = createOrchestrator({ autoPlay: true, related: [trackB] });
 
 	await play(harness, trackA);
-	const endedSession = harness.orchestrator.currentSession;
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
 	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
-	await waitFor(() => harness.orchestrator.currentSession?.track === trackB);
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackB);
 
-	const nextSession = harness.orchestrator.currentSession;
+	const nextSession = harness.orchestrator.getCurrentSession(harness.playerId);
 	assert.equal(endedSession.signal.aborted, true);
 	assert.equal(nextSession.signal.aborted, false);
 	harness.orchestrator.dispose();
@@ -129,9 +128,9 @@ test("related tracks resolve without setting willNext when autoplay is disabled"
 	assert.deepEqual(harness.queueController.relatedTracks, [trackB]);
 	assert.equal(harness.queueController.willNext, null);
 
-	harness.bus.event(harness.playerId, { type: "TRACK_END", session: harness.orchestrator.currentSession.snapshot() });
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: harness.orchestrator.getCurrentSession(harness.playerId).snapshot() });
 	await new Promise((resolve) => setTimeout(resolve, 20));
-	assert.equal(harness.orchestrator.currentSession.track, trackA);
+	assert.equal(harness.orchestrator.getCurrentSession(harness.playerId).track, trackA);
 	harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
@@ -143,9 +142,9 @@ test("loop off advances to the queued track after TRACK_END", async () => {
 
 	await play(harness, trackA);
 	harness.queueController.add(trackB);
-	const endedSession = harness.orchestrator.currentSession;
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
 	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
-	await waitFor(() => harness.orchestrator.currentSession?.track === trackB);
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackB);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b"], harness.errors.join("; "));
 	harness.orchestrator.dispose();
@@ -159,11 +158,11 @@ test("loop track repeats the current track without retaining an autoplay hint", 
 
 	await play(harness, trackA);
 	assert.equal(harness.queueController.willNext, null);
-	const endedSession = harness.orchestrator.currentSession;
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
 	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
-	await waitFor(() => harness.orchestrator.currentSession?.id !== endedSession.id);
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.id !== endedSession.id);
 
-	assert.equal(harness.orchestrator.currentSession.track, trackA);
+	assert.equal(harness.orchestrator.getCurrentSession(harness.playerId).track, trackA);
 	assert.equal(harness.queueController.willNext, null);
 	harness.orchestrator.dispose();
 	harness.queueController.dispose();
@@ -176,13 +175,13 @@ test("loop queue cycles back to the first track after the queue ends", async () 
 
 	await play(harness, trackA);
 	harness.queueController.add(trackB);
-	let endedSession = harness.orchestrator.currentSession;
+	let endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
 	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
-	await waitFor(() => harness.orchestrator.currentSession?.track === trackB);
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackB);
 
-	endedSession = harness.orchestrator.currentSession;
+	endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
 	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
-	await waitFor(() => harness.orchestrator.currentSession?.track === trackA);
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackA);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b", "track-a"]);
 	harness.orchestrator.dispose();
@@ -206,15 +205,16 @@ test("TrackLoader promotes the existing preloaded stream instead of resolving ag
 	const track = { id: "track-preloaded", title: "Preloaded", duration: 180000 };
 	const preloadedStream = { name: "preloaded-stream" };
 	let takeCount = 0;
-	const loader = new TrackLoader({
-		context: {},
-		preloadManager: {
-			takePreloaded: (requestedTrack) => {
-				assert.equal(requestedTrack, track);
-				takeCount++;
-				return { track, stream: preloadedStream };
-			},
+	const loader = new TrackLoader(undefined, {
+		takePreloaded: (playerId, requestedTrack) => {
+			assert.equal(playerId, "test-guild");
+			assert.equal(requestedTrack, track);
+			takeCount++;
+			return { track, stream: preloadedStream };
 		},
+	});
+	loader.attach("test-guild", {
+		context: {},
 		resolvers: [
 			() => {
 				throw new Error("stream resolver should not run");
@@ -224,16 +224,17 @@ test("TrackLoader promotes the existing preloaded stream instead of resolving ag
 	const session = new PlaybackSession();
 	session.begin(track);
 
-	const loaded = await loader.loadWithRecovery(track, session);
+	const loaded = await loader.loadWithRecovery("test-guild", track, session);
 	assert.equal(takeCount, 1);
 	assert.equal(loaded.stream.stream, preloadedStream);
 });
 
 test("TrackLoader rejects new loads after dispose", async () => {
-	const loader = new TrackLoader({ context: {}, resolvers: [] });
+	const loader = new TrackLoader();
+	loader.attach("test-guild", { context: {}, resolvers: [] });
 	loader.dispose();
 
-	await assert.rejects(() => loader.load({ id: "disposed-track", title: "Disposed" }, new PlaybackSession()), {
+	await assert.rejects(() => loader.load("test-guild", { id: "disposed-track", title: "Disposed" }, new PlaybackSession()), {
 		message: "TrackLoader is disposed",
 	});
 });
@@ -323,7 +324,8 @@ test("PreloadManager manages StreamInfo directly without AudioResource and prese
 	const sourceStream = new Readable({ read() {} });
 
 	let streamRequested = false;
-	const preloadManager = new PreloadManager({
+	const preloadManager = new PreloadManager();
+	preloadManager.attach("test-guild", {
 		streamManager,
 		debug: () => {},
 		getNextTrack: () => trackB,
@@ -335,15 +337,15 @@ test("PreloadManager manages StreamInfo directly without AudioResource and prese
 		isEnabled: () => true,
 	});
 
-	await preloadManager.preloadNextTrack();
+	await preloadManager.preloadNextTrack("test-guild");
 	assert.ok(streamRequested);
-	assert.ok(preloadManager.hasValidPreload(trackB));
+	assert.ok(preloadManager.hasValidPreload("test-guild", trackB));
 
 	// Preloaded stream should NOT be in flowing mode (not drained by StreamManager data counter)
 	assert.notEqual(sourceStream.readableFlowing, true);
 
 	// Promote preloaded track
-	const promoted = preloadManager.takePreloaded(trackB);
+	const promoted = preloadManager.takePreloaded("test-guild", trackB);
 	assert.ok(promoted);
 	assert.equal(promoted.track, trackB);
 	assert.equal(promoted.stream, sourceStream);
@@ -351,7 +353,7 @@ test("PreloadManager manages StreamInfo directly without AudioResource and prese
 	assert.equal(promoted.streamInfo?.inputType, 1);
 
 	// Preload slot should now be empty and not valid
-	assert.equal(preloadManager.hasValidPreload(trackB), false);
+	assert.equal(preloadManager.hasValidPreload("test-guild", trackB), false);
 
 	preloadManager.dispose();
 	streamManager.dispose();

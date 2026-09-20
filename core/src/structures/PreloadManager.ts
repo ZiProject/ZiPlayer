@@ -44,18 +44,10 @@ const newStreamSlot = (): StreamSlot => ({
 export class PreloadManager {
 	private readonly bus?: Bus;
 	private readonly slots = new Map<string, PreloadPlayerSlot>();
-	private defaultPlayerId?: string;
 
-	public constructor(bus: Bus);
-	public constructor(deps: PreloadManagerDeps, bus?: Bus);
-	public constructor(busOrDeps: Bus | PreloadManagerDeps, maybeBus?: Bus) {
-		if (busOrDeps && typeof (busOrDeps as any).querySync === "function") {
-			this.bus = busOrDeps as Bus;
-		} else {
-			this.bus = maybeBus;
-			this.defaultPlayerId = "default";
-			this.attach("default", busOrDeps as PreloadManagerDeps);
-		}
+	/** `bus` is only needed by players that attach without `getNextTrack`/`getStream`/`removeTrackFromQueue` deps. */
+	public constructor(bus?: Bus) {
+		this.bus = bus;
 	}
 
 	public attach(playerId: string, deps: PreloadManagerDeps): void {
@@ -81,9 +73,8 @@ export class PreloadManager {
 		return this.slots.has(playerId);
 	}
 
-	public slotState(playerId?: string): StreamSlot {
-		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value;
-		return (id ? this.slots.get(id)?.preloadSlot : undefined) ?? newStreamSlot();
+	public slotState(playerId: string): StreamSlot {
+		return this.slots.get(playerId)?.preloadSlot ?? newStreamSlot();
 	}
 
 	// ---------------------------------------------------------------------
@@ -123,16 +114,9 @@ export class PreloadManager {
 	// Preload operations (all keyed by playerId)
 	// ---------------------------------------------------------------------
 
-	public hasValidPreload(playerId: string, track: Track): boolean;
-	public hasValidPreload(track: Track): boolean;
-	public hasValidPreload(arg1: string | Track, arg2?: Track): boolean {
-		if (typeof arg1 === "string") {
-			const slot = this.slots.get(arg1);
-			return slot ? this.slotHasValidPreload(slot, arg2!) : false;
-		}
-		const playerId = this.defaultPlayerId ?? this.slots.keys().next().value ?? "default";
+	public hasValidPreload(playerId: string, track: Track): boolean {
 		const slot = this.slots.get(playerId);
-		return slot ? this.slotHasValidPreload(slot, arg1) : false;
+		return slot ? this.slotHasValidPreload(slot, track) : false;
 	}
 	private slotHasValidPreload(slot: PreloadPlayerSlot, track: Track): boolean {
 		const stream = slot.preloadSlot.streamInfo?.stream;
@@ -144,13 +128,8 @@ export class PreloadManager {
 			isStreamAlive
 		);
 	}
-	public takePreloaded(playerId: string, track: Track): PromotedPreload | null;
-	public takePreloaded(track: Track): PromotedPreload | null;
-	public takePreloaded(arg1: string | Track, arg2?: Track): PromotedPreload | null {
-		const isFirstArgString = typeof arg1 === "string";
-		const playerId = isFirstArgString ? arg1 : (this.defaultPlayerId ?? this.slots.keys().next().value ?? "default");
-		const track = (isFirstArgString ? arg2 : arg1) as Track;
-		if (!playerId || !track) return null;
+	public takePreloaded(playerId: string, track: Track): PromotedPreload | null {
+		if (!track) return null;
 		const slot = this.slots.get(playerId);
 		if (!slot || !this.slotHasValidPreload(slot, track)) return null;
 		const preloadSlot = slot.preloadSlot;
@@ -169,8 +148,7 @@ export class PreloadManager {
 		preloadSlot.loadPromise = null;
 		return { track, stream, streamInfo, streamId };
 	}
-	public async preloadNextTrack(playerId?: string): Promise<void> {
-		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value ?? "default";
+	public async preloadNextTrack(id: string): Promise<void> {
 		const slot = this.slots.get(id);
 		if (!slot) return;
 		const { debug, isDestroyed, isEnabled } = slot.deps;
@@ -225,9 +203,7 @@ export class PreloadManager {
 		}
 		if (slot.preloadNext && !isDestroyed() && isEnabled()) await this.preloadNextTrack(slot.playerId);
 	}
-	public async safeCancelPreload(playerId?: string): Promise<void> {
-		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value;
-		if (!id) return;
+	public async safeCancelPreload(id: string): Promise<void> {
 		const slot = this.slots.get(id);
 		if (!slot) return;
 		const preloadSlot = slot.preloadSlot;
@@ -241,18 +217,14 @@ export class PreloadManager {
 		}
 		this.clearPreloadSlot(id);
 	}
-	public cancelPreload(playerId?: string): void {
-		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value;
-		if (!id) return;
+	public cancelPreload(id: string): void {
 		const slot = this.slots.get(id);
 		if (!slot) return;
 		slot.preloadSlot.abortController?.abort();
 		if (slot.preloadSlot.streamId) slot.deps.streamManager.unregisterStream(slot.preloadSlot.streamId, true);
 		this.clearPreloadSlot(id);
 	}
-	public clearPreloadSlot(playerId?: string): void {
-		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value;
-		if (!id) return;
+	public clearPreloadSlot(id: string): void {
 		const slot = this.slots.get(id);
 		if (!slot) return;
 		const preloadSlot = slot.preloadSlot;

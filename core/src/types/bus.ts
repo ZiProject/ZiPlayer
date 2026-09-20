@@ -21,6 +21,7 @@ import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { Readable } from "stream";
 import type { Player } from "../structures/Player";
+import type { PlayerQueue } from "../controller/QueueController";
 
 export type PlayerRequestId = string;
 export type PlayerSessionId = string;
@@ -351,6 +352,8 @@ export interface PlayerQueryMap {
 	queueCurrent: Track | null;
 	playerState: PlaybackSessionSnapshot["status"];
 	queue: Track[];
+	/** Live per-player queue state (backs `Player.queue`); `null` when the player has no queue attached. */
+	queueState: PlayerQueue | null;
 	previousTracks: Track[];
 	previousTrack: Track | null;
 	willNext: Track | null;
