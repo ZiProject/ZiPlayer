@@ -4,7 +4,7 @@ import type { Readable } from "stream";
 import type { StreamInfo, Track } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
-import { PlayerBus, type GlobalPlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 import { CONTROLLER_RPC, type TtsIsTTSRequest, type TtsPlayRequest } from "./ControllerBusContract";
 import type { TTSControllerOptions } from "../types";
 
@@ -17,7 +17,8 @@ class TTSWorker {
 	private readonly debug: (...args: any[]) => void;
 	private connection: VoiceConnection | null;
 	private readonly audioPlayer?: AudioPlayer;
-	private readonly bus?: PlayerBus;
+	private readonly bus?: Bus;
+	private readonly playerId?: string;
 	private readonly detachBusOutputs: Array<() => void> = [];
 	private readonly maxTimeTts: number;
 	private readonly volume: number;
@@ -29,12 +30,13 @@ class TTSWorker {
 	private readonly onError: (error: Error) => void;
 	private readonly detachBusHandlers: Array<() => void> = [];
 
-	constructor(options: TTSControllerOptions) {
+	constructor(options: TTSControllerOptions & { playerId?: string }) {
 		this.pluginManager = options.pluginManager;
 		this.extensionManager = options.extensionManager;
 		this.connection = options.connection ?? null;
 		this.audioPlayer = options.audioPlayer;
 		this.bus = options.bus;
+		this.playerId = options.playerId;
 		this.debug = options.debug ?? (() => undefined);
 		this.maxTimeTts =
 			Number.isFinite(options.maxTimeTts) && (options.maxTimeTts as number) > 0 ? (options.maxTimeTts as number) : 60_000;
@@ -106,9 +108,10 @@ class TTSWorker {
 			resource.volume?.setVolume(this.volume / 100);
 			if (wasPlaying) this.audioPlayer?.pause(true);
 			connection.subscribe(this.ttsPlayer);
-			void this.bus
-				?.requestRpc("player.emitTtsStart", { track })
-				.catch((error) => this.debug("[TTSController] failed to publish ttsStart:", error));
+			if (this.bus && this.playerId)
+				void this.bus
+					.requestRpc(this.playerId, "player.emitTtsStart", { track })
+					.catch((error: unknown) => this.debug("[TTSController] failed to publish ttsStart:", error));
 			started = true;
 			this.ttsPlayer.play(resource);
 			await this.waitForPlayingOrIdle();
@@ -120,10 +123,10 @@ class TTSWorker {
 				connection.subscribe(this.audioPlayer);
 				if (wasPlaying && this.audioPlayer.state.status === AudioPlayerStatus.Paused) this.audioPlayer.unpause();
 			}
-			if (started && !this.disposed)
+			if (started && !this.disposed && this.bus && this.playerId)
 				void this.bus
-					?.requestRpc("player.emitTtsEnd", undefined)
-					.catch((error) => this.debug("[TTSController] failed to publish ttsEnd:", error));
+					.requestRpc(this.playerId, "player.emitTtsEnd", undefined)
+					.catch((error: unknown) => this.debug("[TTSController] failed to publish ttsEnd:", error));
 		}
 	}
 
@@ -211,10 +214,13 @@ class TTSWorker {
 export class TTSController {
 	private readonly workers = new Map<string, TTSWorker>();
 
-	constructor(private readonly bus: GlobalPlayerBus) {
+	constructor(private readonly bus: Bus) {
 		bus.registerQuery("tts.hasPlayer", (playerId) => Boolean(this.workers.get(playerId)?.ttsPlayer));
 		bus.registerQuery("ttsInterrupt", (playerId) => this.workers.get(playerId)?.interruptSetting ?? true);
-		bus.registerRpc<TtsIsTTSRequest, boolean>(CONTROLLER_RPC.ttsIsTTS, ({ track }, ctx) => this.workers.get(ctx.playerId)?.isTTS(track) ?? false);
+		bus.registerRpc<TtsIsTTSRequest, boolean>(
+			CONTROLLER_RPC.ttsIsTTS,
+			({ track }, ctx) => this.workers.get(ctx.playerId)?.isTTS(track) ?? false,
+		);
 		bus.registerRpc<TtsPlayRequest, void>(CONTROLLER_RPC.ttsPlay, ({ track }, ctx) => {
 			const worker = this.workers.get(ctx.playerId);
 			if (!worker) return Promise.reject(new Error("TTSController is disposed"));
@@ -223,7 +229,7 @@ export class TTSController {
 	}
 
 	attach(playerId: string, options: Omit<TTSControllerOptions, "bus"> & { bus?: never }): void {
-		this.workers.set(playerId, new TTSWorker({ ...options, bus: new PlayerBus(this.bus, playerId) }));
+		this.workers.set(playerId, new TTSWorker({ ...options, bus: this.bus, playerId }));
 	}
 	detach(playerId: string): void {
 		this.workers.get(playerId)?.dispose();

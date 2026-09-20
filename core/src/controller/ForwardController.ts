@@ -1,6 +1,6 @@
 import { PlaybackMode, type Track, type ForwardHealthStatus } from "../types";
 import { AudioPlayerStatus } from "@discordjs/voice";
-import type { GlobalPlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 
 interface ForwardState {
 	leaderId?: string;
@@ -10,7 +10,7 @@ interface ForwardState {
 
 /** Shared, singleton controller: owns leader/follower voice-subscription state for
  *  forward playback across every player, keyed by playerId. Since every player shares
- *  the same GlobalPlayerBus, cross-player coordination is just a bus call addressed to
+ *  the same Bus, cross-player coordination is just a bus call addressed to
  *  the other player's id — no separate per-player bus lookup is needed. */
 export class ForwardController {
 	private readonly states = new Map<string, ForwardState>();
@@ -18,7 +18,7 @@ export class ForwardController {
 	private readonly debug: (...args: any[]) => void;
 
 	constructor(
-		private readonly bus: GlobalPlayerBus,
+		private readonly bus: Bus,
 		options: { debug?: (...args: any[]) => void } = {},
 	) {
 		this.debug = options.debug ?? (() => undefined);
@@ -67,7 +67,10 @@ export class ForwardController {
 
 	healthStatus(playerId: string): ForwardHealthStatus {
 		const state = this.state(playerId);
-		const role: ForwardHealthStatus["role"] = this.isLeader(playerId) ? "leader" : this.isFollower(playerId) ? "follower" : "none";
+		const role: ForwardHealthStatus["role"] =
+			this.isLeader(playerId) ? "leader"
+			: this.isFollower(playerId) ? "follower"
+			: "none";
 		const issues: string[] = [];
 		if (role === "leader") {
 			for (const followerId of state.followers) {
@@ -110,7 +113,11 @@ export class ForwardController {
 		return this.state(playerId).followers.size > 0;
 	}
 
-	subscribeTo(playerId: string, leader: string | { guildId?: string; id?: string }, options?: { forwardMode?: boolean }): boolean {
+	subscribeTo(
+		playerId: string,
+		leader: string | { guildId?: string; id?: string },
+		options?: { forwardMode?: boolean },
+	): boolean {
 		const state = this.state(playerId);
 		if (this.disposed || !leader) return false;
 		const leaderId = typeof leader === "string" ? leader : (leader.guildId ?? leader.id);

@@ -3,29 +3,29 @@ import type { AudioResource, AudioPlayer, StreamType, AudioPlayerStatus } from "
 import type { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
-import type { PlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 
 export interface ConnectionControllerOptions {
 	guildId: string;
-	bus: PlayerBus;
+	bus: Bus;
 	audioPlayer?: AudioPlayer;
 	options?: Pick<PlayerOptions, "selfDeaf" | "selfMute" | "group">;
 	debug?: (message: string) => void;
 	readyTimeoutMs?: number;
 }
 export interface LifecycleControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 	options: Pick<PlayerOptions, "leaveOnEnd" | "leaveOnEmpty" | "leaveTimeout">;
 	debug?: (...args: any[]) => void;
 }
 export interface ForwardControllerOptions {
 	playerId?: string;
-	bus?: PlayerBus;
+	bus?: Bus;
 	debug?: (...args: any[]) => void;
 }
 export interface PlaybackControllerOptions {
 	audioPlayer: AudioPlayer;
-	bus?: PlayerBus;
+	bus?: Bus;
 	stuckTimeoutMs?: number;
 }
 
@@ -39,7 +39,7 @@ export interface ActiveStream {
 }
 export interface StreamControllerOptions {
 	streamManager?: StreamManager;
-	bus?: PlayerBus;
+	bus?: Bus;
 }
 export type FilterControllerStreamType = "webm/opus" | "ogg/opus" | "arbitrary" | "mp3";
 export interface FilterControllerResourcePort {
@@ -82,7 +82,15 @@ export interface PlaybackSessionSnapshot {
 }
 
 export type PlaybackSessionStatus =
-	AudioPlayerStatus | "idle" | "loading" | "playing" | "paused" | "stopped" | "ended" | "destroyed" | "buffering";
+	| AudioPlayerStatus
+	| "idle"
+	| "loading"
+	| "playing"
+	| "paused"
+	| "stopped"
+	| "ended"
+	| "destroyed"
+	| "buffering";
 export interface AntiStuckControllerOptions {
 	enabled?: boolean;
 	maxRetries?: number;
@@ -90,7 +98,7 @@ export interface AntiStuckControllerOptions {
 	reusePreloadFirst?: boolean;
 	reduceQualityOnRetry?: boolean;
 	controlledSkipThreshold?: number;
-	bus?: PlayerBus;
+	bus?: Bus;
 }
 export interface AntiStuckRetryContext {
 	session: PlaybackSession;

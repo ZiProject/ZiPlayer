@@ -1,20 +1,21 @@
-import type { GlobalPlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 import type { ExtensionManager } from "../extensions";
 import type { BaseExtension } from "../extensions/BaseExtension";
 
 /**
- * Shared, singleton controller: owns extension-related PlayerBus RPC/query
+ * Shared, singleton controller: owns extension-related Bus RPC/query
  * registration for every player. Registered once; routed per player via
  * `attach`/`detach`.
  */
 export class ExtensionController {
 	private readonly managers = new Map<string, ExtensionManager>();
 
-	constructor(bus: GlobalPlayerBus) {
+	constructor(bus: Bus) {
 		bus.registerQuery("extensions", (playerId) => this.manager(playerId)?.getAll() ?? []);
 		bus.registerQuery("extension.list", (playerId) => this.manager(playerId)?.getAll() ?? []);
-		bus.registerRpc<Record<string, never> | undefined, BaseExtension[]>("extension.list", (_req, ctx) =>
-			this.manager(ctx.playerId)?.getAll() ?? [],
+		bus.registerRpc<Record<string, never> | undefined, BaseExtension[]>(
+			"extension.list",
+			(_req, ctx) => this.manager(ctx.playerId)?.getAll() ?? [],
 		);
 		bus.registerRpc<{ name: string }, BaseExtension | undefined>("extension.get", ({ name }, ctx) =>
 			this.manager(ctx.playerId)?.get(name),

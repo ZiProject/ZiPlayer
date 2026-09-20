@@ -1,16 +1,16 @@
 import type { AudioResource } from "@discordjs/voice";
-import type { GlobalPlayerBus, PlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 import { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlaybackSessionController } from "./PlaybackSessionController";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 import type { PlayerMessageContext, StreamInfo, Track, TrackLoadResult } from "../types";
 import type { PlaybackStartControllerOptions } from "../types";
 
-// playback.start must be registered exactly once on the shared GlobalPlayerBus; each
+// playback.start must be registered exactly once on the shared Bus; each
 // per-player PlaybackStartController registers itself here.
 const playbackStartControllers = new Map<string, PlaybackStartController>();
-const playbackStartRpcRegistered = new WeakSet<GlobalPlayerBus>();
-function ensurePlaybackStartRpcBridge(bus: GlobalPlayerBus): void {
+const playbackStartRpcRegistered = new WeakSet<Bus>();
+function ensurePlaybackStartRpcBridge(bus: Bus): void {
 	if (playbackStartRpcRegistered.has(bus)) return;
 	playbackStartRpcRegistered.add(bus);
 	bus.registerRpc<{ track: Track; context: PlayerMessageContext; from: Track | null }, Promise<void>>(
@@ -26,7 +26,7 @@ function ensurePlaybackStartRpcBridge(bus: GlobalPlayerBus): void {
 /** Owns loading and starting one playback session through the Bus. One instance per
  *  player. */
 export class PlaybackStartController {
-	private readonly bus: PlayerBus;
+	private readonly bus: Bus;
 	private readonly playerId: string;
 	private readonly sessionController: PlaybackSessionController;
 	private readonly transitionEnabled: PlaybackStartControllerOptions["transitionEnabled"];
@@ -42,7 +42,7 @@ export class PlaybackStartController {
 		this.stopPlayback = options.stopPlayback;
 		this.prepareTrack = options.prepareTrack;
 		this.adapters = options.adapters;
-		ensurePlaybackStartRpcBridge(this.bus.globalBus);
+		ensurePlaybackStartRpcBridge(this.bus);
 		playbackStartControllers.set(playerId, this);
 	}
 
@@ -54,38 +54,39 @@ export class PlaybackStartController {
 		if (parentContext.signal.aborted) return;
 		const hasPreload =
 			this.bus.hasRpc(CONTROLLER_RPC.preloadHas) ?
-				this.bus.requestRpcSync<{ track: Track }, boolean>(CONTROLLER_RPC.preloadHas, { track })
+				this.bus.requestRpcSync<{ track: Track }, boolean>(this.playerId, CONTROLLER_RPC.preloadHas, { track })
 			:	(this.adapters?.hasPreload?.(track) ?? false);
 		const transition = this.transitionEnabled();
 		if (!transition) this.stopPlayback(parentContext.signal, !hasPreload);
 
-		this.bus.requestRpcSync(CONTROLLER_RPC.trackResetRecovery, {});
+		this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.trackResetRecovery, {});
 
 		const session = this.sessionController.replace(this.playerId, track, { destroyPrevious: !transition });
 		const context = this.childContext(parentContext, session.sessionId, session.signal);
 		await this.setCurrentThroughBus(track, context);
-		this.bus.event({ type: "TRACK_LOADING", session: session.snapshot() });
-		this.bus.event({ type: "willPlay", track, upcomingTracks: this.queueSnapshot() });
+		this.bus.event(this.playerId, { type: "TRACK_LOADING", session: session.snapshot() });
+		this.bus.event(this.playerId, { type: "willPlay", track, upcomingTracks: this.queueSnapshot() });
 
 		try {
 			const loaded = await this.bus.requestRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
+				this.playerId,
 				CONTROLLER_RPC.trackLoadWithRecovery,
 				{ track, session },
 				{ signal: context.signal },
 			);
 			if (!loaded) throw new Error("Track loader is unavailable");
 			if (context.signal.aborted || !this.isCurrentSession(session, context)) return;
-			this.bus.event({ type: "TRACK_LOADED", session: session.snapshot() });
+			this.bus.event(this.playerId, { type: "TRACK_LOADED", session: session.snapshot() });
 			if (loaded.stream.remote && loaded.stream.handle?.play) {
 				session.setResource(null);
 				await loaded.stream.handle.play();
 				session.markPlaying(0);
-				this.bus.event({ type: "TRACK_STARTED", session: session.snapshot(), track });
+				this.bus.event(this.playerId, { type: "TRACK_STARTED", session: session.snapshot(), track });
 				await this.prepareTrack(session, context);
 				return;
 			}
 
-			const filterString = await this.bus.query("filterString");
+			const filterString = await this.bus.query(this.playerId, "filterString");
 			let activeStream = loaded.stream;
 			if (filterString) {
 				const filtered = await this.filterStreamThroughBus(loaded.stream, 0, context);
@@ -95,22 +96,26 @@ export class PlaybackStartController {
 			const active = await this.bus.requestRpc<
 				{ streamInfo: StreamInfo; session: PlaybackSession },
 				import("../types").ActiveStream
-			>(CONTROLLER_RPC.streamReplace, { streamInfo: activeStream, session });
+			>(this.playerId, CONTROLLER_RPC.streamReplace, { streamInfo: activeStream, session });
 			if (context.signal.aborted || !this.isCurrentSession(session, context)) return;
 			const resource = this.bus.requestRpcSync<
 				{ stream: import("stream").Readable; track: Track; inputType?: import("@discordjs/voice").StreamType },
 				AudioResource
-			>(CONTROLLER_RPC.resourceCreate, { stream: active.stream, track, inputType: active.inputType ?? activeStream.inputType });
+			>(this.playerId, CONTROLLER_RPC.resourceCreate, {
+				stream: active.stream,
+				track,
+				inputType: active.inputType ?? activeStream.inputType,
+			});
 			session.setResource(resource);
-			this.bus.requestRpcSync(CONTROLLER_RPC.playbackPlay, { resource, session, from, to: track });
+			this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackPlay, { resource, session, from, to: track });
 			session.markPlaying(0);
 			if (transition) this.sessionController.retirePendingPrevious(this.playerId);
-			this.bus.event({ type: "TRACK_STARTED", session: session.snapshot(), track });
+			this.bus.event(this.playerId, { type: "TRACK_STARTED", session: session.snapshot(), track });
 			await this.prepareTrack(session, context);
 		} catch (error) {
 			if (transition) this.sessionController.retirePendingPrevious(this.playerId);
 			if (!context.signal.aborted && this.isCurrentSession(session, context)) {
-				this.bus.event({
+				this.bus.event(this.playerId, {
 					type: "TRACK_ERROR",
 					session: session.snapshot(),
 					error: error instanceof Error ? error : new Error(String(error)),
@@ -124,7 +129,7 @@ export class PlaybackStartController {
 	}
 
 	private queueSnapshot(): Track[] {
-		return this.bus.querySync("queue") ?? [];
+		return this.bus.querySync(this.playerId, "queue") ?? [];
 	}
 
 	private childContext(context: PlayerMessageContext, sessionId: string, sessionSignal: AbortSignal): PlayerMessageContext {
@@ -141,7 +146,7 @@ export class PlaybackStartController {
 
 	private async setCurrentThroughBus(track: Track | null, context: PlayerMessageContext): Promise<void> {
 		if (!context.signal.aborted)
-			await this.bus.action({ type: "QUEUE_SET_CURRENT", track, requestId: context.requestId }, context);
+			await this.bus.action(this.playerId, { type: "QUEUE_SET_CURRENT", track, requestId: context.requestId }, context);
 	}
 
 	private async filterStreamThroughBus(
@@ -151,10 +156,15 @@ export class PlaybackStartController {
 	): Promise<StreamInfo | null> {
 		if (context.signal.aborted) return null;
 		await this.bus.action(
+			this.playerId,
 			{ type: "FILTER_SET_SOURCE_TYPE", streamType: streamInfo.type ?? "arbitrary", requestId: context.requestId },
 			context,
 		);
-		await this.bus.action({ type: "FILTER_APPLY_AND_SEEK", streamInfo, position, requestId: context.requestId }, context);
-		return this.bus.query("filteredStream");
+		await this.bus.action(
+			this.playerId,
+			{ type: "FILTER_APPLY_AND_SEEK", streamInfo, position, requestId: context.requestId },
+			context,
+		);
+		return this.bus.query(this.playerId, "filteredStream");
 	}
 }

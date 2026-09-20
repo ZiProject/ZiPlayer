@@ -2,14 +2,14 @@ import type { StreamInfo, Track, TrackResolveContext, TrackResolverOptions } fro
 import type { StreamManager } from "./StreamManager";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
-import type { GlobalPlayerBus } from "./PlayerBus";
+import type { Bus } from "./Bus";
 
-// "stream.resolve" must be registered exactly once on the shared GlobalPlayerBus;
+// "stream.resolve" must be registered exactly once on the shared Bus;
 // each per-player TrackResolver instance registers itself here so the shared handler
 // can route by playerId.
-const streamResolveRpcRegistered = new WeakSet<GlobalPlayerBus>();
+const streamResolveRpcRegistered = new WeakSet<Bus>();
 const trackResolvers = new Map<string, TrackResolver>();
-function ensureStreamResolveRpcBridge(bus: GlobalPlayerBus): void {
+function ensureStreamResolveRpcBridge(bus: Bus): void {
 	if (streamResolveRpcRegistered.has(bus)) return;
 	streamResolveRpcRegistered.add(bus);
 	bus.registerRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>("stream.resolve", ({ track, fresh }, ctx) => {
@@ -35,7 +35,7 @@ export class TrackResolver {
 		this.isDestroyed = options.isDestroyed ?? (() => false);
 		this.playerId = options.playerId;
 		if (options.bus && this.playerId) {
-			ensureStreamResolveRpcBridge(options.bus.globalBus);
+			ensureStreamResolveRpcBridge(options.bus);
 			trackResolvers.set(this.playerId, this);
 		}
 	}

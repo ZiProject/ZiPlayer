@@ -8,14 +8,14 @@ import {
 	type PlayerSubscription,
 } from "@discordjs/voice";
 import type { PlayerOptions, VoiceChannel, PlayerConnectionInput, ConnectionControllerOptions } from "../types";
-import { PlayerBus, createPlayerSessionId, type GlobalPlayerBus, type PlayerRequestId, type PlayerSessionId } from "../structures/PlayerBus";
+import { createPlayerSessionId, type Bus, type PlayerRequestId, type PlayerSessionId } from "../structures/Bus";
 
 // connection.setAudioPlayer / connection / connection.state must be registered exactly
-// once on the shared GlobalPlayerBus; each ConnectionController instance (one per
+// once on the shared Bus; each ConnectionController instance (one per
 // player) registers itself here so the shared handlers can route by playerId.
-const connectionRpcRegistered = new WeakSet<GlobalPlayerBus>();
+const connectionRpcRegistered = new WeakSet<Bus>();
 const connectionControllers = new Map<string, ConnectionController>();
-function ensureConnectionRpcBridge(bus: GlobalPlayerBus): void {
+function ensureConnectionRpcBridge(bus: Bus): void {
 	if (connectionRpcRegistered.has(bus)) return;
 	connectionRpcRegistered.add(bus);
 	bus.registerRpc<{ audioPlayer: AudioPlayer | null }, void>("connection.setAudioPlayer", ({ audioPlayer }, ctx) =>
@@ -25,11 +25,11 @@ function ensureConnectionRpcBridge(bus: GlobalPlayerBus): void {
 	bus.registerQuery("connection.state", (playerId) => connectionControllers.get(playerId)?.active?.state.status);
 }
 
-/** Owns Discord voice connection state and lifecycle behind PlayerBus. One instance
+/** Owns Discord voice connection state and lifecycle behind Bus. One instance
  *  per player (a Discord voice connection is inherently per-guild). */
 export class ConnectionController {
 	private readonly guildId: string;
-	private readonly bus: PlayerBus;
+	private readonly bus: Bus;
 	private readonly group?: string;
 	private readonly selfDeaf: boolean;
 	private readonly selfMute: boolean;
@@ -56,7 +56,7 @@ export class ConnectionController {
 		this.debug = options.debug;
 		this.readyTimeoutMs = options.readyTimeoutMs ?? 15_000;
 
-		ensureConnectionRpcBridge(this.bus.globalBus);
+		ensureConnectionRpcBridge(this.bus);
 		connectionControllers.set(this.guildId, this);
 		const unsubscribers = [
 			this.bus.onInput("[Player]->[Connection]:connect", (event) => this.enqueue(() => this.connect(event))),
@@ -160,6 +160,7 @@ export class ConnectionController {
 		this.bus.emitOutput({
 			type: "[Connection]->[Player]:connecting",
 			requestId: event.requestId,
+			playerId: this.guildId,
 			sessionId,
 			channel: event.channel,
 		});
@@ -214,6 +215,7 @@ export class ConnectionController {
 				this.bus.emitOutput({
 					type: "[Connection]->[Player]:disconnected",
 					requestId: this.requestId ?? undefined,
+					playerId: this.guildId,
 					sessionId: this.sessionId ?? sessionId,
 					reason: "destroyed",
 				});
@@ -235,6 +237,7 @@ export class ConnectionController {
 			this.bus.emitOutput({
 				type: "[Connection]->[Player]:error",
 				requestId: event.requestId,
+				playerId: this.guildId,
 				sessionId,
 				operation: "connect",
 				error: this.toError(error),
@@ -256,6 +259,7 @@ export class ConnectionController {
 			this.bus.emitOutput({
 				type: "[Connection]->[Player]:disconnected",
 				requestId: event.requestId,
+				playerId: this.guildId,
 				sessionId,
 				reason: event.reason,
 			});
@@ -263,6 +267,7 @@ export class ConnectionController {
 			this.bus.emitOutput({
 				type: "[Connection]->[Player]:error",
 				requestId: event.requestId,
+				playerId: this.guildId,
 				sessionId,
 				operation: "disconnect",
 				error: this.toError(error),
@@ -287,7 +292,14 @@ export class ConnectionController {
 		connection: VoiceConnection,
 	): void {
 		this.debug?.(`[ConnectionController] connected guild=${this.guildId} channel=${channel.id}`);
-		this.bus.emitOutput({ type: "[Connection]->[Player]:connected", requestId, sessionId, channel, connection });
+		this.bus.emitOutput({
+			type: "[Connection]->[Player]:connected",
+			requestId,
+			playerId: this.guildId,
+			sessionId,
+			channel,
+			connection,
+		});
 	}
 
 	private toError(error: unknown): Error {

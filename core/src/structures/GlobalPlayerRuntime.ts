@@ -3,7 +3,7 @@ import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
 import type { PlayerOptions, TrackMiddleware, PlayerRuntimeGraph } from "../types";
 import type { PlayerManager } from "./PlayerManager";
 import type { Player } from "./Player";
-import { GlobalPlayerBus, PlayerBus } from "./PlayerBus";
+import { Bus } from "./Bus";
 import { TrackLoader } from "./TrackLoader";
 import { TrackResolver } from "./TrackResolver";
 import { PlaybackController } from "../controller/PlaybackController";
@@ -37,7 +37,7 @@ import type { Track, PlayerDebugLevel } from "../types";
 
 export interface CreateControllerGraphParams {
 	playerId: string;
-	bus: PlayerBus;
+	bus: Bus;
 	manager?: PlayerManager;
 	options?: PlayerOptions;
 	debugSink?: (...args: any[]) => void;
@@ -51,7 +51,7 @@ export interface CreateControllerGraphParams {
  * up for a given player through its `attach(playerId, ...)` method.
  */
 export interface SharedControllerGraph {
-	readonly bus: GlobalPlayerBus;
+	readonly bus: Bus;
 	readonly extensionController: ExtensionController;
 	readonly pluginController: PluginController;
 	readonly queueController: QueueController;
@@ -77,7 +77,7 @@ const runtimeInstances = new Map<string, GlobalPlayerRuntime>();
  * as the manager does, before any player is created. */
 export function ensureSharedControllers(): SharedControllerGraph {
 	if (sharedControllerGraph) return sharedControllerGraph;
-	const bus = new GlobalPlayerBus();
+	const bus = new Bus();
 	sharedControllerGraph = {
 		bus,
 		extensionController: new ExtensionController(bus),
@@ -112,9 +112,9 @@ export function ensureSharedControllers(): SharedControllerGraph {
 
 /** Owner of one guild/player's per-player resources (voice connection, audio player,
  * queue/playback state slice, etc.) against the shared, process-wide controller graph
- * and PlayerBus. */
+ * and Bus. */
 export class GlobalPlayerRuntime {
-	readonly bus: PlayerBus;
+	readonly bus: Bus;
 	controllers!: PlayerRuntimeGraph;
 	readonly playerId: string;
 	private disposed = false;
@@ -129,7 +129,7 @@ export class GlobalPlayerRuntime {
 		debugSink?: (...args: any[]) => void,
 	) {
 		this.playerId = playerId;
-		this.bus = new PlayerBus(ensureSharedControllers().bus, playerId);
+		this.bus = ensureSharedControllers().bus;
 		this.controllers = this.createControllerGraph({
 			playerId: this.playerId,
 			bus: this.bus,
@@ -183,7 +183,7 @@ export class GlobalPlayerRuntime {
 		if (this.disposed) throw new Error("GlobalPlayerRuntime is disposed");
 		const { playerId, bus, manager, options = {}, debugSink } = params;
 		const shared = ensureSharedControllers();
-		const debugTracer = new PlayerEventDebug(bus.globalBus, playerId, debugSink ?? (() => undefined), manager?.debugLevel ?? "info");
+		const debugTracer = new PlayerEventDebug(bus, playerId, debugSink ?? (() => undefined), manager?.debugLevel ?? "info");
 		const channel = (tag: string, level: PlayerDebugLevel = "debug") => debugTracer.channel(tag, level);
 		const middleware: TrackMiddleware[] = [
 			...(manager?.getTrackMiddlewareChain() ?? []),
@@ -299,15 +299,15 @@ export class GlobalPlayerRuntime {
 		});
 		shared.filterController.attach(playerId, undefined, channel("FilterController"), {
 			initialFilters: Array.isArray(options.filters) ? options.filters : [],
-			onFilterApplied: (filter) => bus.event({ type: "filterApplied", filter }),
-			onFilterRemoved: (filter) => bus.event({ type: "filterRemoved", filter }),
-			onFiltersCleared: () => bus.event({ type: "filtersCleared" }),
+			onFilterApplied: (filter) => bus.event(playerId, { type: "filterApplied", filter }),
+			onFilterRemoved: (filter) => bus.event(playerId, { type: "filterRemoved", filter }),
+			onFiltersCleared: () => bus.event(playerId, { type: "filtersCleared" }),
 			onProcessingError: (error) => {
-				void bus.requestRpc("playback.reportFilterError", { error }).catch(() => undefined);
+				void bus.requestRpc(playerId, "playback.reportFilterError", { error }).catch(() => undefined);
 			},
 		});
 		const playerConnectionBridge = new PlayerConnectionBridge({
-			bus: bus.globalBus,
+			bus,
 			debug: channel("PlayerConnectionBridge"),
 			guildId: playerId,
 		});
@@ -322,7 +322,7 @@ export class GlobalPlayerRuntime {
 			pluginManager,
 			debug: channel("SearchController"),
 		});
-		const eventBridge = new PlayerEventBridge(null, manager, bus.globalBus, debugTracer, playerId);
+		const eventBridge = new PlayerEventBridge(null, manager, bus, debugTracer, playerId);
 		const graph: PlayerRuntimeGraph = {
 			connectionController,
 			lifecycleController: shared.lifecycleController,
@@ -403,25 +403,25 @@ export class GlobalPlayerRuntime {
 	}
 
 	public hasTTSPlayer(): boolean {
-		return this.bus.querySync("tts.hasPlayer") ?? false;
+		return this.bus.querySync(this.playerId, "tts.hasPlayer") ?? false;
 	}
 	public getAudioPlayer(): AudioPlayer | null {
-		return this.bus.querySync("audioPlayer") ?? null;
+		return this.bus.querySync(this.playerId, "audioPlayer") ?? null;
 	}
 	public setCurrentTrack(track: Track | null): void {
-		this.bus.requestRpcSync("queue.setCurrent", { track });
+		this.bus.requestRpcSync(this.playerId, "queue.setCurrent", { track });
 	}
 	public getQueueSnapshot(): Track[] {
-		return this.bus.querySync("queue") ?? [];
+		return this.bus.querySync(this.playerId, "queue") ?? [];
 	}
 	public serializeQueue(): object | undefined {
-		return this.bus.requestRpcSync("queue.serialize", undefined);
+		return this.bus.requestRpcSync(this.playerId, "queue.serialize", undefined);
 	}
 	public restoreQueue(state: object): void {
-		this.bus.requestRpcSync("queue.restore", { state });
+		this.bus.requestRpcSync(this.playerId, "queue.restore", { state });
 	}
 	public getStreamManagerStats(): ReturnType<StreamManager["getStats"]> | undefined {
-		return this.bus.querySync("stream.stats") ?? undefined;
+		return this.bus.querySync(this.playerId, "stream.stats") ?? undefined;
 	}
 	public monitor(name: string, controller: unknown): void {
 		if (this.disposed) throw new Error(`GlobalPlayerRuntime is disposed; cannot register ${name}`);
@@ -449,7 +449,7 @@ export class GlobalPlayerRuntime {
 			}
 		}
 		this.disposables.clear();
-		this.bus.dispose();
+		this.bus.disposePlayer(this.playerId);
 	}
 	private resolveDispose(controller: unknown): (() => void | Promise<void>) | null {
 		if (!controller || typeof controller !== "object") return null;

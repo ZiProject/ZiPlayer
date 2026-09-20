@@ -1,4 +1,4 @@
-import type { PlayerBus, PlayerAction } from "./PlayerBus";
+import type { Bus, PlayerAction } from "./Bus";
 import { PlaybackSession } from "./PlaybackSession";
 import { PlaybackSessionController } from "../controller/PlaybackSessionController";
 import type { PlayerMessageContext, Track, PlaybackOrchestratorOptions } from "../types";
@@ -30,7 +30,7 @@ export class PlaybackOrchestrator {
 
 	constructor(
 		private readonly playerId: string,
-		private readonly bus: PlayerBus,
+		private readonly bus: Bus,
 		options: PlaybackOrchestratorOptions & { sessionController: PlaybackSessionController },
 	) {
 		this.debug = options.debug ?? (() => undefined);
@@ -50,7 +50,7 @@ export class PlaybackOrchestrator {
 			prepareTrack: (session, context) => this.preparationController.prepareTrack(session, context),
 			adapters: this.adapters,
 		});
-		this.seekController = new PlaybackSeekController(bus.globalBus, this.sessionController);
+		this.seekController = new PlaybackSeekController(bus, this.sessionController);
 		this.trackEndController = new PlaybackTrackEndController(playerId, {
 			bus,
 			nextThroughBus: (ignoreLoop, context) => this.nextThroughBus(ignoreLoop, context),
@@ -61,6 +61,7 @@ export class PlaybackOrchestrator {
 		});
 		this.skipController = new PlaybackSkipController({
 			bus,
+			playerId,
 			nextThroughBus: (ignoreLoop, context) => this.nextThroughBus(ignoreLoop, context),
 			stopPlayback: (signal) => this.stopPlayback(signal),
 			publishState: () => this.publishState(),
@@ -73,20 +74,20 @@ export class PlaybackOrchestrator {
 			lifecycleSignal: this.lifecycleAbort.signal,
 			adapters: this.adapters,
 		});
-		this.detachAction = bus.globalBus.onAction((a, c) => {
+		this.detachAction = bus.onAction((a, c) => {
 			if (c.playerId === this.playerId) return this.handleAction(a, c);
 		});
-		this.detachTrackEnd = bus.subscribe("TRACK_END", (event) => {
+		this.detachTrackEnd = bus.subscribe(playerId, "TRACK_END", (event) => {
 			const session = event.session;
 			if (!session || session.status === "ended" || session.status === "stopped") return;
 			const current = this.sessionController.current(this.playerId);
 			if (!current || current.id !== session.id) return;
 			void this.trackEndController.onTrackEnd(session);
 		});
-		this.detachQueueEnd = bus.subscribe("queueEnd", () => {
+		this.detachQueueEnd = bus.subscribe(playerId, "queueEnd", () => {
 			this.trackEndController.onQueueEnd();
 		});
-		this.detachQueueChanged = bus.subscribe("queueChanged", () => {
+		this.detachQueueChanged = bus.subscribe(playerId, "queueChanged", () => {
 			this.trackEndController.onQueueChanged();
 		});
 		this.detachRpcs.push();
@@ -97,11 +98,11 @@ export class PlaybackOrchestrator {
 	}
 
 	get transitionPolicy() {
-		return this.bus.querySync("transitionSettings");
+		return this.bus.querySync(this.playerId, "transitionSettings");
 	}
 
 	private transitionEnabled(): boolean {
-		const settings = this.bus.querySync("transitionSettings");
+		const settings = this.bus.querySync(this.playerId, "transitionSettings");
 		return !!settings && settings.enabled !== false;
 	}
 
@@ -111,18 +112,18 @@ export class PlaybackOrchestrator {
 	}
 
 	private queueSnapshot(): Track[] {
-		return this.bus.querySync("queue") ?? [];
+		return this.bus.querySync(this.playerId, "queue") ?? [];
 	}
 
 	private queueState(): any {
-		return this.bus.querySync("queueSerialized");
+		return this.bus.querySync(this.playerId, "queueSerialized");
 	}
 
 	private setQueueRelated(tracks: Track[]): void {
 		const state = this.queueState();
 		if (!state || typeof state !== "object") return;
 		state.relatedTracks = tracks;
-		this.bus.requestRpcSync("queue.restore", { state });
+		this.bus.requestRpcSync(this.playerId, "queue.restore", { state });
 	}
 
 	dispose(): void {
@@ -158,11 +159,11 @@ export class PlaybackOrchestrator {
 				if (
 					session?.isActive() &&
 					this.matchesContext(session, context) &&
-					this.bus.requestRpcSync(CONTROLLER_RPC.playbackPause, {})
+					this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackPause, {})
 				) {
 					session.markPaused();
 					this.publishState();
-					this.bus.event({ type: "playerPause", track: session.track });
+					this.bus.event(this.playerId, { type: "playerPause", track: session.track });
 				}
 				break;
 			}
@@ -171,11 +172,11 @@ export class PlaybackOrchestrator {
 				if (
 					session?.isActive() &&
 					this.matchesContext(session, context) &&
-					this.bus.requestRpcSync(CONTROLLER_RPC.playbackResume, {})
+					this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackResume, {})
 				) {
 					session.markPlaying();
 					this.publishState();
-					this.bus.event({ type: "playerResume", track: session.track });
+					this.bus.event(this.playerId, { type: "playerResume", track: session.track });
 				}
 				break;
 			}
@@ -185,7 +186,7 @@ export class PlaybackOrchestrator {
 				this.stopPlayback(context.signal);
 				if (session?.isActive()) session.markStopped();
 				this.publishState();
-				this.bus.event({ type: "playerStop" });
+				this.bus.event(this.playerId, { type: "playerStop" });
 				break;
 			}
 		}
@@ -196,10 +197,10 @@ export class PlaybackOrchestrator {
 	}
 
 	private stopPlayback(_s: AbortSignal, cancelPreload = true): void {
-		this.bus.requestRpcSync(CONTROLLER_RPC.playbackStop, {});
+		this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackStop, {});
 		if (!cancelPreload) return;
 		if (this.bus.hasRpc("preload.cancel")) {
-			this.bus.requestRpcSync("preload.cancel", {});
+			this.bus.requestRpcSync(this.playerId, "preload.cancel", {});
 		} else {
 			this.adapters?.cancelPreload?.();
 		}
@@ -207,17 +208,20 @@ export class PlaybackOrchestrator {
 
 	private async nextThroughBus(ignoreLoop: boolean, context: PlayerMessageContext): Promise<Track | null> {
 		if (context.signal.aborted) return null;
-		const previousCurrent = this.bus.querySync("queueCurrent") ?? null;
-		await this.bus.action({ type: "QUEUE_NEXT", ignoreLoop, requestId: context.requestId }, context);
-		const next = await this.bus.query("queueCurrent");
+		const previousCurrent = this.bus.querySync(this.playerId, "queueCurrent") ?? null;
+		await this.bus.action(this.playerId, { type: "QUEUE_NEXT", ignoreLoop, requestId: context.requestId }, context);
+		const next = await this.bus.query(this.playerId, "queueCurrent");
 		if (context.signal.aborted) {
-			await this.bus.requestRpc("queue.restoreNext", { previousCurrent, nextTrack: next });
+			await this.bus.requestRpc(this.playerId, "queue.restoreNext", { previousCurrent, nextTrack: next });
 			return null;
 		}
 		return next;
 	}
 
 	private publishState(): void {
-		this.bus.event({ type: "playbackStateChanged", session: this.sessionController.current(this.playerId)?.snapshot() ?? null });
+		this.bus.event(this.playerId, {
+			type: "playbackStateChanged",
+			session: this.sessionController.current(this.playerId)?.snapshot() ?? null,
+		});
 	}
 }

@@ -3,7 +3,7 @@ import { PREDEFINED_FILTERS } from "../types";
 import type { Readable } from "stream";
 import { spawn, type ChildProcess } from "child_process";
 import ffmpegStaticPath from "ffmpeg-static";
-import { PlayerBus, type GlobalPlayerBus, type PlayerAction } from "../structures/PlayerBus";
+import type { Bus, PlayerAction } from "../structures/Bus";
 import { StreamType } from "@discordjs/voice";
 import fs from "node:fs";
 
@@ -29,8 +29,9 @@ export class FilterEngine {
 	constructor(
 		private readonly resourcePort: FilterControllerResourcePort | undefined,
 		private readonly debug: DebugFn = () => {},
-		private readonly bus?: PlayerBus,
+		private readonly bus?: Bus,
 		private readonly options: FilterControllerOptions = {},
+		private readonly playerId?: string,
 	) {
 		if (options.initialFilters?.length) {
 			void this.applyFilters(options.initialFilters).catch((error) =>
@@ -155,9 +156,9 @@ export class FilterEngine {
 	}
 
 	private refreshPlayerResource(): Promise<boolean> {
-		if (this.bus)
+		if (this.bus && this.playerId)
 			return this.bus
-				.requestRpc("playback.refreshResource", { position: 0 })
+				.requestRpc(this.playerId, "playback.refreshResource", { position: 0 })
 				.then(() => true)
 				.catch(() => false);
 		return this.resourcePort?.refreshPlayerResource() ?? Promise.resolve(false);
@@ -313,15 +314,29 @@ export class FilterEngine {
 export class FilterController {
 	private readonly engines = new Map<string, FilterEngine>();
 
-	constructor(private readonly bus: GlobalPlayerBus) {
+	constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => {
 			void this.engines.get(context.playerId)?.handleAction(action, context.signal);
 		});
 		bus.registerQuery("filterString", (playerId) => this.engines.get(playerId)?.getFilterString() ?? "");
 		bus.registerQuery("filteredStream", (playerId) => this.engines.get(playerId)?.lastFilteredStreamValue ?? null);
-		bus.registerQuery("filter.list", (playerId) => this.engines.get(playerId)?.getActiveFilters().map((f) => f.name) ?? []);
+		bus.registerQuery(
+			"filter.list",
+			(playerId) =>
+				this.engines
+					.get(playerId)
+					?.getActiveFilters()
+					.map((f) => f.name) ?? [],
+		);
 		bus.registerQuery("filters", (playerId) => this.engines.get(playerId)?.getActiveFilters() ?? []);
-		bus.registerRpc("filter.list", (_req, ctx) => this.engines.get(ctx.playerId)?.getActiveFilters().map((f) => f.name) ?? []);
+		bus.registerRpc(
+			"filter.list",
+			(_req, ctx) =>
+				this.engines
+					.get(ctx.playerId)
+					?.getActiveFilters()
+					.map((f) => f.name) ?? [],
+		);
 		bus.registerRpc<{ filter: string; value: unknown }, any>("filter.set", async ({ filter, value }, ctx) => {
 			const engine = this.engines.get(ctx.playerId);
 			if (!engine) return false;
@@ -335,7 +350,7 @@ export class FilterController {
 		debug: DebugFn = () => {},
 		options: FilterControllerOptions = {},
 	): void {
-		this.engines.set(playerId, new FilterEngine(resourcePort, debug, new PlayerBus(this.bus, playerId), options));
+		this.engines.set(playerId, new FilterEngine(resourcePort, debug, this.bus, options, playerId));
 	}
 	detach(playerId: string): void {
 		this.engines.get(playerId)?.destroy();

@@ -1,19 +1,20 @@
-import type { GlobalPlayerBus, PlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, Track } from "../types";
 import type { PlaybackPreparationControllerOptions } from "../types";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 
 // playback.prepareAutoplay / playback.createRelatedTracks must be registered exactly
-// once on the shared GlobalPlayerBus; each per-player instance registers itself here.
+// once on the shared Bus; each per-player instance registers itself here.
 const preparationControllers = new Map<string, PlaybackPreparationController>();
-const preparationRpcRegistered = new WeakSet<GlobalPlayerBus>();
-function ensurePreparationRpcBridge(bus: GlobalPlayerBus): void {
+const preparationRpcRegistered = new WeakSet<Bus>();
+function ensurePreparationRpcBridge(bus: Bus): void {
 	if (preparationRpcRegistered.has(bus)) return;
 	preparationRpcRegistered.add(bus);
 	bus.registerRpc<{ session: PlaybackSession; context: PlayerMessageContext }, Promise<Track | null>>(
 		CONTROLLER_RPC.playbackPrepareAutoplay,
-		({ session, context }, ctx) => preparationControllers.get(ctx.playerId)?.prepareAutoplay(session, context) ?? Promise.resolve(null),
+		({ session, context }, ctx) =>
+			preparationControllers.get(ctx.playerId)?.prepareAutoplay(session, context) ?? Promise.resolve(null),
 	);
 	bus.registerRpc<{ track?: Track | null }, Promise<Track[]>>(
 		CONTROLLER_RPC.playbackCreateRelatedTracks,
@@ -25,7 +26,7 @@ function ensurePreparationRpcBridge(bus: GlobalPlayerBus): void {
  *  player. */
 export class PlaybackPreparationController {
 	private readonly playerId: string;
-	private readonly bus: PlayerBus;
+	private readonly bus: Bus;
 	private readonly isCurrentSession: PlaybackPreparationControllerOptions["isCurrentSession"];
 	private readonly queueSnapshot: PlaybackPreparationControllerOptions["queueSnapshot"];
 	private readonly setQueueRelated: PlaybackPreparationControllerOptions["setQueueRelated"];
@@ -36,7 +37,7 @@ export class PlaybackPreparationController {
 		this.isCurrentSession = options.isCurrentSession;
 		this.queueSnapshot = options.queueSnapshot;
 		this.setQueueRelated = options.setQueueRelated;
-		ensurePreparationRpcBridge(this.bus.globalBus);
+		ensurePreparationRpcBridge(this.bus);
 		preparationControllers.set(playerId, this);
 	}
 
@@ -46,20 +47,20 @@ export class PlaybackPreparationController {
 
 	public async prepareTrack(session: PlaybackSession, context: PlayerMessageContext): Promise<void> {
 		await this.prepareRelated(session, context);
-		if (this.bus.querySync("queueAutoPlay")) await this.prepareAutoplay(session, context);
+		if (this.bus.querySync(this.playerId, "queueAutoPlay")) await this.prepareAutoplay(session, context);
 	}
 
 	/** Regenerates related tracks for the supplied track or the current track. */
 	public async createRelatedTracks(track?: Track | null): Promise<Track[]> {
-		const source = track ?? this.bus.querySync("currentTrack");
+		const source = track ?? this.bus.querySync(this.playerId, "currentTrack");
 		if (!source) {
 			this.setQueueRelated([]);
 			return [];
 		}
 
-		let related = await this.bus.requestRpc<{ track: Track; history?: Track[] }, Track[]>("plugin.relatedTracks", {
+		let related = await this.bus.requestRpc<{ track: Track; history?: Track[] }, Track[]>(this.playerId, "plugin.relatedTracks", {
 			track: source,
-			history: this.bus.querySync("previousTracks"),
+			history: this.bus.querySync(this.playerId, "previousTracks"),
 		});
 		related = related ?? [];
 		const upcoming = new Set(this.queueSnapshot().map((item) => item.id ?? item.url));
@@ -69,19 +70,21 @@ export class PlaybackPreparationController {
 	}
 
 	public async prepareAutoplay(session: PlaybackSession, context: PlayerMessageContext): Promise<Track | null> {
-		if (!this.bus.querySync("queueAutoPlay") || context.signal.aborted || !this.isCurrentSession(session, context)) return null;
-		if (this.bus.querySync("queueLoop") === "track") {
-			this.bus.requestRpcSync("queue.willNext", { track: null });
+		if (!this.bus.querySync(this.playerId, "queueAutoPlay") || context.signal.aborted || !this.isCurrentSession(session, context))
+			return null;
+		if (this.bus.querySync(this.playerId, "queueLoop") === "track") {
+			this.bus.requestRpcSync(this.playerId, "queue.willNext", { track: null });
 			return null;
 		}
-		const related = (this.bus.querySync("relatedTracks") as Track[] | null) ?? [];
+		const related = (this.bus.querySync(this.playerId, "relatedTracks") as Track[] | null) ?? [];
 		if (!related.length) return null;
 		const pool = related.slice(0, Math.min(5, related.length));
-		const next = (this.bus.querySync("queueNextTrack") as Track | null) ?? pool[Math.floor(Math.random() * pool.length)];
+		const next =
+			(this.bus.querySync(this.playerId, "queueNextTrack") as Track | null) ?? pool[Math.floor(Math.random() * pool.length)];
 		if (!next || !this.isCurrentSession(session, context)) return null;
 		await this.requestPreload(next, context);
 		if (context.signal.aborted || !this.isCurrentSession(session, context)) return null;
-		this.bus.requestRpcSync("queue.willNext", { track: next });
+		this.bus.requestRpcSync(this.playerId, "queue.willNext", { track: next });
 		return next;
 	}
 
@@ -90,8 +93,9 @@ export class PlaybackPreparationController {
 		if (!source || context.signal.aborted || !this.isCurrentSession(session, context)) return;
 		try {
 			let related = await this.bus.requestRpc<{ track: Track; history?: Track[] }, Track[]>(
+				this.playerId,
 				"plugin.relatedTracks",
-				{ track: source, history: this.bus.querySync("previousTracks") },
+				{ track: source, history: this.bus.querySync(this.playerId, "previousTracks") },
 				{ signal: context.signal },
 			);
 			related = related ?? [];
@@ -101,7 +105,7 @@ export class PlaybackPreparationController {
 			this.setQueueRelated(related);
 		} catch (error) {
 			if (!context.signal.aborted && this.isCurrentSession(session, context)) {
-				this.bus.event({
+				this.bus.event(this.playerId, {
 					type: "TRACK_ERROR",
 					session: session.snapshot(),
 					error: error instanceof Error ? error : new Error(String(error)),
@@ -114,6 +118,7 @@ export class PlaybackPreparationController {
 		if (context.signal.aborted) return;
 		try {
 			await this.bus.request(
+				this.playerId,
 				{ type: "[Player]->[Preload]:request", requestId: context.requestId, track },
 				{ signal: context.signal, timeoutMs: 30000 },
 			);

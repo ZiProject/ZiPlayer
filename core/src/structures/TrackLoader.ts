@@ -11,7 +11,7 @@ import type {
 } from "../types";
 import type { PlaybackSession } from "./PlaybackSession";
 import type { PreloadManager } from "./PreloadManager";
-import { PlayerBus, type GlobalPlayerBus } from "./PlayerBus";
+import type { Bus } from "./Bus";
 import { CONTROLLER_RPC } from "../controller/ControllerBusContract";
 
 const TRACK_LOADER_RPC = {
@@ -23,11 +23,11 @@ const TRACK_LOADER_RPC = {
 
 // TrackLoader is owned per-player (it's injected directly into that player's
 // PreloadController worker), but the RPC endpoints below must be registered exactly
-// once on the shared GlobalPlayerBus. Register once, guarded by bus identity, and
+// once on the shared Bus. Register once, guarded by bus identity, and
 // dispatch to whichever TrackLoader is currently registered for that playerId.
-const trackLoaderRpcRegistered = new WeakSet<GlobalPlayerBus>();
+const trackLoaderRpcRegistered = new WeakSet<Bus>();
 const trackLoaders = new Map<string, TrackLoader>();
-function ensureTrackLoaderRpcBridge(bus: GlobalPlayerBus): void {
+function ensureTrackLoaderRpcBridge(bus: Bus): void {
 	if (trackLoaderRpcRegistered.has(bus)) return;
 	trackLoaderRpcRegistered.add(bus);
 	const forward = <TReq, TRes>(handler: (loader: TrackLoader, request: TReq, playerId: string) => TRes) => {
@@ -71,7 +71,10 @@ function ensureTrackLoaderRpcBridge(bus: GlobalPlayerBus): void {
 		TRACK_LOADER_RPC.getRecoveryCount,
 		forward((loader, { track }) => loader.getRecoveryCount(track)),
 	);
-	bus.registerRpc<{ track: Track }, Track>("track.middleware", forward((loader, { track }) => loader.applyMiddleware(track)));
+	bus.registerRpc<{ track: Track }, Track>(
+		"track.middleware",
+		forward((loader, { track }) => loader.applyMiddleware(track)),
+	);
 }
 
 export class TrackLoader {
@@ -83,7 +86,7 @@ export class TrackLoader {
 	private readonly recovery: Required<TrackRecoveryPolicy>;
 	private readonly qualityController?: TrackAttemptQualityController;
 	private readonly debugLog: (message?: any, ...optionalParams: any[]) => void;
-	private readonly bus?: PlayerBus;
+	private readonly bus?: Bus;
 	private readonly detachRpcs: Array<() => void> = [];
 	private readonly failures = new Map<string, number>();
 	private readonly playerId?: string;
@@ -105,7 +108,7 @@ export class TrackLoader {
 		this.bus = options.bus;
 		this.playerId = options.playerId;
 		if (this.bus && this.playerId) {
-			ensureTrackLoaderRpcBridge(this.bus.globalBus);
+			ensureTrackLoaderRpcBridge(this.bus);
 			trackLoaders.set(this.playerId, this);
 		}
 	}

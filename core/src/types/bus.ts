@@ -15,7 +15,7 @@ import type {
 	SaveVideoOptions,
 } from ".";
 
-export type { PlayerBus } from "../structures/PlayerBus";
+export type { Bus } from "../structures/Bus";
 import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
@@ -111,7 +111,7 @@ export type PlayerResourceOutput =
 export type PlayerOutput = (PlayerConnectionOutput | PlayerPreloadOutput | PlayerRecoveryOutput | PlayerResourceOutput) & {
 	readonly playerId: string;
 };
-export type PlayerBusEvents = PlayerInput | PlayerOutput;
+export type BusEvents = PlayerInput | PlayerOutput;
 
 export type PlayerLifecycleEvents = { type: "initialized" } | { type: "ready" } | { type: "destroyed" };
 export type PlayerPlaybackEvents =
@@ -168,16 +168,15 @@ export type PlayerEventArgsMap = {
 	) ?
 		[]
 	: K extends (
-
-			| "TRACK_LOADING"
-			| "TRACK_LOADED"
-			| "TRACK_STARTED"
-			| "TRACK_END"
-			| "STREAM_ABORTED"
-			| "playbackStateChanged"
-			| "playbackSessionCreated"
-			| "RECOVERY_STARTED"
-			| "RECOVERY_FAILED"
+		| "TRACK_LOADING"
+		| "TRACK_LOADED"
+		| "TRACK_STARTED"
+		| "TRACK_END"
+		| "STREAM_ABORTED"
+		| "playbackStateChanged"
+		| "playbackSessionCreated"
+		| "RECOVERY_STARTED"
+		| "RECOVERY_FAILED"
 	) ?
 		[PlaybackSessionSnapshot]
 	: K extends "TRACK_ERROR" ? [PlaybackSessionSnapshot, Error]
@@ -229,7 +228,7 @@ export interface PlayerRequestOptions<K extends PlayerRequestInputType = PlayerR
 	signal?: AbortSignal;
 	onProgress?: (event: PlayerRequestProgress<K>) => void;
 }
-export type PlayerBusRequestErrorReason = "timeout" | "aborted" | "disposed" | "unhandled";
+export type BusRequestErrorReason = "timeout" | "aborted" | "disposed" | "unhandled";
 
 export interface PlayerRpcOptions {
 	timeoutMs?: number;
@@ -237,13 +236,13 @@ export interface PlayerRpcOptions {
 	source?: string;
 	priority?: PlayerActionPriority;
 }
-export interface PlayerBusRpcContext {
+export interface BusRpcContext {
 	readonly playerId: string;
 	readonly requestId: PlayerRequestId;
 	readonly signal: AbortSignal;
 	readonly timestamp: number;
 }
-export interface PlayerBusRpcOptions {
+export interface BusRpcOptions {
 	timeoutMs?: number;
 	signal?: AbortSignal;
 }
@@ -387,9 +386,7 @@ export interface PlayerQueryMap {
 	forwardFollowers: ReadonlySet<Player> | ReadonlySet<string>;
 }
 export type PlayerQuery = keyof PlayerQueryMap;
-export type PlayerQueryHandler<K extends PlayerQuery> = (
-	playerId: string,
-) => PlayerQueryMap[K] | Promise<PlayerQueryMap[K]>;
+export type PlayerQueryHandler<K extends PlayerQuery> = (playerId: string) => PlayerQueryMap[K] | Promise<PlayerQueryMap[K]>;
 
 export const SEARCH_RPC_TYPES = {
 	search: "search",

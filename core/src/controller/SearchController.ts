@@ -2,7 +2,7 @@ import { LRUCache } from "lru-cache";
 import type { SearchResult, SearchRequest, SearchDebugResult } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
-import type { GlobalPlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 
 interface SearchWorkerOptions {
 	pluginManager: PluginManager;
@@ -113,14 +113,15 @@ class SearchWorker {
 export class SearchController {
 	private readonly workers = new Map<string, SearchWorker>();
 
-	public constructor(bus: GlobalPlayerBus) {
+	public constructor(bus: Bus) {
 		bus.registerRpc<SearchRequest, SearchResult>("search", (request, context) => {
 			const worker = this.workers.get(context.playerId);
 			if (!worker) throw new Error("SearchController is disposed");
 			return worker.search(request.query, request.requestedBy, context.signal);
 		});
-		bus.registerRpc<{ query: string }, SearchResult | null>("search.cache.get", ({ query }, ctx) =>
-			this.workers.get(ctx.playerId)?.getCached(query) ?? null,
+		bus.registerRpc<{ query: string }, SearchResult | null>(
+			"search.cache.get",
+			({ query }, ctx) => this.workers.get(ctx.playerId)?.getCached(query) ?? null,
 		);
 		bus.registerRpc<{ query: string; result: SearchResult }, void>("search.cache.set", ({ query, result }, ctx) =>
 			this.workers.get(ctx.playerId)?.cacheResult(query, result),
@@ -129,7 +130,13 @@ export class SearchController {
 		bus.registerRpc<void, void>("search.cache.purge", (_req, ctx) => this.workers.get(ctx.playerId)?.purgeStale());
 		bus.registerRpc<{ query: string }, SearchDebugResult>(
 			"search.debug",
-			({ query }, ctx) => this.workers.get(ctx.playerId)?.debug(query) ?? { isCached: false, cacheAge: undefined, pluginCount: 0, ttsFiltered: false },
+			({ query }, ctx) =>
+				this.workers.get(ctx.playerId)?.debug(query) ?? {
+					isCached: false,
+					cacheAge: undefined,
+					pluginCount: 0,
+					ttsFiltered: false,
+				},
 		);
 	}
 

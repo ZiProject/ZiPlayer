@@ -1,5 +1,5 @@
 import type { LoopMode, SearchResult, Track } from "../types";
-import { PlayerBus, type GlobalPlayerBus, type PlayerAction, type PlayerActionExecutionContext } from "../structures/PlayerBus";
+import type { Bus, PlayerAction, PlayerActionExecutionContext } from "../structures/Bus";
 import type { QueueControllerOptions } from "../types";
 
 type QueueInsertRequest = { query: string | Track | Track[]; index?: number; requestedBy?: string };
@@ -9,7 +9,8 @@ type QueueInsertRequest = { query: string | Track | Track[]; index?: number; req
  *  its own registered RPCs (setCurrent/serialize/restore) for API symmetry with the
  *  bus-less constructor used in a few standalone tests. */
 export class QueueState {
-	private readonly bus?: PlayerBus;
+	private readonly bus?: Bus;
+	private readonly playerId?: string;
 	private readonly MAX_HISTORY_SIZE = 200;
 	private readonly MAX_QUEUE_SIZE = 1000;
 
@@ -21,8 +22,9 @@ export class QueueState {
 	public loopMode: LoopMode = "off";
 	private autoPlayEnabled = false;
 
-	public constructor(bus?: PlayerBus) {
+	public constructor(bus?: Bus, playerId?: string) {
 		this.bus = bus;
+		this.playerId = playerId;
 	}
 
 	public get nextTrack(): Track | null {
@@ -254,7 +256,7 @@ export class QueueState {
 	}
 	public setCurrent(track: Track | null): void {
 		if (this.bus) {
-			this.bus.requestRpcSync("queue.setCurrent", { track });
+			this.bus.requestRpcSync(this.playerId!, "queue.setCurrent", { track });
 			return;
 		}
 		this.setCurrentInternal(track);
@@ -286,11 +288,11 @@ export class QueueState {
 		return this.relatedTracks;
 	}
 	public toJSON(): object {
-		return this.bus ? this.bus.requestRpcSync("queue.serialize", undefined) : this.serializeInternal();
+		return this.bus ? this.bus.requestRpcSync(this.playerId!, "queue.serialize", undefined) : this.serializeInternal();
 	}
 	public fromJSON(state: any): void {
 		if (this.bus) {
-			this.bus.requestRpcSync("queue.restore", { state });
+			this.bus.requestRpcSync(this.playerId!, "queue.restore", { state });
 			return;
 		}
 		this.restoreInternal(state);
@@ -346,7 +348,7 @@ export class QueueState {
 			const tracks =
 				typeof request.query === "string" ?
 					(
-						await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>("search", {
+						await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>(this.playerId!, "search", {
 							query: request.query,
 							requestedBy: request.requestedBy || "Unknown",
 						})
@@ -372,7 +374,7 @@ export class QueueState {
 		}
 	}
 	private publishChanged(): void {
-		this.bus?.publish("queueChanged", this.snapshot());
+		if (this.bus && this.playerId) this.bus.publish(this.playerId, "queueChanged", this.snapshot());
 	}
 	public dispose(): void {
 		this.reset();
@@ -383,7 +385,7 @@ export class QueueState {
 export class QueueController {
 	private readonly states = new Map<string, QueueState>();
 
-	public constructor(private readonly bus: GlobalPlayerBus) {
+	public constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => {
 			void this.states.get(context.playerId)?.handleAction(action, context);
 		});
@@ -408,14 +410,24 @@ export class QueueController {
 		bus.registerRpc<void, Track | null>("queue.previous", (_req, ctx) => state(ctx.playerId).previous());
 		bus.registerRpc<void, void>("queue.shuffle", (_req, ctx) => state(ctx.playerId).shuffle());
 		bus.registerRpc<void, void>("queue.clear", (_req, ctx) => state(ctx.playerId).clear());
-		bus.registerRpc<{ tracks: Track[] }, number>("queue.addMultiple", ({ tracks }, ctx) => state(ctx.playerId).addMultiple(tracks));
-		bus.registerRpc<QueueInsertRequest, boolean>("queue.insert", (request, ctx) => state(ctx.playerId).insertRequest(request, ctx.signal));
+		bus.registerRpc<{ tracks: Track[] }, number>("queue.addMultiple", ({ tracks }, ctx) =>
+			state(ctx.playerId).addMultiple(tracks),
+		);
+		bus.registerRpc<QueueInsertRequest, boolean>("queue.insert", (request, ctx) =>
+			state(ctx.playerId).insertRequest(request, ctx.signal),
+		);
 		bus.registerRpc<{ index: number }, Track | null>("queue.remove", ({ index }, ctx) => state(ctx.playerId).remove(index));
 		bus.registerRpc<{ mode: LoopMode }, LoopMode>("queue.loop", ({ mode }, ctx) => state(ctx.playerId).setLoop(mode));
-		bus.registerRpc<{ enabled: boolean }, boolean>("queue.autoPlay", ({ enabled }, ctx) => state(ctx.playerId).setAutoPlay(enabled));
-		bus.registerRpc<{ track: Track | null }, void>("queue.setCurrent", ({ track }, ctx) => state(ctx.playerId).setCurrentInternal(track));
+		bus.registerRpc<{ enabled: boolean }, boolean>("queue.autoPlay", ({ enabled }, ctx) =>
+			state(ctx.playerId).setAutoPlay(enabled),
+		);
+		bus.registerRpc<{ track: Track | null }, void>("queue.setCurrent", ({ track }, ctx) =>
+			state(ctx.playerId).setCurrentInternal(track),
+		);
 		bus.registerRpc<void, object>("queue.serialize", (_req, ctx) => state(ctx.playerId).serializeInternal());
-		bus.registerRpc<{ state: object }, void>("queue.restore", ({ state: value }, ctx) => state(ctx.playerId).restoreInternal(value));
+		bus.registerRpc<{ state: object }, void>("queue.restore", ({ state: value }, ctx) =>
+			state(ctx.playerId).restoreInternal(value),
+		);
 		bus.registerRpc<{ previousCurrent: Track | null; nextTrack: Track | null }, void>(
 			"queue.restoreNext",
 			({ previousCurrent, nextTrack }, ctx) => state(ctx.playerId).restoreNext(previousCurrent, nextTrack),
@@ -429,7 +441,7 @@ export class QueueController {
 	}
 
 	attach(playerId: string): QueueState {
-		const queueState = new QueueState(new PlayerBus(this.bus, playerId));
+		const queueState = new QueueState(this.bus, playerId);
 		this.states.set(playerId, queueState);
 		return queueState;
 	}

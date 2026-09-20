@@ -169,7 +169,7 @@ export class PlayerManager extends EventEmitter {
 
 	constructor(options: PlayerManagerOptions = {}) {
 		super();
-		// The shared controller graph (one global PlayerBus + singleton controllers,
+		// The shared controller graph (one global Bus + singleton controllers,
 		// keyed internally by playerId) is created here, as soon as the manager
 		// exists — not lazily on the first player. Every Player created by this
 		// manager talks to these same controller instances.
@@ -605,9 +605,9 @@ export class PlayerManager extends EventEmitter {
 		let count = 0;
 
 		for (const player of toDelete) {
-			const guildId = player.guildId;
+			const playerId = player.playerId;
 			player.destroy();
-			this.players.delete(guildId);
+			this.players.delete(playerId);
 			count++;
 		}
 
@@ -695,7 +695,7 @@ export class PlayerManager extends EventEmitter {
 				try {
 					(player as any)[action](...args);
 				} catch (error) {
-					this.debug(`Error broadcasting ${action} to ${player.guildId}:`, error);
+					this.debug(`Error broadcasting ${action} to ${player.playerId}:`, error);
 				}
 			}
 		}
@@ -725,12 +725,12 @@ export class PlayerManager extends EventEmitter {
 	broadcastGuilds(guildIds: readonly string[], action: string, ...args: any[]): void {
 		const wanted = new Set(guildIds);
 		for (const player of this.players.values()) {
-			if (!wanted.has(player.guildId)) continue;
+			if (!wanted.has(player.playerId)) continue;
 			if (typeof (player as any)[action] === "function") {
 				try {
 					(player as any)[action](...args);
 				} catch (error) {
-					this.debug(`Error broadcasting ${action} to ${player.guildId}:`, error);
+					this.debug(`Error broadcasting ${action} to ${player.playerId}:`, error);
 				}
 			}
 		}

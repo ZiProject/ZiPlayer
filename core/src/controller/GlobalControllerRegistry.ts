@@ -1,8 +1,8 @@
-import type { PlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 
 export interface GlobalControllerEntry<T = unknown> {
 	readonly playerId: string;
-	readonly bus: PlayerBus;
+	readonly bus: Bus;
 	readonly graph: T;
 	readonly registeredAt: number;
 	lastPingAt: number;
@@ -19,8 +19,8 @@ export interface GlobalControllerRegistration<T = unknown> {
  * Process-wide controller registry.
  *
  * Controllers are owned by this registry rather than by an individual Player
- * instance. A Player only exposes a PlayerBus; the guild/player id is the
- * routing key used to find the controller graph.
+ * instance. Every player shares the same Bus; the guild/player id is
+ * the routing key used to find the controller graph.
  */
 export class GlobalControllerRegistry<T = unknown> {
 	private static readonly GLOBAL_KEY = Symbol.for("ziplayer.GlobalControllerRegistry");
@@ -52,12 +52,7 @@ export class GlobalControllerRegistry<T = unknown> {
 		this.staleAfterMs = Math.max(10_000, options.staleAfterMs ?? 10_000);
 	}
 
-	public register(
-		playerId: string,
-		bus: PlayerBus,
-		graph: T,
-		dispose: () => void | Promise<void>,
-	): GlobalControllerRegistration<T> {
+	public register(playerId: string, bus: Bus, graph: T, dispose: () => void | Promise<void>): GlobalControllerRegistration<T> {
 		this.unregister(playerId);
 		const now = Date.now();
 		const entry: GlobalControllerEntry<T> = {
@@ -95,7 +90,7 @@ export class GlobalControllerRegistry<T = unknown> {
 		const entry = this.entries.get(playerId);
 		if (!entry) return false;
 		try {
-			await entry.bus.requestRpc("runtime.ping", { playerId }, { timeoutMs: this.pingTimeoutMs });
+			await entry.bus.requestRpc(playerId, "runtime.ping", { playerId }, { timeoutMs: this.pingTimeoutMs });
 			entry.lastPingAt = Date.now();
 			entry.unreachableSince = undefined;
 			return true;

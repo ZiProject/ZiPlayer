@@ -1,5 +1,5 @@
 import type { Track } from "../types";
-import type { GlobalPlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 import { CONTROLLER_RPC, type TransitionBeatWaitRequest, type TransitionPlanRequest } from "./ControllerBusContract";
 import type { TransitionControllerOptions, TransitionPlan } from "../types";
 
@@ -11,7 +11,7 @@ type ResolvedOptions = Required<Omit<TransitionControllerOptions, "genreDuration
 export class TransitionController {
 	private readonly states = new Map<string, ResolvedOptions>();
 
-	public constructor(bus?: GlobalPlayerBus) {
+	public constructor(bus?: Bus) {
 		if (bus) {
 			bus.registerQuery("transitionSettings", (playerId) => (this.states.get(playerId) ?? {}) as Record<string, unknown>);
 			bus.registerRpc<TransitionPlanRequest, TransitionPlan>(CONTROLLER_RPC.transitionPlan, ({ from, to }, ctx) =>

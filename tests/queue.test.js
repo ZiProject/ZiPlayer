@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QueueController, PlayerAction, PlayerBus, GlobalPlayerBus } = require("../core/dist");
+const { QueueController, PlayerAction, Bus } = require("../core/dist");
 
 function makeTrack(id = "t1", title = "Track 1") {
 	return {
@@ -15,10 +15,9 @@ function makeTrack(id = "t1", title = "Track 1") {
 }
 
 function makeQueue(playerId = "test-guild") {
-	const globalBus = new GlobalPlayerBus();
-	const queueController = new QueueController(globalBus);
+	const bus = new Bus();
+	const queueController = new QueueController(bus);
 	const queue = queueController.attach(playerId);
-	const bus = new PlayerBus(globalBus, playerId);
 	return { bus, queue, queueController, playerId };
 }
 
@@ -189,21 +188,21 @@ test("QueueController restores bounded valid state", () => {
 	queue.dispose();
 });
 
-test("QueueController setCurrentTrack routes through PlayerBus", () => {
-	const { bus, queue } = makeQueue();
+test("QueueController setCurrentTrack routes through the shared bus", () => {
+	const { bus, queue, playerId } = makeQueue();
 
 	const track = makeTrack("current");
 
 	queue.setCurrentTrack(track);
 
 	assert.equal(queue.currentTrack.id, "current");
-	assert.deepEqual(bus.querySync("currentTrack"), track);
+	assert.deepEqual(bus.querySync(playerId, "currentTrack"), track);
 
 	queue.dispose();
 });
 
-test("QueueController serialize/restore routes through PlayerBus", () => {
-	const { bus, queue } = makeQueue();
+test("QueueController serialize/restore routes through the shared bus", () => {
+	const { bus, queue, playerId } = makeQueue();
 
 	const t1 = makeTrack("a");
 	const t2 = makeTrack("b");
@@ -214,7 +213,7 @@ test("QueueController serialize/restore routes through PlayerBus", () => {
 	const serialized = queue.toJSON();
 
 	assert.ok(serialized);
-	assert.deepEqual(bus.querySync("queueSerialized"), serialized);
+	assert.deepEqual(bus.querySync(playerId, "queueSerialized"), serialized);
 
 	const { queue: restored } = makeQueue();
 
@@ -229,9 +228,8 @@ test("QueueController serialize/restore routes through PlayerBus", () => {
 });
 
 test("PlayerAction serializes normal actions", async () => {
-	const globalBus = new GlobalPlayerBus();
-	const bus = new PlayerBus(globalBus, "test-guild");
-	const actionExecutor = new PlayerAction(bus);
+	const globalBus = new Bus();
+	const actionExecutor = new PlayerAction(globalBus, "test-guild");
 	const order = [];
 
 	globalBus.onAction(async (action) => {
@@ -250,9 +248,8 @@ test("PlayerAction serializes normal actions", async () => {
 });
 
 test("PlayerAction serializes critical actions", async () => {
-	const globalBus = new GlobalPlayerBus();
-	const bus = new PlayerBus(globalBus, "test-guild");
-	const actionExecutor = new PlayerAction(bus);
+	const globalBus = new Bus();
+	const actionExecutor = new PlayerAction(globalBus, "test-guild");
 	const order = [];
 
 	globalBus.onAction(async (action) => {

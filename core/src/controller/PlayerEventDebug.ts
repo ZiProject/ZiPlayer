@@ -1,6 +1,6 @@
-import type { GlobalPlayerBus, PlayerEvent, PlayerAction, PlayerEventType, PlayerActionExecutionContext } from "../structures/PlayerBus";
+import type { Bus, PlayerEvent, PlayerAction, PlayerEventType, PlayerActionExecutionContext } from "../structures/Bus";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
-import { PlayerBusLatencyTrace } from "./PlayerBusLatencyTrace";
+import { BusLatencyTrace } from "./BusLatencyTrace";
 import type { PlayerDebugLevel, PlayerEventDebugLogger } from "../types";
 
 /**
@@ -33,28 +33,28 @@ const ERROR_LIKE = /\b(error|failed|failure|exception|timeout|aborted)\b|⚠️|
  * (`debugLevel` / `PlayerManagerOptions.debugLevel`), and tagged consistently.
  *
  * When a `bus` is supplied it additionally attaches verbose EVENT/ACTION
- * tracing for the complete PlayerBus pipeline; this part is optional so the
+ * tracing for the complete Bus pipeline; this part is optional so the
  * same class can serve as a bus-less, manager-wide tracer too.
  */
 export class PlayerEventDebug {
 	private readonly detach: Array<() => void> = [];
 	private readonly recent = new Map<string, number>();
-	private readonly latencyTrace: PlayerBusLatencyTrace;
+	private readonly latencyTrace: BusLatencyTrace;
 	private readonly internalTag: string;
 	private level: PlayerDebugLevel;
 
 	constructor(
-		private readonly bus: GlobalPlayerBus | undefined,
+		private readonly bus: Bus | undefined,
 		private readonly id = "unknown",
 		private readonly logger?: PlayerEventDebugLogger,
 		level: PlayerDebugLevel = "info",
 	) {
 		this.level = level;
 		this.internalTag = `PlayerEventDebug:${id}`;
-		this.latencyTrace = new PlayerBusLatencyTrace(logger, level);
+		this.latencyTrace = new BusLatencyTrace(logger, level);
 		if (this.bus) {
 			// Latency tracing is a bus-wide (not per-player) diagnostic knob on the
-			// shared GlobalPlayerBus; the most recently attached tracer wins.
+			// shared Bus; the most recently attached tracer wins.
 			this.bus.setLatencyTrace(this.latencyTrace);
 			const eventTypes: PlayerEventType[] = [
 				"initialized",

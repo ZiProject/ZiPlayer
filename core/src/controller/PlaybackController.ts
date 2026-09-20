@@ -7,18 +7,18 @@ import {
 	type StreamType,
 } from "@discordjs/voice";
 import { Readable } from "stream";
-import type { GlobalPlayerBus, PlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
 import type { AntiStuckRetryHandlers } from "../types";
 import { CONTROLLER_RPC, type TransitionPlanResponse } from "./ControllerBusContract";
 
-// Every RPC/query below must be registered exactly once on the shared GlobalPlayerBus;
+// Every RPC/query below must be registered exactly once on the shared Bus;
 // each per-player PlaybackController (it owns that player's discord.js AudioPlayer)
 // registers itself here so the shared handlers can route by playerId.
 const playbackControllers = new Map<string, PlaybackController>();
-const playbackRpcRegistered = new WeakSet<GlobalPlayerBus>();
-function ensurePlaybackRpcBridge(bus: GlobalPlayerBus): void {
+const playbackRpcRegistered = new WeakSet<Bus>();
+function ensurePlaybackRpcBridge(bus: Bus): void {
 	if (playbackRpcRegistered.has(bus)) return;
 	playbackRpcRegistered.add(bus);
 	const at = (playerId: string) => playbackControllers.get(playerId);
@@ -38,9 +38,13 @@ function ensurePlaybackRpcBridge(bus: GlobalPlayerBus): void {
 	bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackPause, (_req, ctx) => at(ctx.playerId)?.pause() ?? false);
 	bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackResume, (_req, ctx) => at(ctx.playerId)?.resume() ?? false);
 	bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackStop, (_req, ctx) => at(ctx.playerId)?.stop() ?? false);
-	bus.registerRpc<void, void>(CONTROLLER_RPC.playbackBeginResourceRefresh, (_req, ctx) => at(ctx.playerId)?.beginResourceRefresh());
+	bus.registerRpc<void, void>(CONTROLLER_RPC.playbackBeginResourceRefresh, (_req, ctx) =>
+		at(ctx.playerId)?.beginResourceRefresh(),
+	);
 	bus.registerRpc<void, void>(CONTROLLER_RPC.playbackEndResourceRefresh, (_req, ctx) => at(ctx.playerId)?.endResourceRefresh());
-	bus.registerRpc<{ error: Error }, void>("playback.reportFilterError", ({ error }, ctx) => at(ctx.playerId)?.reportFilterError(error));
+	bus.registerRpc<{ error: Error }, void>("playback.reportFilterError", ({ error }, ctx) =>
+		at(ctx.playerId)?.reportFilterError(error),
+	);
 	bus.registerRpc<{ stream: Readable; track: Track; inputType?: StreamType }, AudioResource>(
 		"resource.create",
 		({ stream, track, inputType }, ctx) => {
@@ -66,7 +70,7 @@ export class PlaybackController {
 	public readonly audioPlayer: AudioPlayer;
 	public activeResource: AudioResource | null = null;
 	private activeSession: PlaybackSession | null = null;
-	private readonly bus?: PlayerBus;
+	private readonly bus?: Bus;
 	private readonly stuckTimeoutMs: number;
 	private transitionTimer: ReturnType<typeof setTimeout> | null = null;
 	private fadeTimer: ReturnType<typeof setInterval> | null = null;
@@ -90,6 +94,7 @@ export class PlaybackController {
 				if (!this.bus || !session.isActive()) return false;
 				try {
 					await this.bus.requestRpc(
+						this.playerId,
 						"playback.refreshResource",
 						{ position: session.position },
 						{ signal: session.signal, timeoutMs: 30000 },
@@ -99,13 +104,14 @@ export class PlaybackController {
 					return false;
 				}
 			},
-			skip: ({ session }) => this.bus?.action({ type: "SKIP" }, { signal: session.signal, sessionId: session.sessionId }),
+			skip: ({ session }) =>
+				this.bus?.action(this.playerId, { type: "SKIP" }, { signal: session.signal, sessionId: session.sessionId }),
 		};
 		if (this.bus) {
-			ensurePlaybackRpcBridge(this.bus.globalBus);
+			ensurePlaybackRpcBridge(this.bus);
 			playbackControllers.set(this.playerId, this);
 			this.detachBusHandlers.push(
-				this.bus.subscribe("volumeRequested", () => {
+				this.bus.subscribe(this.playerId, "volumeRequested", () => {
 					if (!this.activeResource) return;
 					const track = this.activeSession?.track ?? (this.activeResource.metadata as Track | undefined);
 					this.applyTargetVolume(this.activeResource, track, this.fadeGain ?? 1);
@@ -113,14 +119,14 @@ export class PlaybackController {
 			);
 		}
 		this.onStateChange = (a, b) => {
-			this.bus?.publish("stateChanged", a, b);
+			this.bus?.publish(this.playerId, "stateChanged", a, b);
 			if (b.status === AudioPlayerStatus.Buffering) this.armStuckWatchdog();
 			else this.clearStuckWatchdog();
 			if (b.status === AudioPlayerStatus.Idle && a.status !== AudioPlayerStatus.Idle) {
 				const previousResource = "resource" in a ? a.resource : undefined;
 				if (previousResource && this.activeResource && previousResource !== this.activeResource) return;
 				const session = this.activeSession;
-				if (session?.isActive()) this.bus?.event({ type: "TRACK_END", session: session.snapshot() });
+				if (session?.isActive()) this.bus?.event(this.playerId, { type: "TRACK_END", session: session.snapshot() });
 				this.activeSession = null;
 				this.activeResource = null;
 			}
@@ -129,10 +135,10 @@ export class PlaybackController {
 			const normalized = error instanceof Error ? error : new Error(String(error));
 			const session = this.activeSession;
 			if (session?.isActive()) {
-				this.bus?.event({ type: "TRACK_ERROR", session: session.snapshot(), error: normalized });
+				this.bus?.event(this.playerId, { type: "TRACK_ERROR", session: session.snapshot(), error: normalized });
 				void this.reportStuck(session, `audio player error: ${normalized.message}`);
 			} else {
-				this.bus?.event({ type: "streamError", error: normalized, track: null });
+				this.bus?.event(this.playerId, { type: "streamError", error: normalized, track: null });
 			}
 		};
 		this.audioPlayer.on("stateChange", this.onStateChange);
@@ -142,7 +148,7 @@ export class PlaybackController {
 	private requestTransitionPlan(from: Track | null, to: Track | null): TransitionPlanResponse {
 		if (!this.bus) return { enabled: false, durationMs: 0, waitForBeat: false, beatAlignMaxWaitMs: 0 };
 		try {
-			return this.bus.requestRpcSync(CONTROLLER_RPC.transitionPlan, { from, to });
+			return this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.transitionPlan, { from, to });
 		} catch {
 			return { enabled: false, durationMs: 0, waitForBeat: false, beatAlignMaxWaitMs: 0 };
 		}
@@ -151,7 +157,7 @@ export class PlaybackController {
 	private requestBeatWait(track: Track | null, positionMs: number): number {
 		if (!this.bus) return 0;
 		try {
-			return this.bus.requestRpcSync(CONTROLLER_RPC.transitionBeatWait, { track, positionMs });
+			return this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.transitionBeatWait, { track, positionMs });
 		} catch {
 			return 0;
 		}
@@ -160,7 +166,7 @@ export class PlaybackController {
 	private requestVolumeTarget(track?: Track | null): number {
 		if (!this.bus) return 1;
 		try {
-			return this.bus.requestRpcSync(CONTROLLER_RPC.volumeTarget, { track });
+			return this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.volumeTarget, { track });
 		} catch {
 			return 1;
 		}
@@ -175,6 +181,7 @@ export class PlaybackController {
 	private reportStuck(session: PlaybackSession, reason: string): Promise<boolean> {
 		if (!this.bus || !session.isActive()) return Promise.resolve(false);
 		return this.bus.requestRpc(
+			this.playerId,
 			CONTROLLER_RPC.antiStuckReport,
 			{ session, reason, handlers: this.recoveryHandlers },
 			{ signal: session.signal },
@@ -251,7 +258,7 @@ export class PlaybackController {
 	private retirePendingSession(): void {
 		if (!this.bus) return;
 		try {
-			this.bus.requestRpcSync(CONTROLLER_RPC.playbackSessionRetirePending, {});
+			this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackSessionRetirePending, {});
 		} catch {}
 	}
 
@@ -394,7 +401,7 @@ export class PlaybackController {
 			return true;
 		}
 		try {
-			await this.bus.requestRpc("playback.refreshResource", { position });
+			await this.bus.requestRpc(this.playerId, "playback.refreshResource", { position });
 			return !session || session.isActive();
 		} catch {
 			return false;
@@ -403,13 +410,13 @@ export class PlaybackController {
 	public setVolume(value: number): number {
 		if (!this.bus) return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 100;
 		try {
-			return this.bus.requestRpcSync(CONTROLLER_RPC.volumeSet, { value });
+			return this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.volumeSet, { value });
 		} catch {
 			return this.volumeValue;
 		}
 	}
 	public get volumeValue(): number {
-		return this.bus?.querySync("volume") ?? 100;
+		return this.bus?.querySync(this.playerId, "volume") ?? 100;
 	}
 	public get position(): number | null {
 		const session = this.activeSession;

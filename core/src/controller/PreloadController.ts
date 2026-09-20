@@ -1,17 +1,17 @@
 import type { AudioResource } from "@discordjs/voice";
 import type { Track, TrackLoadResult, PromotedPreload, StreamInfo } from "../types";
-import type { GlobalPlayerBus, PlayerBus } from "../structures/PlayerBus";
-import { createPlayerRequestId } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
+import { createPlayerRequestId } from "../structures/Bus";
 import type { TrackLoader } from "../structures/TrackLoader";
 import { PreloadManager } from "../structures/PreloadManager";
 import type { PreloadControllerOptions } from "../types";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 
 // Every preload.* RPC/query must be registered exactly once on the shared
-// GlobalPlayerBus; each per-player PreloadController registers itself here.
-const preloadRpcRegistered = new WeakSet<GlobalPlayerBus>();
+// Bus; each per-player PreloadController registers itself here.
+const preloadRpcRegistered = new WeakSet<Bus>();
 const preloadControllers = new Map<string, PreloadController>();
-function ensurePreloadRpcBridge(bus: GlobalPlayerBus): void {
+function ensurePreloadRpcBridge(bus: Bus): void {
 	if (preloadRpcRegistered.has(bus)) return;
 	preloadRpcRegistered.add(bus);
 	const forward = <TReq, TRes>(handler: (controller: PreloadController, request: TReq) => TRes) => {
@@ -25,25 +25,46 @@ function ensurePreloadRpcBridge(bus: GlobalPlayerBus): void {
 		CONTROLLER_RPC.playbackPromotePreload,
 		forward((controller, { track }) => controller.promotePreload(track)),
 	);
-	bus.registerRpc<void, void>("preload.next", forward((controller) => controller.preload()));
-	bus.registerRpc<void, void>("preload.cancel", forward((controller) => controller.cancel()));
-	bus.registerRpc<void, void>("preload.cancelSafe", forward((controller) => controller.cancelSafely()));
-	bus.registerRpc<void, void>("preload.clear", forward((controller) => controller.clear()));
-	bus.registerRpc<{ track: Track }, boolean>("preload.has", forward((controller, { track }) => controller.has(track)));
+	bus.registerRpc<void, void>(
+		"preload.next",
+		forward((controller) => controller.preload()),
+	);
+	bus.registerRpc<void, void>(
+		"preload.cancel",
+		forward((controller) => controller.cancel()),
+	);
+	bus.registerRpc<void, void>(
+		"preload.cancelSafe",
+		forward((controller) => controller.cancelSafely()),
+	);
+	bus.registerRpc<void, void>(
+		"preload.clear",
+		forward((controller) => controller.clear()),
+	);
+	bus.registerRpc<{ track: Track }, boolean>(
+		"preload.has",
+		forward((controller, { track }) => controller.has(track)),
+	);
 	bus.registerRpc<{ track: Track }, PromotedPreload | null>(
 		"preload.promote",
 		forward((controller, { track }) => controller.takePreloaded(track)),
 	);
-	bus.registerQuery("preload.state", (playerId) => preloadControllers.get(playerId)?.getState() ?? { hasSlot: false, currentSlot: undefined as any });
-	bus.registerRpc("preload.state", forward((controller) => controller.getState()));
+	bus.registerQuery(
+		"preload.state",
+		(playerId) => preloadControllers.get(playerId)?.getState() ?? { hasSlot: false, currentSlot: undefined as any },
+	);
+	bus.registerRpc(
+		"preload.state",
+		forward((controller) => controller.getState()),
+	);
 }
 
-/** Owns preload lifecycle. Player-facing requests are routed through PlayerBus. One
+/** Owns preload lifecycle. Player-facing requests are routed through Bus. One
  *  instance per player. */
 export class PreloadController {
 	private readonly loader: TrackLoader;
 	private readonly manager: PreloadManager;
-	private readonly bus?: PlayerBus;
+	private readonly bus?: Bus;
 	private readonly playerId?: string;
 	private readonly unsubscribe?: () => void;
 
@@ -53,7 +74,7 @@ export class PreloadController {
 		this.bus = options.bus;
 		this.playerId = options.playerId;
 		if (this.bus && this.playerId) {
-			ensurePreloadRpcBridge(this.bus.globalBus);
+			ensurePreloadRpcBridge(this.bus);
 			preloadControllers.set(this.playerId, this);
 			this.unsubscribe = this.bus.onInput("[Player]->[Preload]:request", (event) => {
 				void this.handleRequest(event);
@@ -62,23 +83,24 @@ export class PreloadController {
 	}
 
 	public promotePreload(track: Track): AudioResource | null {
-		const session = this.bus!.querySync("playbackSessionInternal");
+		const playerId = this.playerId!;
+		const session = this.bus!.querySync(playerId, "playbackSessionInternal");
 		if (!session) return null;
-		const promoted = this.bus!.requestRpcSync<{ track: Track }, PromotedPreload | null>("preload.promote", { track });
+		const promoted = this.bus!.requestRpcSync<{ track: Track }, PromotedPreload | null>(playerId, "preload.promote", { track });
 		if (!promoted) return null;
 		const streamInfo: StreamInfo = promoted.streamInfo ?? { stream: promoted.stream as any, type: "arbitrary" };
 		const resource = this.bus!.requestRpcSync<
 			{ stream: import("stream").Readable; track: Track; inputType?: import("@discordjs/voice").StreamType },
 			AudioResource
-		>("resource.create", {
+		>(playerId, "resource.create", {
 			stream: (streamInfo.stream ?? promoted.stream) as import("stream").Readable,
 			track: promoted.track,
 			inputType: streamInfo.inputType,
 		});
 		session.setResource(resource);
-		this.bus!.requestRpcSync(CONTROLLER_RPC.playbackPlay, { resource, session });
+		this.bus!.requestRpcSync(playerId, CONTROLLER_RPC.playbackPlay, { resource, session });
 		session.markPlaying(0);
-		this.bus!.event({ type: "playbackStateChanged", session: session.snapshot() });
+		this.bus!.event(playerId, { type: "playbackStateChanged", session: session.snapshot() });
 		return resource;
 	}
 
@@ -92,7 +114,7 @@ export class PreloadController {
 
 	public async preload(): Promise<void> {
 		await this.loader.preloadNext();
-		this.bus?.publish("preloadStateChanged", { requestedTrack: null, valid: false });
+		if (this.bus && this.playerId) this.bus.publish(this.playerId, "preloadStateChanged", { requestedTrack: null, valid: false });
 	}
 
 	/**
@@ -105,23 +127,25 @@ export class PreloadController {
 		return null;
 	}
 
-	/** PlayerBus request entry point; keeps preload ownership inside this controller. */
+	/** Bus request entry point; keeps preload ownership inside this controller. */
 	private async handleRequest(event: { type: "[Player]->[Preload]:request"; requestId: string; track: Track }): Promise<void> {
+		const playerId = this.playerId!;
 		if (this.loader.hasPreload(event.track)) {
-			this.bus?.emitOutput({ type: "[Preload]->[Player]:ready", requestId: event.requestId, track: event.track });
+			this.bus?.emitOutput({ type: "[Preload]->[Player]:ready", requestId: event.requestId, playerId, track: event.track });
 			return;
 		}
 
-		this.bus?.emitOutput({ type: "[Preload]->[Player]:loading", requestId: event.requestId, track: event.track });
+		this.bus?.emitOutput({ type: "[Preload]->[Player]:loading", requestId: event.requestId, playerId, track: event.track });
 		try {
 			await this.loader.preloadNext();
 			const valid = this.loader.hasPreload(event.track);
 			if (!valid) throw new Error(`Preload did not produce the requested track: ${event.track.title}`);
-			this.bus?.emitOutput({ type: "[Preload]->[Player]:ready", requestId: event.requestId, track: event.track });
+			this.bus?.emitOutput({ type: "[Preload]->[Player]:ready", requestId: event.requestId, playerId, track: event.track });
 		} catch (error) {
 			this.bus?.emitOutput({
 				type: "[Preload]->[Player]:failed",
 				requestId: event.requestId,
+				playerId,
 				track: event.track,
 				error: error instanceof Error ? error : new Error(String(error)),
 			});
@@ -129,9 +153,9 @@ export class PreloadController {
 	}
 
 	public request(track: Track): Promise<Track> {
-		if (!this.bus) return Promise.reject(new Error("PreloadController is not connected to PlayerBus"));
+		if (!this.bus || !this.playerId) return Promise.reject(new Error("PreloadController is not connected to a Bus"));
 		return this.bus
-			.request({ type: "[Player]->[Preload]:request", requestId: createPlayerRequestId(), track })
+			.request(this.playerId, { type: "[Player]->[Preload]:request", requestId: createPlayerRequestId(), track })
 			.then((event) => event.track);
 	}
 
@@ -140,16 +164,16 @@ export class PreloadController {
 	}
 	public takePreloaded(track: Track): PromotedPreload | null {
 		const promoted = this.manager.takePreloaded(track);
-		if (promoted) this.bus?.publish("preloadPromoted", track);
+		if (promoted && this.bus && this.playerId) this.bus.publish(this.playerId, "preloadPromoted", track);
 		return promoted;
 	}
 	public cancel(): void {
 		this.loader.cancelPreload();
-		this.bus?.publish("preloadCancelled");
+		if (this.bus && this.playerId) this.bus.publish(this.playerId, "preloadCancelled");
 	}
 	public async cancelSafely(): Promise<void> {
 		await this.loader.cancelPreloadSafely();
-		this.bus?.publish("preloadCancelled");
+		if (this.bus && this.playerId) this.bus.publish(this.playerId, "preloadCancelled");
 	}
 	public clear(): void {
 		this.manager.clearPreloadSlot();

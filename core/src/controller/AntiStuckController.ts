@@ -7,7 +7,7 @@ import type {
 	PlayerAction,
 } from "../types";
 import { CONTROLLER_RPC, type AntiStuckReportRequest } from "./ControllerBusContract";
-import { PlayerBus, type GlobalPlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 
 /** Per-player anti-stuck retry policy + recovery state machine, owned by the shared
  *  `AntiStuckController` below. */
@@ -18,13 +18,14 @@ class AntiStuckWorker {
 	private readonly reusePreloadFirst: boolean;
 	private readonly reduceQualityOnRetry: boolean;
 	private readonly controlledSkipThreshold: number;
-	private readonly bus?: PlayerBus;
+	private readonly bus?: Bus;
+	private readonly playerId?: string;
 	private readonly failures = new Map<string, number>();
 	private timer: NodeJS.Timeout | null = null;
 	private generation = 0;
 	private readonly detachAction?: () => void;
 	private readonly detachBusHandlers: Array<() => void> = [];
-	public constructor(options: AntiStuckControllerOptions = {}) {
+	public constructor(options: AntiStuckControllerOptions & { playerId?: string } = {}) {
 		this.enabled = options.enabled ?? true;
 		this.maxRetries = Math.max(0, options.maxRetries ?? 2);
 		this.retryDelayMs = Math.max(0, options.retryDelayMs ?? 90000);
@@ -32,6 +33,7 @@ class AntiStuckWorker {
 		this.reduceQualityOnRetry = options.reduceQualityOnRetry ?? true;
 		this.controlledSkipThreshold = Math.max(1, options.controlledSkipThreshold ?? 3);
 		this.bus = options.bus;
+		this.playerId = options.playerId;
 	}
 	public arm(session: PlaybackSession, timeoutMs: number, handlers: AntiStuckRetryHandlers): void {
 		this.clearTimer();
@@ -127,29 +129,30 @@ class AntiStuckWorker {
 		const track = session.track;
 		if (!this.enabled || !track || !session.isActive() || generation !== this.generation) return false;
 		const retry = this.getRetryCount(track);
-		this.bus?.event({ type: "STUCK_DETECTED", session: session.snapshot(), reason });
+		if (this.bus && this.playerId) this.bus.event(this.playerId, { type: "STUCK_DETECTED", session: session.snapshot(), reason });
 		if (retry >= this.maxRetries) {
 			await handlers.skip({ session, track, retry, reason });
 			return false;
 		}
 		this.failures.set(this.key(track), retry + 1);
-		this.bus?.event({ type: "RECOVERY_STARTED", session: session.snapshot() });
-		if (requestId)
-			this.bus?.emitOutput({ type: "[Recovery]->[Player]:retrying", requestId, session: session.snapshot(), attempt: retry + 1 });
+		if (this.bus && this.playerId) this.bus.event(this.playerId, { type: "RECOVERY_STARTED", session: session.snapshot() });
+		if (requestId && this.bus && this.playerId)
+			this.bus.emitOutput({ type: "[Recovery]->[Player]:retrying", requestId, playerId: this.playerId, session: session.snapshot(), attempt: retry + 1 });
 		if (this.retryDelayMs > 0) await this.delay(this.retryDelayMs, session.signal);
 		if (!session.isActive() || generation !== this.generation) return false;
 		const ok = await handlers.retry({ session, track, retry: retry + 1, reason });
 		if (ok) {
 			this.failures.delete(this.key(track));
-			if (requestId) this.bus?.emitOutput({ type: "[Recovery]->[Player]:recovered", requestId, session: session.snapshot() });
+			if (requestId && this.bus && this.playerId) this.bus.emitOutput({ type: "[Recovery]->[Player]:recovered", requestId, playerId: this.playerId, session: session.snapshot() });
 			return true;
 		}
 		if (session.isActive()) {
-			this.bus?.event({ type: "RECOVERY_FAILED", session: session.snapshot() });
-			if (requestId)
-				this.bus?.emitOutput({
+			if (this.bus && this.playerId) this.bus.event(this.playerId, { type: "RECOVERY_FAILED", session: session.snapshot() });
+			if (requestId && this.bus && this.playerId)
+				this.bus.emitOutput({
 					type: "[Recovery]->[Player]:failed",
 					requestId,
+					playerId: this.playerId,
 					session: session.snapshot(),
 					error: new Error(reason),
 				});
@@ -186,7 +189,7 @@ class AntiStuckWorker {
 export class AntiStuckController {
 	private readonly workers = new Map<string, AntiStuckWorker>();
 
-	public constructor(private readonly bus: GlobalPlayerBus) {
+	public constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => {
 			if (context.signal.aborted) return;
 			if (action.type === "STOP" || action.type === "SEEK") this.workers.get(context.playerId)?.cancelRecovery();
@@ -199,7 +202,7 @@ export class AntiStuckController {
 	}
 
 	attach(playerId: string, options: Omit<AntiStuckControllerOptions, "bus"> = {}): void {
-		this.workers.set(playerId, new AntiStuckWorker({ ...options, bus: new PlayerBus(this.bus, playerId) }));
+		this.workers.set(playerId, new AntiStuckWorker({ ...options, bus: this.bus, playerId }));
 	}
 	detach(playerId: string): void {
 		this.workers.get(playerId)?.dispose();

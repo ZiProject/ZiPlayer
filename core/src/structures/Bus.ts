@@ -1,10 +1,10 @@
 import type {
 	PlayerAction,
 	PlayerActionExecutionContext,
-	PlayerBusEvents,
-	PlayerBusRequestErrorReason,
-	PlayerBusRpcContext,
-	PlayerBusRpcOptions,
+	BusEvents,
+	BusRequestErrorReason,
+	BusRpcContext,
+	BusRpcOptions,
 	PlayerEvent,
 	PlayerEventArgsMap,
 	PlayerEventType,
@@ -23,15 +23,15 @@ import type {
 } from "../types";
 
 import { PlayerActionPriority } from "../types/bus";
-import type { PlayerBusLatencyTrace } from "../controller/PlayerBusLatencyTrace";
+import type { BusLatencyTrace } from "../controller/BusLatencyTrace";
 
 export type {
 	PlayerAction,
 	PlayerActionExecutionContext,
-	PlayerBusEvents,
-	PlayerBusRequestErrorReason,
-	PlayerBusRpcContext,
-	PlayerBusRpcOptions,
+	BusEvents,
+	BusRequestErrorReason,
+	BusRpcContext,
+	BusRpcOptions,
 	PlayerEvent,
 	PlayerEventArgsMap,
 	PlayerEventType,
@@ -84,31 +84,31 @@ const REQUESTS: Record<PlayerRequestInputType, RequestContract> = {
 	"[Player]->[Resource]:refresh": { success: "[Resource]->[Player]:refreshed", error: "[Resource]->[Player]:error" },
 };
 
-export class PlayerBusRequestError extends Error {
+export class BusRequestError extends Error {
 	public constructor(
-		public readonly reason: PlayerBusRequestErrorReason,
+		public readonly reason: BusRequestErrorReason,
 		public readonly inputType: string,
 		message: string,
 	) {
 		super(message);
-		this.name = "PlayerBusRequestError";
+		this.name = "BusRequestError";
 	}
 }
 
-type RpcHandler<TRequest, TResponse> = (request: TRequest, context: PlayerBusRpcContext) => TResponse | Promise<TResponse>;
+type RpcHandler<TRequest, TResponse> = (request: TRequest, context: BusRpcContext) => TResponse | Promise<TResponse>;
 
 /**
- * GlobalPlayerBus is the single, process-wide message bus shared by every player.
+ * Bus is the single, process-wide message bus shared by every player.
  *
  * Controllers are singletons: they register their RPC/query/action handlers on this
  * bus exactly once (at bootstrap), and every call carries an explicit `playerId` so a
  * handler can route to the right per-player state slice it keeps internally.
  *
- * `Player` instances never touch this class directly — they get a small `PlayerBus`
+ * `Player` instances never touch this class directly — they get a small `Bus`
  * facade (see below) that already knows its own `playerId` and exposes the same
  * ergonomic, no-playerId-argument API the rest of the codebase is used to.
  */
-export class GlobalPlayerBus {
+export class Bus {
 	private readonly inputListeners = new Map<PlayerInput["type"], Set<(event: PlayerInput) => void | Promise<void>>>();
 	private readonly outputListeners = new Map<PlayerOutput["type"], Set<(event: PlayerOutput) => void>>();
 	private readonly eventListeners = new Map<PlayerEventType, Map<string, Set<(event: PlayerEvent) => void>>>();
@@ -118,10 +118,10 @@ export class GlobalPlayerBus {
 	private readonly queryHandlers = new Map<PlayerQuery, Set<PlayerQueryHandler<any>>>();
 	private readonly rpcHandlers = new Map<string, RpcHandler<any, any>>();
 	private readonly pendingRequests = new Set<() => void>();
-	private latencyTrace?: PlayerBusLatencyTrace;
+	private latencyTrace?: BusLatencyTrace;
 	private disposed = false;
 
-	public setLatencyTrace(trace?: PlayerBusLatencyTrace): void {
+	public setLatencyTrace(trace?: BusLatencyTrace): void {
 		this.latencyTrace = trace;
 	}
 
@@ -151,19 +151,21 @@ export class GlobalPlayerBus {
 		return this.addFlatListener(this.outputListeners, type, handler as any);
 	}
 
-	public request<K extends PlayerRequestInputType>(
+	public request<T extends DistributiveOmit<PlayerInput, "playerId">>(
 		playerId: string,
-		input: Extract<PlayerInput, { type: K }>,
-		options: PlayerRequestOptions<K> = {},
-	): Promise<PlayerRequestReply<K>["success"]> {
+		input: T,
+		options: PlayerRequestOptions<T["type"]> = {},
+	): Promise<PlayerRequestReply<T["type"]>["success"]> {
+		const fullInput = { ...input, playerId } as unknown as PlayerInput;
+		type K = T["type"];
 		if (this.disposed)
 			return Promise.reject(
-				new PlayerBusRequestError("disposed", input.type, `PlayerBus is disposed; cannot request "${input.type}"`),
+				new BusRequestError("disposed", fullInput.type, `Bus is disposed; cannot request "${fullInput.type}"`),
 			);
-		const requestId = input.requestId;
+		const requestId = fullInput.requestId;
 		if (!requestId)
-			return Promise.reject(new PlayerBusRequestError("unhandled", input.type, `Input "${input.type}" has no requestId`));
-		const contract = REQUESTS[input.type];
+			return Promise.reject(new BusRequestError("unhandled", fullInput.type, `Input "${fullInput.type}" has no requestId`));
+		const contract = REQUESTS[fullInput.type as PlayerRequestInputType];
 		return new Promise((resolve, reject) => {
 			let settled = false;
 			const cleanups: Array<() => void> = [];
@@ -176,9 +178,7 @@ export class GlobalPlayerBus {
 			};
 			const cancel = () =>
 				settle(() =>
-					reject(
-						new PlayerBusRequestError("disposed", input.type, `PlayerBus was disposed while awaiting reply to "${input.type}"`),
-					),
+					reject(new BusRequestError("disposed", fullInput.type, `Bus was disposed while awaiting reply to "${fullInput.type}"`)),
 				);
 			this.pendingRequests.add(cancel);
 			cleanups.push(() => this.pendingRequests.delete(cancel));
@@ -187,10 +187,10 @@ export class GlobalPlayerBus {
 					() =>
 						settle(() =>
 							reject(
-								new PlayerBusRequestError(
+								new BusRequestError(
 									"timeout",
-									input.type,
-									`Timed out after ${options.timeoutMs}ms awaiting reply to "${input.type}"`,
+									fullInput.type,
+									`Timed out after ${options.timeoutMs}ms awaiting reply to "${fullInput.type}"`,
 								),
 							),
 						),
@@ -200,17 +200,18 @@ export class GlobalPlayerBus {
 			}
 			if (options.signal) {
 				if (options.signal.aborted) {
-					settle(() => reject(new PlayerBusRequestError("aborted", input.type, `Request "${input.type}" was aborted`)));
+					settle(() => reject(new BusRequestError("aborted", fullInput.type, `Request "${fullInput.type}" was aborted`)));
 					return;
 				}
 				const abort = () =>
-					settle(() => reject(new PlayerBusRequestError("aborted", input.type, `Request "${input.type}" was aborted`)));
+					settle(() => reject(new BusRequestError("aborted", fullInput.type, `Request "${fullInput.type}" was aborted`)));
 				options.signal.addEventListener("abort", abort, { once: true });
 				cleanups.push(() => options.signal?.removeEventListener("abort", abort));
 			}
 			cleanups.push(
 				this.onOutput(contract.success, (event) => {
-					if (event.requestId === requestId && event.playerId === playerId) settle(() => resolve(event as PlayerRequestReply<K>["success"]));
+					if (event.requestId === requestId && event.playerId === playerId)
+						settle(() => resolve(event as PlayerRequestReply<K>["success"]));
 				}),
 			);
 			cleanups.push(
@@ -220,7 +221,7 @@ export class GlobalPlayerBus {
 							reject(
 								event.error instanceof Error ?
 									event.error
-								:	new PlayerBusRequestError("unhandled", input.type, String(event.error ?? "request failed")),
+								:	new BusRequestError("unhandled", fullInput.type, String(event.error ?? "request failed")),
 							),
 						);
 				}),
@@ -232,7 +233,7 @@ export class GlobalPlayerBus {
 							options.onProgress!(event as PlayerRequestProgress<K>);
 					}),
 				);
-			this.emitInput(input);
+			this.emitInput(fullInput);
 		});
 	}
 
@@ -245,27 +246,27 @@ export class GlobalPlayerBus {
 		playerId: string,
 		type: K,
 		request: PlayerRpcMap[K]["request"],
-		options?: PlayerBusRpcOptions,
+		options?: BusRpcOptions,
 	): Promise<PlayerRpcMap[K]["response"]>;
 	public requestRpc<TRequest, TResponse>(
 		playerId: string,
 		type: string,
 		request: TRequest,
-		options?: PlayerBusRpcOptions,
+		options?: BusRpcOptions,
 	): Promise<TResponse>;
 	public requestRpc<TRequest, TResponse>(
 		playerId: string,
 		type: string,
 		request: TRequest,
-		options: PlayerBusRpcOptions = {},
+		options: BusRpcOptions = {},
 	): Promise<TResponse> {
 		if (this.disposed)
-			return Promise.reject(new PlayerBusRequestError("disposed", type, `PlayerBus is disposed; cannot request RPC "${type}"`));
+			return Promise.reject(new BusRequestError("disposed", type, `Bus is disposed; cannot request RPC "${type}"`));
 		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
-		if (!handler) return Promise.reject(new PlayerBusRequestError("unhandled", type, `No RPC handler registered for "${type}"`));
-		if (options.signal?.aborted) return Promise.reject(new PlayerBusRequestError("aborted", type, `RPC "${type}" was aborted`));
+		if (!handler) return Promise.reject(new BusRequestError("unhandled", type, `No RPC handler registered for "${type}"`));
+		if (options.signal?.aborted) return Promise.reject(new BusRequestError("aborted", type, `RPC "${type}" was aborted`));
 		const requestId = createPlayerRequestId();
-		const context: PlayerBusRpcContext = {
+		const context: BusRpcContext = {
 			playerId,
 			requestId,
 			signal: options.signal ?? new AbortController().signal,
@@ -282,7 +283,7 @@ export class GlobalPlayerBus {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const timeout = new Promise<never>((_, reject) => {
 			timer = setTimeout(
-				() => reject(new PlayerBusRequestError("timeout", type, `Timed out after ${options.timeoutMs}ms awaiting RPC "${type}"`)),
+				() => reject(new BusRequestError("timeout", type, `Timed out after ${options.timeoutMs}ms awaiting RPC "${type}"`)),
 				options.timeoutMs,
 			);
 		});
@@ -299,10 +300,10 @@ export class GlobalPlayerBus {
 	): PlayerRpcMap[K]["response"];
 	public requestRpcSync<TRequest, TResponse>(playerId: string, type: string, request: TRequest): TResponse;
 	public requestRpcSync<TRequest, TResponse>(playerId: string, type: string, request: TRequest): TResponse {
-		if (this.disposed) throw new PlayerBusRequestError("disposed", type, `PlayerBus is disposed; cannot request RPC "${type}"`);
+		if (this.disposed) throw new BusRequestError("disposed", type, `Bus is disposed; cannot request RPC "${type}"`);
 		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
-		if (!handler) throw new PlayerBusRequestError("unhandled", type, `No RPC handler registered for "${type}"`);
-		const context: PlayerBusRpcContext = {
+		if (!handler) throw new BusRequestError("unhandled", type, `No RPC handler registered for "${type}"`);
+		const context: BusRpcContext = {
 			playerId,
 			requestId: createPlayerRequestId(),
 			signal: new AbortController().signal,
@@ -566,98 +567,6 @@ export class GlobalPlayerBus {
 		event: E,
 	): void {
 		for (const listener of map.get(type)?.get(playerId) ?? []) void listener(event);
-	}
-}
-
-/**
- * Per-player facade over the shared `GlobalPlayerBus`. `Player`, its action
- * executor and its capabilities object all consume the bus through this
- * facade so they keep the exact same call syntax they always had (no
- * `playerId` argument to pass around) while every call is transparently
- * routed to the single global bus with `playerId` bound.
- */
-export class PlayerBus {
-	public constructor(
-		private readonly global: GlobalPlayerBus,
-		private readonly playerId: string,
-	) {}
-
-	public get globalBus(): GlobalPlayerBus {
-		return this.global;
-	}
-
-	public request<T extends DistributiveOmit<PlayerInput, "playerId">>(
-		input: T,
-		options?: PlayerRequestOptions<T["type"]>,
-	): Promise<PlayerRequestReply<T["type"]>["success"]> {
-		return this.global.request(this.playerId, { ...input, playerId: this.playerId } as unknown as PlayerInput, options as any);
-	}
-	public requestRpc<K extends keyof PlayerRpcMap>(
-		type: K,
-		request: PlayerRpcMap[K]["request"],
-		options?: PlayerBusRpcOptions,
-	): Promise<PlayerRpcMap[K]["response"]>;
-	public requestRpc<TRequest, TResponse>(type: string, request: TRequest, options?: PlayerBusRpcOptions): Promise<TResponse>;
-	public requestRpc<TRequest, TResponse>(type: string, request: TRequest, options?: PlayerBusRpcOptions): Promise<TResponse> {
-		return this.global.requestRpc(this.playerId, type as any, request as any, options) as Promise<TResponse>;
-	}
-	public requestRpcSync<K extends keyof PlayerRpcMap>(type: K, request: PlayerRpcMap[K]["request"]): PlayerRpcMap[K]["response"];
-	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest): TResponse;
-	public requestRpcSync<TRequest, TResponse>(type: string, request: TRequest): TResponse {
-		return this.global.requestRpcSync(this.playerId, type as any, request as any) as TResponse;
-	}
-	public action(action: PlayerAction, context?: Partial<PlayerActionExecutionContext>): Promise<void> {
-		return this.global.action(this.playerId, action, context);
-	}
-	public event<K extends PlayerEventType>(event: Extract<PlayerEvent, { type: K }>): void {
-		this.global.event(this.playerId, event);
-	}
-	public publish<K extends PlayerEventType>(type: K, ...args: PlayerEventArgsMap[K]): void {
-		this.global.publish(this.playerId, type, ...args);
-	}
-	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void {
-		return this.global.subscribe(this.playerId, type, listener);
-	}
-	/** Convenience for per-player helper objects that need to emit an output event
-	 * (e.g. resolving a `request()` promise) without importing GlobalPlayerBus. */
-	public emitOutput<T extends DistributiveOmit<PlayerOutput, "playerId">>(event: T): void {
-		this.global.emitOutput({ ...event, playerId: this.playerId } as unknown as PlayerOutput);
-	}
-	public onOutput<K extends PlayerOutput["type"]>(
-		type: K,
-		handler: (event: Extract<PlayerOutput, { type: K }>) => void,
-	): () => void {
-		return this.global.onOutput(type, (event) => {
-			if (event.playerId === this.playerId) handler(event);
-		});
-	}
-	public onInput<K extends PlayerInput["type"]>(
-		type: K,
-		handler: (event: Extract<PlayerInput, { type: K }>) => void | Promise<void>,
-	): () => void {
-		return this.global.onInput(type, (event) => {
-			if (event.playerId === this.playerId) return handler(event);
-		});
-	}
-	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> {
-		return this.global.query(this.playerId, query);
-	}
-	public querySync<K extends PlayerQuery>(query: K): PlayerQueryMap[K] {
-		return this.global.querySync(this.playerId, query);
-	}
-	public get isDisposed(): boolean {
-		return this.global.isDisposed;
-	}
-	public hasRpc(type: string): boolean {
-		return this.global.hasRpc(type);
-	}
-	/** Detach this player from the shared bus (its event subscriptions only — shared
-	 * controllers drop their per-player state slice separately via the controller registry). */
-	public clear(): void {
-		this.global.disposePlayer(this.playerId);
-	}
-	public dispose(): void {
-		this.clear();
 	}
 }
 

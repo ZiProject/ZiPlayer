@@ -22,7 +22,7 @@ export interface TrackResolverOptions {
 	streamManager: StreamManager;
 	pluginManager: PluginManager;
 	extensionManager: ExtensionManager;
-	bus?: import("../structures/PlayerBus").PlayerBus;
+	bus?: import("../structures/Bus").Bus;
 	playerId?: string;
 	isDestroyed?: () => boolean;
 }

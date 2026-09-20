@@ -1,13 +1,13 @@
 import type { Player } from "../structures/Player";
-import type { PlayerEventType, GlobalPlayerBus, PlayerEvent } from "../structures/PlayerBus";
+import type { PlayerEventType, Bus, PlayerEvent } from "../structures/Bus";
 import { PlayerEventDebug } from "./PlayerEventDebug";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
 
-// The tts.emitStart/End RPCs are registered once per shared GlobalPlayerBus (not once
+// The tts.emitStart/End RPCs are registered once per shared Bus (not once
 // per player) and routed to whichever Player is currently attached for that playerId.
-const ttsBridgeRegistered = new WeakSet<GlobalPlayerBus>();
+const ttsBridgeRegistered = new WeakSet<Bus>();
 const ttsPlayers = new Map<string, Player>();
-function ensureTtsRpcBridge(bus: GlobalPlayerBus): void {
+function ensureTtsRpcBridge(bus: Bus): void {
 	if (ttsBridgeRegistered.has(bus)) return;
 	ttsBridgeRegistered.add(bus);
 	bus.registerRpc<{ track: any }, void>("player.emitTtsStart", ({ track }, ctx) => {
@@ -20,7 +20,7 @@ function ensureTtsRpcBridge(bus: GlobalPlayerBus): void {
 	});
 }
 
-/** Bridges canonical PlayerBus events to the public Player event API. One instance per
+/** Bridges canonical Bus events to the public Player event API. One instance per
  *  player (cheap; not a shared controller). */
 export class PlayerEventBridge {
 	private readonly detach: Array<() => void> = [];
@@ -31,7 +31,7 @@ export class PlayerEventBridge {
 	public constructor(
 		private player: Player | null = null,
 		private readonly manager: any,
-		private readonly bus: GlobalPlayerBus,
+		private readonly bus: Bus,
 		private readonly eventDebug: PlayerEventDebug,
 		private readonly playerId: string,
 	) {
@@ -278,13 +278,13 @@ export class PlayerEventBridge {
 	}
 	private describeDebugArg(arg: any): any {
 		if (arg === this.player) {
-			return { type: "Player", guildId: this.player?.guildId, destroyed: this.player?.destroyed ?? false };
+			return { type: "Player", guildId: this.player?.playerId, destroyed: this.player?.destroyed ?? false };
 		}
 		return arg;
 	}
 	private debug(message: string, ...args: any[]): void {
 		try {
-			this.eventDebug.bridge(`[PlayerEventBridge:${this.player?.guildId ?? "unattached"}] ${message}`, ...args);
+			this.eventDebug.bridge(`[PlayerEventBridge:${this.player?.playerId ?? "unattached"}] ${message}`, ...args);
 		} catch {
 			/* Debugging must never affect playback/event propagation. */
 		}

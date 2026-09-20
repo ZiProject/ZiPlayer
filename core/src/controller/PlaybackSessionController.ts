@@ -1,4 +1,4 @@
-import type { GlobalPlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 import { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track } from "../types";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
@@ -14,7 +14,7 @@ export class PlaybackSessionController {
 	private readonly states = new Map<string, SessionState>();
 	private disposed = false;
 
-	public constructor(bus: GlobalPlayerBus) {
+	public constructor(bus: Bus) {
 		bus.registerQuery("playbackSessionInternal", (playerId) => this.states.get(playerId)?.session ?? null);
 		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackSessionRetirePending, (_req, ctx) =>
 			this.retirePendingPrevious(ctx.playerId),

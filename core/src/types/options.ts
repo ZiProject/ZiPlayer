@@ -2,7 +2,7 @@ import type { AudioPlayer, AudioResource } from "@discordjs/voice";
 import type { VoiceConnection } from "@discordjs/voice";
 import type { Player } from "../structures/Player";
 import type { PlayerManager } from "../structures/PlayerManager";
-import type { PlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
 import type { TrackResolver } from "../structures/TrackResolver";
@@ -34,7 +34,7 @@ import type { LifecycleController } from "../controller/LifecycleController";
 import type { ForwardController } from "../controller/ForwardController";
 import type { PlayerOptions, Track, TrackMiddleware, StreamInfo, TrackLoadResult } from "./index";
 export interface PlaybackStartControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 	sessionController: PlaybackSessionController;
 	transitionEnabled: () => boolean;
 	stopPlayback: (signal: AbortSignal, cancelPreload?: boolean) => void;
@@ -42,20 +42,20 @@ export interface PlaybackStartControllerOptions {
 	adapters?: PlaybackOrchestratorAdapters;
 }
 export interface PlaybackPreparationControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 	isCurrentSession: (session: PlaybackSession, context: import("./bus").PlayerMessageContext) => boolean;
 	queueSnapshot: () => Track[];
 	setQueueRelated: (tracks: Track[]) => void;
 }
 export interface PlaybackSkipControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 	nextThroughBus: (ignoreLoop: boolean, context: import("./bus").PlayerMessageContext) => Promise<Track | null>;
 	stopPlayback: (signal: AbortSignal) => void;
 	publishState: () => void;
 	setWaitingForQueue: (waiting: boolean) => void;
 }
 export interface PlaybackTrackEndControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 	nextThroughBus: (ignoreLoop: boolean, context: import("./bus").PlayerMessageContext) => Promise<Track | null>;
 	stopPlayback: (signal: AbortSignal) => void;
 	publishState: () => void;
@@ -63,14 +63,14 @@ export interface PlaybackTrackEndControllerOptions {
 	lifecycleSignal: AbortSignal;
 }
 export interface PlaybackPlayControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 	isWaitingForQueue: () => boolean;
 	debug: (message?: any, ...optionalParams: any[]) => void;
 	lifecycleSignal: AbortSignal;
 	adapters?: PlaybackOrchestratorAdapters;
 }
 export interface ResourceRefreshControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 }
 export interface SaveControllerOptions {
 	middleware?: TrackMiddleware[];
@@ -79,21 +79,21 @@ export interface SaveControllerOptions {
 	resolveVideoStream: (track: Track) => Promise<StreamInfo | null | undefined>;
 	ffmpegPath?: string | null;
 	debug?: (...args: any[]) => void;
-	bus?: PlayerBus;
+	bus?: Bus;
 }
 export interface SearchControllerOptions {
 	extensionManager: ExtensionManager;
 	pluginManager: PluginManager;
 	debug: (...args: any[]) => void;
-	bus?: PlayerBus;
+	bus?: Bus;
 }
 export interface QueueControllerOptions {
-	bus?: PlayerBus;
+	bus?: Bus;
 }
 export interface PreloadControllerOptions {
 	loader: TrackLoader;
 	manager: PreloadManager;
-	bus?: PlayerBus;
+	bus?: Bus;
 }
 export interface TransitionControllerOptions {
 	enabled?: boolean;
@@ -106,7 +106,7 @@ export interface TransitionControllerOptions {
 	maxDurationMs?: number;
 	beatAlignMaxWaitMs?: number;
 	genreDurations?: Record<string, number>;
-	bus?: PlayerBus;
+	bus?: Bus;
 }
 export interface TransitionPlan {
 	enabled: boolean;
@@ -123,7 +123,7 @@ export interface TTSControllerOptions {
 	maxTimeTts?: number;
 	volume?: number;
 	interrupt?: boolean;
-	bus?: PlayerBus;
+	bus?: Bus;
 }
 export interface VolumeControllerOptions {
 	initialVolume?: number;
@@ -140,15 +140,15 @@ export interface FilterControllerOptions {
 }
 export interface ExtensionControllerOptions {
 	extensionManager: ExtensionManager;
-	bus: PlayerBus;
+	bus: Bus;
 }
 export interface PluginControllerOptions {
 	pluginManager: PluginManager;
-	bus: PlayerBus;
+	bus: Bus;
 }
 export interface PlayerConnectionBridgeOptions {
 	player: Player;
-	bus: PlayerBus;
+	bus: Bus;
 	debug?: (...args: any[]) => void;
 	guildId: string;
 }
@@ -207,9 +207,9 @@ export interface PromotedPreload {
 	streamInfo?: StreamInfo;
 	streamId: string | null;
 }
-export type PlayerBusLatencyKind = "action" | "rpc" | "query" | "event";
-export interface PlayerBusLatencyRecord {
-	kind: PlayerBusLatencyKind;
+export type BusLatencyKind = "action" | "rpc" | "query" | "event";
+export interface BusLatencyRecord {
+	kind: BusLatencyKind;
 	type: string;
 	durationUs: number;
 	requestId?: string;

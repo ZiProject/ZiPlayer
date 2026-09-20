@@ -2,7 +2,7 @@ import type { StreamInfo, Track, ActiveStream, StreamControllerOptions, PlayerAc
 import { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
-import { PlayerBus, type GlobalPlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 
 const STREAM_RPC_REPLACE = "controller.stream.replace";
@@ -11,16 +11,20 @@ const STREAM_RPC_REPLACE = "controller.stream.replace";
 export class StreamWorker {
 	private active: ActiveStream | null = null;
 	private readonly streamManager?: StreamManager;
-	private readonly bus?: PlayerBus;
+	private readonly bus?: Bus;
+	private readonly playerId?: string;
 	private readonly detachAction?: () => void;
 	private readonly detachRpcs: Array<() => void> = [];
 	private readonly detachStreamError?: () => void;
-	constructor(options: StreamControllerOptions = {}) {
+	constructor(options: StreamControllerOptions & { playerId?: string } = {}) {
 		this.streamManager = options.streamManager;
 		this.bus = options.bus;
-		if (this.streamManager && this.bus) {
+		this.playerId = options.playerId;
+		if (this.streamManager && this.bus && this.playerId) {
+			const bus = this.bus;
+			const playerId = this.playerId;
 			const onStreamError = ({ error }: { error: Error }) =>
-				this.bus?.event({ type: "streamError", error, track: this.bus.querySync("currentTrack") as Track | null });
+				bus.event(playerId, { type: "streamError", error, track: bus.querySync(playerId, "currentTrack") as Track | null });
 			this.streamManager.on("streamError", onStreamError);
 			this.detachStreamError = () => this.streamManager?.off("streamError", onStreamError);
 		}
@@ -126,7 +130,7 @@ export class StreamWorker {
 	abort(stream: ActiveStream) {
 		if (this.active?.stream !== stream.stream) return;
 		this.active = null;
-		this.bus?.event({ type: "STREAM_ABORTED", session: stream.session.snapshot() });
+		if (this.bus && this.playerId) this.bus.event(this.playerId, { type: "STREAM_ABORTED", session: stream.session.snapshot() });
 		if (stream.streamId) {
 			this.streamManager?.unregisterStream(stream.streamId, true);
 			return;
@@ -157,7 +161,7 @@ export class StreamWorker {
 export class StreamController {
 	private readonly workers = new Map<string, StreamWorker>();
 
-	constructor(private readonly bus: GlobalPlayerBus) {
+	constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => {
 			if (!context.signal.aborted && action.type === "STOP") this.workers.get(context.playerId)?.abortCurrent();
 		});
@@ -168,11 +172,14 @@ export class StreamController {
 		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackDestroyCurrentStream, (_req, ctx) =>
 			this.workers.get(ctx.playerId)?.abortCurrent(),
 		);
-		bus.registerRpc<{ streamInfo: StreamInfo; session: PlaybackSession }, ActiveStream>(STREAM_RPC_REPLACE, ({ streamInfo, session }, ctx) => {
-			const worker = this.workers.get(ctx.playerId);
-			if (!worker) throw new Error("StreamController is disposed");
-			return worker.replace(streamInfo, session);
-		});
+		bus.registerRpc<{ streamInfo: StreamInfo; session: PlaybackSession }, ActiveStream>(
+			STREAM_RPC_REPLACE,
+			({ streamInfo, session }, ctx) => {
+				const worker = this.workers.get(ctx.playerId);
+				if (!worker) throw new Error("StreamController is disposed");
+				return worker.replace(streamInfo, session);
+			},
+		);
 		bus.registerQuery("stream.stats", (playerId) => this.workers.get(playerId)?.statsSnapshot ?? null);
 		bus.registerQuery("stream.state", (playerId) => this.workers.get(playerId)?.stateSnapshot ?? null);
 		bus.registerQuery("stream.current", (playerId) => this.workers.get(playerId)?.current ?? null);
@@ -181,7 +188,7 @@ export class StreamController {
 	}
 
 	attach(playerId: string, streamManager?: StreamManager): void {
-		this.workers.set(playerId, new StreamWorker({ streamManager, bus: new PlayerBus(this.bus, playerId) }));
+		this.workers.set(playerId, new StreamWorker({ streamManager, bus: this.bus, playerId }));
 	}
 	detach(playerId: string): void {
 		this.workers.get(playerId)?.dispose();

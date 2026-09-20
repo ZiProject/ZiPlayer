@@ -9,8 +9,8 @@ import type {
 	TrackMiddlewareContext,
 } from "../types";
 import { FilterEngine } from "./FilterController";
-import { PlayerBus, type GlobalPlayerBus } from "../structures/PlayerBus";
-import type { PlayerBusRpcContext } from "../types";
+import type { Bus } from "../structures/Bus";
+import type { BusRpcContext } from "../types";
 import type { SaveControllerOptions } from "../types";
 
 /**
@@ -235,7 +235,7 @@ export class SaveWorker {
 export class SaveController {
 	private readonly workers = new Map<string, SaveWorker>();
 
-	public constructor(bus: GlobalPlayerBus) {
+	public constructor(bus: Bus) {
 		bus.registerRpc<{ track: Track; options?: SaveOptions | string }, Readable>(
 			"save",
 			({ track, options: saveOptions }, rpcContext) => {

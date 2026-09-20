@@ -1,7 +1,7 @@
 import type { StreamInfo, Track, TrackMiddleware, TrackMiddlewareContext } from ".";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PreloadManager } from "../structures/PreloadManager";
-import type { PlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 
 export interface TrackLoaderContext extends TrackMiddlewareContext {}
 export type TrackStreamResolver = (
@@ -43,5 +43,5 @@ export interface TrackLoaderOptions {
 	recovery?: TrackRecoveryPolicy;
 	qualityController?: TrackAttemptQualityController;
 	debug?: (message?: any, ...optionalParams: any[]) => void;
-	bus?: PlayerBus;
+	bus?: Bus;
 }

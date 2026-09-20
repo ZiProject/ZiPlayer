@@ -1,16 +1,16 @@
-import { createPlayerRequestId } from "../structures/PlayerBus";
+import { createPlayerRequestId } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, PlaybackSessionSnapshot, Track } from "../types";
-import { type GlobalPlayerBus, type PlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 import type { PlaybackTrackEndControllerOptions } from "../types";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 import { PlayerActionPriority } from "../types";
 
 // playback.transitionLock must be registered exactly once on the shared
-// GlobalPlayerBus; each per-player PlaybackTrackEndController registers itself here.
-const transitionLockRpcRegistered = new WeakSet<GlobalPlayerBus>();
+// Bus; each per-player PlaybackTrackEndController registers itself here.
+const transitionLockRpcRegistered = new WeakSet<Bus>();
 const trackEndControllers = new Map<string, PlaybackTrackEndController>();
-function ensureTransitionLockRpcBridge(bus: GlobalPlayerBus): void {
+function ensureTransitionLockRpcBridge(bus: Bus): void {
 	if (transitionLockRpcRegistered.has(bus)) return;
 	transitionLockRpcRegistered.add(bus);
 	bus.registerRpc<{ active: boolean }, void>(CONTROLLER_RPC.playbackTransitionLock, ({ active }, ctx) =>
@@ -19,11 +19,11 @@ function ensureTransitionLockRpcBridge(bus: GlobalPlayerBus): void {
 }
 
 /** Owns TRACK_END, queue refill, autoplay fallback, and queue-end transitions.
- * Talks to sibling playback controllers only through PlayerBus queries/RPCs —
+ * Talks to sibling playback controllers only through Bus queries/RPCs —
  * never by holding a direct reference to them. One instance per player. */
 export class PlaybackTrackEndController {
 	private readonly playerId: string;
-	private readonly bus: PlayerBus;
+	private readonly bus: Bus;
 	private readonly nextThroughBus: PlaybackTrackEndControllerOptions["nextThroughBus"];
 	private readonly stopPlayback: PlaybackTrackEndControllerOptions["stopPlayback"];
 	private readonly publishState: PlaybackTrackEndControllerOptions["publishState"];
@@ -43,12 +43,12 @@ export class PlaybackTrackEndController {
 		this.publishState = options.publishState;
 		this.queueSnapshot = options.queueSnapshot;
 		this.lifecycleSignal = options.lifecycleSignal;
-		ensureTransitionLockRpcBridge(this.bus.globalBus);
+		ensureTransitionLockRpcBridge(this.bus);
 		trackEndControllers.set(playerId, this);
 	}
 
 	private currentSession(): PlaybackSession | null {
-		return this.bus.querySync("playbackSessionInternal") ?? null;
+		return this.bus.querySync(this.playerId, "playbackSessionInternal") ?? null;
 	}
 
 	public get isTransitioning(): boolean {
@@ -104,20 +104,24 @@ export class PlaybackTrackEndController {
 			if (next) {
 				endedSession.markEnded();
 				this.waitingForQueue = false;
-				await this.bus.requestRpc(CONTROLLER_RPC.playbackStart, { track: next, context, from });
+				await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackStart, { track: next, context, from });
 				return;
 			}
-			if (this.bus.querySync("queueAutoPlay")) {
-				const candidate = await this.bus.requestRpc(CONTROLLER_RPC.playbackPrepareAutoplay, { session: endedSession, context });
+			if (this.bus.querySync(this.playerId, "queueAutoPlay")) {
+				const candidate = await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackPrepareAutoplay, {
+					session: endedSession,
+					context,
+				});
 				const stillCurrent = this.currentSession();
 				if (candidate && stillCurrent?.id === snapshot.id && stillCurrent.isActive()) {
 					endedSession.markEnded();
-					this.bus.requestRpcSync("queue.willNext", { track: null });
-					if (!this.bus.querySync("queueNextTrack")) this.bus.requestRpcSync("queue.addMultiple", { tracks: [candidate] });
+					this.bus.requestRpcSync(this.playerId, "queue.willNext", { track: null });
+					if (!this.bus.querySync(this.playerId, "queueNextTrack"))
+						this.bus.requestRpcSync(this.playerId, "queue.addMultiple", { tracks: [candidate] });
 					next = await this.nextThroughBus(false, context);
 					if (next) {
 						this.waitingForQueue = false;
-						await this.bus.requestRpc(CONTROLLER_RPC.playbackStart, { track: next, context, from });
+						await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackStart, { track: next, context, from });
 						return;
 					}
 				}
@@ -128,7 +132,7 @@ export class PlaybackTrackEndController {
 			this.stopPlayback(context.signal);
 			this.publishState();
 			this.waitingForQueue = true;
-			this.bus.event({ type: "queueEnd" });
+			this.bus.event(this.playerId, { type: "queueEnd" });
 		} finally {
 			this.trackEndTransition = false;
 		}
@@ -151,7 +155,7 @@ export class PlaybackTrackEndController {
 			const next = await this.nextThroughBus(false, context);
 			if (!next || context.signal.aborted) return;
 			this.waitingForQueue = false;
-			await this.bus.requestRpc(CONTROLLER_RPC.playbackStart, { track: next, context, from });
+			await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackStart, { track: next, context, from });
 		} finally {
 			this.trackEndTransition = false;
 		}

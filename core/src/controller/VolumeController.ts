@@ -1,5 +1,5 @@
 import type { AudioResource } from "@discordjs/voice";
-import type { GlobalPlayerBus, PlayerAction, PlayerActionExecutionContext } from "../structures/PlayerBus";
+import type { Bus, PlayerAction, PlayerActionExecutionContext } from "../structures/Bus";
 import type { Track } from "../types";
 import { CONTROLLER_RPC, type VolumeTargetRequest, type VolumeSetRequest } from "./ControllerBusContract";
 import type { VolumeControllerOptions } from "../types";
@@ -22,7 +22,7 @@ export class VolumeController {
 	private readonly states = new Map<string, VolumeState>();
 	private disposed = false;
 
-	constructor(private readonly bus: GlobalPlayerBus) {
+	constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => this.handleAction(action, context));
 		bus.registerQuery("volume", (playerId) => this.value(playerId));
 		bus.registerRpc<VolumeSetRequest, number>("volume.set", ({ value }, ctx) => this.setVolume(ctx.playerId, value));
