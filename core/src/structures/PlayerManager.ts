@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import { LRUCache } from "lru-cache";
 import { Player } from "./Player";
+import type { Bus } from "./Bus";
 import { GlobalPlayerRuntime, ensureSharedControllers } from "./GlobalPlayerRuntime";
 import {
 	PlaybackMode,
@@ -122,7 +123,8 @@ export class PlayerManager extends EventEmitter {
 	}
 	private static instance: PlayerManager | null = null;
 	private players: Map<string, Player> = new Map();
-	private runtimes: Map<string, GlobalPlayerRuntime> = new Map();
+	public readonly bus: Bus;
+	private readonly runtime: GlobalPlayerRuntime;
 	private pendingPlayers: Map<string, Promise<Player>> = new Map();
 	private searchCache: Map<string, ManagerCacheEntry<SearchResult>>;
 
@@ -174,6 +176,8 @@ export class PlayerManager extends EventEmitter {
 		// exists — not lazily on the first player. Every Player created by this
 		// manager talks to these same controller instances.
 		ensureSharedControllers();
+		this.runtime = new GlobalPlayerRuntime();
+		this.bus = this.runtime.bus;
 		this.plugins = [];
 		this.searchCache = new Map();
 
@@ -303,9 +307,9 @@ export class PlayerManager extends EventEmitter {
 			return this.searchPlayer;
 		}
 
-		const runtime = GlobalPlayerRuntime.create(SEARCH_PLAYER_GUILD_ID, { extractorTimeout: this.extractorTimeout }, this);
-		const player = new Player(SEARCH_PLAYER_GUILD_ID, runtime.bus, { extractorTimeout: this.extractorTimeout }, this);
-		runtime.attachPlayer(player);
+		this.runtime.attach(SEARCH_PLAYER_GUILD_ID, { extractorTimeout: this.extractorTimeout }, this);
+		const player = new Player(SEARCH_PLAYER_GUILD_ID, this.bus, { extractorTimeout: this.extractorTimeout }, this);
+		this.runtime.attachPlayer(SEARCH_PLAYER_GUILD_ID, player);
 		for (const plugin of this.plugins) {
 			player.addPlugin(plugin);
 		}
@@ -379,10 +383,9 @@ export class PlayerManager extends EventEmitter {
 				const debugSink = (message?: any, ...optionalParams: any[]) => {
 					if (this.listenerCount("debug") > 0 || this.debugEnabled) this.emit("debug", message, ...optionalParams);
 				};
-				const runtime = GlobalPlayerRuntime.create(guildId, options, this, debugSink);
-				this.runtimes.set(guildId, runtime);
-				const player = new Player(guildId, runtime.bus, options, this);
-				runtime.attachPlayer(player);
+				this.runtime.attach(guildId, options, this, debugSink);
+				const player = new Player(guildId, this.bus, options, this);
+				this.runtime.attachPlayer(guildId, player);
 
 				// Add all registered plugins
 				this.plugins.forEach((plugin) => player.addPlugin(plugin));
@@ -505,12 +508,7 @@ export class PlayerManager extends EventEmitter {
 			}
 
 			this.players.delete(guildId);
-			const runtime = this.runtimes.get(guildId);
-			if (runtime) {
-				void runtime.dispose().catch(() => undefined);
-				this.runtimes.delete(guildId);
-			}
-
+			void this.runtime.detach(guildId).catch(() => undefined);
 			this.debug(`Player destroyed for guildId: ${guildId}`);
 		});
 
@@ -857,6 +855,7 @@ export class PlayerManager extends EventEmitter {
 		this.players.clear();
 		this.searchCache.clear();
 		this.cache.clear();
+		void this.runtime.dispose().catch(() => undefined);
 		this.removeAllListeners();
 		this.debug(`PlayerManager destroyed`);
 	}

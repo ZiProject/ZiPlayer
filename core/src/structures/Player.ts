@@ -87,6 +87,12 @@ export class Player extends EventEmitter {
 	public get audioPlayer() {
 		return this.bus.querySync(this.playerId, "audioPlayer");
 	}
+	public get currentResource(): AudioResource | null {
+		return this.bus.querySync(this.playerId, "currentResource") as AudioResource | null;
+	}
+	public get connection(): VoiceConnection | null {
+		return this.bus.querySync(this.playerId, "connection") ?? null;
+	}
 	public get playbackMode(): PlaybackMode {
 		return this.bus.querySync(this.playerId, "playbackMode") ?? PlaybackMode.NATIVE;
 	}
@@ -137,12 +143,6 @@ export class Player extends EventEmitter {
 	}
 	public get relatedTracks(): Track[] {
 		return this.bus.querySync(this.playerId, "relatedTracks") ?? [];
-	}
-	public get currentResource(): AudioResource | null {
-		return this.bus.querySync(this.playerId, "currentResource") as AudioResource | null;
-	}
-	public get connection(): VoiceConnection | null {
-		return this.bus.querySync(this.playerId, "connection") ?? null;
 	}
 	public search(query: string, requestedBy: string): Promise<SearchResult> {
 		return this.bus.requestRpc(this.playerId, "search", { query, requestedBy });

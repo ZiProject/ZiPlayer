@@ -44,66 +44,120 @@ interface ConnectionSlot {
  * run `connect()`/`disconnect()`/`reconnect()` for every OTHER guild's request too.
  */
 export class ConnectionController {
+	private readonly bus?: Bus;
 	private readonly slots = new Map<string, ConnectionSlot>();
+	private defaultPlayerId?: string;
 
-	public constructor(private readonly bus: Bus) {
-		bus.registerRpc<{ audioPlayer: AudioPlayer | null }, void>("connection.setAudioPlayer", ({ audioPlayer }, ctx) =>
-			this.setAudioPlayer(ctx.playerId, audioPlayer),
-		);
-		bus.registerQuery("connection", (playerId) => this.slots.get(playerId)?.connection ?? null);
-		bus.registerQuery("connection.state", (playerId) => this.slots.get(playerId)?.connection?.state.status);
-		bus.onInput("[Player]->[Connection]:connect", (event) =>
-			this.enqueue(event.playerId, () => this.connect(event.playerId, event)),
-		);
-		bus.onInput("[Player]->[Connection]:disconnect", (event) =>
-			this.enqueue(event.playerId, () => this.disconnect(event.playerId, event)),
-		);
-		bus.onInput("[Player]->[Connection]:reconnect", (event) =>
-			this.enqueue(event.playerId, () => this.reconnect(event.playerId, event)),
-		);
+	public constructor(bus: Bus);
+	public constructor(options: ConnectionControllerOptions);
+	public constructor(busOrOptions: Bus | ConnectionControllerOptions) {
+		const isBus = busOrOptions && typeof (busOrOptions as any).registerRpc === "function";
+		const bus: Bus | undefined = isBus ? (busOrOptions as Bus) : (busOrOptions as any).bus;
+		this.bus = bus;
+
+		if (bus) {
+			bus.registerRpc<{ audioPlayer: AudioPlayer | null }, void>("connection.setAudioPlayer", ({ audioPlayer }, ctx) =>
+				this.setAudioPlayer(ctx.playerId, audioPlayer),
+			);
+			bus.registerQuery("connection", (playerId) => this.slots.get(playerId)?.connection ?? null);
+			bus.registerQuery("connection.state", (playerId) => this.slots.get(playerId)?.connection?.state.status);
+			bus.onInput("[Player]->[Connection]:connect", (event) =>
+				this.enqueue(event.playerId, () => this.connect(event.playerId, event)),
+			);
+			bus.onInput("[Player]->[Connection]:disconnect", (event) =>
+				this.enqueue(event.playerId, () => this.disconnect(event.playerId, event)),
+			);
+			bus.onInput("[Player]->[Connection]:reconnect", (event) =>
+				this.enqueue(event.playerId, () => this.reconnect(event.playerId, event)),
+			);
+		}
+
+		if (!isBus) {
+			const options = busOrOptions as ConnectionControllerOptions;
+			const playerId = options.guildId ?? "default";
+			this.defaultPlayerId = playerId;
+			this.attach(playerId, options);
+		}
 	}
 
 	/** Opens a slot for `playerId`. Mirrors the old per-instance constructor options
 	 *  (minus `guildId`/`bus`, which are now `playerId`/the shared bus). */
-	public attach(playerId: string, options: Omit<ConnectionControllerOptions, "guildId" | "bus">): void {
+	public attach(playerId: string, options: Omit<ConnectionControllerOptions, "guildId" | "bus"> | ConnectionControllerOptions): void {
+		const opt = (options as any).options ?? options;
 		this.slots.set(playerId, {
-			group: options.options?.group,
-			selfDeaf: options.options?.selfDeaf ?? true,
-			selfMute: options.options?.selfMute ?? false,
-			debug: options.debug,
-			readyTimeoutMs: options.readyTimeoutMs ?? 15_000,
+			group: opt.group,
+			selfDeaf: opt.selfDeaf ?? true,
+			selfMute: opt.selfMute ?? false,
+			debug: (options as any).debug,
+			readyTimeoutMs: (options as any).readyTimeoutMs ?? 15_000,
 			connection: null,
 			channel: null,
 			sessionId: null,
 			requestId: null,
-			audioPlayer: options.audioPlayer ?? null,
+			audioPlayer: (options as any).audioPlayer ?? null,
 			subscription: null,
 			disposed: false,
 			operation: Promise.resolve(),
 		});
 	}
 
-	public active(playerId: string): VoiceConnection | null {
+	public get active(): VoiceConnection | null {
+		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
+		return id ? (this.slots.get(id)?.connection ?? null) : null;
+	}
+	public getActive(playerId: string): VoiceConnection | null {
 		return this.slots.get(playerId)?.connection ?? null;
 	}
-	public activeChannel(playerId: string): VoiceChannel | null {
+
+	public get activeChannel(): VoiceChannel | null {
+		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
+		return id ? (this.slots.get(id)?.channel ?? null) : null;
+	}
+	public getActiveChannel(playerId: string): VoiceChannel | null {
 		return this.slots.get(playerId)?.channel ?? null;
 	}
-	public activeSessionId(playerId: string): PlayerSessionId | null {
+
+	public get activeSessionId(): PlayerSessionId | null {
+		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
+		return id ? (this.slots.get(id)?.sessionId ?? null) : null;
+	}
+	public getActiveSessionId(playerId: string): PlayerSessionId | null {
 		return this.slots.get(playerId)?.sessionId ?? null;
 	}
-	public activeSubscription(playerId: string): PlayerSubscription | null {
+
+	public get activeSubscription(): PlayerSubscription | null {
+		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
+		return id ? (this.slots.get(id)?.subscription ?? null) : null;
+	}
+	public getActiveSubscription(playerId: string): PlayerSubscription | null {
 		return this.slots.get(playerId)?.subscription ?? null;
 	}
-	public isReady(playerId: string): boolean {
+
+	public get isReady(): boolean {
+		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
+		return id ? this.slots.get(id)?.connection?.state.status === VoiceConnectionStatus.Ready : false;
+	}
+	public getIsReady(playerId: string): boolean {
 		return this.slots.get(playerId)?.connection?.state.status === VoiceConnectionStatus.Ready;
 	}
-	public isSubscribed(playerId: string): boolean {
+
+	public get isSubscribed(): boolean {
+		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
+		if (!id) return false;
+		const slot = this.slots.get(id);
+		return Boolean(slot?.subscription && slot.connection?.state.status === VoiceConnectionStatus.Ready);
+	}
+	public getIsSubscribed(playerId: string): boolean {
 		const slot = this.slots.get(playerId);
-		return Boolean(slot?.subscription && this.isReady(playerId));
+		return Boolean(slot?.subscription && slot.connection?.state.status === VoiceConnectionStatus.Ready);
 	}
 
-	public setAudioPlayer(playerId: string, audioPlayer: AudioPlayer | null): void {
+	public setAudioPlayer(playerId: string, audioPlayer: AudioPlayer | null): void;
+	public setAudioPlayer(audioPlayer: AudioPlayer | null): void;
+	public setAudioPlayer(arg1: string | AudioPlayer | null, arg2?: AudioPlayer | null): void {
+		const isFirstArgString = typeof arg1 === "string";
+		const playerId = isFirstArgString ? arg1 : (this.defaultPlayerId ?? this.slots.keys().next().value ?? "default");
+		const audioPlayer = (isFirstArgString ? arg2 : arg1) as AudioPlayer | null;
 		const slot = this.slots.get(playerId);
 		if (!slot || slot.audioPlayer === audioPlayer) return;
 		this.cleanupSubscription(playerId);
@@ -113,7 +167,12 @@ export class ConnectionController {
 		}
 	}
 
-	public ensureSubscription(playerId: string, connection?: VoiceConnection | null): PlayerSubscription | null {
+	public ensureSubscription(playerId: string, connection?: VoiceConnection | null): PlayerSubscription | null;
+	public ensureSubscription(connection?: VoiceConnection | null): PlayerSubscription | null;
+	public ensureSubscription(arg1?: string | VoiceConnection | null, arg2?: VoiceConnection | null): PlayerSubscription | null {
+		const isFirstArgString = typeof arg1 === "string";
+		const playerId = isFirstArgString ? arg1 : (this.defaultPlayerId ?? this.slots.keys().next().value ?? "default");
+		const connection = isFirstArgString ? arg2 : arg1;
 		const slot = this.slots.get(playerId);
 		if (!slot) return null;
 		const target = connection === undefined ? slot.connection : connection;
@@ -142,14 +201,23 @@ export class ConnectionController {
 		return slot.subscription;
 	}
 
-	public cleanupSubscription(playerId: string): void {
-		const slot = this.slots.get(playerId);
+	public cleanupSubscription(playerId?: string): void {
+		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value ?? "default";
+		const slot = this.slots.get(id);
 		if (!slot?.subscription) return;
 		try {
 			slot.subscription.unsubscribe();
 		} catch {}
 		slot.subscription = null;
-		slot.debug?.(`[ConnectionController] AudioPlayer unsubscribed guild=${playerId}`);
+		slot.debug?.(`[ConnectionController] AudioPlayer unsubscribed guild=${id}`);
+	}
+
+	public async dispose(playerId?: string): Promise<void> {
+		if (playerId) {
+			await this.detach(playerId);
+			return;
+		}
+		for (const id of [...this.slots.keys()]) await this.detach(id);
 	}
 
 	public async detach(playerId: string): Promise<void> {
@@ -185,7 +253,7 @@ export class ConnectionController {
 		slot.requestId = event.requestId;
 		slot.sessionId = sessionId;
 		slot.channel = event.channel;
-		this.bus.emitOutput({
+		this.bus?.emitOutput({
 			type: "[Connection]->[Player]:connecting",
 			requestId: event.requestId,
 			playerId,
@@ -240,7 +308,7 @@ export class ConnectionController {
 				if (slot.connection !== connection) return;
 				this.cleanupSubscription(playerId);
 				slot.connection = null;
-				this.bus.emitOutput({
+				this.bus?.emitOutput({
 					type: "[Connection]->[Player]:disconnected",
 					requestId: slot.requestId ?? undefined,
 					playerId,
@@ -262,7 +330,7 @@ export class ConnectionController {
 			this.cleanupSubscription(playerId);
 			slot.connection?.destroy();
 			slot.connection = null;
-			this.bus.emitOutput({
+			this.bus?.emitOutput({
 				type: "[Connection]->[Player]:error",
 				requestId: event.requestId,
 				playerId,
@@ -288,7 +356,7 @@ export class ConnectionController {
 		slot.requestId = null;
 		try {
 			connection?.destroy();
-			this.bus.emitOutput({
+			this.bus?.emitOutput({
 				type: "[Connection]->[Player]:disconnected",
 				requestId: event.requestId,
 				playerId,
@@ -296,7 +364,7 @@ export class ConnectionController {
 				reason: event.reason,
 			});
 		} catch (error) {
-			this.bus.emitOutput({
+			this.bus?.emitOutput({
 				type: "[Connection]->[Player]:error",
 				requestId: event.requestId,
 				playerId,
@@ -330,7 +398,7 @@ export class ConnectionController {
 		slot: ConnectionSlot,
 	): void {
 		slot.debug?.(`[ConnectionController] connected guild=${playerId} channel=${channel.id}`);
-		this.bus.emitOutput({
+		this.bus?.emitOutput({
 			type: "[Connection]->[Player]:connected",
 			requestId,
 			playerId,

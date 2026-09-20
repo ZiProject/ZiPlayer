@@ -42,9 +42,21 @@ const newStreamSlot = (): StreamSlot => ({
  * opened by `attach(playerId, deps)` and released by `detach(playerId)`.
  */
 export class PreloadManager {
+	private readonly bus?: Bus;
 	private readonly slots = new Map<string, PreloadPlayerSlot>();
+	private defaultPlayerId?: string;
 
-	public constructor(private readonly bus: Bus) {}
+	public constructor(bus: Bus);
+	public constructor(deps: PreloadManagerDeps, bus?: Bus);
+	public constructor(busOrDeps: Bus | PreloadManagerDeps, maybeBus?: Bus) {
+		if (busOrDeps && typeof (busOrDeps as any).querySync === "function") {
+			this.bus = busOrDeps as Bus;
+		} else {
+			this.bus = maybeBus;
+			this.defaultPlayerId = "default";
+			this.attach("default", busOrDeps as PreloadManagerDeps);
+		}
+	}
 
 	public attach(playerId: string, deps: PreloadManagerDeps): void {
 		if (this.slots.has(playerId)) this.detach(playerId);
@@ -69,8 +81,9 @@ export class PreloadManager {
 		return this.slots.has(playerId);
 	}
 
-	public slotState(playerId: string): StreamSlot {
-		return this.slots.get(playerId)?.preloadSlot ?? newStreamSlot();
+	public slotState(playerId?: string): StreamSlot {
+		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value;
+		return (id ? this.slots.get(id)?.preloadSlot : undefined) ?? newStreamSlot();
 	}
 
 	// ---------------------------------------------------------------------
@@ -79,16 +92,19 @@ export class PreloadManager {
 
 	private getNextTrack(slot: PreloadPlayerSlot): Track | null {
 		if (slot.deps.getNextTrack) return slot.deps.getNextTrack() ?? null;
+		if (!this.bus) return null;
 		return this.bus.querySync(slot.playerId, "queueLoop") === "track" ?
 				this.bus.querySync(slot.playerId, "queueCurrent")
 			:	this.bus.querySync(slot.playerId, "queueNextTrack");
 	}
 	private getStream(slot: PreloadPlayerSlot, track: Track): Promise<StreamInfo | null> {
 		if (slot.deps.getStream) return slot.deps.getStream(track);
+		if (!this.bus) return Promise.resolve(null);
 		return this.bus.requestRpc(slot.playerId, "stream.resolve", { track });
 	}
 	private removeTrack(slot: PreloadPlayerSlot, track: Track): boolean {
 		if (slot.deps.removeTrackFromQueue) return slot.deps.removeTrackFromQueue(track);
+		if (!this.bus) return false;
 		const next = this.bus.querySync(slot.playerId, "queueNextTrack");
 		const same =
 			next === track ||
@@ -107,9 +123,16 @@ export class PreloadManager {
 	// Preload operations (all keyed by playerId)
 	// ---------------------------------------------------------------------
 
-	public hasValidPreload(playerId: string, track: Track): boolean {
+	public hasValidPreload(playerId: string, track: Track): boolean;
+	public hasValidPreload(track: Track): boolean;
+	public hasValidPreload(arg1: string | Track, arg2?: Track): boolean {
+		if (typeof arg1 === "string") {
+			const slot = this.slots.get(arg1);
+			return slot ? this.slotHasValidPreload(slot, arg2!) : false;
+		}
+		const playerId = this.defaultPlayerId ?? this.slots.keys().next().value ?? "default";
 		const slot = this.slots.get(playerId);
-		return slot ? this.slotHasValidPreload(slot, track) : false;
+		return slot ? this.slotHasValidPreload(slot, arg1) : false;
 	}
 	private slotHasValidPreload(slot: PreloadPlayerSlot, track: Track): boolean {
 		const stream = slot.preloadSlot.streamInfo?.stream;
@@ -121,7 +144,13 @@ export class PreloadManager {
 			isStreamAlive
 		);
 	}
-	public takePreloaded(playerId: string, track: Track): PromotedPreload | null {
+	public takePreloaded(playerId: string, track: Track): PromotedPreload | null;
+	public takePreloaded(track: Track): PromotedPreload | null;
+	public takePreloaded(arg1: string | Track, arg2?: Track): PromotedPreload | null {
+		const isFirstArgString = typeof arg1 === "string";
+		const playerId = isFirstArgString ? arg1 : (this.defaultPlayerId ?? this.slots.keys().next().value ?? "default");
+		const track = (isFirstArgString ? arg2 : arg1) as Track;
+		if (!playerId || !track) return null;
 		const slot = this.slots.get(playerId);
 		if (!slot || !this.slotHasValidPreload(slot, track)) return null;
 		const preloadSlot = slot.preloadSlot;
@@ -140,8 +169,9 @@ export class PreloadManager {
 		preloadSlot.loadPromise = null;
 		return { track, stream, streamInfo, streamId };
 	}
-	public async preloadNextTrack(playerId: string): Promise<void> {
-		const slot = this.slots.get(playerId);
+	public async preloadNextTrack(playerId?: string): Promise<void> {
+		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value ?? "default";
+		const slot = this.slots.get(id);
 		if (!slot) return;
 		const { debug, isDestroyed, isEnabled } = slot.deps;
 		const preloadSlot = slot.preloadSlot;
@@ -167,7 +197,7 @@ export class PreloadManager {
 			if (preloadSlot.loadPromise) await preloadSlot.loadPromise;
 			return;
 		}
-		if (preloadSlot.isValid && !this.trackMatches(preloadSlot.track, nextTrack)) await this.safeCancelPreload(playerId);
+		if (preloadSlot.isValid && !this.trackMatches(preloadSlot.track, nextTrack)) await this.safeCancelPreload(id);
 		slot.preloadLock = true;
 		slot.preloadNext = false;
 		const abortController = new AbortController();
@@ -182,21 +212,23 @@ export class PreloadManager {
 			if (err instanceof Error && err.message === "PRELOAD_CANCELLED") debug(`[Preload] Cancelled for ${nextTrack.title}`);
 			else if (err instanceof Error && err.message === "No stream available") {
 				debug(`[Preload] Skipped unplayable track: ${nextTrack.title}`);
-				this.clearPreloadSlot(playerId);
+				this.clearPreloadSlot(id);
 				slot.preloadNext = true;
 			} else {
 				debug(`[Preload] Failed for ${nextTrack.title}:`, err);
-				this.clearPreloadSlot(playerId);
+				this.clearPreloadSlot(id);
 			}
 		} finally {
 			slot.preloadLock = false;
 			preloadSlot.isLoading = false;
 			preloadSlot.loadPromise = null;
 		}
-		if (slot.preloadNext && !isDestroyed() && isEnabled()) await this.preloadNextTrack(playerId);
+		if (slot.preloadNext && !isDestroyed() && isEnabled()) await this.preloadNextTrack(slot.playerId);
 	}
-	public async safeCancelPreload(playerId: string): Promise<void> {
-		const slot = this.slots.get(playerId);
+	public async safeCancelPreload(playerId?: string): Promise<void> {
+		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value;
+		if (!id) return;
+		const slot = this.slots.get(id);
 		if (!slot) return;
 		const preloadSlot = slot.preloadSlot;
 		if (!preloadSlot.abortController && !preloadSlot.streamInfo && !preloadSlot.streamId) return;
@@ -207,17 +239,21 @@ export class PreloadManager {
 		if (preloadSlot.streamInfo) {
 			this.destroyStreamInfo(slot, preloadSlot.streamInfo);
 		}
-		this.clearPreloadSlot(playerId);
+		this.clearPreloadSlot(id);
 	}
-	public cancelPreload(playerId: string): void {
-		const slot = this.slots.get(playerId);
+	public cancelPreload(playerId?: string): void {
+		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value;
+		if (!id) return;
+		const slot = this.slots.get(id);
 		if (!slot) return;
 		slot.preloadSlot.abortController?.abort();
 		if (slot.preloadSlot.streamId) slot.deps.streamManager.unregisterStream(slot.preloadSlot.streamId, true);
-		this.clearPreloadSlot(playerId);
+		this.clearPreloadSlot(id);
 	}
-	public clearPreloadSlot(playerId: string): void {
-		const slot = this.slots.get(playerId);
+	public clearPreloadSlot(playerId?: string): void {
+		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value;
+		if (!id) return;
+		const slot = this.slots.get(id);
 		if (!slot) return;
 		const preloadSlot = slot.preloadSlot;
 		if (preloadSlot.streamInfo) {

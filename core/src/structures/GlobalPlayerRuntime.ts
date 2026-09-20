@@ -77,7 +77,7 @@ export interface SharedControllerGraph {
 }
 
 let sharedControllerGraph: SharedControllerGraph | null = null;
-const runtimeInstances = new Map<string, GlobalPlayerRuntime>();
+let globalRuntimeInstance: GlobalPlayerRuntime | null = null;
 
 /** Creates the shared controller graph on first use (or returns the existing one).
  * PlayerManager calls this eagerly in its constructor so the controllers exist as soon
@@ -122,52 +122,66 @@ export function ensureSharedControllers(): SharedControllerGraph {
 	// GlobalPlayerRuntime itself; registered once here and routed to whichever
 	// runtime instance is currently registered for that playerId.
 	bus.registerRpc<{ playerId: string }, { playerId: string; timestamp: number }>("runtime.ping", ({ playerId: pingId }, ctx) => {
-		if (pingId !== ctx.playerId || !runtimeInstances.has(ctx.playerId)) throw new Error(`Player id mismatch: ${pingId}`);
+		if (pingId !== ctx.playerId || !globalRuntimeInstance?.has(ctx.playerId)) throw new Error(`Player id mismatch: ${pingId}`);
 		return { playerId: ctx.playerId, timestamp: Date.now() };
 	});
-	bus.registerRpc<void, boolean>("runtime.dispose", (_req, ctx) => {
-		void runtimeInstances.get(ctx.playerId)?.dispose();
+	bus.registerRpc<void, boolean>("runtime.dispose", async (_req, ctx) => {
+		if (globalRuntimeInstance) await globalRuntimeInstance.detach(ctx.playerId);
 		return true;
 	});
 	return sharedControllerGraph;
 }
 
-/** Owner of one guild/player's per-player resources (voice connection, audio player,
- * queue/playback state slice, etc.) against the shared, process-wide controller graph
- * and Bus. */
+interface PlayerRuntimeSlice {
+	readonly playerId: string;
+	readonly controllers: PlayerRuntimeGraph;
+	readonly disposables: Map<string, () => void | Promise<void>>;
+	readonly errors: Array<{ name: string; error: unknown }>;
+	globalRegistration?: GlobalControllerRegistration<unknown>;
+	disposed: boolean;
+}
+
+/** Owner of per-player resources (voice connection, audio player, queue/playback
+ * state slice, etc.) against the shared, process-wide controller graph and Bus. */
 export class GlobalPlayerRuntime {
 	readonly bus: Bus;
-	controllers!: PlayerRuntimeGraph;
-	readonly playerId: string;
+	private readonly slices = new Map<string, PlayerRuntimeSlice>();
 	private disposed = false;
-	private readonly disposables = new Map<string, () => void | Promise<void>>();
 	private readonly errors: Array<{ name: string; error: unknown }> = [];
-	private globalRegistration?: GlobalControllerRegistration<unknown>;
 
+	public constructor(bus?: Bus);
 	public constructor(
 		playerId: string,
-		options: PlayerOptions = {},
+		options?: PlayerOptions,
+		manager?: PlayerManager,
+		debugSink?: (...args: any[]) => void,
+	);
+	public constructor(
+		busOrPlayerId?: Bus | string,
+		options?: PlayerOptions,
 		manager?: PlayerManager,
 		debugSink?: (...args: any[]) => void,
 	) {
-		this.playerId = playerId;
-		this.bus = ensureSharedControllers().bus;
-		this.controllers = this.createControllerGraph({
-			playerId: this.playerId,
-			bus: this.bus,
-			options,
-			manager,
-			debugSink,
-		});
+		const isLegacy = typeof busOrPlayerId === "string";
+		const bus = isLegacy ? undefined : (busOrPlayerId as Bus | undefined);
+		this.bus = bus ?? ensureSharedControllers().bus;
+		globalRuntimeInstance = this;
+		if (isLegacy && busOrPlayerId) {
+			this.attach(busOrPlayerId, options ?? {}, manager, debugSink);
+		}
 	}
 
 	public static create(
-		playerId: string,
+		playerId?: string,
 		options: PlayerOptions = {},
 		manager?: PlayerManager,
 		debugSink?: (...args: any[]) => void,
 	): GlobalPlayerRuntime {
-		return new GlobalPlayerRuntime(playerId, options, manager, debugSink);
+		const runtime = globalRuntimeInstance ?? new GlobalPlayerRuntime();
+		if (playerId) {
+			runtime.attach(playerId, options, manager, debugSink);
+		}
+		return runtime;
 	}
 
 	public get isDisposed(): boolean {
@@ -178,10 +192,50 @@ export class GlobalPlayerRuntime {
 		return this.errors;
 	}
 
-	public attachPlayer(player: Player): void {
-		this.controllers?.extensionManager?.attachPlayer(player);
+	public has(playerId: string): boolean {
+		return this.slices.has(playerId);
+	}
+
+	public get controllers(): PlayerRuntimeGraph | undefined {
+		return this.slices.values().next().value?.controllers;
+	}
+
+	public get playerId(): string {
+		return this.slices.keys().next().value ?? "";
+	}
+
+	public getGraph(playerId: string): PlayerRuntimeGraph | undefined {
+		return this.slices.get(playerId)?.controllers;
+	}
+
+	public attachPlayer(player: Player): void;
+	public attachPlayer(playerId: string, player: Player): void;
+	public attachPlayer(playerIdOrPlayer: string | Player, maybePlayer?: Player): void {
+		const playerId = typeof playerIdOrPlayer === "string" ? playerIdOrPlayer : playerIdOrPlayer.playerId;
+		const player = typeof playerIdOrPlayer === "string" ? maybePlayer! : playerIdOrPlayer;
+		const slice = this.slices.get(playerId);
+		slice?.controllers?.extensionManager?.attachPlayer(player);
 		const shared = ensureSharedControllers();
-		shared.eventBridge.attachPlayer(this.playerId, player);
+		shared.eventBridge.attachPlayer(playerId, player);
+	}
+
+	public attach(
+		playerId: string,
+		options: PlayerOptions = {},
+		manager?: PlayerManager,
+		debugSink?: (...args: any[]) => void,
+	): PlayerRuntimeGraph {
+		if (this.disposed) throw new Error("GlobalPlayerRuntime is disposed");
+		if (this.slices.has(playerId)) {
+			void this.detach(playerId);
+		}
+		return this.createControllerGraph({
+			playerId,
+			bus: this.bus,
+			options,
+			manager,
+			debugSink,
+		});
 	}
 
 	public initialize(params: {
@@ -190,21 +244,36 @@ export class GlobalPlayerRuntime {
 		options?: PlayerOptions;
 		debugSink?: (...args: any[]) => void;
 	}): PlayerRuntimeGraph {
-		if (this.disposed) throw new Error("GlobalPlayerRuntime is disposed");
-		this.controllers = this.createControllerGraph({
-			playerId: params.playerId,
-			bus: this.bus,
-			manager: params.manager,
-			options: params.options ?? {},
-			debugSink: params.debugSink,
-		});
-		return this.controllers;
+		return this.attach(params.playerId, params.options, params.manager, params.debugSink);
 	}
 
 	public createControllerGraph(params: CreateControllerGraphParams): PlayerRuntimeGraph {
 		if (this.disposed) throw new Error("GlobalPlayerRuntime is disposed");
 		const { playerId, bus, manager, options = {}, debugSink } = params;
 		const shared = ensureSharedControllers();
+		const disposables = new Map<string, () => void | Promise<void>>();
+		const errors: Array<{ name: string; error: unknown }> = [];
+		let sliceDisposed = false;
+
+		const monitorCleanup = (name: string, cleanup: () => void | Promise<void>) => {
+			if (sliceDisposed) throw new Error(`Player ${playerId} runtime is disposed; cannot register ${name}`);
+			disposables.set(name, cleanup);
+		};
+
+		const resolveDispose = (controller: unknown): (() => void | Promise<void>) | null => {
+			if (!controller || typeof controller !== "object") return null;
+			const value = controller as { dispose?: unknown; destroy?: unknown };
+			if (typeof value.dispose === "function") return () => (value.dispose as () => void | Promise<void>)();
+			if (typeof value.destroy === "function") return () => (value.destroy as () => void | Promise<void>)();
+			return null;
+		};
+
+		const monitor = (name: string, controller: unknown) => {
+			if (sliceDisposed) throw new Error(`Player ${playerId} runtime is disposed; cannot register ${name}`);
+			const dispose = resolveDispose(controller);
+			if (dispose) disposables.set(name, dispose);
+		};
+
 		const debugTracer = new PlayerEventDebug(bus, playerId, debugSink ?? (() => undefined), manager?.debugLevel ?? "info");
 		const channel = (tag: string, level: PlayerDebugLevel = "debug") => debugTracer.channel(tag, level);
 		const middleware: TrackMiddleware[] = [
@@ -250,12 +319,12 @@ export class GlobalPlayerRuntime {
 			streamManager,
 			pluginManager,
 			extensionManager,
-			isDestroyed: () => this.disposed,
+			isDestroyed: () => sliceDisposed,
 		});
 		shared.preloadManager.attach(playerId, {
 			streamManager,
 			debug: channel("Preload"),
-			isDestroyed: () => this.disposed,
+			isDestroyed: () => sliceDisposed,
 			isEnabled: () =>
 				options.lowPerformance && options.preload?.autoDisableInLowPerformance ? false : (options.preload?.enabled ?? true),
 		});
@@ -343,19 +412,7 @@ export class GlobalPlayerRuntime {
 			searchController: shared.searchController,
 		};
 
-		runtimeInstances.set(playerId, this);
-		this.monitorCleanup("globalRuntimeRegistration", () => {
-			if (runtimeInstances.get(playerId) === this) runtimeInstances.delete(playerId);
-		});
-		// Detach this player's slice from every shared controller on dispose. Order
-		// mirrors lifecycleOrder below (reversed at disposal time), so a shared
-		// controller's per-player state disappears before its process-wide
-		// registration would ever be touched (which never happens: shared
-		// controllers are never destroyed, only detached per player).
-		this.monitorCleanup("sharedControllers", async () => {
-			// Orchestrator/preload/playback detach before the connection they play through and
-			// before the session controller they read sessions from, mirroring how they were
-			// wired up (orchestrator/preload attached after connection+session in the block above).
+		monitorCleanup("sharedControllers", async () => {
 			shared.orchestrator.detach(playerId);
 			shared.preloadController.detach(playerId);
 			shared.playbackController.detach(playerId);
@@ -381,72 +438,80 @@ export class GlobalPlayerRuntime {
 			shared.eventBridge.detach(playerId);
 		});
 
-		this.globalRegistration = globalControllerRegistry.register(playerId, bus, graph, () => this.dispose());
-		// Only resources genuinely created fresh per player go through the generic
-		// monitor()->dispose()/destroy() path. The six controllers above (trackResolver,
-		// preloadManager, trackLoader, playbackController, preloadController, orchestrator)
-		// are shared singletons now — their per-player teardown is `detach(playerId)` in the
-		// "sharedControllers" cleanup above, not a `dispose()` call here (which would tear
-		// down every player's state at once).
+		const globalRegistration = globalControllerRegistry.register(playerId, bus, graph, () => this.detach(playerId));
+
 		const lifecycleOrder: Array<keyof PlayerRuntimeGraph> = ["streamManager", "pluginManager", "extensionManager", "debugTracer"];
-		for (const name of lifecycleOrder) this.monitor(name, graph[name]);
+		for (const name of lifecycleOrder) monitor(name, graph[name]);
+
+		const slice: PlayerRuntimeSlice = {
+			playerId,
+			controllers: graph,
+			disposables,
+			errors,
+			globalRegistration,
+			disposed: false,
+		};
+		this.slices.set(playerId, slice);
 		return graph;
 	}
 
-	public hasTTSPlayer(): boolean {
-		return this.bus.querySync(this.playerId, "tts.hasPlayer") ?? false;
-	}
-	public getAudioPlayer(): AudioPlayer | null {
-		return this.bus.querySync(this.playerId, "audioPlayer") ?? null;
-	}
-	public setCurrentTrack(track: Track | null): void {
-		this.bus.requestRpcSync(this.playerId, "queue.setCurrent", { track });
-	}
-	public getQueueSnapshot(): Track[] {
-		return this.bus.querySync(this.playerId, "queue") ?? [];
-	}
-	public serializeQueue(): object | undefined {
-		return this.bus.requestRpcSync(this.playerId, "queue.serialize", undefined);
-	}
-	public restoreQueue(state: object): void {
-		this.bus.requestRpcSync(this.playerId, "queue.restore", { state });
-	}
-	public getStreamManagerStats(): ReturnType<StreamManager["getStats"]> | undefined {
-		return this.bus.querySync(this.playerId, "stream.stats") ?? undefined;
-	}
-	public monitor(name: string, controller: unknown): void {
-		if (this.disposed) throw new Error(`GlobalPlayerRuntime is disposed; cannot register ${name}`);
-		const dispose = this.resolveDispose(controller);
-		if (dispose) this.disposables.set(name, dispose);
-	}
-	public monitorCleanup(name: string, cleanup: () => void | Promise<void>): void {
-		if (this.disposed) throw new Error(`GlobalPlayerRuntime is disposed; cannot register ${name}`);
-		this.disposables.set(name, cleanup);
-	}
-	public async dispose(): Promise<void> {
-		if (this.disposed) return;
-		this.disposed = true;
-		this.errors.length = 0;
-		this.globalRegistration?.unregister();
-		this.globalRegistration = undefined;
-		for (const [name, cleanup] of [...this.disposables.entries()].reverse()) {
+	public async detach(playerId: string): Promise<void> {
+		const slice = this.slices.get(playerId);
+		if (!slice || slice.disposed) return;
+		slice.disposed = true;
+		this.slices.delete(playerId);
+		slice.globalRegistration?.unregister();
+		slice.globalRegistration = undefined;
+		for (const [name, cleanup] of [...slice.disposables.entries()].reverse()) {
 			try {
 				const result = cleanup();
 				if (result && typeof (result as Promise<void>).then === "function") {
 					await result;
 				}
 			} catch (error) {
+				slice.errors.push({ name, error });
 				this.errors.push({ name, error });
 			}
 		}
-		this.disposables.clear();
-		this.bus.disposePlayer(this.playerId);
+		slice.disposables.clear();
+		this.bus.disposePlayer(playerId);
 	}
-	private resolveDispose(controller: unknown): (() => void | Promise<void>) | null {
-		if (!controller || typeof controller !== "object") return null;
-		const value = controller as { dispose?: unknown; destroy?: unknown };
-		if (typeof value.dispose === "function") return () => (value.dispose as () => void | Promise<void>)();
-		if (typeof value.destroy === "function") return () => (value.destroy as () => void | Promise<void>)();
-		return null;
+
+	public async dispose(): Promise<void> {
+		if (this.disposed) return;
+		this.disposed = true;
+		for (const playerId of [...this.slices.keys()]) {
+			await this.detach(playerId);
+		}
+	}
+
+	public hasTTSPlayer(playerId?: string): boolean {
+		const id = playerId ?? this.playerId;
+		return this.bus.querySync(id, "tts.hasPlayer") ?? false;
+	}
+	public getAudioPlayer(playerId?: string): AudioPlayer | null {
+		const id = playerId ?? this.playerId;
+		return this.bus.querySync(id, "audioPlayer") ?? null;
+	}
+	public setCurrentTrack(track: Track | null, playerId?: string): void {
+		const id = playerId ?? this.playerId;
+		this.bus.requestRpcSync(id, "queue.setCurrent", { track });
+	}
+	public getQueueSnapshot(playerId?: string): Track[] {
+		const id = playerId ?? this.playerId;
+		return this.bus.querySync(id, "queue") ?? [];
+	}
+	public serializeQueue(playerId?: string): object | undefined {
+		const id = playerId ?? this.playerId;
+		return this.bus.requestRpcSync(id, "queue.serialize", undefined);
+	}
+	public restoreQueue(state: object, playerId?: string): void {
+		const id = playerId ?? this.playerId;
+		this.bus.requestRpcSync(id, "queue.restore", { state });
+	}
+	public getStreamManagerStats(playerId?: string): ReturnType<StreamManager["getStats"]> | undefined {
+		const id = playerId ?? this.playerId;
+		return this.bus.querySync(id, "stream.stats") ?? undefined;
 	}
 }
+

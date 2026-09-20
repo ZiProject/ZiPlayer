@@ -15,11 +15,9 @@ class TTSWorker {
 	private readonly pluginManager: PluginManager;
 	private readonly extensionManager?: ExtensionManager;
 	private readonly debug: (...args: any[]) => void;
-	private connection: VoiceConnection | null;
 	private readonly audioPlayer?: AudioPlayer;
 	private readonly bus?: Bus;
 	private readonly playerId?: string;
-	private readonly detachBusOutputs: Array<() => void> = [];
 	private readonly maxTimeTts: number;
 	private readonly volume: number;
 	private readonly interrupt: boolean;
@@ -33,7 +31,6 @@ class TTSWorker {
 	constructor(options: TTSControllerOptions & { playerId?: string }) {
 		this.pluginManager = options.pluginManager;
 		this.extensionManager = options.extensionManager;
-		this.connection = options.connection ?? null;
 		this.audioPlayer = options.audioPlayer;
 		this.bus = options.bus;
 		this.playerId = options.playerId;
@@ -48,19 +45,9 @@ class TTSWorker {
 			this.ttsPlayer.stop(true);
 		};
 		this.ttsPlayer.on("error", this.onError);
-		if (options.bus) {
-			this.detachBusOutputs.push(
-				options.bus.onOutput("[Connection]->[Player]:connected", (event) => this.setConnection(event.connection)),
-				options.bus.onOutput("[Connection]->[Player]:disconnected", () => this.setConnection(null)),
-			);
-		}
 	}
 	get interruptSetting(): boolean {
 		return this.interrupt;
-	}
-
-	public setConnection(connection: VoiceConnection | null): void {
-		this.connection = connection;
 	}
 
 	isTTS(track: Track): boolean {
@@ -94,7 +81,7 @@ class TTSWorker {
 	}
 
 	private async playInternal(track: Track): Promise<void> {
-		const connection = this.connection;
+		const connection = this.bus && this.playerId ? (this.bus.querySync(this.playerId, "connection") as VoiceConnection | null) : null;
 		if (this.disposed || this.lifecycleAbort.signal.aborted) throw this.abortError();
 		if (!connection) throw new Error("Cannot play TTS without a voice connection");
 		const wasPlaying = this.audioPlayer?.state.status === AudioPlayerStatus.Playing;
@@ -119,7 +106,8 @@ class TTSWorker {
 		} finally {
 			this.activeResource = null;
 			this.ttsPlayer.stop(true);
-			if (!this.disposed && this.audioPlayer && this.connection) {
+			const connection = this.bus && this.playerId ? (this.bus.querySync(this.playerId, "connection") as VoiceConnection | null) : null;
+			if (!this.disposed && this.audioPlayer && connection) {
 				connection.subscribe(this.audioPlayer);
 				if (wasPlaying && this.audioPlayer.state.status === AudioPlayerStatus.Paused) this.audioPlayer.unpause();
 			}
@@ -201,11 +189,9 @@ class TTSWorker {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.lifecycleAbort.abort();
-		for (const detach of this.detachBusOutputs.splice(0)) detach();
 		this.ttsPlayer.removeListener("error", this.onError);
 		this.ttsPlayer.stop(true);
 		this.activeResource = null;
-		this.connection = null;
 	}
 }
 

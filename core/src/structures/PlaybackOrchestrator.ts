@@ -44,15 +44,24 @@ interface OrchestratorWorker {
  * is shared by every worker instead of being recreated per player.
  */
 export class PlaybackOrchestrator {
+	private readonly bus: Bus;
 	private readonly workers = new Map<string, OrchestratorWorker>();
 	private readonly sessionController: PlaybackSessionController;
 	private readonly seekController: PlaybackSeekController;
 	private readonly detachAction: () => void;
+	private defaultPlayerId?: string;
 
+	constructor(bus: Bus, options: PlaybackOrchestratorOptions);
+	constructor(playerId: string, bus: Bus, options: PlaybackOrchestratorOptions);
 	constructor(
-		private readonly bus: Bus,
-		options: PlaybackOrchestratorOptions,
+		busOrPlayerId: Bus | string,
+		optionsOrBus: PlaybackOrchestratorOptions | Bus,
+		maybeOptions?: PlaybackOrchestratorOptions,
 	) {
+		const isLegacy = typeof busOrPlayerId === "string";
+		const bus = (isLegacy ? optionsOrBus : busOrPlayerId) as Bus;
+		const options = (isLegacy ? maybeOptions : optionsOrBus) as PlaybackOrchestratorOptions;
+		this.bus = bus;
 		this.sessionController = options.sessionController;
 		this.seekController = new PlaybackSeekController(bus, this.sessionController);
 
@@ -91,6 +100,11 @@ export class PlaybackOrchestrator {
 		bus.registerRpc<{ active: boolean }, void>(CONTROLLER_RPC.playbackTransitionLock, ({ active }, ctx) =>
 			this.workers.get(ctx.playerId)?.trackEndController.setTrackEndTransition(active),
 		);
+
+		if (isLegacy && typeof busOrPlayerId === "string") {
+			this.defaultPlayerId = busOrPlayerId;
+			this.attach(busOrPlayerId);
+		}
 	}
 
 	// ---------------------------------------------------------------------
@@ -196,11 +210,21 @@ export class PlaybackOrchestrator {
 		return this.workers.has(playerId);
 	}
 
-	public currentSession(playerId: string) {
+	public get currentSession(): PlaybackSession | null {
+		const id = this.defaultPlayerId ?? this.workers.keys().next().value;
+		return id ? this.sessionController.current(id) : null;
+	}
+
+	public getCurrentSession(playerId: string): PlaybackSession | null {
 		return this.sessionController.current(playerId);
 	}
 
-	public transitionPolicy(playerId: string) {
+	public get transitionPolicy() {
+		const id = this.defaultPlayerId ?? this.workers.keys().next().value;
+		return id ? this.bus.querySync(id, "transitionSettings") : undefined;
+	}
+
+	public getTransitionPolicy(playerId: string) {
 		return this.bus.querySync(playerId, "transitionSettings");
 	}
 

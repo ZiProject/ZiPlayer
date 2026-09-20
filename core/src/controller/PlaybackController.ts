@@ -45,9 +45,21 @@ const NO_TRANSITION: TransitionPlanResponse = { enabled: false, durationMs: 0, w
  * exactly once, in the constructor, and route by `ctx.playerId` / the query's `playerId`.
  */
 export class PlaybackController {
+	private readonly bus: Bus;
 	private readonly slots = new Map<string, PlaybackSlot>();
+	private defaultPlayerId?: string;
 
-	public constructor(private readonly bus: Bus) {
+	public constructor(bus: Bus);
+	public constructor(playerId: string, options: PlaybackControllerOptions & { bus?: Bus });
+	public constructor(
+		busOrPlayerId: Bus | string,
+		maybeOptions?: PlaybackControllerOptions & { bus?: Bus },
+	) {
+		const isLegacy = typeof busOrPlayerId === "string";
+		const bus: Bus = isLegacy ? (maybeOptions?.bus ?? (maybeOptions as any)?.audioPlayer?.bus) : (busOrPlayerId as Bus);
+		const options = isLegacy ? maybeOptions : undefined;
+		this.bus = bus;
+
 		const at = (playerId: string) => this.slots.get(playerId);
 		bus.registerRpc<{ resource: AudioResource; from: number; to: number; durationMs: number }, void>(
 			"transition.fade",
@@ -87,6 +99,11 @@ export class PlaybackController {
 		bus.registerQuery("isBuffering", (playerId) => this.status(playerId) === AudioPlayerStatus.Buffering);
 		bus.registerQuery("isLive", (playerId) => Boolean(this.currentSessionTrack(playerId)?.isLive));
 		bus.registerQuery("position", (playerId) => this.position(playerId));
+
+		if (isLegacy && options) {
+			this.defaultPlayerId = busOrPlayerId;
+			this.attach(busOrPlayerId, options);
+		}
 	}
 
 	// ---------------------------------------------------------------------
@@ -183,8 +200,44 @@ export class PlaybackController {
 	}
 
 	/** Global shutdown: releases every player's slot. */
-	public dispose(): void {
-		for (const playerId of [...this.slots.keys()]) this.detach(playerId);
+	public dispose(playerId?: string): void {
+		if (playerId) {
+			this.detach(playerId);
+			return;
+		}
+		for (const id of [...this.slots.keys()]) this.detach(id);
+	}
+
+	public get activeResource(): AudioResource | null {
+		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
+		return id ? (this.slots.get(id)?.activeResource ?? null) : null;
+	}
+	public set activeResource(resource: AudioResource | null) {
+		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
+		if (id) {
+			const slot = this.slots.get(id);
+			if (slot) slot.activeResource = resource;
+		}
+	}
+
+	public get fadeGain(): number | null {
+		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
+		return id ? (this.slots.get(id)?.fadeGain ?? null) : null;
+	}
+	public set fadeGain(gain: number | null) {
+		const id = this.defaultPlayerId ?? this.slots.keys().next().value;
+		if (id) {
+			const slot = this.slots.get(id);
+			if (slot) slot.fadeGain = gain;
+		}
+	}
+
+	public cancelFade(playerId?: string): void {
+		const id = playerId ?? this.defaultPlayerId ?? this.slots.keys().next().value;
+		if (id) {
+			const slot = this.slots.get(id);
+			if (slot) this.cancelFadeSlot(slot);
+		}
 	}
 
 	public has(playerId: string): boolean {
@@ -361,14 +414,52 @@ export class PlaybackController {
 		this.retirePendingSession(playerId);
 	}
 
-	public async fadeResourceVolume(
+	public fadeResourceVolume(
 		playerId: string,
 		resource: AudioResource,
 		from: number,
 		to: number,
 		durationMs: number,
 		signal?: AbortSignal,
+	): Promise<void>;
+	public fadeResourceVolume(
+		resource: AudioResource,
+		from: number,
+		to: number,
+		durationMs: number,
+		signal?: AbortSignal,
+	): Promise<void>;
+	public async fadeResourceVolume(
+		arg1: string | AudioResource,
+		arg2: AudioResource | number,
+		arg3?: number,
+		arg4?: number,
+		arg5?: number | AbortSignal,
+		arg6?: AbortSignal,
 	): Promise<void> {
+		let playerId: string;
+		let resource: AudioResource;
+		let from: number;
+		let to: number;
+		let durationMs: number;
+		let signal: AbortSignal | undefined;
+
+		if (typeof arg1 === "string") {
+			playerId = arg1;
+			resource = arg2 as AudioResource;
+			from = arg3!;
+			to = arg4!;
+			durationMs = arg5 as number;
+			signal = arg6;
+		} else {
+			playerId = this.defaultPlayerId ?? this.slots.keys().next().value ?? "default";
+			resource = arg1 as AudioResource;
+			from = arg2 as number;
+			to = arg3!;
+			durationMs = arg4!;
+			signal = typeof arg5 === "object" ? (arg5 as any) : undefined;
+		}
+
 		const slot = this.slots.get(playerId);
 		if (!slot) return;
 		const abortSignal = signal ?? slot.lifecycleAbort.signal;
@@ -441,7 +532,7 @@ export class PlaybackController {
 		const begin = () => {
 			slot.transitionTimer = null;
 			if (slot.disposed || (session && !session.isActive())) {
-				this.cancelFade(slot);
+				this.cancelFadeSlot(slot);
 				return;
 			}
 			slot.fadeGain = 0;
@@ -454,14 +545,14 @@ export class PlaybackController {
 			const start = Date.now();
 			slot.fadeTimer = setInterval(() => {
 				if (session && !session.isActive()) {
-					this.cancelFade(slot);
+					this.cancelFadeSlot(slot);
 					return;
 				}
 				const p = Math.min(1, (Date.now() - start) / Math.max(1, plan.durationMs));
 				slot.fadeGain = p;
 				this.applyTargetVolume(slot, newResource, track, p);
 				if (p >= 1) {
-					this.cancelFade(slot);
+					this.cancelFadeSlot(slot);
 					this.applyTargetVolume(slot, newResource, track, 1);
 				}
 			}, 25);
@@ -469,7 +560,8 @@ export class PlaybackController {
 		if (wait > 0) slot.transitionTimer = setTimeout(begin, wait);
 		else begin();
 	}
-	private cancelFade(slot: PlaybackSlot): void {
+
+	private cancelFadeSlot(slot: PlaybackSlot): void {
 		if (slot.fadeTimer) {
 			clearInterval(slot.fadeTimer);
 			slot.fadeTimer = null;
@@ -487,7 +579,7 @@ export class PlaybackController {
 			clearTimeout(slot.transitionTimer);
 			slot.transitionTimer = null;
 		}
-		this.cancelFade(slot);
+		this.cancelFadeSlot(slot);
 	}
 	public pause(playerId: string): boolean {
 		return this.slots.get(playerId)?.audioPlayer.pause(true) ?? false;
