@@ -1,9 +1,10 @@
 /**
- * Internal controller-to-controller RPC boundary.
+ * PlayerBus is the communication boundary between the Player facade
+ * and shared controllers.
  *
- * Controllers must not import or retain another controller. They communicate
- * through Bus using stable capability names. Player remains the public
- * facade and GlobalPlayerRuntime remains the composition/lifecycle root.
+ * Player does not own controller instances or controller lifecycle.
+ * Shared controllers are owned by PlayerManager and keep per-player
+ * state internally, keyed by playerId.
  */
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type {

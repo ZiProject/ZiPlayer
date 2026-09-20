@@ -51,15 +51,14 @@ interface PlayerEventBridgeSlot {
  * Bridges canonical Bus events (and the `player.emitTtsStart`/`emitTtsEnd` RPCs) to the
  * public Player event API.
  *
- * Singleton — created exactly once in `ensureSharedControllers()` and shared by every
- * player in the process (see `SharedControllerGraph`). The two RPCs and the
+ * Singleton — created once and shared by every player in the process. The two RPCs and the
  * `[Connection]->[Player]:error` output are registered a single time for the whole
  * process (their dispatch is already global, routed by `ctx.playerId`/`event.playerId`).
  * The ~30 canonical event types are scoped per player by `Bus.subscribe(playerId, ...)`,
  * so those subscriptions are (re)created once per `attach(playerId, ...)` call rather
- * than once per bridge instance; `Bus.disposePlayer(playerId)` (called by
- * `GlobalPlayerRuntime.dispose()`) tears them down again, so `detach()` only needs to
- * clear this bridge's own per-player bookkeeping.
+ * than once per bridge instance; `PlayerManager.destroy(playerId)` (which triggers
+ * `controller.detach(playerId)`) tears down per-player state while shared controllers
+ * remain alive.
  */
 export class PlayerEventBridge {
 	private readonly slots = new Map<string, PlayerEventBridgeSlot>();

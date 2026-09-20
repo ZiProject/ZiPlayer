@@ -5,6 +5,7 @@ const { Readable } = require("node:stream");
 const {
 	ConnectionController,
 	PlaybackOrchestrator,
+	createPlaybackOrchestrator,
 	PlaybackController,
 	StreamController,
 	StreamWorker,
@@ -102,8 +103,8 @@ test("Bus PLAY replaces the previous stream through StreamController", async () 
 		playedArgs = { resource, session, from, to };
 		return undefined;
 	});
-	bus.registerRpc("plugin.relatedTracks", () => []);
-	const orchestrator = new PlaybackOrchestrator(playerId, bus, { sessionController });
+	const orchestrator = createPlaybackOrchestrator(bus, { sessionController });
+	orchestrator.attach(playerId);
 
 	// Start track A
 	await bus.action(playerId, { type: "PLAY", track: trackA }, createContext());

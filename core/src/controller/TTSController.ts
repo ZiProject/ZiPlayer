@@ -80,8 +80,13 @@ class TTSWorker {
 		return this.running;
 	}
 
+	private getConnection(): VoiceConnection | null {
+		if (!this.bus || !this.playerId) return null;
+		return (this.bus.querySync(this.playerId, "connection") as VoiceConnection | null) ?? null;
+	}
+
 	private async playInternal(track: Track): Promise<void> {
-		const connection = this.bus && this.playerId ? (this.bus.querySync(this.playerId, "connection") as VoiceConnection | null) : null;
+		const connection = this.getConnection();
 		if (this.disposed || this.lifecycleAbort.signal.aborted) throw this.abortError();
 		if (!connection) throw new Error("Cannot play TTS without a voice connection");
 		const wasPlaying = this.audioPlayer?.state.status === AudioPlayerStatus.Playing;
@@ -106,7 +111,7 @@ class TTSWorker {
 		} finally {
 			this.activeResource = null;
 			this.ttsPlayer.stop(true);
-			const connection = this.bus && this.playerId ? (this.bus.querySync(this.playerId, "connection") as VoiceConnection | null) : null;
+			const connection = this.getConnection();
 			if (!this.disposed && this.audioPlayer && connection) {
 				connection.subscribe(this.audioPlayer);
 				if (wasPlaying && this.audioPlayer.state.status === AudioPlayerStatus.Paused) this.audioPlayer.unpause();
@@ -221,6 +226,11 @@ export class TTSController {
 		this.workers.get(playerId)?.dispose();
 		this.workers.delete(playerId);
 	}
+
+	private getConnection(playerId: string): VoiceConnection | null {
+		return (this.bus.querySync(playerId, "connection") as VoiceConnection | null) ?? null;
+	}
+
 	public player(playerId: string): AudioPlayer | undefined {
 		return this.workers.get(playerId)?.player;
 	}

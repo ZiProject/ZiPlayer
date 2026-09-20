@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { Bus, PlaybackOrchestrator, QueueController, PlaybackSessionController } = require("../core/dist");
+const { Bus, PlaybackOrchestrator, createPlaybackOrchestrator, QueueController, PlaybackSessionController } = require("../core/dist");
 
 const waitFor = async (predicate) => {
 	for (let attempt = 0; attempt < 50; attempt++) {
@@ -56,7 +56,8 @@ const createOrchestrator = ({ autoPlay, related } = {}) => {
 		});
 	});
 	queue.setAutoPlay(autoPlay);
-	const orchestrator = new PlaybackOrchestrator(playerId, globalBus, { sessionController });
+	const orchestrator = createPlaybackOrchestrator(globalBus, { sessionController });
+	orchestrator.attach(playerId);
 	return { bus: globalBus, playerId, queue, orchestrator, played };
 };
 

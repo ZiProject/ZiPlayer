@@ -26,7 +26,7 @@ Start from the public API in `src/index.ts`, then follow the owning abstraction:
 | Public player API  | `src/structures/Player.ts`                  | Per-guild controls and public getters                    |
 | Player lifecycle   | `src/structures/PlayerManager.ts`           | Create, find, destroy, and broadcast players             |
 | Internal bus       | `src/structures/Bus.ts`                     | RPC, synchronous queries, actions, and events            |
-| Runtime wiring     | `src/structures/PlayerRuntimeController.ts` | Registers controllers, plugins, extensions, and handlers |
+| Runtime wiring     | `createSharedControllers()src/structures/PlayerManager.ts ` | Registers controllers, plugins, extensions, and handlers |
 | Playback state     | `src/structures/PlaybackSession.ts`         | Active stream/session state and transitions              |
 | Queue behavior     | `src/controller/QueueController.ts`         | Queue, history, loop, autoplay, and queue queries        |
 | Search             | `src/controller/SearchController.ts`        | Search RPC, caching, and provider coordination           |

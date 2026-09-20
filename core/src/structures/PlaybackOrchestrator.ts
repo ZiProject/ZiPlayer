@@ -10,57 +10,129 @@ import { PlaybackSkipController } from "../controller/PlaybackSkipController";
 import { PlaybackTrackEndController } from "../controller/PlaybackTrackEndController";
 import { PlaybackPlayController } from "../controller/PlaybackPlayController";
 
-/** Everything the orchestrator keeps for ONE player. Lives only inside `PlaybackOrchestrator.workers`. */
-interface OrchestratorWorker {
-	readonly playerId: string;
+interface OrchestratorCallbacks {
+	matchesContext: (session: PlaybackSession, context: PlayerMessageContext) => boolean;
+	transitionEnabled: (playerId: string) => boolean;
+	stopPlayback: (playerId: string, signal: AbortSignal, cancelPreload?: boolean) => void;
+	nextThroughBus: (playerId: string, ignoreLoop: boolean, context: PlayerMessageContext) => Promise<Track | null>;
+	publishState: (playerId: string) => void;
+	queueSnapshot: (playerId: string) => Track[];
+	setQueueRelated: (playerId: string, tracks: Track[]) => void;
+}
+
+/** Per-player worker: owns start/prepare/play/trackEnd/skip controllers and player bus subscriptions. */
+export class PlaybackOrchestratorWorker {
+	readonly start: PlaybackStartController;
+	readonly prepare: PlaybackPreparationController;
+	readonly play: PlaybackPlayController;
+	readonly trackEnd: PlaybackTrackEndController;
+	readonly skip: PlaybackSkipController;
 	readonly lifecycleAbort: AbortController;
 	readonly debug: (message?: any, ...optionalParams: any[]) => void;
-	readonly adapters: PlaybackOrchestratorAttachOptions["adapters"];
-	readonly preparationController: PlaybackPreparationController;
-	readonly startController: PlaybackStartController;
-	readonly skipController: PlaybackSkipController;
-	readonly trackEndController: PlaybackTrackEndController;
-	readonly playController: PlaybackPlayController;
-	readonly detachTrackEnd: () => void;
-	readonly detachQueueEnd: () => void;
-	readonly detachQueueChanged: () => void;
-	disposed: boolean;
+	readonly adapters?: PlaybackOrchestratorAttachOptions["adapters"];
+	private readonly detachTrackEnd: () => void;
+	private readonly detachQueueEnd: () => void;
+	private readonly detachQueueChanged: () => void;
+	public disposed = false;
+
+	public constructor(
+		readonly playerId: string,
+		private readonly bus: Bus,
+		private readonly sessionController: PlaybackSessionController,
+		attachOptions: PlaybackOrchestratorAttachOptions = {},
+		callbacks: OrchestratorCallbacks,
+	) {
+		this.lifecycleAbort = new AbortController();
+		this.debug = attachOptions.debug ?? (() => undefined);
+		this.adapters = attachOptions.adapters;
+
+		this.prepare = new PlaybackPreparationController(playerId, {
+			bus: this.bus,
+			isCurrentSession: (session, context) => callbacks.matchesContext(session, context),
+			queueSnapshot: () => callbacks.queueSnapshot(playerId),
+			setQueueRelated: (tracks) => callbacks.setQueueRelated(playerId, tracks),
+		});
+
+		this.start = new PlaybackStartController(playerId, {
+			bus: this.bus,
+			sessionController: this.sessionController,
+			transitionEnabled: () => callbacks.transitionEnabled(playerId),
+			stopPlayback: (signal, cancelPreload) => callbacks.stopPlayback(playerId, signal, cancelPreload),
+			prepareTrack: (session, context) => this.prepare.prepareTrack(session, context),
+			adapters: this.adapters,
+		});
+
+		this.trackEnd = new PlaybackTrackEndController(playerId, {
+			bus: this.bus,
+			nextThroughBus: (ignoreLoop, context) => callbacks.nextThroughBus(playerId, ignoreLoop, context),
+			stopPlayback: (signal) => callbacks.stopPlayback(playerId, signal),
+			publishState: () => callbacks.publishState(playerId),
+			queueSnapshot: () => callbacks.queueSnapshot(playerId),
+			lifecycleSignal: this.lifecycleAbort.signal,
+		});
+
+		this.skip = new PlaybackSkipController({
+			bus: this.bus,
+			playerId,
+			nextThroughBus: (ignoreLoop, context) => callbacks.nextThroughBus(playerId, ignoreLoop, context),
+			stopPlayback: (signal) => callbacks.stopPlayback(playerId, signal),
+			publishState: () => callbacks.publishState(playerId),
+			setWaitingForQueue: (waiting) => this.trackEnd.setWaitingForQueue(waiting),
+		});
+
+		this.play = new PlaybackPlayController(playerId, {
+			bus: this.bus,
+			isWaitingForQueue: () => this.trackEnd.isWaitingForQueue,
+			debug: this.debug,
+			lifecycleSignal: this.lifecycleAbort.signal,
+			adapters: this.adapters,
+		});
+
+		this.detachTrackEnd = this.bus.subscribe(playerId, "TRACK_END", (event) => {
+			const session = event.session;
+			if (!session || session.status === "ended" || session.status === "stopped") return;
+			const current = this.sessionController.current(playerId);
+			if (!current || current.id !== session.id) return;
+			void this.trackEnd.onTrackEnd(session);
+		});
+		this.detachQueueEnd = this.bus.subscribe(playerId, "queueEnd", () => this.trackEnd.onQueueEnd());
+		this.detachQueueChanged = this.bus.subscribe(playerId, "queueChanged", () => this.trackEnd.onQueueChanged());
+	}
+
+	public async dispose(): Promise<void> {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.lifecycleAbort.abort();
+		this.detachTrackEnd();
+		this.detachQueueEnd();
+		this.detachQueueChanged();
+		this.sessionController.clear(this.playerId);
+		await this.trackEnd.dispose();
+		await this.play.dispose();
+		await this.prepare.dispose();
+		await this.start.dispose();
+	}
 }
 
 /**
  * Owns the playback action state machine (PLAY/PAUSE/RESUME/STOP/SKIP/SEEK), TRACK_END
  * handling, and queue-refill/autoplay orchestration for every player.
  *
- * Shared, singleton — created once in `ensureSharedControllers()`. Each player's sub-workers
- * (Start/Preparation/Play/TrackEnd/Skip), lifecycle-abort signal and bus subscriptions live
- * in an internal `Map<playerId, OrchestratorWorker>` (opened by `attach(playerId, ...)`,
- * released by `detach(playerId)`). `onAction`, `playback.start`, `playback.prepareAutoplay`,
- * `playback.createRelatedTracks`, `play` and `playback.transitionLock` are all registered
- * exactly once, in the constructor, and route to the right worker via `ctx.playerId` /
- * `context.playerId`.
- *
- * `PlaybackSeekController` needs no per-player state (it only reads the shared
- * `PlaybackSessionController` and the `playerId` passed on every call), so a single instance
- * is shared by every worker instead of being recreated per player.
+ * Shared, singleton — created once in PlayerManager constructor. Each player's worker
+ * lives in an internal `Map<playerId, PlaybackOrchestratorWorker>` (opened by `attach(playerId, ...)`,
+ * released by `detach(playerId)`).
  */
 export class PlaybackOrchestrator {
 	private readonly bus: Bus;
-	private readonly workers = new Map<string, OrchestratorWorker>();
+	private readonly workers = new Map<string, PlaybackOrchestratorWorker>();
 	private readonly sessionController: PlaybackSessionController;
 	private readonly seekController: PlaybackSeekController;
 	private readonly detachAction: () => void;
-	private defaultPlayerId?: string;
 
-	constructor(bus: Bus, options: PlaybackOrchestratorOptions);
-	constructor(playerId: string, bus: Bus, options: PlaybackOrchestratorOptions);
-	constructor(
-		busOrPlayerId: Bus | string,
-		optionsOrBus: PlaybackOrchestratorOptions | Bus,
-		maybeOptions?: PlaybackOrchestratorOptions,
+	public constructor(
+		bus: Bus,
+		private readonly options: PlaybackOrchestratorOptions,
 	) {
-		const isLegacy = typeof busOrPlayerId === "string";
-		const bus = (isLegacy ? optionsOrBus : busOrPlayerId) as Bus;
-		const options = (isLegacy ? maybeOptions : optionsOrBus) as PlaybackOrchestratorOptions;
 		this.bus = bus;
 		this.sessionController = options.sessionController;
 		this.seekController = new PlaybackSeekController(bus, this.sessionController);
@@ -75,36 +147,31 @@ export class PlaybackOrchestrator {
 			CONTROLLER_RPC.playbackStart,
 			({ track, context, from }, ctx) => {
 				const worker = this.workers.get(ctx.playerId);
-				return worker ? worker.startController.start(track, context, from) : Promise.resolve();
+				return worker ? worker.start.start(track, context, from) : Promise.resolve();
 			},
 		);
 		bus.registerRpc<{ session: PlaybackSession; context: PlayerMessageContext }, Promise<Track | null>>(
 			CONTROLLER_RPC.playbackPrepareAutoplay,
 			({ session, context }, ctx) => {
 				const worker = this.workers.get(ctx.playerId);
-				return worker ? worker.preparationController.prepareAutoplay(session, context) : Promise.resolve(null);
+				return worker ? worker.prepare.prepareAutoplay(session, context) : Promise.resolve(null);
 			},
 		);
 		bus.registerRpc<{ track?: Track | null }, Promise<Track[]>>(CONTROLLER_RPC.playbackCreateRelatedTracks, ({ track }, ctx) => {
 			const worker = this.workers.get(ctx.playerId);
-			return worker ? worker.preparationController.createRelatedTracks(track) : Promise.resolve([]);
+			return worker ? worker.prepare.createRelatedTracks(track) : Promise.resolve([]);
 		});
 		bus.registerRpc<{ query: import("../types").SearchResult | Track | string | null; requestedBy?: string }, boolean>(
 			CONTROLLER_RPC.play,
 			(request, context) => {
 				const worker = this.workers.get(context.playerId);
 				if (!worker) return Promise.resolve(false);
-				return worker.playController.play(request.query, request.requestedBy, context);
+				return worker.play.play(request.query, request.requestedBy, context);
 			},
 		);
 		bus.registerRpc<{ active: boolean }, void>(CONTROLLER_RPC.playbackTransitionLock, ({ active }, ctx) =>
-			this.workers.get(ctx.playerId)?.trackEndController.setTrackEndTransition(active),
+			this.workers.get(ctx.playerId)?.trackEnd.setTrackEndTransition(active),
 		);
-
-		if (isLegacy && typeof busOrPlayerId === "string") {
-			this.defaultPlayerId = busOrPlayerId;
-			this.attach(busOrPlayerId);
-		}
 	}
 
 	// ---------------------------------------------------------------------
@@ -113,96 +180,40 @@ export class PlaybackOrchestrator {
 
 	/** Opens a worker for `playerId`. Re-attaching replaces (and releases) the old worker. */
 	public attach(playerId: string, options: PlaybackOrchestratorAttachOptions = {}): void {
-		if (this.workers.has(playerId)) this.detach(playerId);
-		const lifecycleAbort = new AbortController();
-		const debug = options.debug ?? (() => undefined);
-		const adapters = options.adapters;
-
-		const preparationController = new PlaybackPreparationController(playerId, {
-			bus: this.bus,
-			isCurrentSession: (session, context) => this.matchesContext(session, context),
-			queueSnapshot: () => this.queueSnapshot(playerId),
-			setQueueRelated: (tracks) => this.setQueueRelated(playerId, tracks),
-		});
-		const startController = new PlaybackStartController(playerId, {
-			bus: this.bus,
-			sessionController: this.sessionController,
-			transitionEnabled: () => this.transitionEnabled(playerId),
-			stopPlayback: (signal, cancelPreload) => this.stopPlayback(playerId, signal, cancelPreload),
-			prepareTrack: (session, context) => preparationController.prepareTrack(session, context),
-			adapters,
-		});
-		const trackEndController = new PlaybackTrackEndController(playerId, {
-			bus: this.bus,
-			nextThroughBus: (ignoreLoop, context) => this.nextThroughBus(playerId, ignoreLoop, context),
-			stopPlayback: (signal) => this.stopPlayback(playerId, signal),
-			publishState: () => this.publishState(playerId),
-			queueSnapshot: () => this.queueSnapshot(playerId),
-			lifecycleSignal: lifecycleAbort.signal,
-		});
-		const skipController = new PlaybackSkipController({
-			bus: this.bus,
+		if (this.workers.has(playerId)) return;
+		this.workers.set(
 			playerId,
-			nextThroughBus: (ignoreLoop, context) => this.nextThroughBus(playerId, ignoreLoop, context),
-			stopPlayback: (signal) => this.stopPlayback(playerId, signal),
-			publishState: () => this.publishState(playerId),
-			setWaitingForQueue: (waiting) => trackEndController.setWaitingForQueue(waiting),
-		});
-		const playController = new PlaybackPlayController(playerId, {
-			bus: this.bus,
-			isWaitingForQueue: () => trackEndController.isWaitingForQueue,
-			debug,
-			lifecycleSignal: lifecycleAbort.signal,
-			adapters,
-		});
-
-		const detachTrackEnd = this.bus.subscribe(playerId, "TRACK_END", (event) => {
-			const session = event.session;
-			if (!session || session.status === "ended" || session.status === "stopped") return;
-			const current = this.sessionController.current(playerId);
-			if (!current || current.id !== session.id) return;
-			void trackEndController.onTrackEnd(session);
-		});
-		const detachQueueEnd = this.bus.subscribe(playerId, "queueEnd", () => trackEndController.onQueueEnd());
-		const detachQueueChanged = this.bus.subscribe(playerId, "queueChanged", () => trackEndController.onQueueChanged());
-
-		this.workers.set(playerId, {
-			playerId,
-			lifecycleAbort,
-			debug,
-			adapters,
-			preparationController,
-			startController,
-			skipController,
-			trackEndController,
-			playController,
-			detachTrackEnd,
-			detachQueueEnd,
-			detachQueueChanged,
-			disposed: false,
-		});
+			new PlaybackOrchestratorWorker(
+				playerId,
+				this.bus,
+				this.sessionController,
+				options,
+				{
+					matchesContext: (session, context) => this.matchesContext(session, context),
+					transitionEnabled: (pId) => this.transitionEnabled(pId),
+					stopPlayback: (pId, signal, cancelPreload) => this.stopPlayback(pId, signal, cancelPreload),
+					nextThroughBus: (pId, ignoreLoop, context) => this.nextThroughBus(pId, ignoreLoop, context),
+					publishState: (pId) => this.publishState(pId),
+					queueSnapshot: (pId) => this.queueSnapshot(pId),
+					setQueueRelated: (pId, tracks) => this.setQueueRelated(pId, tracks),
+				},
+			),
+		);
 	}
 
 	/** Releases `playerId`'s worker: aborts its lifecycle signal, drops bus subscriptions and clears its session. */
-	public detach(playerId: string): void {
+	public async detach(playerId: string): Promise<void> {
 		const worker = this.workers.get(playerId);
 		if (!worker) return;
 		this.workers.delete(playerId);
-		worker.disposed = true;
-		worker.lifecycleAbort.abort();
-		worker.detachTrackEnd();
-		worker.detachQueueEnd();
-		worker.detachQueueChanged();
-		this.sessionController.clear(playerId);
-		worker.trackEndController.dispose();
-		worker.playController.dispose();
-		worker.preparationController.dispose();
-		worker.startController.dispose();
+		await worker.dispose();
 	}
 
 	/** Global shutdown: releases every player's worker and the shared `onAction` subscription. */
 	public dispose(): void {
-		for (const playerId of [...this.workers.keys()]) this.detach(playerId);
+		for (const playerId of [...this.workers.keys()]) {
+			void this.detach(playerId);
+		}
 		this.detachAction();
 	}
 
@@ -211,7 +222,7 @@ export class PlaybackOrchestrator {
 	}
 
 	public get currentSession(): PlaybackSession | null {
-		const id = this.defaultPlayerId ?? this.workers.keys().next().value;
+		const id = this.workers.keys().next().value;
 		return id ? this.sessionController.current(id) : null;
 	}
 
@@ -220,7 +231,7 @@ export class PlaybackOrchestrator {
 	}
 
 	public get transitionPolicy() {
-		const id = this.defaultPlayerId ?? this.workers.keys().next().value;
+		const id = this.workers.keys().next().value;
 		return id ? this.bus.querySync(id, "transitionSettings") : undefined;
 	}
 
@@ -252,18 +263,18 @@ export class PlaybackOrchestrator {
 		this.bus.requestRpcSync(playerId, "queue.restore", { state });
 	}
 
-	private async handleAction(worker: OrchestratorWorker, a: PlayerAction, context: PlayerMessageContext): Promise<void> {
+	private async handleAction(worker: PlaybackOrchestratorWorker, a: PlayerAction, context: PlayerMessageContext): Promise<void> {
 		if (context.signal.aborted) return;
 		const playerId = worker.playerId;
 		switch (a.type) {
 			case "PLAY":
-				if (a.track) await worker.startController.start(a.track, context);
+				if (a.track) await worker.start.start(a.track, context);
 				break;
 			case "SEEK":
 				await this.seekController.seek(a.position, context);
 				break;
 			case "SKIP":
-				await worker.skipController.skip(context);
+				await worker.skip.skip(context);
 				break;
 			case "PAUSE": {
 				const session = this.sessionController.current(playerId);
@@ -335,4 +346,8 @@ export class PlaybackOrchestrator {
 			session: this.sessionController.current(playerId)?.snapshot() ?? null,
 		});
 	}
+}
+
+export function createPlaybackOrchestrator(bus: Bus, options: PlaybackOrchestratorOptions): PlaybackOrchestrator {
+	return Reflect.construct(PlaybackOrchestrator, [bus, options]);
 }

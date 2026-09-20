@@ -273,7 +273,8 @@ export class PreloadManager {
 		const preloadSlot = slot.preloadSlot;
 		if (isDestroyed()) throw new Error("PLAYER_DESTROYED");
 		debug(`[Preload] Starting preload for: ${track.title}`);
-		if (abortController.signal.aborted || !this.trackMatches(this.getNextTrack(slot), track)) throw new Error("PRELOAD_CANCELLED");
+		if (abortController.signal.aborted || !this.trackMatches(this.getNextTrack(slot), track))
+			throw new Error("PRELOAD_CANCELLED");
 		const streamInfo = await this.getStreamWithCancel(slot, track, abortController.signal);
 		if (abortController.signal.aborted || isDestroyed()) {
 			this.destroyStreamInfo(slot, streamInfo);

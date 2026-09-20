@@ -6,6 +6,7 @@ const {
 	Player,
 	Bus,
 	PlaybackOrchestrator,
+	createPlaybackOrchestrator,
 	PlaybackSession,
 	QueueController,
 	PlaybackSessionController,
@@ -65,7 +66,8 @@ const createOrchestrator = ({ autoPlay, related, relatedResolver, loop = "off", 
 	});
 	queue.setAutoPlay(autoPlay);
 	queue.setLoop(loop);
-	const orchestrator = new PlaybackOrchestrator(playerId, globalBus, { sessionController });
+	const orchestrator = createPlaybackOrchestrator(globalBus, { sessionController });
+	orchestrator.attach(playerId);
 	return { bus: globalBus, playerId, queueController: queue, orchestrator, played, errors, trackLoader };
 };
 

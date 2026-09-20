@@ -14,7 +14,8 @@ export {
 	PreloadCapability,
 	FilterCapability,
 } from "./capabilities/PlayerCapabilities";
-export { PlaybackOrchestrator } from "./structures/PlaybackOrchestrator";
+export { PlaybackOrchestrator, createPlaybackOrchestrator } from "./structures/PlaybackOrchestrator";
+export { createSharedControllers } from "./structures/PlayerManager";
 export { PlaybackSession } from "./structures/PlaybackSession";
 export { TrackLoader } from "./structures/TrackLoader";
 export { PlaybackController } from "./controller/PlaybackController";

@@ -7,3 +7,4 @@ export * from "./controller";
 export * from "./bus";
 export * from "./trackLoader";
 export * from "./options";
+export * from "./controllerSet";

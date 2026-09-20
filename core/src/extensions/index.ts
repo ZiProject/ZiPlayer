@@ -137,7 +137,7 @@ export class ExtensionManager {
 		if (result) {
 			this.extensionMetadata.delete(name);
 			this.invokeExtensionLifecycle(extension, "onDestroy");
-			if (extension.player === this.player) extension.player = null;
+			if (!this.player || extension.player === this.player) extension.player = null;
 			this.debug(`Unregistered extension: ${name}`);
 		}
 		return result;

@@ -517,6 +517,16 @@ export class Player extends EventEmitter {
 	public destroy(): void {
 		if (this.destroyed) return;
 		this.destroyed = true;
+		try {
+			const exts = this.getExtensions();
+			for (const ext of exts) {
+				if (ext && (ext as any).player === this) {
+					(ext as any).player = null;
+				}
+			}
+		} catch {
+			// ignore
+		}
 		this.dispose();
 		this.emit("playerDestroy");
 		this.removeAllListeners();
@@ -526,7 +536,6 @@ export class Player extends EventEmitter {
 		this.disposed = true;
 		this.invalidatePlay();
 		this.actionExecutor.dispose();
-		void this.bus.requestRpc(this.playerId, "runtime.dispose", undefined).catch(() => undefined);
 		this.bus.publish(this.playerId, "destroyed");
 		this.bus.disposePlayer(this.playerId);
 	}
