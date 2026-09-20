@@ -38,7 +38,6 @@ export class Player extends EventEmitter {
 	public readonly playerId: string;
 	public readonly manager?: PlayerManager;
 	public readonly options: PlayerOptions;
-	public connection: VoiceConnection | null = null;
 	public userdata?: Record<string, any>;
 	public _lastActivity = Date.now();
 	public destroyed = false;
@@ -141,6 +140,9 @@ export class Player extends EventEmitter {
 	}
 	public get currentResource(): AudioResource | null {
 		return this.bus.querySync(this.playerId, "currentResource") as AudioResource | null;
+	}
+	public get connection(): VoiceConnection | null {
+		return this.bus.querySync(this.playerId, "connection") ?? null;
 	}
 	public search(query: string, requestedBy: string): Promise<SearchResult> {
 		return this.bus.requestRpc(this.playerId, "search", { query, requestedBy });

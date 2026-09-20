@@ -2,28 +2,15 @@ import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, Track } from "../types";
 import type { PlaybackPreparationControllerOptions } from "../types";
-import { CONTROLLER_RPC } from "./ControllerBusContract";
 
-// playback.prepareAutoplay / playback.createRelatedTracks must be registered exactly
-// once on the shared Bus; each per-player instance registers itself here.
-const preparationControllers = new Map<string, PlaybackPreparationController>();
-const preparationRpcRegistered = new WeakSet<Bus>();
-function ensurePreparationRpcBridge(bus: Bus): void {
-	if (preparationRpcRegistered.has(bus)) return;
-	preparationRpcRegistered.add(bus);
-	bus.registerRpc<{ session: PlaybackSession; context: PlayerMessageContext }, Promise<Track | null>>(
-		CONTROLLER_RPC.playbackPrepareAutoplay,
-		({ session, context }, ctx) =>
-			preparationControllers.get(ctx.playerId)?.prepareAutoplay(session, context) ?? Promise.resolve(null),
-	);
-	bus.registerRpc<{ track?: Track | null }, Promise<Track[]>>(
-		CONTROLLER_RPC.playbackCreateRelatedTracks,
-		({ track }, ctx) => preparationControllers.get(ctx.playerId)?.createRelatedTracks(track) ?? Promise.resolve([]),
-	);
-}
-
-/** Owns related-track and autoplay preparation after a track starts. One instance per
- *  player. */
+/**
+ * Owns related-track and autoplay preparation after a track starts.
+ *
+ * Per-player worker — created by the shared `PlaybackOrchestrator` in `attach(playerId, ...)`
+ * and discarded in `detach(playerId)`. Registers no RPC of its own: `playback.prepareAutoplay`
+ * and `playback.createRelatedTracks` are registered exactly once, in `PlaybackOrchestrator`'s
+ * constructor, and routed to the right worker via `ctx.playerId`.
+ */
 export class PlaybackPreparationController {
 	private readonly playerId: string;
 	private readonly bus: Bus;
@@ -37,12 +24,10 @@ export class PlaybackPreparationController {
 		this.isCurrentSession = options.isCurrentSession;
 		this.queueSnapshot = options.queueSnapshot;
 		this.setQueueRelated = options.setQueueRelated;
-		ensurePreparationRpcBridge(this.bus);
-		preparationControllers.set(playerId, this);
 	}
 
 	public dispose(): void {
-		if (preparationControllers.get(this.playerId) === this) preparationControllers.delete(this.playerId);
+		// No module-level registration to release; kept for a uniform worker lifecycle API.
 	}
 
 	public async prepareTrack(session: PlaybackSession, context: PlayerMessageContext): Promise<void> {

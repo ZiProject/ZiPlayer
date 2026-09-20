@@ -21,7 +21,6 @@ import { TTSController } from "../controller/TTSController";
 import { PlayerEventBridge } from "../controller/PlayerEventBridge";
 import { PlayerEventDebug } from "../controller/PlayerEventDebug";
 import { ResourceRefreshController } from "../controller/ResourceRefreshController";
-import { PlayerConnectionBridge } from "../controller/PlayerConnectionBridge";
 import { PluginController } from "../controller/PluginController";
 import { ExtensionController } from "../controller/ExtensionController";
 import { SearchController } from "../controller/SearchController";
@@ -67,9 +66,14 @@ export interface SharedControllerGraph {
 	readonly resourceRefreshController: ResourceRefreshController;
 	readonly sessionController: PlaybackSessionController;
 	readonly forwardController: ForwardController;
-	readonly playerConnectionBridge: PlayerConnectionBridge;
 	readonly eventBridge: PlayerEventBridge;
 	readonly connectionController: ConnectionController;
+	readonly trackResolver: TrackResolver;
+	readonly preloadManager: PreloadManager;
+	readonly trackLoader: TrackLoader;
+	readonly playbackController: PlaybackController;
+	readonly preloadController: PreloadController;
+	readonly orchestrator: PlaybackOrchestrator;
 }
 
 let sharedControllerGraph: SharedControllerGraph | null = null;
@@ -81,6 +85,13 @@ const runtimeInstances = new Map<string, GlobalPlayerRuntime>();
 export function ensureSharedControllers(): SharedControllerGraph {
 	if (sharedControllerGraph) return sharedControllerGraph;
 	const bus = new Bus();
+	// A few singletons depend on one another at construction time (TrackLoader needs the
+	// PreloadManager it reuses buffered streams from; PreloadController needs both; the
+	// PlaybackOrchestrator needs the PlaybackSessionController) — built as locals first so
+	// they can be threaded through, then assigned into the graph below.
+	const sessionController = new PlaybackSessionController(bus);
+	const preloadManager = new PreloadManager(bus);
+	const trackLoader = new TrackLoader(bus, preloadManager);
 	sharedControllerGraph = {
 		bus,
 		extensionController: new ExtensionController(bus),
@@ -96,11 +107,16 @@ export function ensureSharedControllers(): SharedControllerGraph {
 		streamController: new StreamController(bus),
 		lifecycleController: new LifecycleController(bus),
 		resourceRefreshController: new ResourceRefreshController(bus),
-		sessionController: new PlaybackSessionController(bus),
+		sessionController,
 		forwardController: new ForwardController(bus),
-		playerConnectionBridge: new PlayerConnectionBridge(bus),
 		eventBridge: new PlayerEventBridge(bus),
 		connectionController: new ConnectionController(bus),
+		trackResolver: new TrackResolver(bus),
+		preloadManager,
+		trackLoader,
+		playbackController: new PlaybackController(bus),
+		preloadController: new PreloadController(bus, { loader: trackLoader, manager: preloadManager }),
+		orchestrator: new PlaybackOrchestrator(bus, { sessionController }),
 	};
 	// runtime.ping / runtime.dispose are the only two RPCs owned directly by
 	// GlobalPlayerRuntime itself; registered once here and routed to whichever
@@ -165,7 +181,6 @@ export class GlobalPlayerRuntime {
 	public attachPlayer(player: Player): void {
 		this.controllers?.extensionManager?.attachPlayer(player);
 		const shared = ensureSharedControllers();
-		shared.playerConnectionBridge.attach(this.playerId, player, this.controllers?.debugTracer?.channel("PlayerConnectionBridge"));
 		shared.eventBridge.attachPlayer(this.playerId, player);
 	}
 
@@ -231,9 +246,25 @@ export class GlobalPlayerRuntime {
 			volume: options.tts?.volume ?? options.volume ?? 100,
 		});
 		shared.queueController.attach(playerId);
-		const resolver = new TrackResolver(bus);
-		const preloadManager = new PreloadManager(bus);
-		const trackLoader = new TrackLoader(bus, preloadManager);
+		shared.trackResolver.attach(playerId, {
+			streamManager,
+			pluginManager,
+			extensionManager,
+			isDestroyed: () => this.disposed,
+		});
+		shared.preloadManager.attach(playerId, {
+			streamManager,
+			debug: channel("Preload"),
+			isDestroyed: () => this.disposed,
+			isEnabled: () =>
+				options.lowPerformance && options.preload?.autoDisableInLowPerformance ? false : (options.preload?.enabled ?? true),
+		});
+		shared.trackLoader.attach(playerId, {
+			middleware,
+			context: { playerId, manager } as any,
+			resolvers: [(track, session) => bus.requestRpc(playerId, "stream.resolve", { track }, { signal: session.signal })],
+			debug: channel("TrackLoader"),
+		});
 		shared.transitionController.attach(playerId, {
 			enabled:
 				options.lowPerformance && options.crossfade?.autoDisableInLowPerformance ?
@@ -254,20 +285,16 @@ export class GlobalPlayerRuntime {
 			loudness: options.loudnessNormalization,
 		});
 		shared.antiStuckController.attach(playerId, { ...options.antiStuck });
-		const playbackController = new PlaybackController(bus);
+		shared.playbackController.attach(playerId, { audioPlayer, stuckTimeoutMs: options.antiStuck?.stuckTimeoutMs });
 		shared.streamController.attach(playerId, streamManager);
 		shared.saveController.attach(playerId, {
-			middleware: [async (track) => trackLoader.applyMiddleware(playerId, track)],
+			middleware: [async (track) => shared.trackLoader.applyMiddleware(playerId, track)],
 			middlewareContext: { playerId, manager } as any,
 			resolveStream: (track) => pluginManager.getStream(track),
 			resolveVideoStream: (track) => pluginManager.getVideo(track),
 			debug: channel("SaveController"),
 		});
-		const preloadController = new PreloadController({
-			loader: trackLoader,
-			manager: preloadManager,
-			playerId,
-		});
+		shared.preloadController.attach(playerId);
 		shared.filterController.attach(playerId, undefined, channel("FilterController"), {
 			initialFilters: Array.isArray(options.filters) ? options.filters : [],
 			onFilterApplied: (filter) => bus.event(playerId, { type: "filterApplied", filter }),
@@ -278,9 +305,7 @@ export class GlobalPlayerRuntime {
 			},
 		});
 		shared.sessionController.attach(playerId);
-		const orchestrator = new PlaybackOrchestrator(playerId, bus, {
-			sessionController: shared.sessionController,
-		});
+		shared.orchestrator.attach(playerId, { debug: channel("PlaybackOrchestrator") });
 		shared.resourceRefreshController.attach(playerId);
 		shared.searchController.attach(playerId, {
 			extensionManager,
@@ -294,24 +319,24 @@ export class GlobalPlayerRuntime {
 			forwardController: shared.forwardController,
 			audioPlayer,
 			streamManager,
-			preloadManager,
-			trackResolver: resolver,
+			preloadManager: shared.preloadManager,
+			trackResolver: shared.trackResolver,
 			pluginManager,
 			extensionManager,
 			pluginController: shared.pluginController,
 			extensionController: shared.extensionController,
 			queueController: shared.queueController,
-			trackLoader,
-			playbackController,
+			trackLoader: shared.trackLoader,
+			playbackController: shared.playbackController,
 			streamController: shared.streamController,
 			saveController: shared.saveController,
 			filterController: shared.filterController,
 			antiStuckController: shared.antiStuckController,
 			transitionController: shared.transitionController,
 			volumeController: shared.volumeController,
-			preloadController,
+			preloadController: shared.preloadController,
 			resourceRefreshController: shared.resourceRefreshController,
-			orchestrator,
+			orchestrator: shared.orchestrator,
 			sessionController: shared.sessionController,
 			ttsController: shared.ttsController,
 			debugTracer,
@@ -328,6 +353,15 @@ export class GlobalPlayerRuntime {
 		// registration would ever be touched (which never happens: shared
 		// controllers are never destroyed, only detached per player).
 		this.monitorCleanup("sharedControllers", async () => {
+			// Orchestrator/preload/playback detach before the connection they play through and
+			// before the session controller they read sessions from, mirroring how they were
+			// wired up (orchestrator/preload attached after connection+session in the block above).
+			shared.orchestrator.detach(playerId);
+			shared.preloadController.detach(playerId);
+			shared.playbackController.detach(playerId);
+			shared.trackLoader.detach(playerId);
+			shared.trackResolver.detach(playerId);
+			shared.preloadManager.detach(playerId);
 			await shared.connectionController.detach(playerId);
 			shared.lifecycleController.detach(playerId);
 			shared.forwardController.detach(playerId);
@@ -344,24 +378,17 @@ export class GlobalPlayerRuntime {
 			shared.resourceRefreshController.detach(playerId);
 			shared.searchController.detach(playerId);
 			shared.sessionController.detach(playerId);
-			shared.playerConnectionBridge.detach(playerId);
 			shared.eventBridge.detach(playerId);
 		});
 
 		this.globalRegistration = globalControllerRegistry.register(playerId, bus, graph, () => this.dispose());
-		const lifecycleOrder: Array<keyof PlayerRuntimeGraph> = [
-			"connectionController",
-			"streamManager",
-			"preloadManager",
-			"trackResolver",
-			"pluginManager",
-			"extensionManager",
-			"trackLoader",
-			"playbackController",
-			"preloadController",
-			"orchestrator",
-			"debugTracer",
-		];
+		// Only resources genuinely created fresh per player go through the generic
+		// monitor()->dispose()/destroy() path. The six controllers above (trackResolver,
+		// preloadManager, trackLoader, playbackController, preloadController, orchestrator)
+		// are shared singletons now — their per-player teardown is `detach(playerId)` in the
+		// "sharedControllers" cleanup above, not a `dispose()` call here (which would tear
+		// down every player's state at once).
+		const lifecycleOrder: Array<keyof PlayerRuntimeGraph> = ["streamManager", "pluginManager", "extensionManager", "debugTracer"];
 		for (const name of lifecycleOrder) this.monitor(name, graph[name]);
 		return graph;
 	}

@@ -3,24 +3,19 @@ import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, PlaybackSessionSnapshot, Track } from "../types";
 import type { Bus } from "../structures/Bus";
 import type { PlaybackTrackEndControllerOptions } from "../types";
-import { CONTROLLER_RPC } from "./ControllerBusContract";
 import { PlayerActionPriority } from "../types";
+import { CONTROLLER_RPC } from "./ControllerBusContract";
 
-// playback.transitionLock must be registered exactly once on the shared
-// Bus; each per-player PlaybackTrackEndController registers itself here.
-const transitionLockRpcRegistered = new WeakSet<Bus>();
-const trackEndControllers = new Map<string, PlaybackTrackEndController>();
-function ensureTransitionLockRpcBridge(bus: Bus): void {
-	if (transitionLockRpcRegistered.has(bus)) return;
-	transitionLockRpcRegistered.add(bus);
-	bus.registerRpc<{ active: boolean }, void>(CONTROLLER_RPC.playbackTransitionLock, ({ active }, ctx) =>
-		trackEndControllers.get(ctx.playerId)?.setTrackEndTransition(active),
-	);
-}
-
-/** Owns TRACK_END, queue refill, autoplay fallback, and queue-end transitions.
+/**
+ * Owns TRACK_END, queue refill, autoplay fallback, and queue-end transitions.
  * Talks to sibling playback controllers only through Bus queries/RPCs —
- * never by holding a direct reference to them. One instance per player. */
+ * never by holding a direct reference to them.
+ *
+ * Per-player worker — created by the shared `PlaybackOrchestrator` in `attach(playerId, ...)`
+ * and discarded in `detach(playerId)`. Registers no RPC of its own: `playback.transitionLock`
+ * is registered exactly once, in `PlaybackOrchestrator`'s constructor, and routed to the
+ * right worker via `ctx.playerId`.
+ */
 export class PlaybackTrackEndController {
 	private readonly playerId: string;
 	private readonly bus: Bus;
@@ -43,8 +38,6 @@ export class PlaybackTrackEndController {
 		this.publishState = options.publishState;
 		this.queueSnapshot = options.queueSnapshot;
 		this.lifecycleSignal = options.lifecycleSignal;
-		ensureTransitionLockRpcBridge(this.bus);
-		trackEndControllers.set(playerId, this);
 	}
 
 	private currentSession(): PlaybackSession | null {
@@ -139,7 +132,6 @@ export class PlaybackTrackEndController {
 	}
 
 	public dispose(): void {
-		if (trackEndControllers.get(this.playerId) === this) trackEndControllers.delete(this.playerId);
 		this.queueStartGeneration++;
 		this.queueStartPromise = null;
 		this.trackEndTransition = false;

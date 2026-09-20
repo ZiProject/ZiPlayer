@@ -6,25 +6,14 @@ import { CONTROLLER_RPC } from "./ControllerBusContract";
 import type { PlayerMessageContext, StreamInfo, Track, TrackLoadResult } from "../types";
 import type { PlaybackStartControllerOptions } from "../types";
 
-// playback.start must be registered exactly once on the shared Bus; each
-// per-player PlaybackStartController registers itself here.
-const playbackStartControllers = new Map<string, PlaybackStartController>();
-const playbackStartRpcRegistered = new WeakSet<Bus>();
-function ensurePlaybackStartRpcBridge(bus: Bus): void {
-	if (playbackStartRpcRegistered.has(bus)) return;
-	playbackStartRpcRegistered.add(bus);
-	bus.registerRpc<{ track: Track; context: PlayerMessageContext; from: Track | null }, Promise<void>>(
-		CONTROLLER_RPC.playbackStart,
-		({ track, context, from }, ctx) => {
-			const controller = playbackStartControllers.get(ctx.playerId);
-			if (!controller) return Promise.resolve();
-			return controller.start(track, context, from);
-		},
-	);
-}
-
-/** Owns loading and starting one playback session through the Bus. One instance per
- *  player. */
+/**
+ * Owns loading and starting one playback session through the Bus.
+ *
+ * Per-player worker — created by the shared `PlaybackOrchestrator` in `attach(playerId, ...)`
+ * and discarded in `detach(playerId)`. Registers no RPC of its own: `playback.start` is
+ * registered exactly once, in `PlaybackOrchestrator`'s constructor, and routed to the right
+ * worker via `ctx.playerId`.
+ */
 export class PlaybackStartController {
 	private readonly bus: Bus;
 	private readonly playerId: string;
@@ -42,12 +31,10 @@ export class PlaybackStartController {
 		this.stopPlayback = options.stopPlayback;
 		this.prepareTrack = options.prepareTrack;
 		this.adapters = options.adapters;
-		ensurePlaybackStartRpcBridge(this.bus);
-		playbackStartControllers.set(playerId, this);
 	}
 
 	public dispose(): void {
-		if (playbackStartControllers.get(this.playerId) === this) playbackStartControllers.delete(this.playerId);
+		// No module-level registration to release; kept for a uniform worker lifecycle API.
 	}
 
 	public async start(track: Track, parentContext: PlayerMessageContext, from: Track | null = null): Promise<void> {

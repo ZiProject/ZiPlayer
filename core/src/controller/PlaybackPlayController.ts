@@ -4,26 +4,16 @@ import type { PlayerMessageContext, SearchResult, Track } from "../types";
 import type { PlaybackPlayControllerOptions } from "../types";
 import { CONTROLLER_RPC } from "./ControllerBusContract";
 
-// playback.play must be registered exactly once on the shared Bus; each
-// per-player PlaybackPlayController registers itself here.
-const playControllers = new Map<string, PlaybackPlayController>();
-const playRpcRegistered = new WeakSet<Bus>();
-function ensurePlayRpcBridge(bus: Bus): void {
-	if (playRpcRegistered.has(bus)) return;
-	playRpcRegistered.add(bus);
-	bus.registerRpc<{ query: string | Track | SearchResult | null; requestedBy?: string }, boolean>(
-		CONTROLLER_RPC.play,
-		(request, context) => {
-			const controller = playControllers.get(context.playerId);
-			if (!controller) return Promise.resolve(false);
-			return controller.play(request.query, request.requestedBy, context);
-		},
-	);
-}
-
-/** Owns the public play RPC: search, queue insertion, TTS interrupt, and initial skip.
+/**
+ * Owns the public play RPC: search, queue insertion, TTS interrupt, and initial skip.
  * Talks to sibling playback controllers only through Bus queries/actions —
- * never by holding a direct reference to them. One instance per player. */
+ * never by holding a direct reference to them.
+ *
+ * Per-player worker — created by the shared `PlaybackOrchestrator` in `attach(playerId, ...)`
+ * and discarded in `detach(playerId)`. Registers no RPC of its own: `play` is registered
+ * exactly once, in `PlaybackOrchestrator`'s constructor, and routed to the right worker via
+ * `ctx.playerId`.
+ */
 export class PlaybackPlayController {
 	private readonly playerId: string;
 	private readonly bus: Bus;
@@ -39,12 +29,10 @@ export class PlaybackPlayController {
 		this.debug = options.debug;
 		this.lifecycleSignal = options.lifecycleSignal;
 		this.adapters = options.adapters;
-		ensurePlayRpcBridge(this.bus);
-		playControllers.set(playerId, this);
 	}
 
 	public dispose(): void {
-		if (playControllers.get(this.playerId) === this) playControllers.delete(this.playerId);
+		// No module-level registration to release; kept for a uniform worker lifecycle API.
 	}
 
 	private currentSession(): PlaybackSession | null {
