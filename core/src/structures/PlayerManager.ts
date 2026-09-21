@@ -49,7 +49,6 @@ import { PlaybackSessionController } from "../controller/PlaybackSessionControll
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
 
 export function createSharedControllers(params: {
-	manager?: PlayerManager;
 	options?: PlayerManagerOptions;
 	debugSink?: (...args: any[]) => void;
 	bus?: Bus;
@@ -265,7 +264,6 @@ export class PlayerManager extends EventEmitter {
 	constructor(options: PlayerManagerOptions = {}) {
 		super();
 		this.controllers = createSharedControllers({
-			manager: this,
 			options,
 			debugSink: this.debugSink,
 		});

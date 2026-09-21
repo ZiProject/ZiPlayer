@@ -351,3 +351,15 @@ test("a failed create() releases what it attached and the guild can be created a
 	assert.equal(mgr.get("g-fail"), player);
 	assert.equal(player.destroyed, false);
 });
+
+test("createSharedControllers builds the whole set from a Bus alone (no PlayerManager needed)", () => {
+	const { Bus, createSharedControllers } = require("../core/dist");
+	const bus = new Bus();
+	const controllers = createSharedControllers({ bus });
+
+	assert.equal(controllers.bus, bus);
+	for (const name of ["connection", "playback", "preload", "trackLoader", "orchestrator", "queue", "lifecycle", "eventBridge"]) {
+		assert.ok(controllers[name], `${name} controller is created`);
+	}
+	bus.dispose();
+});
