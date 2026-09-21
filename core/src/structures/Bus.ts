@@ -5,6 +5,7 @@ import type {
 	BusRequestErrorReason,
 	BusRpcContext,
 	BusRpcOptions,
+	BusLatencyKind,
 	PlayerEvent,
 	PlayerEventArgsMap,
 	PlayerEventType,
@@ -22,9 +23,9 @@ import type {
 	PlayerSessionId,
 } from "../types";
 
-import { BUS_OUTPUT, BUS_REQUEST } from "./BusContract";
+import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST } from "./BusContract";
 import { PlayerActionPriority } from "../types/bus";
-import type { BusLatencyTrace } from "../controller/BusLatencyTrace";
+import { BusLatencyTrace } from "../controller/BusLatencyTrace";
 
 export type {
 	PlayerAction,
@@ -125,11 +126,11 @@ export class Bus {
 	private readonly queryHandlers = new Map<PlayerQuery, Set<PlayerQueryHandler<any>>>();
 	private readonly rpcHandlers = new Map<string, RpcHandler<any, any>>();
 	private readonly pendingRequests = new Set<() => void>();
-	private latencyTrace?: BusLatencyTrace;
+	private readonly latencyTrace?: BusLatencyTrace;
 	private disposed = false;
 
-	public setLatencyTrace(trace?: BusLatencyTrace): void {
-		this.latencyTrace = trace;
+	public constructor(latencyTrace?: BusLatencyTrace) {
+		this.latencyTrace = latencyTrace;
 	}
 
 	// ---------------------------------------------------------------------
@@ -279,13 +280,7 @@ export class Bus {
 			signal: options.signal ?? new AbortController().signal,
 			timestamp: Date.now(),
 		};
-		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
-		const operation = Promise.resolve()
-			.then(() => handler(request, context))
-			.finally(() => {
-				if (this.latencyTrace?.enabled)
-					this.latencyTrace.record("rpc", type, start, { requestId, handler: handler.name || "anonymous" });
-			});
+		const operation = Promise.resolve().then(() => handler(request, context));
 		if (options.timeoutMs === undefined) return operation;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const timeout = new Promise<never>((_, reject) => {
@@ -316,16 +311,14 @@ export class Bus {
 			signal: new AbortController().signal,
 			timestamp: Date.now(),
 		};
-		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
-		try {
+		const operation = () => {
 			const value = handler(request, context);
 			if (value && typeof (value as any).then === "function")
 				throw new Error(`RPC "${type}" is asynchronous; use requestRpc() instead`);
 			return value as TResponse;
-		} finally {
-			if (this.latencyTrace?.enabled)
-				this.latencyTrace.record("rpc", type, start, { requestId: context.requestId, handler: handler.name || "anonymous" });
-		}
+		};
+		if (this.latencyTrace?.enabled) return this.latencyTrace.measure("rpc", type, operation);
+		return operation();
 	}
 
 	public get isDisposed(): boolean {
@@ -360,37 +353,12 @@ export class Bus {
 			source: context?.source,
 			timestamp: context?.timestamp ?? Date.now(),
 		};
-		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
-		const handlerDurations: number[] = [];
-		return Promise.all(
-			[...this.actionListeners].map((handler) => {
-				const handlerStart = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
-				return Promise.resolve()
-					.then(() => handler(action, execution))
-					.finally(() => {
-						if (this.latencyTrace?.enabled) {
-							const duration = this.latencyTrace.record("action", action.type, handlerStart, {
-								requestId: execution.requestId,
-								sessionId: execution.sessionId,
-								source: execution.source,
-								handler: handler.name || "anonymous",
-							});
-							handlerDurations.push(duration);
-						}
-					});
-			}),
-		)
-			.finally(() => {
-				if (this.latencyTrace?.enabled) {
-					this.latencyTrace.record("action", action.type, start, {
-						requestId: execution.requestId,
-						sessionId: execution.sessionId,
-						source: execution.source,
-						handler: `criticalPath=${Math.max(0, ...handlerDurations).toFixed(1)}µs`,
-					});
-				}
-			})
-			.then(() => undefined);
+		const operation = () =>
+			Promise.all([...this.actionListeners].map((handler) => Promise.resolve().then(() => handler(action, execution)))).then(
+				() => undefined,
+			);
+		if (this.latencyTrace?.enabled) return this.latencyTrace.measureAsync("action", action.type, operation);
+		return operation();
 	}
 	/** Registered once by a shared (singleton) controller, never per player. */
 	public onAction(handler: (action: PlayerAction, context: PlayerActionExecutionContext) => void | Promise<void>): () => void {
@@ -434,24 +402,22 @@ export class Bus {
 		if (this.disposed) return Promise.resolve(undefined as any);
 		const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined;
 		if (!handler) return Promise.resolve(undefined as any);
-		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
-		return Promise.resolve(handler(playerId)).finally(() => {
-			if (this.latencyTrace?.enabled) this.latencyTrace.record("query", query, start, { handler: handler.name || "anonymous" });
-		});
+		const operation = () => Promise.resolve(handler(playerId));
+		if (this.latencyTrace?.enabled) return this.latencyTrace.measureAsync("query", query, operation);
+		return operation();
 	}
 	public querySync<K extends PlayerQuery>(playerId: string, query: K): PlayerQueryMap[K] {
 		if (this.disposed) return undefined as any;
 		const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined;
 		if (!handler) return undefined as any;
-		const start = this.latencyTrace?.enabled ? this.latencyTrace.start() : 0;
-		try {
+		const operation = () => {
 			const value = handler(playerId);
 			if (value && typeof (value as any).then === "function")
 				throw new Error(`Query "${query}" is asynchronous; use query() instead`);
 			return value as PlayerQueryMap[K];
-		} finally {
-			if (this.latencyTrace?.enabled) this.latencyTrace.record("query", query, start, { handler: handler.name || "anonymous" });
-		}
+		};
+		if (this.latencyTrace?.enabled) return this.latencyTrace.measure("query", query, operation);
+		return operation();
 	}
 
 	/** Drop everything scoped to a single player (its event subscriptions). Shared, global
@@ -474,61 +440,60 @@ export class Bus {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.clear();
-		this.latencyTrace = undefined;
 	}
 
 	private toEvent<K extends PlayerEventType>(type: K, args: PlayerEventArgsMap[K]): Extract<PlayerEvent, { type: K }> {
 		switch (type) {
-			case "initialized":
-			case "ready":
-			case "destroyed":
-			case "preloadCancelled":
+			case BUS_EVENT.initialized:
+			case BUS_EVENT.ready:
+			case BUS_EVENT.destroyed:
+			case BUS_EVENT.preloadCancelled:
 				return { type } as any;
-			case "TRACK_LOADING":
-			case "TRACK_LOADED":
-			case "TRACK_STARTED":
-			case "TRACK_END":
-			case "STREAM_ABORTED":
-			case "playbackStateChanged":
-			case "playbackSessionCreated":
-			case "RECOVERY_STARTED":
-			case "RECOVERY_FAILED":
+			case BUS_EVENT.trackLoading:
+			case BUS_EVENT.trackLoaded:
+			case BUS_EVENT.trackStarted:
+			case BUS_EVENT.trackEnd:
+			case BUS_EVENT.streamAborted:
+			case BUS_EVENT.playbackStateChanged:
+			case BUS_EVENT.playbackSessionCreated:
+			case BUS_EVENT.recoveryStarted:
+			case BUS_EVENT.recoveryFailed:
 				return { type, session: args[0] } as any;
-			case "TRACK_ERROR":
+			case BUS_EVENT.trackError:
 				return { type, session: args[0], error: args[1] } as any;
-			case "STUCK_DETECTED":
+			case BUS_EVENT.stuckDetected:
 				return { type, session: args[0], reason: args[1] } as any;
-			case "trackRequested":
+			case BUS_EVENT.trackRequested:
 				return { type, track: args[0], session: args[1] } as any;
-			case "queueChanged":
+			case BUS_EVENT.queueChanged:
 				return { type, queue: args[0] } as any;
-			case "volumeRequested":
+			case BUS_EVENT.volumeRequested:
 				return { type, volume: args[0], oldVolume: args[1], newVolume: args[2] } as any;
-			case "stateChanged":
+			case BUS_EVENT.stateChanged:
 				return { type, oldState: args[0], newState: args[1] } as any;
-			case "preloadStateChanged":
+			case BUS_EVENT.preloadStateChanged:
 				return { type, state: args[0] } as any;
-			case "preloadPromoted":
+			case BUS_EVENT.preloadPromoted:
 				return { type, track: args[0] } as any;
-			case "queueEnd":
-			case "playerStop":
-			case "filtersCleared":
+			case BUS_EVENT.queueEnd:
+			case BUS_EVENT.playerStop:
+			case BUS_EVENT.filtersCleared:
 				return { type } as any;
-			case "willPlay":
+			case BUS_EVENT.willPlay:
 				return { type, track: args[0], upcomingTracks: args[1] } as any;
-			case "playerPause":
-			case "playerResume":
+			case BUS_EVENT.playerPause:
+			case BUS_EVENT.playerResume:
 				return { type, track: args[0] } as any;
-			case "seek":
+			case BUS_EVENT.seek:
 				return { type, track: args[0], position: args[1] } as any;
-			case "filterApplied":
-			case "filterRemoved":
+			case BUS_EVENT.filterApplied:
+			case BUS_EVENT.filterRemoved:
 				return { type, filter: args[0] } as any;
-			case "streamError":
+			case BUS_EVENT.streamError:
 				return { type, error: args[0], track: args[1] } as any;
-			case "forwardModeStart":
+			case BUS_EVENT.forwardModeStart:
 				return { type, leader: args[0] } as any;
-			case "forwardModeEnd":
+			case BUS_EVENT.forwardModeEnd:
 				return { type, leader: args[0], reason: args[1] } as any;
 		}
 	}

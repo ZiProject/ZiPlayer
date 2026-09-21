@@ -20,6 +20,7 @@ import {
 import type { BaseExtension } from "../extensions";
 import { withTimeout } from "../utils/timeout";
 import { PlayerEventDebug } from "../controller/PlayerEventDebug";
+import { BusLatencyTrace } from "../controller/BusLatencyTrace";
 import { TrackLoader } from "./TrackLoader";
 import { TrackResolver } from "./TrackResolver";
 import { PlaybackController } from "../controller/PlaybackController";
@@ -53,8 +54,9 @@ export function createSharedControllers(params: {
 	options?: PlayerManagerOptions;
 	debugSink?: (...args: any[]) => void;
 	bus?: Bus;
+	busLatencyTrace?: BusLatencyTrace;
 }): SharedControllerSet {
-	const bus = params.bus ?? new Bus();
+	const bus = params.bus ?? new Bus(params.busLatencyTrace);
 	const sessionController = new PlaybackSessionController(bus);
 	const preloadManager = new PreloadManager(bus);
 	const trackLoader = new TrackLoader(bus, preloadManager);
@@ -267,6 +269,7 @@ export class PlayerManager extends EventEmitter {
 		this.controllers = createSharedControllers({
 			options,
 			debugSink: this.debugSink,
+			busLatencyTrace: this.debugTracer.latencyTraceInstance,
 		});
 		this.bus = this.controllers.bus;
 		this.plugins = [];
@@ -544,9 +547,9 @@ export class PlayerManager extends EventEmitter {
 		});
 		this.controllers.filter?.attach(playerId, undefined, channel("FilterController"), {
 			initialFilters: Array.isArray(options?.filters) ? options?.filters : [],
-			onFilterApplied: (filter) => this.bus.event(playerId, { type:BUS_EVENT.filterApplied , filter }),
+			onFilterApplied: (filter) => this.bus.event(playerId, { type: BUS_EVENT.filterApplied, filter }),
 			onFilterRemoved: (filter) => this.bus.event(playerId, { type: BUS_EVENT.filterRemoved, filter }),
-			onFiltersCleared: () => this.bus.event(playerId, { type:BUS_EVENT.filtersCleared }),
+			onFiltersCleared: () => this.bus.event(playerId, { type: BUS_EVENT.filtersCleared }),
 			onProcessingError: (error) => {
 				void this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackReportFilterError, { error }).catch(() => undefined);
 			},

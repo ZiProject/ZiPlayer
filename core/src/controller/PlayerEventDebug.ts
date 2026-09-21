@@ -1,7 +1,7 @@
 import type { Bus, PlayerEvent, PlayerAction, PlayerEventType, PlayerActionExecutionContext } from "../structures/Bus";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
 import { BusLatencyTrace } from "./BusLatencyTrace";
-import type { PlayerDebugLevel, PlayerEventDebugLogger } from "../types";
+import type { PlayerDebugLevel, PlayerEventDebugLogger, BusLatencyKind } from "../types";
 
 /**
  * Lower number = more severe / always-shown. A level is "enabled" when the
@@ -51,11 +51,11 @@ export class PlayerEventDebug {
 	) {
 		this.level = level;
 		this.internalTag = `PlayerEventDebug:${id}`;
-		this.latencyTrace = new BusLatencyTrace(logger, level);
+		this.latencyTrace = new BusLatencyTrace((record) => {
+			if (!this.enabled("time")) return;
+			this.logger?.("[BusLatency]", record);
+		}, level);
 		if (this.bus) {
-			// Latency tracing is a bus-wide (not per-player) diagnostic knob on the
-			// shared Bus; the most recently attached tracer wins.
-			this.bus.setLatencyTrace(this.latencyTrace);
 			const eventTypes: PlayerEventType[] = [
 				"initialized",
 				"ready",
@@ -105,9 +105,21 @@ export class PlayerEventDebug {
 		return this.level;
 	}
 
+	public get latencyTraceInstance(): BusLatencyTrace {
+		return this.latencyTrace;
+	}
+
 	public setDebugLevel(level: PlayerDebugLevel): void {
 		this.level = level;
 		this.latencyTrace.setDebugLevel(level);
+	}
+
+	public measure<T>(kind: BusLatencyKind, type: string, operation: () => T): T {
+		return this.latencyTrace.measure(kind, type, operation);
+	}
+
+	public measureAsync<T>(kind: BusLatencyKind, type: string, operation: () => Promise<T>): Promise<T> {
+		return this.latencyTrace.measureAsync(kind, type, operation);
 	}
 
 	/** Whether a message logged at `level` would actually reach the logger right now. */
@@ -158,7 +170,6 @@ export class PlayerEventDebug {
 		this.log("info", this.internalTag, "DETACHED");
 		for (const detach of this.detach.splice(0)) detach();
 		this.recent.clear();
-		if (this.bus) this.bus.setLatencyTrace(undefined);
 	}
 
 	private event(event: PlayerEvent) {

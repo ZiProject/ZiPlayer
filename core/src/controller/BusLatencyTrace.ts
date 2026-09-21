@@ -1,18 +1,25 @@
-import type { PlayerDebugLevel, PlayerEventDebugLogger, BusLatencyKind, BusLatencyRecord } from "../types";
+import type { PlayerDebugLevel, BusLatencyKind, BusLatencyRecord } from "../types";
 
 function nowMs(): number {
 	return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
 }
 
-/** Optional high-resolution timing sink for Bus. Disabled unless debug level is `time`. */
+/** Pure latency recorder. It creates BusLatencyRecord values and optionally emits them to a sink. */
 export class BusLatencyTrace {
 	private level: PlayerDebugLevel;
+	private readonly onRecord?: (record: BusLatencyRecord) => void;
 
 	public constructor(
-		private readonly logger?: PlayerEventDebugLogger,
-		level: PlayerDebugLevel = "off",
+		arg1?: PlayerDebugLevel | ((record: BusLatencyRecord) => void),
+		arg2?: PlayerDebugLevel | ((record: BusLatencyRecord) => void),
 	) {
-		this.level = level;
+		if (typeof arg1 === "function") {
+			this.onRecord = arg1;
+			this.level = (typeof arg2 === "string" ? arg2 : "off") as PlayerDebugLevel;
+		} else {
+			this.level = (arg1 ?? "off") as PlayerDebugLevel;
+			this.onRecord = typeof arg2 === "function" ? arg2 : undefined;
+		}
 	}
 
 	public get debugLevel(): PlayerDebugLevel {
@@ -31,6 +38,24 @@ export class BusLatencyTrace {
 		return nowMs();
 	}
 
+	public measure<T>(kind: BusLatencyKind, type: string, operation: () => T): T {
+		const start = this.start();
+		try {
+			return operation();
+		} finally {
+			this.record(kind, type, start);
+		}
+	}
+
+	public async measureAsync<T>(kind: BusLatencyKind, type: string, operation: () => Promise<T>): Promise<T> {
+		const start = this.start();
+		try {
+			return await operation();
+		} finally {
+			this.record(kind, type, start);
+		}
+	}
+
 	public record(
 		kind: BusLatencyKind,
 		type: string,
@@ -46,22 +71,8 @@ export class BusLatencyTrace {
 				timestamp: Date.now(),
 				...meta,
 			};
-			this.logger?.(`[BusLatency] ${formatRecord(record)}`, record);
+			this.onRecord?.(record);
 		}
 		return durationUs;
 	}
-}
-
-function formatRecord(record: BusLatencyRecord): string {
-	const parts = [`kind=${record.kind}`, `type=${record.type}`, `duration=${formatUs(record.durationUs)}`];
-	if (record.handler) parts.push(`handler=${record.handler}`);
-	if (record.requestId) parts.push(`request=${record.requestId}`);
-	if (record.sessionId) parts.push(`session=${record.sessionId}`);
-	if (record.source) parts.push(`source=${record.source}`);
-	return parts.join(" ");
-}
-
-function formatUs(value: number): string {
-	if (value < 1000) return `${value.toFixed(1)}µs`;
-	return `${(value / 1000).toFixed(2)}ms`;
 }
