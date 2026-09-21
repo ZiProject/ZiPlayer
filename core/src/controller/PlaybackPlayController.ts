@@ -62,8 +62,7 @@ export class PlaybackPlayController {
 				const session = this.currentSession();
 				if (session?.status === "playing" || session?.status === "paused") return true;
 				await this.skipThroughBus(context);
-				const after = this.currentSession();
-				return after?.track !== null && after?.track !== undefined;
+				return true;
 			}
 			let tracks: Track[];
 			if (typeof query === "string") {
@@ -103,12 +102,10 @@ export class PlaybackPlayController {
 				return true;
 			}
 			if (this.isWaitingForQueue()) {
-				const waiting = this.currentSession();
-				return waiting?.status === "playing" || waiting?.status === "paused";
+				return true;
 			}
 			await this.skipThroughBus(context);
-			const after = this.currentSession();
-			return after?.track !== null && after?.track !== undefined;
+			return true;
 		} catch (error) {
 			this.debug("[PlaybackPlayController] Play error:", error);
 			const session = this.currentSession();

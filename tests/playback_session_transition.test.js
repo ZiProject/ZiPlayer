@@ -128,7 +128,10 @@ test("related tracks resolve without setting willNext when autoplay is disabled"
 	assert.deepEqual(harness.queueController.relatedTracks, [trackB]);
 	assert.equal(harness.queueController.willNext, null);
 
-	harness.bus.event(harness.playerId, { type: "TRACK_END", session: harness.orchestrator.getCurrentSession(harness.playerId).snapshot() });
+	harness.bus.event(harness.playerId, {
+		type: "TRACK_END",
+		session: harness.orchestrator.getCurrentSession(harness.playerId).snapshot(),
+	});
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	assert.equal(harness.orchestrator.getCurrentSession(harness.playerId).track, trackA);
 	await harness.orchestrator.dispose();
@@ -197,6 +200,36 @@ test("Bus PLAY starts a replacement track without legacy orchestrator arguments"
 	await play(harness, trackB);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b"], harness.errors.join("; "));
+	await harness.orchestrator.dispose();
+	harness.queueController.dispose();
+});
+
+test("Player.play resolves true when the next session is not materialized yet", async () => {
+	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
+	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
+	const harness = createOrchestrator();
+	const player = Object.create(Player.prototype);
+	player.bus = harness.bus;
+	player.playerId = harness.playerId;
+	player.playOperation = Promise.resolve(false);
+	player.playGeneration = 0;
+	player.playAbortController = null;
+	player.action = async () => {};
+
+	await player.play(trackA);
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
+	assert.ok(endedSession);
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
+	await waitFor(
+		() =>
+			!harness.orchestrator.getCurrentSession(harness.playerId) ||
+			harness.orchestrator.getCurrentSession(harness.playerId)?.status === "ended",
+	);
+
+	const result = await player.play(trackB);
+	assert.equal(result, true);
+	await waitFor(() => harness.played.at(-1) === "track-b");
+	assert.deepEqual(harness.played.slice(-1), ["track-b"], harness.errors.join("; "));
 	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
