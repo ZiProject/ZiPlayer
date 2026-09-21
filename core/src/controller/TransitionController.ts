@@ -87,6 +87,13 @@ export class TransitionController {
 		const waitMs = beatMs - remainder;
 		return waitMs > 0 && waitMs <= options.beatAlignMaxWaitMs ? waitMs : 0;
 	}
+	public aggregateSnapshot(): { active: number } {
+		let active = 0;
+		for (const settings of this.states.values()) {
+			if (settings.enabled) active++;
+		}
+		return { active };
+	}
 	public settings(playerId: string): Readonly<ResolvedOptions> | undefined {
 		return this.states.get(playerId);
 	}

@@ -89,6 +89,16 @@ export class ConnectionController {
 		});
 	}
 
+	public countAttached(): number {
+		return this.slots.size;
+	}
+	public countConnected(): number {
+		let count = 0;
+		for (const slot of this.slots.values()) {
+			if (slot.connection) count++;
+		}
+		return count;
+	}
 	public getActive(playerId: string): VoiceConnection | null {
 		return this.slots.get(playerId)?.connection ?? null;
 	}

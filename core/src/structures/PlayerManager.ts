@@ -11,6 +11,7 @@ import {
 	SearchResult,
 	ManagerEvents,
 	PlayerStats,
+	type ForwardHealthStatus,
 	type PlaybackMirrorOptions,
 	type TrackMiddleware,
 	type PlayerDebugLevel,
@@ -47,7 +48,7 @@ import { ExtensionManager } from "../extensions";
 import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { SaveController } from "../controller/SaveController";
 import { PlaybackSessionController } from "../controller/PlaybackSessionController";
-import { BUS_EVENT, CONTROLLER_RPC, PLAYER_RPC } from "./BusContract";
+import { BUS_EVENT, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
 
 export function createSharedControllers(params: {
@@ -167,6 +168,54 @@ interface ManagerCacheEntry<T> {
  *   await existingPlayer.play("Never Gonna Give You Up", userId);
  * }
  */
+class PlayerMonitoring {
+	constructor(
+		private readonly controllers: SharedControllerSet,
+		private readonly bus: Bus,
+	) {}
+
+	getSnapshot(): PlayerStats {
+		const playback = this.controllers.playback?.aggregateSnapshot() ?? { playing: 0, paused: 0, idle: 0, total: 0 };
+		const queue = this.controllers.queue?.aggregateSnapshot() ?? { totalTracks: 0 };
+		const streams = this.controllers.stream?.aggregateSnapshot() ?? { active: 0, loading: 0 };
+		const preload = this.controllers.preload?.aggregateSnapshot() ?? { active: 0 };
+		const transitions = this.controllers.transition?.aggregateSnapshot() ?? { active: 0 };
+		const forward = this.controllers.forward?.aggregateSnapshot() ?? { leader: 0, follower: 0, healthStatus: [] };
+		const players = this.controllers.playback?.countAttached() ?? this.controllers.connection?.countAttached() ?? 0;
+		const connectedPlayers = this.controllers.connection?.countConnected() ?? 0;
+
+		return {
+			players,
+			totalPlayers: players,
+			playback: {
+				playing: playback.playing,
+				paused: playback.paused,
+				idle: playback.idle,
+			},
+			streams: {
+				active: streams.active,
+				loading: streams.loading,
+			},
+			queues: {
+				totalTracks: queue.totalTracks,
+			},
+			preload: {
+				active: preload.active,
+			},
+			transitions: {
+				active: transitions.active,
+			},
+			leader: forward.leader,
+			follower: forward.follower,
+			activePlayers: playback.playing,
+			pausedPlayers: playback.paused,
+			connectedPlayers,
+			totalTracksInQueue: queue.totalTracks,
+			forwardHealthStatus: forward.healthStatus,
+		};
+	}
+}
+
 export class PlayerManager extends EventEmitter {
 	private _debugLevel: PlayerDebugLevel = "info";
 	/**
@@ -199,6 +248,7 @@ export class PlayerManager extends EventEmitter {
 	private players: Map<string, Player> = new Map();
 	public readonly bus: Bus;
 	private readonly controllers: SharedControllerSet;
+	private readonly monitoring: PlayerMonitoring;
 	private readonly perPlayerResources = new Map<
 		string,
 		{ streamManager: StreamManager; pluginManager: PluginManager; extensionManager: ExtensionManager }
@@ -272,6 +322,7 @@ export class PlayerManager extends EventEmitter {
 			busLatencyTrace: this.debugTracer.latencyTraceInstance,
 		});
 		this.bus = this.controllers.bus;
+		this.monitoring = new PlayerMonitoring(this.controllers, this.bus);
 		this.plugins = [];
 		this.searchCache = new Map();
 
@@ -862,36 +913,7 @@ export class PlayerManager extends EventEmitter {
 	 * @returns {PlayerStats} Statistics about players
 	 */
 	getStats(): PlayerStats {
-		let activePlayers = 0;
-		let pausedPlayers = 0;
-		let connectedPlayers = 0;
-		let totalTracksInQueue = 0;
-		let forwardHealthStatus = [];
-		let leader = 0;
-		let follower = 0;
-
-		for (const player of this.players.values()) {
-			if (player.isPlaying) activePlayers++;
-			if (player.isPaused) pausedPlayers++;
-			if (player.connection) connectedPlayers++;
-			totalTracksInQueue += player.queueSize;
-			const forwardStatus = player.getForwardHealthStatus();
-			if (forwardStatus.role === "leader") leader++;
-			if (forwardStatus.role === "follower") follower++;
-
-			forwardHealthStatus.push(forwardStatus);
-		}
-
-		return {
-			totalPlayers: this.players.size,
-			leader,
-			follower,
-			activePlayers,
-			pausedPlayers,
-			connectedPlayers,
-			totalTracksInQueue,
-			forwardHealthStatus,
-		};
+		return this.monitoring.getSnapshot();
 	}
 
 	/**

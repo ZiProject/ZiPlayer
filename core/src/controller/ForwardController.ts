@@ -51,6 +51,18 @@ export class ForwardController {
 	attach(playerId: string): void {
 		this.states.set(playerId, { leaderId: undefined, followers: new Set(), mode: PlaybackMode.NATIVE });
 	}
+	aggregateSnapshot(): { leader: number; follower: number; healthStatus: ForwardHealthStatus[] } {
+		let leader = 0;
+		let follower = 0;
+		const healthStatus: ForwardHealthStatus[] = [];
+		for (const playerId of this.states.keys()) {
+			const status = this.healthStatus(playerId);
+			healthStatus.push(status);
+			if (status.role === "leader") leader++;
+			if (status.role === "follower") follower++;
+		}
+		return { leader, follower, healthStatus };
+	}
 	detach(playerId: string): void {
 		this.clearFollowers(playerId);
 		this.unsubscribeForward(playerId, "controller disposed");

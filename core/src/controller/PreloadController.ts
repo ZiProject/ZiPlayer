@@ -86,6 +86,13 @@ export class PreloadController {
 	public has(playerId: string, track: Track): boolean {
 		return this.loader.hasPreload(playerId, track);
 	}
+	public aggregateSnapshot(): { active: number } {
+		let active = 0;
+		for (const state of this.states.values()) {
+			if (state.preload || state.generation) active++;
+		}
+		return { active };
+	}
 
 	// ---------------------------------------------------------------------
 	// Preload operations (all keyed by playerId)

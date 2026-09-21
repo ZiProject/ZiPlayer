@@ -462,6 +462,13 @@ export class QueueController {
 		this.states.set(playerId, queueState);
 		return queueState;
 	}
+	aggregateSnapshot(): { totalTracks: number } {
+		let totalTracks = 0;
+		for (const state of this.states.values()) {
+			totalTracks += state.tracks.length;
+		}
+		return { totalTracks };
+	}
 	detach(playerId: string): void {
 		this.states.get(playerId)?.dispose();
 		this.states.delete(playerId);

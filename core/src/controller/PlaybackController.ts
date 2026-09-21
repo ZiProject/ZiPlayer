@@ -225,6 +225,28 @@ export class PlaybackController {
 	// Per-player state accessors
 	// ---------------------------------------------------------------------
 
+	public countAttached(): number {
+		return this.slots.size;
+	}
+	public aggregateSnapshot(): { playing: number; paused: number; idle: number; total: number } {
+		let playing = 0;
+		let paused = 0;
+		let idle = 0;
+		for (const slot of this.slots.values()) {
+			switch (slot.audioPlayer.state.status) {
+				case AudioPlayerStatus.Playing:
+					playing++;
+					break;
+				case AudioPlayerStatus.Paused:
+					paused++;
+					break;
+				default:
+					idle++;
+					break;
+			}
+		}
+		return { playing, paused, idle, total: this.slots.size };
+	}
 	public getAudioPlayer(playerId: string): AudioPlayer | null {
 		return this.slots.get(playerId)?.audioPlayer ?? null;
 	}

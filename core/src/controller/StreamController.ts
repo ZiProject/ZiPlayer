@@ -195,6 +195,26 @@ export class StreamController {
 	attach(playerId: string, streamManager?: StreamManager): void {
 		this.workers.set(playerId, new StreamWorker({ streamManager, bus: this.bus, playerId }));
 	}
+	aggregateSnapshot(): { active: number; loading: number } {
+		let active = 0;
+		let loading = 0;
+		for (const worker of this.workers.values()) {
+			const current = worker.current;
+			const stats = worker.statsSnapshot as {
+				active?: number;
+				paused?: number;
+				ended?: number;
+				error?: number;
+				destroyed?: number;
+				total?: number;
+				bySource?: Record<string, number>;
+			} | null;
+			if (current) active++;
+			if (stats && typeof stats.active === "number") active += stats.active;
+			if (stats && typeof (stats as any).loading === "number") loading += (stats as any).loading;
+		}
+		return { active, loading };
+	}
 	detach(playerId: string): void {
 		this.workers.get(playerId)?.dispose();
 		this.workers.delete(playerId);
