@@ -1,6 +1,7 @@
 import type { Track, StreamInfo, StreamSlot, PromotedPreload } from "../types";
 import type { StreamManager } from "./StreamManager";
 import type { Bus } from "./Bus";
+import { PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
 
 /** Per-player resources handed to the shared `PreloadManager` via `attach(playerId, deps)`. */
 export interface PreloadManagerDeps {
@@ -84,24 +85,24 @@ export class PreloadManager {
 	private getNextTrack(slot: PreloadPlayerSlot): Track | null {
 		if (slot.deps.getNextTrack) return slot.deps.getNextTrack() ?? null;
 		if (!this.bus) return null;
-		return this.bus.querySync(slot.playerId, "queueLoop") === "track" ?
-				this.bus.querySync(slot.playerId, "queueCurrent")
-			:	this.bus.querySync(slot.playerId, "queueNextTrack");
+		return this.bus.querySync(slot.playerId, PLAYER_QUERY.queueLoop) === "track" ?
+				this.bus.querySync(slot.playerId, PLAYER_QUERY.queueCurrent)
+			:	this.bus.querySync(slot.playerId, PLAYER_QUERY.queueNextTrack);
 	}
 	private getStream(slot: PreloadPlayerSlot, track: Track): Promise<StreamInfo | null> {
 		if (slot.deps.getStream) return slot.deps.getStream(track);
 		if (!this.bus) return Promise.resolve(null);
-		return this.bus.requestRpc(slot.playerId, "stream.resolve", { track });
+		return this.bus.requestRpc(slot.playerId, PLAYER_RPC.streamResolve, { track });
 	}
 	private removeTrack(slot: PreloadPlayerSlot, track: Track): boolean {
 		if (slot.deps.removeTrackFromQueue) return slot.deps.removeTrackFromQueue(track);
 		if (!this.bus) return false;
-		const next = this.bus.querySync(slot.playerId, "queueNextTrack");
+		const next = this.bus.querySync(slot.playerId, PLAYER_QUERY.queueNextTrack);
 		const same =
 			next === track ||
 			(next?.id !== undefined && track.id !== undefined && next.id === track.id) ||
 			(next?.url !== undefined && track.url !== undefined && next.url === track.url);
-		return same ? this.bus.requestRpcSync(slot.playerId, "queue.remove", { index: 0 }) !== null : false;
+		return same ? this.bus.requestRpcSync(slot.playerId, PLAYER_RPC.queueRemove, { index: 0 }) !== null : false;
 	}
 	private trackMatches(a: Track | null, b: Track | null): boolean {
 		if (!a || !b) return false;

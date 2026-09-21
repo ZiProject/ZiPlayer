@@ -1,5 +1,6 @@
 import type { AudioPlayerState, VoiceConnection } from "@discordjs/voice";
 import type { PlaybackSession } from "../structures/PlaybackSession";
+import type { BUS_OUTPUT, BUS_REQUEST } from "../structures/BusContract";
 import type {
 	Track,
 	StreamInfo,
@@ -66,49 +67,54 @@ export type PlayerAction =
 export type PlayerActionType = PlayerAction["type"];
 
 export type PlayerConnectionInput =
-	| { type: "[Player]->[Connection]:connect"; requestId: PlayerRequestId; channel: VoiceChannel }
-	| { type: "[Player]->[Connection]:disconnect"; requestId: PlayerRequestId; reason?: string }
-	| { type: "[Player]->[Connection]:reconnect"; requestId: PlayerRequestId; channel: VoiceChannel };
-export type PlayerPreloadInput = { type: "[Player]->[Preload]:request"; requestId: PlayerRequestId; track: Track };
+	| { type: typeof BUS_REQUEST.connectionConnect; requestId: PlayerRequestId; channel: VoiceChannel }
+	| { type: typeof BUS_REQUEST.connectionDisconnect; requestId: PlayerRequestId; reason?: string }
+	| { type: typeof BUS_REQUEST.connectionReconnect; requestId: PlayerRequestId; channel: VoiceChannel };
+export type PlayerPreloadInput = { type: typeof BUS_REQUEST.preloadRequest; requestId: PlayerRequestId; track: Track };
 export type PlayerRecoveryInput = {
-	type: "[Player]->[Recovery]:recover";
+	type: typeof BUS_REQUEST.recoveryRecover;
 	requestId: PlayerRequestId;
 	session: PlaybackSessionSnapshot;
 	reason: string;
 };
-export type PlayerResourceInput = { type: "[Player]->[Resource]:refresh"; requestId: PlayerRequestId; position?: number };
+export type PlayerResourceInput = { type: typeof BUS_REQUEST.resourceRefresh; requestId: PlayerRequestId; position?: number };
 export type PlayerInput = (PlayerConnectionInput | PlayerPreloadInput | PlayerRecoveryInput | PlayerResourceInput) & {
 	readonly playerId: string;
 };
 
 export type PlayerConnectionOutput =
-	| { type: "[Connection]->[Player]:connecting"; requestId: PlayerRequestId; sessionId: PlayerSessionId; channel: VoiceChannel }
 	| {
-			type: "[Connection]->[Player]:connected";
+			type: typeof BUS_OUTPUT.connectionConnecting;
+			requestId: PlayerRequestId;
+			sessionId: PlayerSessionId;
+			channel: VoiceChannel;
+	  }
+	| {
+			type: typeof BUS_OUTPUT.connectionConnected;
 			requestId: PlayerRequestId;
 			sessionId: PlayerSessionId;
 			channel: VoiceChannel;
 			connection: VoiceConnection;
 	  }
-	| { type: "[Connection]->[Player]:disconnected"; requestId?: PlayerRequestId; sessionId: PlayerSessionId; reason?: string }
+	| { type: typeof BUS_OUTPUT.connectionDisconnected; requestId?: PlayerRequestId; sessionId: PlayerSessionId; reason?: string }
 	| {
-			type: "[Connection]->[Player]:error";
+			type: typeof BUS_OUTPUT.connectionError;
 			requestId: PlayerRequestId;
 			sessionId?: PlayerSessionId;
 			operation: "connect" | "disconnect" | "reconnect";
 			error: Error;
 	  };
 export type PlayerPreloadOutput =
-	| { type: "[Preload]->[Player]:loading"; requestId: PlayerRequestId; track: Track }
-	| { type: "[Preload]->[Player]:ready"; requestId: PlayerRequestId; track: Track }
-	| { type: "[Preload]->[Player]:failed"; requestId: PlayerRequestId; track: Track; error: Error };
+	| { type: typeof BUS_OUTPUT.preloadLoading; requestId: PlayerRequestId; track: Track }
+	| { type: typeof BUS_OUTPUT.preloadReady; requestId: PlayerRequestId; track: Track }
+	| { type: typeof BUS_OUTPUT.preloadFailed; requestId: PlayerRequestId; track: Track; error: Error };
 export type PlayerRecoveryOutput =
-	| { type: "[Recovery]->[Player]:retrying"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; attempt: number }
-	| { type: "[Recovery]->[Player]:recovered"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot }
-	| { type: "[Recovery]->[Player]:failed"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; error: Error };
+	| { type: typeof BUS_OUTPUT.recoveryRetrying; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; attempt: number }
+	| { type: typeof BUS_OUTPUT.recoveryRecovered; requestId: PlayerRequestId; session: PlaybackSessionSnapshot }
+	| { type: typeof BUS_OUTPUT.recoveryFailed; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; error: Error };
 export type PlayerResourceOutput =
-	| { type: "[Resource]->[Player]:refreshed"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot }
-	| { type: "[Resource]->[Player]:error"; requestId: PlayerRequestId; error: Error };
+	| { type: typeof BUS_OUTPUT.resourceRefreshed; requestId: PlayerRequestId; session: PlaybackSessionSnapshot }
+	| { type: typeof BUS_OUTPUT.resourceError; requestId: PlayerRequestId; error: Error };
 export type PlayerOutput = (PlayerConnectionOutput | PlayerPreloadOutput | PlayerRecoveryOutput | PlayerResourceOutput) & {
 	readonly playerId: string;
 };
@@ -198,29 +204,38 @@ export type PlayerEventArgsMap = {
 	: never;
 };
 
-export interface PlayerRequestReplyMap {
-	"[Player]->[Connection]:connect": {
-		success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connected" }>;
-		progress: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connecting" }>;
-	};
-	"[Player]->[Connection]:disconnect": {
-		success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:disconnected" }>;
-	};
-	"[Player]->[Connection]:reconnect": {
-		success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connected" }>;
-		progress: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connecting" }>;
-	};
-	"[Player]->[Preload]:request": {
-		success: Extract<PlayerPreloadOutput, { type: "[Preload]->[Player]:ready" }>;
-		progress: Extract<PlayerPreloadOutput, { type: "[Preload]->[Player]:loading" }>;
-	};
-	"[Player]->[Recovery]:recover": {
-		success: Extract<PlayerRecoveryOutput, { type: "[Recovery]->[Player]:recovered" }>;
-		progress: Extract<PlayerRecoveryOutput, { type: "[Recovery]->[Player]:retrying" }>;
-	};
-	"[Player]->[Resource]:refresh": { success: Extract<PlayerResourceOutput, { type: "[Resource]->[Player]:refreshed" }> };
-}
-export type PlayerRequestInputType = keyof PlayerRequestReplyMap;
+export type PlayerRequestReplyMap = {
+	[Key in (typeof BUS_REQUEST)[keyof typeof BUS_REQUEST]]: Key extends typeof BUS_REQUEST.connectionConnect ?
+		{
+			success: Extract<PlayerConnectionOutput, { type: typeof BUS_OUTPUT.connectionConnected }>;
+			progress: Extract<PlayerConnectionOutput, { type: typeof BUS_OUTPUT.connectionConnecting }>;
+		}
+	: Key extends typeof BUS_REQUEST.connectionDisconnect ?
+		{
+			success: Extract<PlayerConnectionOutput, { type: typeof BUS_OUTPUT.connectionDisconnected }>;
+		}
+	: Key extends typeof BUS_REQUEST.connectionReconnect ?
+		{
+			success: Extract<PlayerConnectionOutput, { type: typeof BUS_OUTPUT.connectionConnected }>;
+			progress: Extract<PlayerConnectionOutput, { type: typeof BUS_OUTPUT.connectionConnecting }>;
+		}
+	: Key extends typeof BUS_REQUEST.preloadRequest ?
+		{
+			success: Extract<PlayerPreloadOutput, { type: typeof BUS_OUTPUT.preloadReady }>;
+			progress: Extract<PlayerPreloadOutput, { type: typeof BUS_OUTPUT.preloadLoading }>;
+		}
+	: Key extends typeof BUS_REQUEST.recoveryRecover ?
+		{
+			success: Extract<PlayerRecoveryOutput, { type: typeof BUS_OUTPUT.recoveryRecovered }>;
+			progress: Extract<PlayerRecoveryOutput, { type: typeof BUS_OUTPUT.recoveryRetrying }>;
+		}
+	: Key extends typeof BUS_REQUEST.resourceRefresh ?
+		{
+			success: Extract<PlayerResourceOutput, { type: typeof BUS_OUTPUT.resourceRefreshed }>;
+		}
+	:	never;
+};
+export type PlayerRequestInputType = (typeof BUS_REQUEST)[keyof typeof BUS_REQUEST];
 export type PlayerRequestReply<K extends PlayerRequestInputType> = PlayerRequestReplyMap[K];
 export type PlayerRequestProgress<K extends PlayerRequestInputType> =
 	PlayerRequestReply<K> extends { progress: infer P } ? P : never;
@@ -265,9 +280,11 @@ export interface PlayerRpcMap {
 	"queue.remove": { request: { index: number }; response: Track | null };
 	"queue.loop": { request: { mode: LoopMode }; response: LoopMode };
 	"queue.autoPlay": { request: { enabled: boolean }; response: boolean };
+	"queue.willNext": { request: { track: Track | null }; response: Track | null };
 	"queue.setCurrent": { request: { track: Track | null }; response: void };
 	"queue.serialize": { request: undefined; response: object };
 	"queue.restore": { request: { state: object }; response: void };
+	"queue.restoreNext": { request: { previousCurrent: Track | null; nextTrack: Track | null }; response: void };
 	"playback.destroyCurrentStream": { request: undefined; response: void };
 	"playback.recover": { request: { track: Track; session: unknown }; response: TrackLoadResult };
 	"playback.loadFresh": { request: { track: Track; session: unknown }; response: TrackLoadResult };

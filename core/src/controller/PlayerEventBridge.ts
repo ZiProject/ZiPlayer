@@ -1,5 +1,6 @@
 import type { Player } from "../structures/Player";
 import type { PlayerEventType, Bus, PlayerEvent } from "../structures/Bus";
+import { BUS_OUTPUT, CONTROLLER_RPC } from "../structures/BusContract";
 import { PlayerEventDebug } from "./PlayerEventDebug";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
 
@@ -64,15 +65,15 @@ export class PlayerEventBridge {
 	private readonly slots = new Map<string, PlayerEventBridgeSlot>();
 
 	public constructor(private readonly bus: Bus) {
-		bus.registerRpc<{ track: any }, void>("player.emitTtsStart", ({ track }, ctx) => {
+		bus.registerRpc<{ track: any }, void>(CONTROLLER_RPC.playerEmitTtsStart, ({ track }, ctx) => {
 			const slot = this.slots.get(ctx.playerId);
 			if (slot && !slot.disposed && slot.player && !slot.player.destroyed) slot.player.emit("ttsStart", { track });
 		});
-		bus.registerRpc<void, void>("player.emitTtsEnd", (_req, ctx) => {
+		bus.registerRpc<void, void>(CONTROLLER_RPC.playerEmitTtsEnd, (_req, ctx) => {
 			const slot = this.slots.get(ctx.playerId);
 			if (slot && !slot.disposed && slot.player && !slot.player.destroyed) slot.player.emit("ttsEnd");
 		});
-		bus.onOutput("[Connection]->[Player]:error", (event) => {
+		bus.onOutput(BUS_OUTPUT.connectionError, (event) => {
 			const slot = this.slots.get(event.playerId);
 			if (!slot || slot.disposed || !slot.player || slot.player.destroyed) return;
 			slot.player.emit("connectionError", event.error);

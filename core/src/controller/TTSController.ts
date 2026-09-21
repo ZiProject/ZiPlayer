@@ -5,7 +5,7 @@ import type { StreamInfo, Track } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
 import type { Bus } from "../structures/Bus";
-import { CONTROLLER_RPC, type TtsIsTTSRequest, type TtsPlayRequest } from "../structures/BusContract";
+import { CONTROLLER_RPC, PLAYER_QUERY, type TtsIsTTSRequest, type TtsPlayRequest } from "../structures/BusContract";
 import type { TTSControllerOptions } from "../types";
 
 /** Per-player TTS stream resolution and interrupt playback lifecycle, owned by the
@@ -82,7 +82,7 @@ class TTSWorker {
 
 	private getConnection(): VoiceConnection | null {
 		if (!this.bus || !this.playerId) return null;
-		return (this.bus.querySync(this.playerId, "connection") as VoiceConnection | null) ?? null;
+		return (this.bus.querySync(this.playerId, PLAYER_QUERY.connection) as VoiceConnection | null) ?? null;
 	}
 
 	private async playInternal(track: Track): Promise<void> {
@@ -102,7 +102,7 @@ class TTSWorker {
 			connection.subscribe(this.ttsPlayer);
 			if (this.bus && this.playerId)
 				void this.bus
-					.requestRpc(this.playerId, "player.emitTtsStart", { track })
+					.requestRpc(this.playerId, CONTROLLER_RPC.playerEmitTtsStart, { track })
 					.catch((error: unknown) => this.debug("[TTSController] failed to publish ttsStart:", error));
 			started = true;
 			this.ttsPlayer.play(resource);
@@ -118,7 +118,7 @@ class TTSWorker {
 			}
 			if (started && !this.disposed && this.bus && this.playerId)
 				void this.bus
-					.requestRpc(this.playerId, "player.emitTtsEnd", undefined)
+					.requestRpc(this.playerId, CONTROLLER_RPC.playerEmitTtsEnd, undefined)
 					.catch((error: unknown) => this.debug("[TTSController] failed to publish ttsEnd:", error));
 		}
 	}
@@ -206,8 +206,8 @@ export class TTSController {
 	private readonly workers = new Map<string, TTSWorker>();
 
 	constructor(private readonly bus: Bus) {
-		bus.registerQuery("tts.hasPlayer", (playerId) => Boolean(this.workers.get(playerId)?.ttsPlayer));
-		bus.registerQuery("ttsInterrupt", (playerId) => this.workers.get(playerId)?.interruptSetting ?? true);
+		bus.registerQuery(PLAYER_QUERY.ttsHasPlayer, (playerId) => Boolean(this.workers.get(playerId)?.ttsPlayer));
+		bus.registerQuery(PLAYER_QUERY.ttsInterrupt, (playerId) => this.workers.get(playerId)?.interruptSetting ?? true);
 		bus.registerRpc<TtsIsTTSRequest, boolean>(
 			CONTROLLER_RPC.ttsIsTTS,
 			({ track }, ctx) => this.workers.get(ctx.playerId)?.isTTS(track) ?? false,
@@ -228,7 +228,7 @@ export class TTSController {
 	}
 
 	private getConnection(playerId: string): VoiceConnection | null {
-		return (this.bus.querySync(playerId, "connection") as VoiceConnection | null) ?? null;
+		return (this.bus.querySync(playerId, PLAYER_QUERY.connection) as VoiceConnection | null) ?? null;
 	}
 
 	public player(playerId: string): AudioPlayer | undefined {

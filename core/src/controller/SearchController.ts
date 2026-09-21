@@ -3,6 +3,7 @@ import type { SearchResult, SearchRequest, SearchDebugResult } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
 import type { Bus } from "../structures/Bus";
+import { PLAYER_RPC } from "../structures/BusContract";
 
 interface SearchWorkerOptions {
 	pluginManager: PluginManager;
@@ -114,22 +115,22 @@ export class SearchController {
 	private readonly workers = new Map<string, SearchWorker>();
 
 	public constructor(bus: Bus) {
-		bus.registerRpc<SearchRequest, SearchResult>("search", (request, context) => {
+		bus.registerRpc<SearchRequest, SearchResult>(PLAYER_RPC.search, (request, context) => {
 			const worker = this.workers.get(context.playerId);
 			if (!worker) throw new Error("SearchController is disposed");
 			return worker.search(request.query, request.requestedBy, context.signal);
 		});
 		bus.registerRpc<{ query: string }, SearchResult | null>(
-			"search.cache.get",
+			PLAYER_RPC.searchCacheGet,
 			({ query }, ctx) => this.workers.get(ctx.playerId)?.getCached(query) ?? null,
 		);
-		bus.registerRpc<{ query: string; result: SearchResult }, void>("search.cache.set", ({ query, result }, ctx) =>
+		bus.registerRpc<{ query: string; result: SearchResult }, void>(PLAYER_RPC.searchCacheSet, ({ query, result }, ctx) =>
 			this.workers.get(ctx.playerId)?.cacheResult(query, result),
 		);
-		bus.registerRpc<void, void>("search.cache.clear", (_req, ctx) => this.workers.get(ctx.playerId)?.clear());
-		bus.registerRpc<void, void>("search.cache.purge", (_req, ctx) => this.workers.get(ctx.playerId)?.purgeStale());
+		bus.registerRpc<void, void>(PLAYER_RPC.searchCacheClear, (_req, ctx) => this.workers.get(ctx.playerId)?.clear());
+		bus.registerRpc<void, void>(PLAYER_RPC.searchCachePurge, (_req, ctx) => this.workers.get(ctx.playerId)?.purgeStale());
 		bus.registerRpc<{ query: string }, SearchDebugResult>(
-			"search.debug",
+			PLAYER_RPC.searchDebug,
 			({ query }, ctx) =>
 				this.workers.get(ctx.playerId)?.debug(query) ?? {
 					isCached: false,

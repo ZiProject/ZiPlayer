@@ -46,6 +46,7 @@ import { ExtensionManager } from "../extensions";
 import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { SaveController } from "../controller/SaveController";
 import { PlaybackSessionController } from "../controller/PlaybackSessionController";
+import { BUS_EVENT, CONTROLLER_RPC, PLAYER_RPC } from "./BusContract";
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
 
 export function createSharedControllers(params: {
@@ -488,7 +489,9 @@ export class PlayerManager extends EventEmitter {
 		this.controllers.trackLoader.attach(playerId, {
 			middleware,
 			context: { playerId, manager: this } as any,
-			resolvers: [(track, session) => this.bus.requestRpc(playerId, "stream.resolve", { track }, { signal: session.signal })],
+			resolvers: [
+				(track, session) => this.bus.requestRpc(playerId, PLAYER_RPC.streamResolve, { track }, { signal: session.signal }),
+			],
 			debug: channel("TrackLoader"),
 		});
 		this.controllers.trackResolver.attach(playerId, {
@@ -541,11 +544,11 @@ export class PlayerManager extends EventEmitter {
 		});
 		this.controllers.filter?.attach(playerId, undefined, channel("FilterController"), {
 			initialFilters: Array.isArray(options?.filters) ? options?.filters : [],
-			onFilterApplied: (filter) => this.bus.event(playerId, { type: "filterApplied", filter }),
-			onFilterRemoved: (filter) => this.bus.event(playerId, { type: "filterRemoved", filter }),
-			onFiltersCleared: () => this.bus.event(playerId, { type: "filtersCleared" }),
+			onFilterApplied: (filter) => this.bus.event(playerId, { type:BUS_EVENT.filterApplied , filter }),
+			onFilterRemoved: (filter) => this.bus.event(playerId, { type: BUS_EVENT.filterRemoved, filter }),
+			onFiltersCleared: () => this.bus.event(playerId, { type:BUS_EVENT.filtersCleared }),
 			onProcessingError: (error) => {
-				void this.bus.requestRpc(playerId, "playback.reportFilterError", { error }).catch(() => undefined);
+				void this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackReportFilterError, { error }).catch(() => undefined);
 			},
 		});
 		this.controllers.session?.attach(playerId);
@@ -1059,9 +1062,7 @@ export class PlayerManager extends EventEmitter {
 	private runTeardown(playerId: string, player: Player | null): Promise<void> {
 		const teardown = this.teardownPlayer(playerId, player);
 		this.pendingTeardowns.add(teardown);
-		void teardown
-			.finally(() => this.pendingTeardowns.delete(teardown))
-			.catch(() => undefined);
+		void teardown.finally(() => this.pendingTeardowns.delete(teardown)).catch(() => undefined);
 		return teardown;
 	}
 
@@ -1145,9 +1146,7 @@ export class PlayerManager extends EventEmitter {
 			try {
 				const result = detach();
 				if (result && typeof (result as Promise<void>).then === "function") {
-					pending.push(
-						(result as Promise<void>).catch((error) => this.debug(`Error detaching ${name} for ${playerId}:`, error)),
-					);
+					pending.push((result as Promise<void>).catch((error) => this.debug(`Error detaching ${name} for ${playerId}:`, error)));
 				}
 			} catch (error) {
 				this.debug(`Error detaching ${name} for ${playerId}:`, error);

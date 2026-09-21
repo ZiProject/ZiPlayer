@@ -6,7 +6,7 @@ import type {
 	LegacyAntiStuckRetryHandlers,
 	PlayerAction,
 } from "../types";
-import { CONTROLLER_RPC, type AntiStuckReportRequest } from "../structures/BusContract";
+import { BUS_OUTPUT, CONTROLLER_RPC, PLAYER_QUERY, BUS_EVENT, type AntiStuckReportRequest } from "../structures/BusContract";
 import type { Bus } from "../structures/Bus";
 
 /** Per-player anti-stuck retry policy + recovery state machine, owned by the shared
@@ -129,28 +129,43 @@ class AntiStuckWorker {
 		const track = session.track;
 		if (!this.enabled || !track || !session.isActive() || generation !== this.generation) return false;
 		const retry = this.getRetryCount(track);
-		if (this.bus && this.playerId) this.bus.event(this.playerId, { type: "STUCK_DETECTED", session: session.snapshot(), reason });
+		if (this.bus && this.playerId)
+			this.bus.event(this.playerId, { type: BUS_EVENT.stuckDetected, session: session.snapshot(), reason });
 		if (retry >= this.maxRetries) {
 			await handlers.skip({ session, track, retry, reason });
 			return false;
 		}
 		this.failures.set(this.key(track), retry + 1);
-		if (this.bus && this.playerId) this.bus.event(this.playerId, { type: "RECOVERY_STARTED", session: session.snapshot() });
+		if (this.bus && this.playerId)
+			this.bus.event(this.playerId, { type: BUS_EVENT.recoveryStarted, session: session.snapshot() });
 		if (requestId && this.bus && this.playerId)
-			this.bus.emitOutput({ type: "[Recovery]->[Player]:retrying", requestId, playerId: this.playerId, session: session.snapshot(), attempt: retry + 1 });
+			this.bus.emitOutput({
+				type: BUS_OUTPUT.recoveryRetrying,
+				requestId,
+				playerId: this.playerId,
+				session: session.snapshot(),
+				attempt: retry + 1,
+			});
 		if (this.retryDelayMs > 0) await this.delay(this.retryDelayMs, session.signal);
 		if (!session.isActive() || generation !== this.generation) return false;
 		const ok = await handlers.retry({ session, track, retry: retry + 1, reason });
 		if (ok) {
 			this.failures.delete(this.key(track));
-			if (requestId && this.bus && this.playerId) this.bus.emitOutput({ type: "[Recovery]->[Player]:recovered", requestId, playerId: this.playerId, session: session.snapshot() });
+			if (requestId && this.bus && this.playerId)
+				this.bus.emitOutput({
+					type: BUS_OUTPUT.recoveryRecovered,
+					requestId,
+					playerId: this.playerId,
+					session: session.snapshot(),
+				});
 			return true;
 		}
 		if (session.isActive()) {
-			if (this.bus && this.playerId) this.bus.event(this.playerId, { type: "RECOVERY_FAILED", session: session.snapshot() });
+			if (this.bus && this.playerId)
+				this.bus.event(this.playerId, { type: BUS_EVENT.recoveryFailed, session: session.snapshot() });
 			if (requestId && this.bus && this.playerId)
 				this.bus.emitOutput({
-					type: "[Recovery]->[Player]:failed",
+					type: BUS_OUTPUT.recoveryFailed,
 					requestId,
 					playerId: this.playerId,
 					session: session.snapshot(),
@@ -194,7 +209,7 @@ export class AntiStuckController {
 			if (context.signal.aborted) return;
 			if (action.type === "STOP" || action.type === "SEEK") this.workers.get(context.playerId)?.cancelRecovery();
 		});
-		bus.registerQuery("retryPolicy", (playerId) => this.workers.get(playerId)?.policySnapshot ?? {});
+		bus.registerQuery(PLAYER_QUERY.retryPolicy, (playerId) => this.workers.get(playerId)?.policySnapshot ?? {});
 		bus.registerRpc<AntiStuckReportRequest, boolean>(CONTROLLER_RPC.antiStuckReport, ({ session, reason, handlers }, ctx) => {
 			const worker = this.workers.get(ctx.playerId);
 			return worker ? worker.reportStuck(session, reason, handlers) : Promise.resolve(false);

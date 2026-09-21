@@ -22,6 +22,7 @@ import type {
 	PlayerSessionId,
 } from "../types";
 
+import { BUS_OUTPUT, BUS_REQUEST } from "./BusContract";
 import { PlayerActionPriority } from "../types/bus";
 import type { BusLatencyTrace } from "../controller/BusLatencyTrace";
 
@@ -60,28 +61,34 @@ interface RequestContract {
 }
 
 const REQUESTS: Record<PlayerRequestInputType, RequestContract> = {
-	"[Player]->[Connection]:connect": {
-		success: "[Connection]->[Player]:connected",
-		error: "[Connection]->[Player]:error",
-		progress: "[Connection]->[Player]:connecting",
+	[BUS_REQUEST.connectionConnect]: {
+		success: BUS_OUTPUT.connectionConnected,
+		error: BUS_OUTPUT.connectionError,
+		progress: BUS_OUTPUT.connectionConnecting,
 	},
-	"[Player]->[Connection]:disconnect": { success: "[Connection]->[Player]:disconnected", error: "[Connection]->[Player]:error" },
-	"[Player]->[Connection]:reconnect": {
-		success: "[Connection]->[Player]:connected",
-		error: "[Connection]->[Player]:error",
-		progress: "[Connection]->[Player]:connecting",
+	[BUS_REQUEST.connectionDisconnect]: {
+		success: BUS_OUTPUT.connectionDisconnected,
+		error: BUS_OUTPUT.connectionError,
 	},
-	"[Player]->[Preload]:request": {
-		success: "[Preload]->[Player]:ready",
-		error: "[Preload]->[Player]:failed",
-		progress: "[Preload]->[Player]:loading",
+	[BUS_REQUEST.connectionReconnect]: {
+		success: BUS_OUTPUT.connectionConnected,
+		error: BUS_OUTPUT.connectionError,
+		progress: BUS_OUTPUT.connectionConnecting,
 	},
-	"[Player]->[Recovery]:recover": {
-		success: "[Recovery]->[Player]:recovered",
-		error: "[Recovery]->[Player]:failed",
-		progress: "[Recovery]->[Player]:retrying",
+	[BUS_REQUEST.preloadRequest]: {
+		success: BUS_OUTPUT.preloadReady,
+		error: BUS_OUTPUT.preloadFailed,
+		progress: BUS_OUTPUT.preloadLoading,
 	},
-	"[Player]->[Resource]:refresh": { success: "[Resource]->[Player]:refreshed", error: "[Resource]->[Player]:error" },
+	[BUS_REQUEST.recoveryRecover]: {
+		success: BUS_OUTPUT.recoveryRecovered,
+		error: BUS_OUTPUT.recoveryFailed,
+		progress: BUS_OUTPUT.recoveryRetrying,
+	},
+	[BUS_REQUEST.resourceRefresh]: {
+		success: BUS_OUTPUT.resourceRefreshed,
+		error: BUS_OUTPUT.resourceError,
+	},
 };
 
 export class BusRequestError extends Error {

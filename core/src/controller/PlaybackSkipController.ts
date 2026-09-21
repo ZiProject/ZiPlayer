@@ -2,7 +2,7 @@ import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext } from "../types";
 import type { PlaybackSkipControllerOptions } from "../types";
-import { CONTROLLER_RPC } from "../structures/BusContract";
+import { BUS_EVENT, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 
 /** Owns manual skip and its autoplay/queue fallback workflow. Talks to sibling
  * playback controllers only through Bus queries/RPCs — never by holding
@@ -25,7 +25,7 @@ export class PlaybackSkipController {
 	}
 
 	private currentSession(): PlaybackSession | null {
-		return this.bus.querySync(this.playerId, "playbackSessionInternal") ?? null;
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSessionInternal) ?? null;
 	}
 
 	public async skip(context: PlayerMessageContext): Promise<void> {
@@ -33,36 +33,36 @@ export class PlaybackSkipController {
 		const oldSession = this.currentSession();
 		const from = oldSession?.track ?? null;
 		if (oldSession && context.sessionId && oldSession.sessionId !== context.sessionId) return;
-		this.bus.requestRpcSync(this.playerId, "playback.transitionLock", { active: true });
+		this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackTransitionLock, { active: true });
 		try {
 			let next = await this.nextThroughBus(true, context);
-			if (!next && this.bus.querySync(this.playerId, "queueAutoPlay") && oldSession) {
+			if (!next && this.bus.querySync(this.playerId, PLAYER_QUERY.queueAutoPlay) && oldSession) {
 				const candidate = await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackPrepareAutoplay, {
 					session: oldSession,
 					context,
 				});
 				if (candidate) {
-					this.bus.requestRpcSync(this.playerId, "queue.willNext", { track: null });
-					if (!this.bus.querySync(this.playerId, "queueNextTrack"))
-						this.bus.requestRpcSync(this.playerId, "queue.addMultiple", { tracks: [candidate] });
+					this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track: null });
+					if (!this.bus.querySync(this.playerId, PLAYER_QUERY.queueNextTrack))
+						this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueAddMultiple, { tracks: [candidate] });
 					next = await this.nextThroughBus(true, context);
 				}
 			}
 			if (oldSession?.isActive()) {
-				this.bus.event(this.playerId, { type: "TRACK_END", session: oldSession.snapshot() });
+				this.bus.event(this.playerId, { type: BUS_EVENT.trackEnd, session: oldSession.snapshot() });
 				oldSession.markEnded();
 			}
 			if (!next) {
 				this.stopPlayback(context.signal);
 				this.publishState();
 				this.setWaitingForQueue(true);
-				this.bus.event(this.playerId, { type: "queueEnd" });
+				this.bus.event(this.playerId, { type: BUS_EVENT.queueEnd });
 				return;
 			}
 			this.setWaitingForQueue(false);
 			await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackStart, { track: next, context, from });
 		} finally {
-			this.bus.requestRpcSync(this.playerId, "playback.transitionLock", { active: false });
+			this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackTransitionLock, { active: false });
 		}
 	}
 }

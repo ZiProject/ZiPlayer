@@ -1,5 +1,6 @@
 import { AudioPlayerStatus } from "@discordjs/voice";
 import { createPlayerRequestId, type Bus } from "../structures/Bus";
+import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST, PLAYER_RPC } from "../structures/BusContract";
 import type { LifecycleControllerOptions } from "../types";
 
 /** Per-player idle/leave policy worker, owned by the shared `LifecycleController` below. */
@@ -25,22 +26,22 @@ class LifecycleWorker {
 		this.debug = debug;
 
 		this.unsubscribe.push(
-			this.bus.subscribe(this.playerId, "TRACK_STARTED", () => {
+			this.bus.subscribe(this.playerId, BUS_EVENT.trackStarted, () => {
 				this.isPlaying = true;
 				this.clearLeaveTimeout();
 			}),
-			this.bus.subscribe(this.playerId, "TRACK_LOADING", () => this.clearLeaveTimeout()),
-			this.bus.subscribe(this.playerId, "trackRequested", () => this.clearLeaveTimeout()),
-			this.bus.subscribe(this.playerId, "stateChanged", (_event) => {
+			this.bus.subscribe(this.playerId, BUS_EVENT.trackLoading, () => this.clearLeaveTimeout()),
+			this.bus.subscribe(this.playerId, BUS_EVENT.trackRequested, () => this.clearLeaveTimeout()),
+			this.bus.subscribe(this.playerId, BUS_EVENT.stateChanged, (_event) => {
 				const status = _event.newState.status;
 				this.isPlaying = status === AudioPlayerStatus.Playing;
 				if (status !== AudioPlayerStatus.Idle) this.clearLeaveTimeout();
 			}),
-			this.bus.subscribe(this.playerId, "TRACK_END", () => {
+			this.bus.subscribe(this.playerId, BUS_EVENT.trackEnd, () => {
 				this.isPlaying = false;
 				if (this.leaveOnEnd) this.scheduleLeave("track-end");
 			}),
-			this.bus.subscribe(this.playerId, "queueChanged", (event) => {
+			this.bus.subscribe(this.playerId, BUS_EVENT.queueChanged, (event) => {
 				// An empty queue is not equivalent to an idle player: the current
 				// track may still be playing after the queue has been consumed.
 				if (this.leaveOnEmpty && event.queue.length === 0) {
@@ -52,8 +53,8 @@ class LifecycleWorker {
 					this.scheduleLeave("queue-empty");
 				} else if (event.queue.length > 0) this.clearLeaveTimeout();
 			}),
-			this.bus.onOutput("[Connection]->[Player]:connected", () => this.clearLeaveTimeout()),
-			this.bus.onOutput("[Connection]->[Player]:connecting", () => this.clearLeaveTimeout()),
+			this.bus.onOutput(BUS_OUTPUT.connectionConnected, () => this.clearLeaveTimeout()),
+			this.bus.onOutput(BUS_OUTPUT.connectionConnecting, () => this.clearLeaveTimeout()),
 		);
 	}
 
@@ -105,7 +106,7 @@ class LifecycleWorker {
 		try {
 			await this.bus.request(
 				this.playerId,
-				{ type: "[Player]->[Connection]:disconnect", requestId: createPlayerRequestId(), reason },
+				{ type: BUS_REQUEST.connectionDisconnect, requestId: createPlayerRequestId(), reason },
 				{ timeoutMs: Math.max(5000, this.leaveTimeout || 5000) },
 			);
 		} catch (error) {
@@ -120,10 +121,11 @@ export class LifecycleController {
 	private readonly workers = new Map<string, LifecycleWorker>();
 
 	public constructor(private readonly bus: Bus) {
-		bus.registerRpc<{ reason?: "track-end" | "queue-empty" | "manual" }, void>("lifecycle.scheduleLeave", ({ reason }, ctx) =>
-			this.workers.get(ctx.playerId)?.scheduleLeave(reason),
+		bus.registerRpc<{ reason?: "track-end" | "queue-empty" | "manual" }, void>(
+			PLAYER_RPC.lifecycleScheduleLeave,
+			({ reason }, ctx) => this.workers.get(ctx.playerId)?.scheduleLeave(reason),
 		);
-		bus.registerRpc<void, void>("lifecycle.clearLeaveTimeout", (_req, ctx) =>
+		bus.registerRpc<void, void>(PLAYER_RPC.lifecycleClearLeaveTimeout, (_req, ctx) =>
 			this.workers.get(ctx.playerId)?.clearLeaveTimeout(),
 		);
 	}

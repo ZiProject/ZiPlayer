@@ -1,4 +1,5 @@
 import type { Bus } from "../structures/Bus";
+import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import type { ExtensionManager } from "../extensions";
 import type { BaseExtension } from "../extensions/BaseExtension";
 
@@ -11,28 +12,28 @@ export class ExtensionController {
 	private readonly managers = new Map<string, ExtensionManager>();
 
 	constructor(bus: Bus) {
-		bus.registerQuery("extensions", (playerId) => this.manager(playerId)?.getAll() ?? []);
-		bus.registerQuery("extension.list", (playerId) => this.manager(playerId)?.getAll() ?? []);
+		bus.registerQuery(PLAYER_QUERY.extensions, (playerId) => this.manager(playerId)?.getAll() ?? []);
+		bus.registerQuery(PLAYER_QUERY.extensionList, (playerId) => this.manager(playerId)?.getAll() ?? []);
 		bus.registerRpc<Record<string, never> | undefined, BaseExtension[]>(
-			"extension.list",
+			PLAYER_RPC.extensionList,
 			(_req, ctx) => this.manager(ctx.playerId)?.getAll() ?? [],
 		);
-		bus.registerRpc<{ name: string }, BaseExtension | undefined>("extension.get", ({ name }, ctx) =>
+		bus.registerRpc<{ name: string }, BaseExtension | undefined>(PLAYER_RPC.extensionGet, ({ name }, ctx) =>
 			this.manager(ctx.playerId)?.get(name),
 		);
 		bus.registerRpc<{ name: string }, boolean>(
-			"extension.enable",
+			PLAYER_RPC.extensionEnable,
 			({ name }, ctx) => this.manager(ctx.playerId)?.enable(name) ?? false,
 		);
 		bus.registerRpc<{ name: string }, boolean>(
-			"extension.disable",
+			PLAYER_RPC.extensionDisable,
 			({ name }, ctx) => this.manager(ctx.playerId)?.disable(name) ?? false,
 		);
-		bus.registerRpc<{ extension: BaseExtension }, void>("extension.add", ({ extension }, ctx) =>
+		bus.registerRpc<{ extension: BaseExtension }, void>(PLAYER_RPC.extensionAdd, ({ extension }, ctx) =>
 			this.manager(ctx.playerId)?.register(extension),
 		);
 		bus.registerRpc<{ extension: BaseExtension }, boolean>(
-			"extension.remove",
+			PLAYER_RPC.extensionRemove,
 			({ extension }, ctx) => this.manager(ctx.playerId)?.unregister(extension) ?? false,
 		);
 	}

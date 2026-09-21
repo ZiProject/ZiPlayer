@@ -1,6 +1,7 @@
 import type { LoopMode, SearchResult, Track } from "../types";
 import type { Bus, PlayerAction, PlayerActionExecutionContext } from "../structures/Bus";
 import type { QueueControllerOptions } from "../types";
+import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 
 type QueueInsertRequest = { query: string | Track | Track[]; index?: number; requestedBy?: string };
 
@@ -259,7 +260,7 @@ export class QueueState {
 	}
 	public setCurrent(track: Track | null): void {
 		if (this.bus) {
-			this.bus.requestRpcSync(this.playerId!, "queue.setCurrent", { track });
+			this.bus.requestRpcSync(this.playerId!, PLAYER_RPC.queueSetCurrent, { track });
 			return;
 		}
 		this.setCurrentInternal(track);
@@ -291,11 +292,11 @@ export class QueueState {
 		return this.relatedTracks;
 	}
 	public toJSON(): object {
-		return this.bus ? this.bus.requestRpcSync(this.playerId!, "queue.serialize", undefined) : this.serializeInternal();
+		return this.bus ? this.bus.requestRpcSync(this.playerId!, PLAYER_RPC.queueSerialize, undefined) : this.serializeInternal();
 	}
 	public fromJSON(state: any): void {
 		if (this.bus) {
-			this.bus.requestRpcSync(this.playerId!, "queue.restore", { state });
+			this.bus.requestRpcSync(this.playerId!, PLAYER_RPC.queueRestore, { state });
 			return;
 		}
 		this.restoreInternal(state);
@@ -351,7 +352,7 @@ export class QueueState {
 			const tracks =
 				typeof request.query === "string" ?
 					(
-						await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>(this.playerId!, "search", {
+						await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>(this.playerId!, PLAYER_RPC.search, {
 							query: request.query,
 							requestedBy: request.requestedBy || "Unknown",
 						})
@@ -402,51 +403,53 @@ export class QueueController {
 		bus.onAction((action, context) => {
 			void this.states.get(context.playerId)?.handleAction(action, context);
 		});
-		bus.registerQuery("currentTrack", (playerId) => this.states.get(playerId)?.current ?? null);
-		bus.registerQuery("queueCurrent", (playerId) => this.states.get(playerId)?.current ?? null);
-		bus.registerQuery("queue", (playerId) => this.states.get(playerId)?.snapshot() ?? []);
-		bus.registerQuery("queueState", (playerId) => this.states.get(playerId) ?? null);
-		bus.registerQuery("queueSerialized", (playerId) => this.states.get(playerId)?.serializeInternal() ?? {});
-		bus.registerQuery("previousTracks", (playerId) => this.states.get(playerId)?.previousTracks ?? []);
-		bus.registerQuery("previousTrack", (playerId) => this.states.get(playerId)?.previousTracks.at(-1) ?? null);
-		bus.registerQuery("willNext", (playerId) => this.states.get(playerId)?.willNext ?? null);
-		bus.registerQuery("queueLoop", (playerId) => this.states.get(playerId)?.loopMode ?? "off");
-		bus.registerQuery("queueAutoPlay", (playerId) => this.states.get(playerId)?.autoPlay() ?? false);
-		bus.registerQuery("relatedTracks", (playerId) => this.states.get(playerId)?.relatedTracks ?? []);
-		bus.registerQuery("queueNextTrack", (playerId) => this.states.get(playerId)?.nextTrack ?? null);
+		bus.registerQuery(PLAYER_QUERY.currentTrack, (playerId) => this.states.get(playerId)?.current ?? null);
+		bus.registerQuery(PLAYER_QUERY.queueCurrent, (playerId) => this.states.get(playerId)?.current ?? null);
+		bus.registerQuery(PLAYER_QUERY.queue, (playerId) => this.states.get(playerId)?.snapshot() ?? []);
+		bus.registerQuery(PLAYER_QUERY.queueState, (playerId) => this.states.get(playerId) ?? null);
+		bus.registerQuery(PLAYER_QUERY.queueSerialized, (playerId) => this.states.get(playerId)?.serializeInternal() ?? {});
+		bus.registerQuery(PLAYER_QUERY.previousTracks, (playerId) => this.states.get(playerId)?.previousTracks ?? []);
+		bus.registerQuery(PLAYER_QUERY.previousTrack, (playerId) => this.states.get(playerId)?.previousTracks.at(-1) ?? null);
+		bus.registerQuery(PLAYER_QUERY.willNext, (playerId) => this.states.get(playerId)?.willNext ?? null);
+		bus.registerQuery(PLAYER_QUERY.queueLoop, (playerId) => this.states.get(playerId)?.loopMode ?? "off");
+		bus.registerQuery(PLAYER_QUERY.queueAutoPlay, (playerId) => this.states.get(playerId)?.autoPlay() ?? false);
+		bus.registerQuery(PLAYER_QUERY.relatedTracks, (playerId) => this.states.get(playerId)?.relatedTracks ?? []);
+		bus.registerQuery(PLAYER_QUERY.queueNextTrack, (playerId) => this.states.get(playerId)?.nextTrack ?? null);
 
 		const state = (playerId: string): QueueState => {
 			const found = this.states.get(playerId);
 			if (!found) throw new Error("QueueController is disposed");
 			return found;
 		};
-		bus.registerRpc<{ track: Track }, number>("queue.add", ({ track }, ctx) => state(ctx.playerId).add(track));
-		bus.registerRpc<void, Track | null>("queue.previous", (_req, ctx) => state(ctx.playerId).previous());
-		bus.registerRpc<void, void>("queue.shuffle", (_req, ctx) => state(ctx.playerId).shuffle());
-		bus.registerRpc<void, void>("queue.clear", (_req, ctx) => state(ctx.playerId).clear());
-		bus.registerRpc<{ tracks: Track[] }, number>("queue.addMultiple", ({ tracks }, ctx) =>
+		bus.registerRpc<{ track: Track }, number>(PLAYER_RPC.queueAdd, ({ track }, ctx) => state(ctx.playerId).add(track));
+		bus.registerRpc<void, Track | null>(PLAYER_RPC.queuePrevious, (_req, ctx) => state(ctx.playerId).previous());
+		bus.registerRpc<void, void>(PLAYER_RPC.queueShuffle, (_req, ctx) => state(ctx.playerId).shuffle());
+		bus.registerRpc<void, void>(PLAYER_RPC.queueClear, (_req, ctx) => state(ctx.playerId).clear());
+		bus.registerRpc<{ tracks: Track[] }, number>(PLAYER_RPC.queueAddMultiple, ({ tracks }, ctx) =>
 			state(ctx.playerId).addMultiple(tracks),
 		);
-		bus.registerRpc<QueueInsertRequest, boolean>("queue.insert", (request, ctx) =>
+		bus.registerRpc<QueueInsertRequest, boolean>(PLAYER_RPC.queueInsert, (request, ctx) =>
 			state(ctx.playerId).insertRequest(request, ctx.signal),
 		);
-		bus.registerRpc<{ index: number }, Track | null>("queue.remove", ({ index }, ctx) => state(ctx.playerId).remove(index));
-		bus.registerRpc<{ mode: LoopMode }, LoopMode>("queue.loop", ({ mode }, ctx) => state(ctx.playerId).setLoop(mode));
-		bus.registerRpc<{ enabled: boolean }, boolean>("queue.autoPlay", ({ enabled }, ctx) =>
+		bus.registerRpc<{ index: number }, Track | null>(PLAYER_RPC.queueRemove, ({ index }, ctx) =>
+			state(ctx.playerId).remove(index),
+		);
+		bus.registerRpc<{ mode: LoopMode }, LoopMode>(PLAYER_RPC.queueLoop, ({ mode }, ctx) => state(ctx.playerId).setLoop(mode));
+		bus.registerRpc<{ enabled: boolean }, boolean>(PLAYER_RPC.queueAutoPlay, ({ enabled }, ctx) =>
 			state(ctx.playerId).setAutoPlay(enabled),
 		);
-		bus.registerRpc<{ track: Track | null }, void>("queue.setCurrent", ({ track }, ctx) =>
+		bus.registerRpc<{ track: Track | null }, void>(PLAYER_RPC.queueSetCurrent, ({ track }, ctx) =>
 			state(ctx.playerId).setCurrentInternal(track),
 		);
-		bus.registerRpc<void, object>("queue.serialize", (_req, ctx) => state(ctx.playerId).serializeInternal());
-		bus.registerRpc<{ state: object }, void>("queue.restore", ({ state: value }, ctx) =>
+		bus.registerRpc<void, object>(PLAYER_RPC.queueSerialize, (_req, ctx) => state(ctx.playerId).serializeInternal());
+		bus.registerRpc<{ state: object }, void>(PLAYER_RPC.queueRestore, ({ state: value }, ctx) =>
 			state(ctx.playerId).restoreInternal(value),
 		);
 		bus.registerRpc<{ previousCurrent: Track | null; nextTrack: Track | null }, void>(
-			"queue.restoreNext",
+			PLAYER_RPC.queueRestoreNext,
 			({ previousCurrent, nextTrack }, ctx) => state(ctx.playerId).restoreNext(previousCurrent, nextTrack),
 		);
-		bus.registerRpc<{ track: Track | null }, Track | null>("queue.willNext", ({ track }, ctx) => {
+		bus.registerRpc<{ track: Track | null }, Track | null>(PLAYER_RPC.queueWillNext, ({ track }, ctx) => {
 			const target = state(ctx.playerId);
 			if (track) target.setWillNext(track);
 			else target.clearWillNext();

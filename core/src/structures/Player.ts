@@ -29,6 +29,7 @@ import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { PlaybackSession } from "./PlaybackSession";
+import { BUS_EVENT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
 import { PlayerCapabilities, createPlayerCapabilities } from "../capabilities/PlayerCapabilities";
 import type { PlayerQueue } from "../controller/QueueController";
 
@@ -67,8 +68,8 @@ export class Player extends EventEmitter {
 		this.userdata = this.options.userdata;
 		this.actionExecutor = new PlayerAction(this.bus, this.playerId);
 		this.capabilities = createPlayerCapabilities(this.bus, this.playerId);
-		this.bus.publish(this.playerId, "initialized");
-		this.bus.publish(this.playerId, "ready");
+		this.bus.publish(this.playerId, BUS_EVENT.initialized);
+		this.bus.publish(this.playerId, BUS_EVENT.ready);
 	}
 
 	public get id(): string {
@@ -83,25 +84,25 @@ export class Player extends EventEmitter {
 	}
 
 	public get currentTrack(): Track | null {
-		return this.bus.querySync(this.playerId, "currentTrack");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.currentTrack);
 	}
 	public get audioPlayer() {
-		return this.bus.querySync(this.playerId, "audioPlayer");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.audioPlayer);
 	}
 	public get currentResource(): AudioResource | null {
-		return this.bus.querySync(this.playerId, "currentResource") as AudioResource | null;
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.currentResource) as AudioResource | null;
 	}
 	public get connection(): VoiceConnection | null {
-		return this.bus.querySync(this.playerId, "connection") ?? null;
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.connection) ?? null;
 	}
 	public get playbackMode(): PlaybackMode {
-		return this.bus.querySync(this.playerId, "playbackMode") ?? PlaybackMode.NATIVE;
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode) ?? PlaybackMode.NATIVE;
 	}
 	public get forwardLeader(): any {
-		return this.bus.querySync(this.playerId, "forwardLeader");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.forwardLeader);
 	}
 	public get forwardFollowers(): ReadonlySet<any> {
-		return this.bus.querySync(this.playerId, "forwardFollowers") ?? new Set();
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.forwardFollowers) ?? new Set();
 	}
 	/**
 	 * Queue of this player (add / insert / remove / move / swap / shuffle / loop / history ...).
@@ -111,18 +112,18 @@ export class Player extends EventEmitter {
 	 * Throws once the player has been destroyed (its queue state is released).
 	 */
 	public get queue(): PlayerQueue {
-		const queue = this.bus.querySync(this.playerId, "queueState");
+		const queue = this.bus.querySync(this.playerId, PLAYER_QUERY.queueState);
 		if (!queue) throw new Error(`Queue is not available for player "${this.playerId}" (destroyed or not attached)`);
 		return queue;
 	}
 	public get queueSize(): number {
-		return this.bus.querySync(this.playerId, "queue")?.length ?? 0;
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.queue)?.length ?? 0;
 	}
 	public get isPlaying(): boolean {
-		return this.bus.querySync(this.playerId, "isPlaying");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.isPlaying);
 	}
 	public get isPaused(): boolean {
-		return this.bus.querySync(this.playerId, "isPaused");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.isPaused);
 	}
 	public get isLive(): boolean {
 		if (this.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isLive ?? false;
@@ -130,62 +131,65 @@ export class Player extends EventEmitter {
 	}
 	public get isIdle(): boolean {
 		if (this.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isIdle ?? true;
-		return this.bus.querySync(this.playerId, "playerState") === "idle";
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.playerState) === "idle";
 	}
 	public get isBuffering(): boolean {
 		if (this.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isBuffering ?? false;
-		return this.bus.querySync(this.playerId, "playerState") === "buffering";
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.playerState) === "buffering";
 	}
 	public get volume(): number {
-		return this.bus.querySync(this.playerId, "volume");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.volume);
 	}
 	public set volume(value: number) {
-		this.bus.requestRpcSync<{ value: number }, number>(this.playerId, "volume.set", { value });
+		this.bus.requestRpcSync<{ value: number }, number>(this.playerId, PLAYER_RPC.volumeSet, { value });
 	}
 	public get previousTrack(): Track | null {
-		return this.bus.querySync(this.playerId, "previousTrack");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.previousTrack);
 	}
 	public get upcomingTracks(): Track[] {
-		return this.bus.querySync(this.playerId, "queue") ?? [];
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.queue) ?? [];
 	}
 	public get previousTracks(): Track[] {
-		return this.bus.querySync(this.playerId, "previousTracks") ?? [];
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.previousTracks) ?? [];
 	}
 	public get availablePlugins(): string[] {
-		return (this.bus.querySync(this.playerId, "availablePlugins") ?? []).map((plugin) => plugin.name);
+		return (this.bus.querySync(this.playerId, PLAYER_QUERY.availablePlugins) ?? []).map((plugin) => plugin.name);
 	}
 	public get relatedTracks(): Track[] {
-		return this.bus.querySync(this.playerId, "relatedTracks") ?? [];
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.relatedTracks) ?? [];
 	}
 	public search(query: string, requestedBy: string): Promise<SearchResult> {
-		return this.bus.requestRpc(this.playerId, "search", { query, requestedBy });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.search, { query, requestedBy });
 	}
 	public getCachedSearchResult(query: string): Promise<SearchResult | null> {
-		return this.bus.requestRpc(this.playerId, "search.cache.get", { query });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.searchCacheGet, { query });
 	}
 	public cacheSearchResult(query: string, result: SearchResult): Promise<void> {
-		return this.bus.requestRpc(this.playerId, "search.cache.set", { query, result });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.searchCacheSet, { query, result });
 	}
 	public clearSearchCache(): Promise<void> {
-		return this.bus.requestRpc(this.playerId, "search.cache.clear", {});
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.searchCacheClear, {});
 	}
 	public clearExpiredSearchCache(): Promise<void> {
-		return this.bus.requestRpc(this.playerId, "search.cache.purge", {});
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.searchCachePurge, {});
 	}
 	public debugSearchQuery(query: string): Promise<SearchDebugResult> {
-		return this.bus.requestRpc(this.playerId, "search.debug", { query });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.searchDebug, { query });
 	}
 	public createRelatedTracks(track?: Track | null): Promise<Track[]> {
-		return this.bus.requestRpc(this.playerId, "playback.createRelatedTracks", { track });
+		return this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackCreateRelatedTracks, { track });
 	}
 	public async connect(channel: VoiceChannel): Promise<VoiceConnection> {
-		return this.bus
-			.request(this.playerId, { type: "[Player]->[Connection]:connect", requestId: createPlayerRequestId(), channel })
-			.then((e) => e.connection);
+		const request = {
+			type: BUS_REQUEST.connectionConnect,
+			requestId: createPlayerRequestId(),
+			channel,
+		} as const;
+		return (this.bus.request(this.playerId, request) as Promise<{ connection: VoiceConnection }>).then((e) => e.connection);
 	}
 	public async disconnect(): Promise<void> {
 		return this.bus
-			.request(this.playerId, { type: "[Player]->[Connection]:disconnect", requestId: createPlayerRequestId() })
+			.request(this.playerId, { type: BUS_REQUEST.connectionDisconnect, requestId: createPlayerRequestId() })
 			.then(() => undefined);
 	}
 	public async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
@@ -242,76 +246,76 @@ export class Player extends EventEmitter {
 		this.playAbortController?.abort();
 	}
 	public destroyCurrentStream(): void {
-		void this.bus.action(this.playerId, { type: "STOP" });
+		void this.bus.action(this.playerId, { type:PLAYER_ACTION.stop });
 	}
 	public generateWillNext(): Track | null {
-		return this.bus.querySync(this.playerId, "willNext");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.willNext);
 	}
 	public preloadNextTrack(): Promise<void> {
-		return this.bus.requestRpc(this.playerId, "preload.next", undefined);
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.preloadNext, undefined);
 	}
 	public safeCancelPreload(): Promise<void> {
-		return this.bus.requestRpc(this.playerId, "preload.cancelSafe", undefined);
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.preloadCancelSafe, undefined);
 	}
 	public preloadNext(): Promise<void> {
-		return this.bus.requestRpc(this.playerId, "preload.next", undefined);
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.preloadNext, undefined);
 	}
 	public cancelPreload(): void {
-		this.bus.requestRpcSync<void, void>(this.playerId, "preload.cancel", undefined);
+		this.bus.requestRpcSync<void, void>(this.playerId, PLAYER_RPC.preloadCancel, undefined);
 	}
 	public clearSlot(): void {
-		this.bus.requestRpcSync<void, void>(this.playerId, "preload.clear", undefined);
+		this.bus.requestRpcSync<void, void>(this.playerId, PLAYER_RPC.preloadClear, undefined);
 	}
 	public async fadeResourceVolume(resource: AudioResource, from: number, to: number, durationMs: number): Promise<void> {
-		return this.bus.requestRpc(this.playerId, "transition.fade", { resource, from, to, durationMs });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.transitionFade, { resource, from, to, durationMs });
 	}
 	public async applyCrossfadeIn(resource: AudioResource, track: Track): Promise<void> {
-		return this.bus.requestRpc(this.playerId, "transition.fadeIn", { resource, track });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.transitionFadeIn, { resource, track });
 	}
 	public async applyCrossfadeOutCurrent(): Promise<void> {
-		return this.bus.requestRpc(this.playerId, "transition.fadeOutCurrent", undefined);
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.transitionFadeOutCurrent, undefined);
 	}
 	public async crossfadeSkipAndStop(): Promise<void> {
-		return this.bus.requestRpc(this.playerId, "transition.skipAndStop", undefined);
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.transitionSkipAndStop, undefined);
 	}
 	public getTrackMetadataValue(track: Track, key: string): any {
 		return track?.metadata?.[key];
 	}
 	public resolveSmartTransitionDuration(track: Track): number {
-		return this.bus.requestRpcSync(this.playerId, "transition.duration", { from: this.currentTrack, to: track });
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.transitionDuration, { from: this.currentTrack, to: track });
 	}
 	public async maybeAlignToBeatBoundary(track?: Track): Promise<void> {
 		const wait = this.bus.requestRpcSync<{ track: Track | null; positionMs: number }, number>(
 			this.playerId,
-			"transition.beatWait",
+			PLAYER_RPC.transitionBeatWait,
 			{ track: track ?? this.currentTrack, positionMs: this.getTime().current },
 		);
 		if (wait > 0) await new Promise<void>((resolve) => setTimeout(resolve, wait));
 	}
 	public getTrackTargetVolume(track: Track): number {
-		return this.bus.requestRpcSync<{ track: Track | null }, number>(this.playerId, "transition.targetVolume", { track });
+		return this.bus.requestRpcSync<{ track: Track | null }, number>(this.playerId, PLAYER_RPC.transitionTargetVolume, { track });
 	}
 	public attemptTrackRecovery(track: Track, session?: PlaybackSession): Promise<TrackLoadResult> {
 		if (!session) return Promise.reject(new Error("attemptTrackRecovery requires an active PlaybackSession"));
-		return this.bus.requestRpc(this.playerId, "playback.recover", { track, session });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.playbackRecover, { track, session });
 	}
 	public promotePreloadToCurrent(track: Track): AudioResource | null {
-		return this.bus.requestRpcSync(this.playerId, "playback.promotePreload", { track });
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.playbackPromotePreload, { track });
 	}
 	public createResource(stream: Stream.Readable, track: Track): AudioResource {
-		return this.bus.requestRpcSync(this.playerId, "resource.create", { stream, track });
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.resourceCreate, { stream, track });
 	}
 	public mergeTrackPreserveRef(target: Track, source: Track): Track {
 		Object.assign(target, source);
 		return target;
 	}
 	public async applyTrackMiddleware(track: Track): Promise<Track> {
-		return this.bus.requestRpc(this.playerId, "track.middleware", { track });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.trackMiddleware, { track });
 	}
 	public async getStream(track: Track): Promise<StreamInfo | TrackLoadResult | null> {
-		if (this.bus.querySync(this.playerId, "playbackSession"))
-			return this.bus.requestRpc(this.playerId, "playback.loadFreshCurrent", { track });
-		return this.bus.requestRpc(this.playerId, "stream.resolve", { track });
+		if (this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSession))
+			return this.bus.requestRpc(this.playerId, PLAYER_RPC.playbackLoadFreshCurrent, { track });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.streamResolve, { track });
 	}
 	public isUnrecoverableStreamError(error: unknown): boolean {
 		const name = error instanceof Error ? error.name : "";
@@ -325,26 +329,26 @@ export class Player extends EventEmitter {
 		return this.action({ type: "PLAY", track });
 	}
 	public loadFreshStream(track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
-		return this.bus.requestRpc(this.playerId, "playback.loadFresh", { track, session });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.playbackLoadFresh, { track, session });
 	}
 	public async playRemote(_track: Track, stream: any, ..._args: any[]): Promise<boolean> {
-		return this.bus.requestRpc(this.playerId, "playback.remote", { track: _track, stream });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.playbackRemote, { track: _track, stream });
 	}
 	public ensureTTSPlayer(): boolean {
-		return this.bus.querySync(this.playerId, "tts.hasPlayer") ?? false;
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.ttsHasPlayer) ?? false;
 	}
 	public interruptWithTTSTrack(track: Track, ..._args: any[]): Promise<boolean> {
 		return this.play(track);
 	}
 	public async previous(): Promise<boolean> {
-		const track = this.bus.requestRpcSync<void, Track | null>(this.playerId, "queue.previous", undefined);
+		const track = this.bus.requestRpcSync<void, Track | null>(this.playerId, PLAYER_RPC.queuePrevious, undefined);
 		if (!track) return false;
 		await this.startTrack(track);
 		return true;
 	}
 	async save(track: Track, options?: SaveOptions | string): Promise<Stream.Readable> {
 		try {
-			return await this.bus.requestRpc(this.playerId, "save", { track, options });
+			return await this.bus.requestRpc(this.playerId, PLAYER_RPC.save, { track, options });
 		} catch (error) {
 			this.debug("[Player] save error:", error);
 			this.emit("playerError", error as Error, track);
@@ -354,7 +358,7 @@ export class Player extends EventEmitter {
 	async saveVideo(track: Track, options?: SaveVideoOptions | string): Promise<Stream.Readable> {
 		if (!track) throw new TypeError("A track is required to save video");
 		try {
-			return await this.bus.requestRpc(this.playerId, "save.video", { track, options });
+			return await this.bus.requestRpc(this.playerId, PLAYER_RPC.saveVideo, { track, options });
 		} catch (error) {
 			this.debug("[Player] saveVideo error:", error);
 			this.emit("playerError", error as Error, track);
@@ -363,56 +367,56 @@ export class Player extends EventEmitter {
 	}
 	public loop(mode?: any): any {
 		return mode === undefined ?
-				this.bus.querySync(this.playerId, "queueLoop")
-			:	this.bus.requestRpcSync(this.playerId, "queue.loop", { mode });
+				this.bus.querySync(this.playerId, PLAYER_QUERY.queueLoop)
+			:	this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueLoop, { mode });
 	}
 	public autoPlay(enabled?: boolean): boolean {
 		return enabled === undefined ?
-				this.bus.querySync(this.playerId, "queueAutoPlay")
-			:	this.bus.requestRpcSync(this.playerId, "queue.autoPlay", { enabled });
+				this.bus.querySync(this.playerId, PLAYER_QUERY.queueAutoPlay)
+			:	this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueAutoPlay, { enabled });
 	}
 	public setWillNext(track: Track | null): Track | null {
-		return this.bus.requestRpcSync(this.playerId, "queue.willNext", { track });
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track });
 	}
 	public setCurrentTrack(track: Track | null): void {
 		void this.action({ type: "QUEUE_SET_CURRENT", track });
 	}
 	public setVolume(value: number): boolean {
 		if (!Number.isFinite(value) || value < 0 || value > 100) return false;
-		this.bus.requestRpcSync(this.playerId, "volume.set", { value });
+		this.bus.requestRpcSync(this.playerId, PLAYER_RPC.volumeSet, { value });
 		return true;
 	}
 	public shuffle(): void {
-		this.bus.requestRpcSync<void, void>(this.playerId, "queue.shuffle", undefined);
+		this.bus.requestRpcSync<void, void>(this.playerId, PLAYER_RPC.queueShuffle, undefined);
 	}
 	public clearQueue(): void {
-		this.bus.requestRpcSync<void, void>(this.playerId, "queue.clear", undefined);
+		this.bus.requestRpcSync<void, void>(this.playerId, PLAYER_RPC.queueClear, undefined);
 	}
 	public async insert(query: string | Track | Track[], index = 0, requestedBy?: string): Promise<boolean> {
 		return this.bus
 			.requestRpc<
 				{ query: string | Track | Track[]; index: number; requestedBy?: string },
 				boolean
-			>(this.playerId, "queue.insert", { query, index, requestedBy })
+			>(this.playerId, PLAYER_RPC.queueInsert, { query, index, requestedBy })
 			.catch(() => false);
 	}
 	public remove(index: number): Track | null {
-		return this.bus.requestRpcSync<{ index: number }, Track | null>(this.playerId, "queue.remove", { index });
+		return this.bus.requestRpcSync<{ index: number }, Track | null>(this.playerId, PLAYER_RPC.queueRemove, { index });
 	}
 	public scheduleLeave(): void {
-		this.bus.requestRpcSync(this.playerId, "lifecycle.scheduleLeave", {});
+		this.bus.requestRpcSync(this.playerId, PLAYER_RPC.lifecycleScheduleLeave, {});
 	}
 	public clearLeaveTimeout(): void {
-		this.bus.requestRpcSync(this.playerId, "lifecycle.clearLeaveTimeout", undefined);
+		this.bus.requestRpcSync(this.playerId, PLAYER_RPC.lifecycleClearLeaveTimeout, undefined);
 	}
 	public refreshPlayerResource(position = 0): Promise<boolean> {
 		return this.bus
-			.request(this.playerId, { type: "[Player]->[Resource]:refresh", requestId: createPlayerRequestId(), position } as any)
+			.request(this.playerId, { type: BUS_REQUEST.resourceRefresh, requestId: createPlayerRequestId(), position } as any)
 			.then(() => true)
 			.catch(() => false);
 	}
 	public getExtensions(): any[] {
-		return this.bus.querySync(this.playerId, "extensions") ?? [];
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.extensions) ?? [];
 	}
 	public saveSession(_options?: any): any {
 		return this.getSerializableState();
@@ -423,26 +427,27 @@ export class Player extends EventEmitter {
 	public getSerializableState(): any {
 		return {
 			playerId: this.playerId,
-			queue: this.bus.requestRpcSync(this.playerId, "queue.serialize", undefined),
+			queue: this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueSerialize, undefined),
 			volume: this.volume,
 			playbackMode: this.playbackMode,
 		};
 	}
 	public restoreState(state: any): void {
-		if (state?.queue) this.bus.requestRpcSync(this.playerId, "queue.restore", { state: state.queue });
+		if (state?.queue) this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueRestore, { state: state.queue });
 		if (typeof state?.volume === "number") this.setVolume(state.volume);
 	}
 	public getStreamManagerStats(): any {
-		return this.bus.requestRpcSync(this.playerId, "stream.stats", undefined) ?? {};
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.streamStats) ?? {};
 	}
 	public getTime() {
-		const session = this.bus.querySync(this.playerId, "playbackSession");
+		const session = this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSession);
 		const track = session?.track ?? this.currentTrack;
 		const isLive = Boolean(track?.isLive);
 		if (isLive) return { current: 0, total: 0, format: "LIVE", formatted: { current: "LIVE", total: "LIVE" } };
 		if (!track) return { current: 0, total: 0, format: "00:00", formatted: { current: "00:00", total: "00:00" } };
 		const total = Math.floor(track.duration > 1000 ? track.duration : track.duration * 1000) | 0;
-		const current = Math.max(0, Math.floor(this.bus.querySync(this.playerId, "position") ?? session?.position ?? 0)) | 0;
+		const current =
+			Math.max(0, Math.floor(this.bus.querySync(this.playerId, PLAYER_QUERY.position) ?? session?.position ?? 0)) | 0;
 		return {
 			current,
 			total,
@@ -459,12 +464,12 @@ export class Player extends EventEmitter {
 			showPercentage = false,
 			showTime = true,
 		} = options;
-		const session = this.bus.querySync(this.playerId, "playbackSession");
+		const session = this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSession);
 		const track = session?.track ?? this.currentTrack;
 		const isLive = Boolean(track?.isLive);
 		if (isLive || !track) return isLive ? "🔴 LIVE" : "";
 		const total = track.duration > 1000 ? track.duration : track.duration * 1000;
-		const current = Math.max(0, Number(this.bus.querySync(this.playerId, "position") ?? session?.position ?? 0));
+		const current = Math.max(0, Number(this.bus.querySync(this.playerId, PLAYER_QUERY.position) ?? session?.position ?? 0));
 		if (!total) return this.formatTimeCompact(current);
 		const ratio = Math.min(Math.max(current / total, 0), 1);
 		const progress = Math.round(ratio * size);
@@ -507,25 +512,27 @@ export class Player extends EventEmitter {
 		return this.bus.subscribe(this.playerId, type, listener);
 	}
 	public addPlugin(plugin: BasePlugin): void {
-		this.bus.requestRpcSync<{ plugin: BasePlugin }, void>(this.playerId, "plugin.add", { plugin });
+		this.bus.requestRpcSync<{ plugin: BasePlugin }, void>(this.playerId, PLAYER_RPC.pluginAdd, { plugin });
 	}
 	public removePlugin(name: string): boolean {
-		return this.bus.requestRpcSync<{ name: string }, boolean>(this.playerId, "plugin.remove", { name });
+		return this.bus.requestRpcSync<{ name: string }, boolean>(this.playerId, PLAYER_RPC.pluginRemove, { name });
 	}
 	public attachExtension(extension: BaseExtension): void {
-		this.bus.requestRpcSync<{ extension: BaseExtension }, void>(this.playerId, "extension.add", { extension });
+		this.bus.requestRpcSync<{ extension: BaseExtension }, void>(this.playerId, PLAYER_RPC.extensionAdd, { extension });
 	}
 	public detachExtension(extension: BaseExtension): boolean {
-		return this.bus.requestRpcSync<{ extension: BaseExtension }, boolean>(this.playerId, "extension.remove", { extension });
+		return this.bus.requestRpcSync<{ extension: BaseExtension }, boolean>(this.playerId, PLAYER_RPC.extensionRemove, {
+			extension,
+		});
 	}
 	public subscribeTo(leader: Player | string, options?: { forwardMode?: boolean }): boolean {
-		return this.bus.requestRpcSync(this.playerId, "forward.subscribe", { leader, options });
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.forwardSubscribe, { leader, options });
 	}
 	public unsubscribeForward(reason?: string): boolean {
-		return this.bus.requestRpcSync(this.playerId, "forward.unsubscribe", { reason });
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.forwardUnsubscribe, { reason });
 	}
 	public getForwardHealthStatus() {
-		return this.bus.requestRpcSync(this.playerId, "forward.health", undefined);
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.forwardHealth, undefined);
 	}
 	/**
 	 * Teardown step 1 — abort workflow. Marks the player destroyed and cancels everything the facade
@@ -584,7 +591,7 @@ export class Player extends EventEmitter {
 		this.disposed = true;
 		this.invalidatePlay();
 		this.actionExecutor.dispose();
-		this.bus.publish(this.playerId, "destroyed");
+		this.bus.publish(this.playerId, BUS_EVENT.destroyed);
 		this.bus.disposePlayer(this.playerId);
 	}
 }

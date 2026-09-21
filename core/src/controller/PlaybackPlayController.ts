@@ -2,7 +2,7 @@ import type { Bus, BusRpcContext } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, SearchResult, Track } from "../types";
 import type { PlaybackPlayControllerOptions } from "../types";
-import { CONTROLLER_RPC } from "../structures/BusContract";
+import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, PLAYER_ACTION } from "../structures/BusContract";
 
 /**
  * Owns the public play RPC: search, queue insertion, TTS interrupt, and initial skip.
@@ -36,11 +36,11 @@ export class PlaybackPlayController {
 	}
 
 	private currentSession(): PlaybackSession | null {
-		return this.bus.querySync(this.playerId, "playbackSessionInternal") ?? null;
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSessionInternal) ?? null;
 	}
 
 	private async skipThroughBus(context: PlayerMessageContext): Promise<void> {
-		await this.bus.action(this.playerId, { type: "SKIP", requestId: context.requestId }, context);
+		await this.bus.action(this.playerId, { type: PLAYER_ACTION.skip, requestId: context.requestId }, context);
 	}
 
 	public async play(
@@ -69,7 +69,7 @@ export class PlaybackPlayController {
 			if (typeof query === "string") {
 				const result = await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>(
 					this.playerId,
-					"search",
+					PLAYER_RPC.search,
 					{ query, requestedBy: requestedBy || "Unknown" },
 					{ signal: context.signal },
 				);
@@ -77,7 +77,7 @@ export class PlaybackPlayController {
 			} else if ("tracks" in query) tracks = query.playlist ? query.tracks : query.tracks.slice(0, 1);
 			else tracks = [query];
 			if (tracks.length === 0 || context.signal.aborted) return false;
-			const ttsInterruptEnabled = this.bus.querySync(this.playerId, "ttsInterrupt") ?? true;
+			const ttsInterruptEnabled = this.bus.querySync(this.playerId, PLAYER_QUERY.ttsInterrupt) ?? true;
 			const isTTSTrack =
 				tracks.length === 1 &&
 				ttsInterruptEnabled &&
@@ -92,12 +92,12 @@ export class PlaybackPlayController {
 				}
 				return true;
 			}
-			await this.bus.requestRpc(this.playerId, "queue.addMultiple", { tracks }, { signal: context.signal });
+			await this.bus.requestRpc(this.playerId, PLAYER_RPC.queueAddMultiple, { tracks }, { signal: context.signal });
 			const session = this.currentSession();
 			if ((session?.status === "playing" || session?.status === "paused") && !this.isWaitingForQueue()) {
-				if (this.bus.hasRpc("preload.next")) {
+				if (this.bus.hasRpc(PLAYER_RPC.preloadNext)) {
 					void this.bus
-						.requestRpc(this.playerId, "preload.next", {}, { signal: context.signal })
+						.requestRpc(this.playerId, PLAYER_RPC.preloadNext, {}, { signal: context.signal })
 						.catch((error: unknown) => this.debug("[PlaybackPlayController] Preload after queue add error:", error));
 				}
 				return true;

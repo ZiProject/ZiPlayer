@@ -1,5 +1,6 @@
 import type { StreamInfo, Track, TrackResolveContext, TrackResolverOptions } from "../types";
 import type { Bus } from "./Bus";
+import { PLAYER_RPC } from "./BusContract";
 
 /**
  * Resolves a Track to a playable stream through the extension/plugin chain, without owning playback.
@@ -14,7 +15,7 @@ export class TrackResolver {
 	private readonly slots = new Map<string, TrackResolverOptions>();
 
 	public constructor(bus: Bus) {
-		bus.registerRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>("stream.resolve", ({ track, fresh }, ctx) =>
+		bus.registerRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>(PLAYER_RPC.streamResolve, ({ track, fresh }, ctx) =>
 			this.resolve(ctx.playerId, track, { fresh }),
 		);
 	}

@@ -10,6 +10,7 @@ import type {
 } from "../types";
 import { FilterEngine } from "./FilterController";
 import type { Bus } from "../structures/Bus";
+import { PLAYER_RPC } from "../structures/BusContract";
 import type { BusRpcContext } from "../types";
 import type { SaveControllerOptions } from "../types";
 
@@ -237,7 +238,7 @@ export class SaveController {
 
 	public constructor(bus: Bus) {
 		bus.registerRpc<{ track: Track; options?: SaveOptions | string }, Readable>(
-			"save",
+			PLAYER_RPC.save,
 			({ track, options: saveOptions }, rpcContext) => {
 				const worker = this.workers.get(rpcContext.playerId);
 				if (!worker) throw new Error("SaveController is disposed");
@@ -245,7 +246,7 @@ export class SaveController {
 			},
 		);
 		bus.registerRpc<{ track: Track; options?: SaveVideoOptions | string }, Readable>(
-			"save.video",
+			PLAYER_RPC.saveVideo,
 			({ track, options: saveOptions }, rpcContext) => {
 				const worker = this.workers.get(rpcContext.playerId);
 				if (!worker) throw new Error("SaveController is disposed");

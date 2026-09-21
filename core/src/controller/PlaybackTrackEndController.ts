@@ -4,7 +4,7 @@ import type { PlayerMessageContext, PlaybackSessionSnapshot, Track } from "../ty
 import type { Bus } from "../structures/Bus";
 import type { PlaybackTrackEndControllerOptions } from "../types";
 import { PlayerActionPriority } from "../types";
-import { CONTROLLER_RPC } from "../structures/BusContract";
+import { BUS_EVENT, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 
 /**
  * Owns TRACK_END, queue refill, autoplay fallback, and queue-end transitions.
@@ -41,7 +41,7 @@ export class PlaybackTrackEndController {
 	}
 
 	private currentSession(): PlaybackSession | null {
-		return this.bus.querySync(this.playerId, "playbackSessionInternal") ?? null;
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSessionInternal) ?? null;
 	}
 
 	public get isTransitioning(): boolean {
@@ -100,7 +100,7 @@ export class PlaybackTrackEndController {
 				await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackStart, { track: next, context, from });
 				return;
 			}
-			if (this.bus.querySync(this.playerId, "queueAutoPlay")) {
+			if (this.bus.querySync(this.playerId, PLAYER_QUERY.queueAutoPlay)) {
 				const candidate = await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackPrepareAutoplay, {
 					session: endedSession,
 					context,
@@ -108,9 +108,9 @@ export class PlaybackTrackEndController {
 				const stillCurrent = this.currentSession();
 				if (candidate && stillCurrent?.id === snapshot.id && stillCurrent.isActive()) {
 					endedSession.markEnded();
-					this.bus.requestRpcSync(this.playerId, "queue.willNext", { track: null });
-					if (!this.bus.querySync(this.playerId, "queueNextTrack"))
-						this.bus.requestRpcSync(this.playerId, "queue.addMultiple", { tracks: [candidate] });
+					this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track: null });
+					if (!this.bus.querySync(this.playerId, PLAYER_QUERY.queueNextTrack))
+						this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueAddMultiple, { tracks: [candidate] });
 					next = await this.nextThroughBus(false, context);
 					if (next) {
 						this.waitingForQueue = false;
@@ -125,7 +125,7 @@ export class PlaybackTrackEndController {
 			this.stopPlayback(context.signal);
 			this.publishState();
 			this.waitingForQueue = true;
-			this.bus.event(this.playerId, { type: "queueEnd" });
+			this.bus.event(this.playerId, { type: BUS_EVENT.queueEnd });
 		} finally {
 			this.trackEndTransition = false;
 		}

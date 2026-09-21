@@ -11,7 +11,14 @@ import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
 import type { AntiStuckRetryHandlers } from "../types";
-import { CONTROLLER_RPC, type TransitionPlanResponse } from "../structures/BusContract";
+import {
+	BUS_EVENT,
+	CONTROLLER_RPC,
+	PLAYER_QUERY,
+	PLAYER_RPC,
+	PLAYER_ACTION,
+	type TransitionPlanResponse,
+} from "../structures/BusContract";
 
 /** Everything the controller keeps for ONE player. Lives only inside `PlaybackController.slots`. */
 interface PlaybackSlot {
@@ -53,14 +60,14 @@ export class PlaybackController {
 
 		const at = (playerId: string) => this.slots.get(playerId);
 		bus.registerRpc<{ resource: AudioResource; from: number; to: number; durationMs: number }, void>(
-			"transition.fade",
+			PLAYER_RPC.transitionFade,
 			({ resource, from, to, durationMs }, ctx) => this.fadeResourceVolume(ctx.playerId, resource, from, to, durationMs),
 		);
-		bus.registerRpc<{ resource: AudioResource; track: Track }, void>("transition.fadeIn", ({ resource, track }, ctx) =>
+		bus.registerRpc<{ resource: AudioResource; track: Track }, void>(PLAYER_RPC.transitionFadeIn, ({ resource, track }, ctx) =>
 			this.applyCrossfadeIn(ctx.playerId, resource, track),
 		);
-		bus.registerRpc<void, void>("transition.fadeOutCurrent", (_req, ctx) => this.applyCrossfadeOutCurrent(ctx.playerId));
-		bus.registerRpc<void, void>("transition.skipAndStop", (_req, ctx) => this.crossfadeSkipAndStop(ctx.playerId));
+		bus.registerRpc<void, void>(PLAYER_RPC.transitionFadeOutCurrent, (_req, ctx) => this.applyCrossfadeOutCurrent(ctx.playerId));
+		bus.registerRpc<void, void>(PLAYER_RPC.transitionSkipAndStop, (_req, ctx) => this.crossfadeSkipAndStop(ctx.playerId));
 		bus.registerRpc<{ resource: AudioResource; session?: PlaybackSession; from?: Track | null; to?: Track }, void>(
 			CONTROLLER_RPC.playbackPlay,
 			({ resource, session, from, to }, ctx) => this.play(ctx.playerId, resource, session, from, to),
@@ -68,28 +75,30 @@ export class PlaybackController {
 		bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackPause, (_req, ctx) => this.pause(ctx.playerId));
 		bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackResume, (_req, ctx) => this.resume(ctx.playerId));
 		bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackStop, (_req, ctx) => this.stop(ctx.playerId));
-		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackBeginResourceRefresh, (_req, ctx) => this.beginResourceRefresh(ctx.playerId));
+		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackBeginResourceRefresh, (_req, ctx) =>
+			this.beginResourceRefresh(ctx.playerId),
+		);
 		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackEndResourceRefresh, (_req, ctx) => this.endResourceRefresh(ctx.playerId));
-		bus.registerRpc<{ error: Error }, void>("playback.reportFilterError", ({ error }, ctx) =>
+		bus.registerRpc<{ error: Error }, void>(CONTROLLER_RPC.playbackReportFilterError, ({ error }, ctx) =>
 			this.reportFilterError(ctx.playerId, error),
 		);
 		bus.registerRpc<{ stream: Readable; track: Track; inputType?: StreamType }, AudioResource>(
-			"resource.create",
+			PLAYER_RPC.resourceCreate,
 			({ stream, track, inputType }, ctx) => {
 				if (!this.slots.has(ctx.playerId)) throw new Error("No PlaybackController registered for this player");
 				return this.createResource(stream, track, inputType);
 			},
 		);
-		bus.registerQuery("audioPlayer", (playerId) => at(playerId)?.audioPlayer as any);
-		bus.registerQuery("currentResource", (playerId) => this.currentResource(playerId));
-		bus.registerQuery("playbackSession", (playerId) => this.currentSessionSnapshot(playerId));
-		bus.registerQuery("playerState", (playerId) => this.status(playerId) ?? AudioPlayerStatus.Idle);
-		bus.registerQuery("isPlaying", (playerId) => this.status(playerId) === AudioPlayerStatus.Playing);
-		bus.registerQuery("isPaused", (playerId) => this.status(playerId) === AudioPlayerStatus.Paused);
-		bus.registerQuery("isIdle", (playerId) => this.status(playerId) === AudioPlayerStatus.Idle);
-		bus.registerQuery("isBuffering", (playerId) => this.status(playerId) === AudioPlayerStatus.Buffering);
-		bus.registerQuery("isLive", (playerId) => Boolean(this.currentSessionTrack(playerId)?.isLive));
-		bus.registerQuery("position", (playerId) => this.position(playerId));
+		bus.registerQuery(PLAYER_QUERY.audioPlayer, (playerId) => at(playerId)?.audioPlayer as any);
+		bus.registerQuery(PLAYER_QUERY.currentResource, (playerId) => this.currentResource(playerId));
+		bus.registerQuery(PLAYER_QUERY.playbackSession, (playerId) => this.currentSessionSnapshot(playerId));
+		bus.registerQuery(PLAYER_QUERY.playerState, (playerId) => this.status(playerId) ?? AudioPlayerStatus.Idle);
+		bus.registerQuery(PLAYER_QUERY.isPlaying, (playerId) => this.status(playerId) === AudioPlayerStatus.Playing);
+		bus.registerQuery(PLAYER_QUERY.isPaused, (playerId) => this.status(playerId) === AudioPlayerStatus.Paused);
+		bus.registerQuery(PLAYER_QUERY.isIdle, (playerId) => this.status(playerId) === AudioPlayerStatus.Idle);
+		bus.registerQuery(PLAYER_QUERY.isBuffering, (playerId) => this.status(playerId) === AudioPlayerStatus.Buffering);
+		bus.registerQuery(PLAYER_QUERY.isLive, (playerId) => Boolean(this.currentSessionTrack(playerId)?.isLive));
+		bus.registerQuery(PLAYER_QUERY.position, (playerId) => this.position(playerId));
 	}
 
 	// ---------------------------------------------------------------------
@@ -119,7 +128,7 @@ export class PlaybackController {
 					try {
 						await this.bus.requestRpc(
 							playerId,
-							"playback.refreshResource",
+							PLAYER_RPC.playbackRefreshResource,
 							{ position: session.position },
 							{ signal: session.signal, timeoutMs: 30000 },
 						);
@@ -128,17 +137,18 @@ export class PlaybackController {
 						return false;
 					}
 				},
-				skip: ({ session }) => this.bus.action(playerId, { type: "SKIP" }, { signal: session.signal, sessionId: session.sessionId }),
+				skip: ({ session }) =>
+					this.bus.action(playerId, { type: PLAYER_ACTION.skip }, { signal: session.signal, sessionId: session.sessionId }),
 			},
 			onStateChange: (a, b) => {
-				this.bus.publish(playerId, "stateChanged", a, b);
+				this.bus.publish(playerId, BUS_EVENT.stateChanged, a, b);
 				if (b.status === AudioPlayerStatus.Buffering) this.armStuckWatchdog(slot);
 				else this.clearStuckWatchdog(slot);
 				if (b.status === AudioPlayerStatus.Idle && a.status !== AudioPlayerStatus.Idle) {
 					const previousResource = "resource" in a ? a.resource : undefined;
 					if (previousResource && slot.activeResource && previousResource !== slot.activeResource) return;
 					const session = slot.activeSession;
-					if (session?.isActive()) this.bus.event(playerId, { type: "TRACK_END", session: session.snapshot() });
+					if (session?.isActive()) this.bus.event(playerId, { type: BUS_EVENT.trackEnd, session: session.snapshot() });
 					slot.activeSession = null;
 					slot.activeResource = null;
 				}
@@ -147,15 +157,15 @@ export class PlaybackController {
 				const normalized = error instanceof Error ? error : new Error(String(error));
 				const session = slot.activeSession;
 				if (session?.isActive()) {
-					this.bus.event(playerId, { type: "TRACK_ERROR", session: session.snapshot(), error: normalized });
+					this.bus.event(playerId, { type: BUS_EVENT.trackError, session: session.snapshot(), error: normalized });
 					void this.reportStuck(slot, session, `audio player error: ${normalized.message}`);
 				} else {
-					this.bus.event(playerId, { type: "streamError", error: normalized, track: null });
+					this.bus.event(playerId, { type: BUS_EVENT.streamError, error: normalized, track: null });
 				}
 			},
 		};
 		slot.detachBusHandlers.push(
-			this.bus.subscribe(playerId, "volumeRequested", () => {
+			this.bus.subscribe(playerId, BUS_EVENT.volumeRequested, () => {
 				if (!slot.activeResource) return;
 				const track = slot.activeSession?.track ?? (slot.activeResource.metadata as Track | undefined);
 				this.applyTargetVolume(slot, slot.activeResource, track, slot.fadeGain ?? 1);
@@ -243,7 +253,7 @@ export class PlaybackController {
 		return session.position;
 	}
 	public volumeValue(playerId: string): number {
-		return this.bus.querySync(playerId, "volume") ?? 100;
+		return this.bus.querySync(playerId, PLAYER_QUERY.volume) ?? 100;
 	}
 
 	// ---------------------------------------------------------------------
@@ -316,7 +326,8 @@ export class PlaybackController {
 			)
 				return;
 			const currentDuration = Number(resource?.playbackDuration ?? session.position);
-			if (currentDuration === initialDuration) void this.reportStuck(slot, session, `buffering stalled for ${slot.stuckTimeoutMs}ms`);
+			if (currentDuration === initialDuration)
+				void this.reportStuck(slot, session, `buffering stalled for ${slot.stuckTimeoutMs}ms`);
 			else this.armStuckWatchdog(slot);
 		}, slot.stuckTimeoutMs);
 	}
@@ -529,7 +540,7 @@ export class PlaybackController {
 		if (!Number.isFinite(position) || position < 0) return false;
 		if (session && !session.isActive()) return false;
 		try {
-			await this.bus.requestRpc(playerId, "playback.refreshResource", { position });
+			await this.bus.requestRpc(playerId, PLAYER_RPC.playbackRefreshResource, { position });
 			return !session || session.isActive();
 		} catch {
 			return false;

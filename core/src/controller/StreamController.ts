@@ -3,7 +3,7 @@ import { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
 import type { Bus } from "../structures/Bus";
-import { CONTROLLER_RPC } from "../structures/BusContract";
+import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, BUS_EVENT } from "../structures/BusContract";
 
 const STREAM_RPC_REPLACE = "controller.stream.replace";
 
@@ -24,7 +24,11 @@ export class StreamWorker {
 			const bus = this.bus;
 			const playerId = this.playerId;
 			const onStreamError = ({ error }: { error: Error }) =>
-				bus.event(playerId, { type: "streamError", error, track: bus.querySync(playerId, "currentTrack") as Track | null });
+				bus.event(playerId, {
+					type: BUS_EVENT.streamError,
+					error,
+					track: bus.querySync(playerId, PLAYER_QUERY.currentTrack) as Track | null,
+				});
 			this.streamManager.on("streamError", onStreamError);
 			this.detachStreamError = () => this.streamManager?.off("streamError", onStreamError);
 		}
@@ -130,7 +134,8 @@ export class StreamWorker {
 	abort(stream: ActiveStream) {
 		if (this.active?.stream !== stream.stream) return;
 		this.active = null;
-		if (this.bus && this.playerId) this.bus.event(this.playerId, { type: "STREAM_ABORTED", session: stream.session.snapshot() });
+		if (this.bus && this.playerId)
+			this.bus.event(this.playerId, { type: BUS_EVENT.streamAborted, session: stream.session.snapshot() });
 		if (stream.streamId) {
 			this.streamManager?.unregisterStream(stream.streamId, true);
 			return;
@@ -180,11 +185,11 @@ export class StreamController {
 				return worker.replace(streamInfo, session);
 			},
 		);
-		bus.registerQuery("stream.stats", (playerId) => this.workers.get(playerId)?.statsSnapshot ?? null);
-		bus.registerQuery("stream.state", (playerId) => this.workers.get(playerId)?.stateSnapshot ?? null);
-		bus.registerQuery("stream.current", (playerId) => this.workers.get(playerId)?.current ?? null);
-		bus.registerRpc("stream.state", (_req, ctx) => this.workers.get(ctx.playerId)?.stateSnapshot ?? null);
-		bus.registerRpc("stream.current", (_req, ctx) => this.workers.get(ctx.playerId)?.current ?? null);
+		bus.registerQuery(PLAYER_QUERY.streamStats, (playerId) => this.workers.get(playerId)?.statsSnapshot ?? null);
+		bus.registerQuery(PLAYER_QUERY.streamState, (playerId) => this.workers.get(playerId)?.stateSnapshot ?? null);
+		bus.registerQuery(PLAYER_QUERY.streamCurrent, (playerId) => this.workers.get(playerId)?.current ?? null);
+		bus.registerRpc(PLAYER_RPC.streamState, (_req, ctx) => this.workers.get(ctx.playerId)?.stateSnapshot ?? null);
+		bus.registerRpc(PLAYER_RPC.streamCurrent, (_req, ctx) => this.workers.get(ctx.playerId)?.current ?? null);
 	}
 
 	attach(playerId: string, streamManager?: StreamManager): void {

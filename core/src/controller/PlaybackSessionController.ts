@@ -1,7 +1,7 @@
 import type { Bus } from "../structures/Bus";
 import { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track } from "../types";
-import { CONTROLLER_RPC } from "../structures/BusContract";
+import { CONTROLLER_RPC, PLAYER_QUERY } from "../structures/BusContract";
 
 interface SessionState {
 	session: PlaybackSession | null;
@@ -15,7 +15,7 @@ export class PlaybackSessionController {
 	private disposed = false;
 
 	public constructor(bus: Bus) {
-		bus.registerQuery("playbackSessionInternal", (playerId) => this.states.get(playerId)?.session ?? null);
+		bus.registerQuery(PLAYER_QUERY.playbackSessionInternal, (playerId) => this.states.get(playerId)?.session ?? null);
 		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackSessionRetirePending, (_req, ctx) =>
 			this.retirePendingPrevious(ctx.playerId),
 		);

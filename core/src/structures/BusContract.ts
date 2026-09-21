@@ -71,15 +71,33 @@ export type {
 // The `request()` message pairs: every `PlayerInput["type"]` the bus
 // accepts. Response/progress types live in `PlayerRequestReplyMap`.
 // ---------------------------------------------------------------------
-export const BUS_REQUEST = {
+const BUS_REQUEST_VALUES = {
 	connectionConnect: "[Player]->[Connection]:connect",
 	connectionDisconnect: "[Player]->[Connection]:disconnect",
 	connectionReconnect: "[Player]->[Connection]:reconnect",
 	preloadRequest: "[Player]->[Preload]:request",
 	recoveryRecover: "[Player]->[Recovery]:recover",
 	resourceRefresh: "[Player]->[Resource]:refresh",
-} as const satisfies Record<string, PlayerRequestInputType>;
-export type BusRequestKey = keyof typeof BUS_REQUEST;
+} as const;
+export const BUS_REQUEST = BUS_REQUEST_VALUES;
+export type BusRequestKey = keyof typeof BUS_REQUEST_VALUES;
+
+const BUS_OUTPUT_VALUES = {
+	connectionConnecting: "[Connection]->[Player]:connecting",
+	connectionConnected: "[Connection]->[Player]:connected",
+	connectionDisconnected: "[Connection]->[Player]:disconnected",
+	connectionError: "[Connection]->[Player]:error",
+	preloadLoading: "[Preload]->[Player]:loading",
+	preloadReady: "[Preload]->[Player]:ready",
+	preloadFailed: "[Preload]->[Player]:failed",
+	recoveryRetrying: "[Recovery]->[Player]:retrying",
+	recoveryRecovered: "[Recovery]->[Player]:recovered",
+	recoveryFailed: "[Recovery]->[Player]:failed",
+	resourceRefreshed: "[Resource]->[Player]:refreshed",
+	resourceError: "[Resource]->[Player]:error",
+} as const;
+export const BUS_OUTPUT = BUS_OUTPUT_VALUES;
+export type BusOutputKey = keyof typeof BUS_OUTPUT_VALUES;
 
 // ---------------------------------------------------------------------
 // Internal controller<->controller RPC namespace. Registered/consumed only
@@ -87,6 +105,7 @@ export type BusRequestKey = keyof typeof BUS_REQUEST;
 // ---------------------------------------------------------------------
 export const CONTROLLER_RPC = {
 	play: "play",
+	runtimePing: "runtime.ping",
 	playbackDestroyCurrentStream: "playback.destroyCurrentStream",
 	playbackRecover: "playback.recover",
 	playbackLoadFresh: "playback.loadFresh",
@@ -97,6 +116,7 @@ export const CONTROLLER_RPC = {
 	playbackPrepareAutoplay: "playback.prepareAutoplay",
 	playbackCreateRelatedTracks: "playback.createRelatedTracks",
 	playbackStart: "playback.start",
+	playbackReportFilterError: "playback.reportFilterError",
 	playbackSessionRetirePending: "playback.session.retirePending",
 	preloadHas: "preload.has",
 	streamReplace: "controller.stream.replace",
@@ -116,6 +136,8 @@ export const CONTROLLER_RPC = {
 	trackLoadWithRecovery: "controller.track.loadWithRecovery",
 	trackResetRecovery: "controller.track.resetRecovery",
 	trackGetRecoveryCount: "controller.track.getRecoveryCount",
+	playerEmitTtsStart: "player.emitTtsStart",
+	playerEmitTtsEnd: "player.emitTtsEnd",
 	ttsIsTTS: "controller.tts.isTTS",
 	ttsPlay: "controller.tts.play",
 } as const;
@@ -143,9 +165,11 @@ export const PLAYER_RPC = {
 	queueRemove: "queue.remove",
 	queueLoop: "queue.loop",
 	queueAutoPlay: "queue.autoPlay",
+	queueWillNext: "queue.willNext",
 	queueSetCurrent: "queue.setCurrent",
 	queueSerialize: "queue.serialize",
 	queueRestore: "queue.restore",
+	queueRestoreNext: "queue.restoreNext",
 	playbackDestroyCurrentStream: "playback.destroyCurrentStream",
 	playbackRecover: "playback.recover",
 	playbackLoadFresh: "playback.loadFresh",

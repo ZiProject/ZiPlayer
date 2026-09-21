@@ -1,4 +1,5 @@
 import type { Bus } from "../structures/Bus";
+import { CONTROLLER_RPC } from "../structures/BusContract";
 
 export interface GlobalControllerEntry<T = unknown> {
 	readonly playerId: string;
@@ -90,7 +91,7 @@ export class GlobalControllerRegistry<T = unknown> {
 		const entry = this.entries.get(playerId);
 		if (!entry) return false;
 		try {
-			await entry.bus.requestRpc(playerId, "runtime.ping", { playerId }, { timeoutMs: this.pingTimeoutMs });
+			await entry.bus.requestRpc(playerId, CONTROLLER_RPC.runtimePing, { playerId }, { timeoutMs: this.pingTimeoutMs });
 			entry.lastPingAt = Date.now();
 			entry.unreachableSince = undefined;
 			return true;

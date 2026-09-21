@@ -9,6 +9,7 @@ import {
 } from "@discordjs/voice";
 import type { PlayerOptions, VoiceChannel, PlayerConnectionInput, ConnectionControllerOptions } from "../types";
 import { createPlayerSessionId, type Bus, type PlayerRequestId, type PlayerSessionId } from "../structures/Bus";
+import { BUS_OUTPUT, BUS_REQUEST, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 
 interface ConnectionSlot {
 	group?: string;
@@ -51,18 +52,18 @@ export class ConnectionController {
 		this.bus = bus;
 
 		if (bus) {
-			bus.registerRpc<{ audioPlayer: AudioPlayer | null }, void>("connection.setAudioPlayer", ({ audioPlayer }, ctx) =>
+			bus.registerRpc<{ audioPlayer: AudioPlayer | null }, void>(PLAYER_RPC.connectionSetAudioPlayer, ({ audioPlayer }, ctx) =>
 				this.setAudioPlayer(ctx.playerId, audioPlayer),
 			);
-			bus.registerQuery("connection", (playerId) => this.slots.get(playerId)?.connection ?? null);
-			bus.registerQuery("connection.state", (playerId) => this.slots.get(playerId)?.connection?.state.status);
-			bus.onInput("[Player]->[Connection]:connect", (event) =>
+			bus.registerQuery(PLAYER_QUERY.connection, (playerId) => this.slots.get(playerId)?.connection ?? null);
+			bus.registerQuery(PLAYER_QUERY.connectionState, (playerId) => this.slots.get(playerId)?.connection?.state.status);
+			bus.onInput(BUS_REQUEST.connectionConnect, (event) =>
 				this.enqueue(event.playerId, () => this.connect(event.playerId, event)),
 			);
-			bus.onInput("[Player]->[Connection]:disconnect", (event) =>
+			bus.onInput(BUS_REQUEST.connectionDisconnect, (event) =>
 				this.enqueue(event.playerId, () => this.disconnect(event.playerId, event)),
 			);
-			bus.onInput("[Player]->[Connection]:reconnect", (event) =>
+			bus.onInput(BUS_REQUEST.connectionReconnect, (event) =>
 				this.enqueue(event.playerId, () => this.reconnect(event.playerId, event)),
 			);
 		}
@@ -190,7 +191,7 @@ export class ConnectionController {
 
 	private async connect(
 		playerId: string,
-		event: Extract<PlayerConnectionInput, { type: "[Player]->[Connection]:connect" }>,
+		event: Extract<PlayerConnectionInput, { type: typeof BUS_REQUEST.connectionConnect }>,
 	): Promise<void> {
 		const slot = this.slots.get(playerId);
 		if (!slot || slot.disposed) return;
@@ -199,7 +200,7 @@ export class ConnectionController {
 		slot.sessionId = sessionId;
 		slot.channel = event.channel;
 		this.bus?.emitOutput({
-			type: "[Connection]->[Player]:connecting",
+			type: BUS_OUTPUT.connectionConnecting,
 			requestId: event.requestId,
 			playerId,
 			sessionId,
@@ -254,7 +255,7 @@ export class ConnectionController {
 				this.cleanupSubscription(playerId);
 				slot.connection = null;
 				this.bus?.emitOutput({
-					type: "[Connection]->[Player]:disconnected",
+					type: BUS_OUTPUT.connectionDisconnected,
 					requestId: slot.requestId ?? undefined,
 					playerId,
 					sessionId: slot.sessionId ?? sessionId,
@@ -276,7 +277,7 @@ export class ConnectionController {
 			slot.connection?.destroy();
 			slot.connection = null;
 			this.bus?.emitOutput({
-				type: "[Connection]->[Player]:error",
+				type: BUS_OUTPUT.connectionError,
 				requestId: event.requestId,
 				playerId,
 				sessionId,
@@ -288,7 +289,7 @@ export class ConnectionController {
 
 	private async disconnect(
 		playerId: string,
-		event: Extract<PlayerConnectionInput, { type: "[Player]->[Connection]:disconnect" }>,
+		event: Extract<PlayerConnectionInput, { type: typeof BUS_REQUEST.connectionDisconnect }>,
 	): Promise<void> {
 		const slot = this.slots.get(playerId);
 		if (!slot || slot.disposed) return;
@@ -302,7 +303,7 @@ export class ConnectionController {
 		try {
 			connection?.destroy();
 			this.bus?.emitOutput({
-				type: "[Connection]->[Player]:disconnected",
+				type: BUS_OUTPUT.connectionDisconnected,
 				requestId: event.requestId,
 				playerId,
 				sessionId,
@@ -310,7 +311,7 @@ export class ConnectionController {
 			});
 		} catch (error) {
 			this.bus?.emitOutput({
-				type: "[Connection]->[Player]:error",
+				type: BUS_OUTPUT.connectionError,
 				requestId: event.requestId,
 				playerId,
 				sessionId,
@@ -322,7 +323,7 @@ export class ConnectionController {
 
 	private async reconnect(
 		playerId: string,
-		event: Extract<PlayerConnectionInput, { type: "[Player]->[Connection]:reconnect" }>,
+		event: Extract<PlayerConnectionInput, { type: typeof BUS_REQUEST.connectionReconnect }>,
 	): Promise<void> {
 		const slot = this.slots.get(playerId);
 		if (!slot || slot.disposed) return;
@@ -331,7 +332,7 @@ export class ConnectionController {
 		slot.connection = null;
 		slot.channel = null;
 		slot.sessionId = null;
-		await this.connect(playerId, { type: "[Player]->[Connection]:connect", requestId: event.requestId, channel: event.channel });
+		await this.connect(playerId, { type: BUS_REQUEST.connectionConnect, requestId: event.requestId, channel: event.channel });
 	}
 
 	private emitConnected(
@@ -344,7 +345,7 @@ export class ConnectionController {
 	): void {
 		slot.debug?.(`[ConnectionController] connected guild=${playerId} channel=${channel.id}`);
 		this.bus?.emitOutput({
-			type: "[Connection]->[Player]:connected",
+			type: BUS_OUTPUT.connectionConnected,
 			requestId,
 			playerId,
 			sessionId,

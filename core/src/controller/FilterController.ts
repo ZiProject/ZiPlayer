@@ -5,6 +5,7 @@ import { spawn, type ChildProcess } from "child_process";
 import ffmpegStaticPath from "ffmpeg-static";
 import type { Bus, PlayerAction } from "../structures/Bus";
 import { StreamType } from "@discordjs/voice";
+import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import fs from "node:fs";
 
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
@@ -158,7 +159,7 @@ export class FilterEngine {
 	private refreshPlayerResource(): Promise<boolean> {
 		if (this.bus && this.playerId)
 			return this.bus
-				.requestRpc(this.playerId, "playback.refreshResource", { position: 0 })
+				.requestRpc(this.playerId, PLAYER_RPC.playbackRefreshResource, { position: 0 })
 				.then(() => true)
 				.catch(() => false);
 		return this.resourcePort?.refreshPlayerResource() ?? Promise.resolve(false);
@@ -318,26 +319,26 @@ export class FilterController {
 		bus.onAction((action, context) => {
 			void this.engines.get(context.playerId)?.handleAction(action, context.signal);
 		});
-		bus.registerQuery("filterString", (playerId) => this.engines.get(playerId)?.getFilterString() ?? "");
-		bus.registerQuery("filteredStream", (playerId) => this.engines.get(playerId)?.lastFilteredStreamValue ?? null);
+		bus.registerQuery(PLAYER_QUERY.filterString, (playerId) => this.engines.get(playerId)?.getFilterString() ?? "");
+		bus.registerQuery(PLAYER_QUERY.filteredStream, (playerId) => this.engines.get(playerId)?.lastFilteredStreamValue ?? null);
 		bus.registerQuery(
-			"filter.list",
+			PLAYER_QUERY.filterList,
 			(playerId) =>
 				this.engines
 					.get(playerId)
 					?.getActiveFilters()
 					.map((f) => f.name) ?? [],
 		);
-		bus.registerQuery("filters", (playerId) => this.engines.get(playerId)?.getActiveFilters() ?? []);
+		bus.registerQuery(PLAYER_QUERY.filters, (playerId) => this.engines.get(playerId)?.getActiveFilters() ?? []);
 		bus.registerRpc(
-			"filter.list",
+			PLAYER_RPC.filterList,
 			(_req, ctx) =>
 				this.engines
 					.get(ctx.playerId)
 					?.getActiveFilters()
 					.map((f) => f.name) ?? [],
 		);
-		bus.registerRpc<{ filter: string; value: unknown }, any>("filter.set", async ({ filter, value }, ctx) => {
+		bus.registerRpc<{ filter: string; value: unknown }, any>(PLAYER_RPC.filterSet, async ({ filter, value }, ctx) => {
 			const engine = this.engines.get(ctx.playerId);
 			if (!engine) return false;
 			return value ? engine.applyFilter(filter) : engine.removeFilter(filter);

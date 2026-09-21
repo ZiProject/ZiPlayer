@@ -1,7 +1,14 @@
 import type { AudioResource } from "@discordjs/voice";
 import type { Bus, PlayerAction, PlayerActionExecutionContext } from "../structures/Bus";
 import type { Track } from "../types";
-import { CONTROLLER_RPC, type VolumeTargetRequest, type VolumeSetRequest } from "../structures/BusContract";
+import {
+	BUS_EVENT,
+	CONTROLLER_RPC,
+	PLAYER_QUERY,
+	PLAYER_RPC,
+	type VolumeTargetRequest,
+	type VolumeSetRequest,
+} from "../structures/BusContract";
 import type { VolumeControllerOptions } from "../types";
 
 type ActiveResourceState = {
@@ -24,8 +31,8 @@ export class VolumeController {
 
 	constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => this.handleAction(action, context));
-		bus.registerQuery("volume", (playerId) => this.value(playerId));
-		bus.registerRpc<VolumeSetRequest, number>("volume.set", ({ value }, ctx) => this.setVolume(ctx.playerId, value));
+		bus.registerQuery(PLAYER_QUERY.volume, (playerId) => this.value(playerId));
+		bus.registerRpc<VolumeSetRequest, number>(PLAYER_RPC.volumeSet, ({ value }, ctx) => this.setVolume(ctx.playerId, value));
 		bus.registerRpc<VolumeTargetRequest, number>(CONTROLLER_RPC.volumeTarget, ({ track }, ctx) =>
 			this.getTargetVolume(ctx.playerId, track),
 		);
@@ -74,7 +81,7 @@ export class VolumeController {
 		const oldVolume = state.volume;
 		state.volume = this.clamp(value);
 		if (state.volume !== oldVolume)
-			this.bus.event(playerId, { type: "volumeRequested", volume: state.volume, oldVolume, newVolume: state.volume });
+			this.bus.event(playerId, { type: BUS_EVENT.volumeRequested, volume: state.volume, oldVolume, newVolume: state.volume });
 
 		const active = state.activeResourceResolver?.();
 		if (active?.resource) {

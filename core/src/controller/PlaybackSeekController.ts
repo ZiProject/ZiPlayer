@@ -1,6 +1,7 @@
 import type { Bus } from "../structures/Bus";
 import type { PlaybackSessionController } from "./PlaybackSessionController";
 import type { PlayerMessageContext, Track } from "../types";
+import { BUS_EVENT, BUS_REQUEST } from "../structures/BusContract";
 
 /** Shared, singleton controller: owns seek validation and resource-refresh coordination
  *  for the active session of whichever player the seek was requested for. */
@@ -20,15 +21,15 @@ export class PlaybackSeekController {
 		try {
 			await bus.request(
 				playerId,
-				{ type: "[Player]->[Resource]:refresh", requestId: context.requestId, position },
+				{ type: BUS_REQUEST.resourceRefresh, requestId: context.requestId, position },
 				{ signal: context.signal, timeoutMs: 30000 },
 			);
 			if (context.signal.aborted || !this.isCurrent(playerId, session, context)) return;
-			bus.event(playerId, { type: "seek", track: session.track, position });
+			bus.event(playerId, { type: BUS_EVENT.seek, track: session.track, position });
 		} catch (error) {
 			if (!context.signal.aborted && this.isCurrent(playerId, session, context)) {
 				bus.event(playerId, {
-					type: "TRACK_ERROR",
+					type: BUS_EVENT.trackError,
 					session: session.snapshot(),
 					error: error instanceof Error ? error : new Error(String(error)),
 				});

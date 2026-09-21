@@ -2,7 +2,7 @@ import type { AudioResource } from "@discordjs/voice";
 import type { Bus } from "../structures/Bus";
 import { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlaybackSessionController } from "./PlaybackSessionController";
-import { CONTROLLER_RPC } from "../structures/BusContract";
+import { CONTROLLER_RPC, PLAYER_ACTION, BUS_EVENT, PLAYER_QUERY } from "../structures/BusContract";
 import type { PlayerMessageContext, StreamInfo, Track, TrackLoadResult } from "../types";
 import type { PlaybackStartControllerOptions } from "../types";
 
@@ -51,8 +51,8 @@ export class PlaybackStartController {
 		const session = this.sessionController.replace(this.playerId, track, { destroyPrevious: !transition });
 		const context = this.childContext(parentContext, session.sessionId, session.signal);
 		await this.setCurrentThroughBus(track, context);
-		this.bus.event(this.playerId, { type: "TRACK_LOADING", session: session.snapshot() });
-		this.bus.event(this.playerId, { type: "willPlay", track, upcomingTracks: this.queueSnapshot() });
+		this.bus.event(this.playerId, { type: BUS_EVENT.trackLoading, session: session.snapshot() });
+		this.bus.event(this.playerId, { type: BUS_EVENT.willPlay, track, upcomingTracks: this.queueSnapshot() });
 
 		try {
 			const loaded = await this.bus.requestRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
@@ -63,17 +63,17 @@ export class PlaybackStartController {
 			);
 			if (!loaded) throw new Error("Track loader is unavailable");
 			if (context.signal.aborted || !this.isCurrentSession(session, context)) return;
-			this.bus.event(this.playerId, { type: "TRACK_LOADED", session: session.snapshot() });
+			this.bus.event(this.playerId, { type: BUS_EVENT.trackLoaded, session: session.snapshot() });
 			if (loaded.stream.remote && loaded.stream.handle?.play) {
 				session.setResource(null);
 				await loaded.stream.handle.play();
 				session.markPlaying(0);
-				this.bus.event(this.playerId, { type: "TRACK_STARTED", session: session.snapshot(), track });
+				this.bus.event(this.playerId, { type: BUS_EVENT.trackStarted, session: session.snapshot(), track });
 				await this.prepareTrack(session, context);
 				return;
 			}
 
-			const filterString = await this.bus.query(this.playerId, "filterString");
+			const filterString = await this.bus.query(this.playerId, PLAYER_QUERY.filterString);
 			let activeStream = loaded.stream;
 			if (filterString) {
 				const filtered = await this.filterStreamThroughBus(loaded.stream, 0, context);
@@ -97,13 +97,13 @@ export class PlaybackStartController {
 			this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackPlay, { resource, session, from, to: track });
 			session.markPlaying(0);
 			if (transition) this.sessionController.retirePendingPrevious(this.playerId);
-			this.bus.event(this.playerId, { type: "TRACK_STARTED", session: session.snapshot(), track });
+			this.bus.event(this.playerId, { type: BUS_EVENT.trackStarted, session: session.snapshot(), track });
 			await this.prepareTrack(session, context);
 		} catch (error) {
 			if (transition) this.sessionController.retirePendingPrevious(this.playerId);
 			if (!context.signal.aborted && this.isCurrentSession(session, context)) {
 				this.bus.event(this.playerId, {
-					type: "TRACK_ERROR",
+					type: BUS_EVENT.trackError,
 					session: session.snapshot(),
 					error: error instanceof Error ? error : new Error(String(error)),
 				});
@@ -116,7 +116,7 @@ export class PlaybackStartController {
 	}
 
 	private queueSnapshot(): Track[] {
-		return this.bus.querySync(this.playerId, "queue") ?? [];
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.queue) ?? [];
 	}
 
 	private childContext(context: PlayerMessageContext, sessionId: string, sessionSignal: AbortSignal): PlayerMessageContext {
@@ -133,7 +133,7 @@ export class PlaybackStartController {
 
 	private async setCurrentThroughBus(track: Track | null, context: PlayerMessageContext): Promise<void> {
 		if (!context.signal.aborted)
-			await this.bus.action(this.playerId, { type: "QUEUE_SET_CURRENT", track, requestId: context.requestId }, context);
+			await this.bus.action(this.playerId, { type: PLAYER_ACTION.queueSetCurrent, track, requestId: context.requestId }, context);
 	}
 
 	private async filterStreamThroughBus(
@@ -144,14 +144,14 @@ export class PlaybackStartController {
 		if (context.signal.aborted) return null;
 		await this.bus.action(
 			this.playerId,
-			{ type: "FILTER_SET_SOURCE_TYPE", streamType: streamInfo.type ?? "arbitrary", requestId: context.requestId },
+			{ type: PLAYER_ACTION.filterSetSourceType, streamType: streamInfo.type ?? "arbitrary", requestId: context.requestId },
 			context,
 		);
 		await this.bus.action(
 			this.playerId,
-			{ type: "FILTER_APPLY_AND_SEEK", streamInfo, position, requestId: context.requestId },
+			{ type: PLAYER_ACTION.filterApplyAndSeek, streamInfo, position, requestId: context.requestId },
 			context,
 		);
-		return this.bus.query(this.playerId, "filteredStream");
+		return this.bus.query(this.playerId, PLAYER_QUERY.filteredStream);
 	}
 }

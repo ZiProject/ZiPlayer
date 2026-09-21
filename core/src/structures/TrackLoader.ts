@@ -12,7 +12,7 @@ import type {
 import type { PlaybackSession } from "./PlaybackSession";
 import type { PreloadManager } from "./PreloadManager";
 import type { Bus } from "./Bus";
-import { CONTROLLER_RPC } from "./BusContract";
+import { CONTROLLER_RPC, PLAYER_QUERY } from "./BusContract";
 
 const TRACK_LOADER_RPC = {
 	load: "controller.track.load",
@@ -67,7 +67,9 @@ export class TrackLoader {
 			};
 			bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
 				CONTROLLER_RPC.playbackRecover,
-				bridge((slot, { track, session }) => bus.requestRpc(slot.playerId, CONTROLLER_RPC.trackLoadWithRecovery, { track, session })),
+				bridge((slot, { track, session }) =>
+					bus.requestRpc(slot.playerId, CONTROLLER_RPC.trackLoadWithRecovery, { track, session }),
+				),
 			);
 			bus.registerRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
 				CONTROLLER_RPC.playbackLoadFresh,
@@ -76,7 +78,7 @@ export class TrackLoader {
 			bus.registerRpc<{ track: Track }, TrackLoadResult | null>(
 				CONTROLLER_RPC.playbackLoadFreshCurrent,
 				bridge((slot, { track }) => {
-					const session = bus.querySync(slot.playerId, "playbackSessionInternal");
+					const session = bus.querySync(slot.playerId, PLAYER_QUERY.playbackSessionInternal);
 					if (!session) return null;
 					return bus.requestRpc(slot.playerId, CONTROLLER_RPC.trackLoad, { track, session });
 				}),

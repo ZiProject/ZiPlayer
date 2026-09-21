@@ -3,6 +3,7 @@ import type { BasePlugin } from "../plugins/BasePlugin";
 import type { Track } from "../types";
 import type { LoopMode } from "../types";
 import type { Bus } from "../structures/Bus";
+import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 
 /** Bus-only capabilities exposed by Player; no controller references escape the runtime. */
 export class PlayerCapabilities {
@@ -37,43 +38,43 @@ export class QueueCapability {
 	) {}
 
 	public add(track: Track): Promise<number> | number {
-		return this.bus.requestRpc(this.playerId, "queue.add", { track });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.queueAdd, { track });
 	}
 
 	public remove(index: number): Promise<Track | null> | Track | null {
-		return this.bus.requestRpc(this.playerId, "queue.remove", { index });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.queueRemove, { index });
 	}
 
 	public clear(): Promise<void> | void {
-		return this.bus.requestRpc(this.playerId, "queue.clear", undefined as any);
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.queueClear, undefined as any);
 	}
 
 	public get tracks(): Track[] {
-		return this.bus.querySync(this.playerId, "queue") ?? [];
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.queue) ?? [];
 	}
 
 	public get currentTrack(): Track | null {
-		return this.bus.querySync(this.playerId, "currentTrack");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.currentTrack);
 	}
 
 	public get nextTrack(): Track | null {
-		return this.bus.querySync(this.playerId, "queueNextTrack");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.queueNextTrack);
 	}
 
 	public get previousTrack(): Track | null {
-		return this.bus.querySync(this.playerId, "previousTrack");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.previousTrack);
 	}
 
 	public get previousTracks(): Track[] {
-		return this.bus.querySync(this.playerId, "previousTracks") ?? [];
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.previousTracks) ?? [];
 	}
 
 	public get relatedTracks(): Track[] {
-		return this.bus.querySync(this.playerId, "relatedTracks") ?? [];
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.relatedTracks) ?? [];
 	}
 
 	public get willNext(): Track | null {
-		return this.bus.querySync(this.playerId, "willNext");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.willNext);
 	}
 
 	public get length(): number {
@@ -89,58 +90,60 @@ export class QueueCapability {
 	}
 
 	public get loopMode(): LoopMode {
-		return this.bus.querySync(this.playerId, "queueLoop");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.queueLoop);
 	}
 
 	public get autoPlayEnabled(): boolean {
-		return this.bus.querySync(this.playerId, "queueAutoPlay");
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.queueAutoPlay);
 	}
 
 	public addMultiple(tracks: Track[]): number {
-		return this.bus.requestRpcSync(this.playerId, "queue.addMultiple", { tracks });
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueAddMultiple, { tracks });
 	}
 
 	public insert(track: Track, index = this.length): boolean | number {
-		return this.bus.requestRpcSync(this.playerId, "queue.insert", { query: track, index });
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueInsert, { query: track, index });
 	}
 
 	public removeMultiple(indices: number[]): Track[] {
 		return [...indices]
 			.sort((a, b) => b - a)
-			.map((index) => this.bus.requestRpcSync(this.playerId, "queue.remove", { index }))
+			.map((index) => this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueRemove, { index }))
 			.filter((track): track is Track => track !== null);
 	}
 
 	public shuffle(): void {
-		this.bus.requestRpcSync(this.playerId, "queue.shuffle", undefined);
+		this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueShuffle, undefined);
 	}
 
 	public previous(): Track | null {
-		return this.bus.requestRpcSync(this.playerId, "queue.previous", undefined);
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queuePrevious, undefined);
 	}
 
 	public loop(mode?: LoopMode): LoopMode {
-		return mode === undefined ? this.loopMode : this.bus.requestRpcSync(this.playerId, "queue.loop", { mode });
+		return mode === undefined ? this.loopMode : this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueLoop, { mode });
 	}
 
 	public autoPlay(enabled?: boolean): boolean {
-		return enabled === undefined ? this.autoPlayEnabled : this.bus.requestRpcSync(this.playerId, "queue.autoPlay", { enabled });
+		return enabled === undefined ?
+				this.autoPlayEnabled
+			:	this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueAutoPlay, { enabled });
 	}
 
 	public setWillNext(track: Track | null): Track | null {
-		return this.bus.requestRpcSync(this.playerId, "queue.willNext", { track });
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track });
 	}
 
 	public setCurrent(track: Track | null): void {
-		this.bus.requestRpcSync(this.playerId, "queue.setCurrent", { track });
+		this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueSetCurrent, { track });
 	}
 
 	public serialize(): object {
-		return this.bus.requestRpcSync(this.playerId, "queue.serialize", undefined);
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueSerialize, undefined);
 	}
 
 	public restore(state: object): void {
-		this.bus.requestRpcSync(this.playerId, "queue.restore", { state });
+		this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueRestore, { state });
 	}
 }
 
@@ -153,7 +156,8 @@ export class PluginCapability {
 	public get(name: string): any {
 		try {
 			return (
-				this.bus.querySync(this.playerId, "plugin.get" as any) ?? this.bus.requestRpcSync(this.playerId, "plugin.get", { name })
+				this.bus.querySync(this.playerId, "plugin.get" as any) ??
+				this.bus.requestRpcSync(this.playerId, PLAYER_RPC.pluginGet, { name })
 			);
 		} catch {
 			return undefined;
@@ -161,15 +165,19 @@ export class PluginCapability {
 	}
 
 	public list(): any[] {
-		return this.bus.querySync(this.playerId, "plugin.list") ?? this.bus.querySync(this.playerId, "availablePlugins") ?? [];
+		return (
+			this.bus.querySync(this.playerId, PLAYER_QUERY.pluginList) ??
+			this.bus.querySync(this.playerId, PLAYER_QUERY.availablePlugins) ??
+			[]
+		);
 	}
 
 	public get available(): string[] {
-		return (this.bus.querySync(this.playerId, "availablePlugins") ?? []).map((plugin) => plugin.name);
+		return (this.bus.querySync(this.playerId, PLAYER_QUERY.availablePlugins) ?? []).map((plugin) => plugin.name);
 	}
 
 	public add(plugin: BasePlugin): void {
-		this.bus.requestRpcSync(this.playerId, "plugin.add", { plugin });
+		this.bus.requestRpcSync(this.playerId, PLAYER_RPC.pluginAdd, { plugin });
 	}
 
 	public register(plugin: BasePlugin): void {
@@ -177,25 +185,25 @@ export class PluginCapability {
 	}
 
 	public remove(name: string): boolean {
-		return this.bus.requestRpcSync(this.playerId, "plugin.remove", { name });
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.pluginRemove, { name });
 	}
 
 	public clear(): void {
 		try {
-			this.bus.requestRpcSync(this.playerId, "plugin.clear", undefined);
+			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.pluginClear, undefined);
 		} catch {}
 	}
 
 	public getStats(): object {
 		try {
-			return this.bus.requestRpcSync(this.playerId, "plugin.stats", undefined);
+			return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.pluginStats, undefined);
 		} catch {
 			return { totalPlugins: 0, pluginNames: [], streamCacheSize: 0, searchCacheSize: 0, pendingStreams: 0, pendingSearches: 0 };
 		}
 	}
 
 	public getStream(track: Track): Promise<any> {
-		return this.bus.requestRpc(this.playerId, "stream.resolve", { track });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.streamResolve, { track });
 	}
 }
 
@@ -206,31 +214,35 @@ export class ExtensionCapability {
 	) {}
 
 	public list(): any[] {
-		return this.bus.querySync(this.playerId, "extension.list") ?? this.bus.querySync(this.playerId, "extensions") ?? [];
+		return (
+			this.bus.querySync(this.playerId, PLAYER_QUERY.extensionList) ??
+			this.bus.querySync(this.playerId, PLAYER_QUERY.extensions) ??
+			[]
+		);
 	}
 
 	public get(name: string): any {
-		return this.bus.requestRpcSync(this.playerId, "extension.get", { name });
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.extensionGet, { name });
 	}
 
 	public enable(name: string): Promise<boolean> {
-		return this.bus.requestRpc(this.playerId, "extension.enable", { name });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.extensionEnable, { name });
 	}
 
 	public disable(name: string): Promise<boolean> {
-		return this.bus.requestRpc(this.playerId, "extension.disable", { name });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.extensionDisable, { name });
 	}
 
 	public get all(): any[] {
-		return this.bus.querySync(this.playerId, "extensions") ?? [];
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.extensions) ?? [];
 	}
 
 	public add(extension: BaseExtension): void {
-		this.bus.requestRpcSync(this.playerId, "extension.add", { extension });
+		this.bus.requestRpcSync(this.playerId, PLAYER_RPC.extensionAdd, { extension });
 	}
 
 	public remove(extension: BaseExtension): boolean {
-		return this.bus.requestRpcSync(this.playerId, "extension.remove", { extension });
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.extensionRemove, { extension });
 	}
 }
 
@@ -241,15 +253,21 @@ export class StreamCapability {
 	) {}
 
 	public getState(): any {
-		return this.bus.querySync(this.playerId, "stream.state") ?? this.bus.requestRpcSync(this.playerId, "stream.state", {});
+		return (
+			this.bus.querySync(this.playerId, PLAYER_QUERY.streamState) ??
+			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.streamState, {})
+		);
 	}
 
 	public getCurrent(): any {
-		return this.bus.querySync(this.playerId, "stream.current") ?? this.bus.requestRpcSync(this.playerId, "stream.current", {});
+		return (
+			this.bus.querySync(this.playerId, PLAYER_QUERY.streamCurrent) ??
+			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.streamCurrent, {})
+		);
 	}
 
 	public stats(): any {
-		return this.bus.requestRpcSync(this.playerId, "stream.stats", undefined) ?? {};
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.streamState, undefined) ?? {};
 	}
 }
 
@@ -260,19 +278,22 @@ export class PreloadCapability {
 	) {}
 
 	public getState(): any {
-		return this.bus.querySync(this.playerId, "preload.state") ?? this.bus.requestRpcSync(this.playerId, "preload.state", {});
+		return (
+			this.bus.querySync(this.playerId, PLAYER_QUERY.preloadState) ??
+			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.preloadState, {})
+		);
 	}
 
 	public clear(): Promise<void> | void {
-		return this.bus.requestRpc(this.playerId, "preload.clear", undefined);
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.preloadClear, undefined);
 	}
 
 	public next(): Promise<void> {
-		return this.bus.requestRpc(this.playerId, "preload.next", undefined);
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.preloadNext, undefined);
 	}
 
 	public cancel(): void {
-		this.bus.requestRpcSync(this.playerId, "preload.cancel", undefined);
+		this.bus.requestRpcSync(this.playerId, PLAYER_RPC.preloadCancel, undefined);
 	}
 }
 
@@ -283,14 +304,17 @@ export class FilterCapability {
 	) {}
 
 	public getFilters(): any {
-		return this.bus.querySync(this.playerId, "filter.list") ?? this.bus.requestRpcSync(this.playerId, "filter.list", {});
+		return (
+			this.bus.querySync(this.playerId, PLAYER_QUERY.filterList) ??
+			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.filterList, {})
+		);
 	}
 
 	public set(filter: string, value: unknown): Promise<any> {
-		return this.bus.requestRpc(this.playerId, "filter.set", { filter, value });
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.filterSet, { filter, value });
 	}
 
 	public state(): any {
-		return this.bus.querySync(this.playerId, "filters") ?? [];
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.filters) ?? [];
 	}
 }
