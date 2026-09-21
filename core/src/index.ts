@@ -3,6 +3,15 @@ import { PlayerManager, getGlobalManager } from "./structures/PlayerManager";
 export { Player } from "./structures/Player";
 export { PlayerManager } from "./structures/PlayerManager";
 export { Bus } from "./structures/Bus";
+export { BUS_REQUEST, CONTROLLER_RPC, PLAYER_RPC, BUS_EVENT, PLAYER_ACTION, PLAYER_QUERY } from "./structures/BusContract";
+export type {
+	BusRequestKey,
+	ControllerRpcKey,
+	PlayerRpcKey,
+	BusEventKey,
+	PlayerActionKey,
+	PlayerQueryKey,
+} from "./structures/BusContract";
 export { PlayerAction } from "./structures/PlayerAction";
 export {
 	PlayerCapabilities,

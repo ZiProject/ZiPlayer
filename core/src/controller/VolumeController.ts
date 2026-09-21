@@ -1,7 +1,7 @@
 import type { AudioResource } from "@discordjs/voice";
 import type { Bus, PlayerAction, PlayerActionExecutionContext } from "../structures/Bus";
 import type { Track } from "../types";
-import { CONTROLLER_RPC, type VolumeTargetRequest, type VolumeSetRequest } from "./ControllerBusContract";
+import { CONTROLLER_RPC, type VolumeTargetRequest, type VolumeSetRequest } from "../structures/BusContract";
 import type { VolumeControllerOptions } from "../types";
 
 type ActiveResourceState = {

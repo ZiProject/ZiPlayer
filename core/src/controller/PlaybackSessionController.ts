@@ -1,7 +1,7 @@
 import type { Bus } from "../structures/Bus";
 import { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track } from "../types";
-import { CONTROLLER_RPC } from "./ControllerBusContract";
+import { CONTROLLER_RPC } from "../structures/BusContract";
 
 interface SessionState {
 	session: PlaybackSession | null;

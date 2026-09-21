@@ -5,7 +5,7 @@ import { createPlayerRequestId } from "../structures/Bus";
 import type { TrackLoader } from "../structures/TrackLoader";
 import type { PreloadManager } from "../structures/PreloadManager";
 import type { PreloadControllerOptions } from "../types";
-import { CONTROLLER_RPC } from "./ControllerBusContract";
+import { CONTROLLER_RPC } from "../structures/BusContract";
 
 export interface PreloadState {
 	preload?: PromotedPreload | null;

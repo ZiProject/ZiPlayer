@@ -1,6 +1,6 @@
 import type { Track } from "../types";
 import type { Bus } from "../structures/Bus";
-import { CONTROLLER_RPC, type TransitionBeatWaitRequest, type TransitionPlanRequest } from "./ControllerBusContract";
+import { CONTROLLER_RPC, type TransitionBeatWaitRequest, type TransitionPlanRequest } from "../structures/BusContract";
 import type { TransitionControllerOptions, TransitionPlan } from "../types";
 
 type ResolvedOptions = Required<Omit<TransitionControllerOptions, "genreDurations" | "bus">> & {

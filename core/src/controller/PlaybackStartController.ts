@@ -2,7 +2,7 @@ import type { AudioResource } from "@discordjs/voice";
 import type { Bus } from "../structures/Bus";
 import { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlaybackSessionController } from "./PlaybackSessionController";
-import { CONTROLLER_RPC } from "./ControllerBusContract";
+import { CONTROLLER_RPC } from "../structures/BusContract";
 import type { PlayerMessageContext, StreamInfo, Track, TrackLoadResult } from "../types";
 import type { PlaybackStartControllerOptions } from "../types";
 

@@ -2,7 +2,7 @@ import type { Bus, BusRpcContext } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, SearchResult, Track } from "../types";
 import type { PlaybackPlayControllerOptions } from "../types";
-import { CONTROLLER_RPC } from "./ControllerBusContract";
+import { CONTROLLER_RPC } from "../structures/BusContract";
 
 /**
  * Owns the public play RPC: search, queue insertion, TTS interrupt, and initial skip.

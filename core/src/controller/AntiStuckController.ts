@@ -6,7 +6,7 @@ import type {
 	LegacyAntiStuckRetryHandlers,
 	PlayerAction,
 } from "../types";
-import { CONTROLLER_RPC, type AntiStuckReportRequest } from "./ControllerBusContract";
+import { CONTROLLER_RPC, type AntiStuckReportRequest } from "../structures/BusContract";
 import type { Bus } from "../structures/Bus";
 
 /** Per-player anti-stuck retry policy + recovery state machine, owned by the shared

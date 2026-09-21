@@ -12,7 +12,7 @@ import type {
 import type { PlaybackSession } from "./PlaybackSession";
 import type { PreloadManager } from "./PreloadManager";
 import type { Bus } from "./Bus";
-import { CONTROLLER_RPC } from "../controller/ControllerBusContract";
+import { CONTROLLER_RPC } from "./BusContract";
 
 const TRACK_LOADER_RPC = {
 	load: "controller.track.load",

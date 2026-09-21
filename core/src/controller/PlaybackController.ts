@@ -11,7 +11,7 @@ import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
 import type { AntiStuckRetryHandlers } from "../types";
-import { CONTROLLER_RPC, type TransitionPlanResponse } from "./ControllerBusContract";
+import { CONTROLLER_RPC, type TransitionPlanResponse } from "../structures/BusContract";
 
 /** Everything the controller keeps for ONE player. Lives only inside `PlaybackController.slots`. */
 interface PlaybackSlot {

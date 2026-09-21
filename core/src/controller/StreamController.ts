@@ -3,7 +3,7 @@ import { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
 import type { Bus } from "../structures/Bus";
-import { CONTROLLER_RPC } from "./ControllerBusContract";
+import { CONTROLLER_RPC } from "../structures/BusContract";
 
 const STREAM_RPC_REPLACE = "controller.stream.replace";
 

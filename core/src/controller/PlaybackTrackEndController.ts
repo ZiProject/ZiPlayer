@@ -4,7 +4,7 @@ import type { PlayerMessageContext, PlaybackSessionSnapshot, Track } from "../ty
 import type { Bus } from "../structures/Bus";
 import type { PlaybackTrackEndControllerOptions } from "../types";
 import { PlayerActionPriority } from "../types";
-import { CONTROLLER_RPC } from "./ControllerBusContract";
+import { CONTROLLER_RPC } from "../structures/BusContract";
 
 /**
  * Owns TRACK_END, queue refill, autoplay fallback, and queue-end transitions.

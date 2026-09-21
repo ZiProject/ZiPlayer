@@ -2,7 +2,7 @@ import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext } from "../types";
 import type { PlaybackSkipControllerOptions } from "../types";
-import { CONTROLLER_RPC } from "./ControllerBusContract";
+import { CONTROLLER_RPC } from "../structures/BusContract";
 
 /** Owns manual skip and its autoplay/queue fallback workflow. Talks to sibling
  * playback controllers only through Bus queries/RPCs — never by holding

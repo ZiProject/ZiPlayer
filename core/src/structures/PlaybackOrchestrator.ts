@@ -2,7 +2,7 @@ import type { Bus, PlayerAction } from "./Bus";
 import { PlaybackSession } from "./PlaybackSession";
 import { PlaybackSessionController } from "../controller/PlaybackSessionController";
 import type { PlayerMessageContext, Track, PlaybackOrchestratorOptions, PlaybackOrchestratorAttachOptions } from "../types";
-import { CONTROLLER_RPC } from "../controller/ControllerBusContract";
+import { CONTROLLER_RPC } from "./BusContract";
 import { PlaybackStartController } from "../controller/PlaybackStartController";
 import { PlaybackPreparationController } from "../controller/PlaybackPreparationController";
 import { PlaybackSeekController } from "../controller/PlaybackSeekController";
