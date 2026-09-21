@@ -1,7 +1,7 @@
 import { AudioPlayerStatus } from "@discordjs/voice";
 import { createPlayerRequestId, type Bus } from "../structures/Bus";
-import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST, PLAYER_RPC } from "../structures/BusContract";
-import type { LifecycleControllerOptions } from "../types";
+import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
+import { PlaybackMode, type LifecycleControllerOptions } from "../types";
 
 /** Per-player idle/leave policy worker, owned by the shared `LifecycleController` below. */
 class LifecycleWorker {
@@ -41,13 +41,24 @@ class LifecycleWorker {
 				this.isPlaying = false;
 				if (this.leaveOnEnd) this.scheduleLeave("track-end");
 			}),
+			this.bus.subscribe(this.playerId, BUS_EVENT.forwardModeStart, () => {
+				this.clearLeaveTimeout();
+				this.debug?.("[LifecycleController] clearing leave timer: forward mode started");
+			}),
+			this.bus.subscribe(this.playerId, BUS_EVENT.forwardModeEnd, () => {
+				if (!this.leaveOnEmpty || this.isPlaying || this.isForward()) return;
+				const queue = this.bus.querySync(this.playerId, PLAYER_QUERY.queue) ?? [];
+				if (queue.length === 0) {
+					this.scheduleLeave("queue-empty");
+				}
+			}),
 			this.bus.subscribe(this.playerId, BUS_EVENT.queueChanged, (event) => {
 				// An empty queue is not equivalent to an idle player: the current
 				// track may still be playing after the queue has been consumed.
 				if (this.leaveOnEmpty && event.queue.length === 0) {
-					if (this.isPlaying) {
+					if (this.isPlaying || this.isForward()) {
 						this.clearLeaveTimeout();
-						this.debug?.(`[LifecycleController] keeping connection: queue-empty while playing`);
+						this.debug?.(`[LifecycleController] keeping connection: queue-empty while playing or forwarding`);
 						return;
 					}
 					this.scheduleLeave("queue-empty");
@@ -58,9 +69,17 @@ class LifecycleWorker {
 		);
 	}
 
+	private isForward(): boolean {
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode) === PlaybackMode.FORWARD;
+	}
+
 	scheduleLeave(reason: "track-end" | "queue-empty" | "manual" = "manual"): void {
 		if (this.disposed) return;
 		this.clearLeaveTimeout();
+		if (this.isForward()) {
+			this.debug?.(`[LifecycleController] ignoring leave (${reason}): forward mode`);
+			return;
+		}
 		if (reason === "queue-empty" && this.isPlaying) {
 			this.debug?.(`[LifecycleController] ignoring leave (${reason}) while playback is active`);
 			return;
@@ -74,6 +93,10 @@ class LifecycleWorker {
 			this.leaveTimer = null;
 			// Playback may have started after the queue-empty event and before
 			// the timeout fired. Re-check the lifecycle condition at the edge.
+			if (this.isForward()) {
+				this.debug?.(`[LifecycleController] cancelling leave (${reason}): forward mode active`);
+				return;
+			}
 			if (reason === "queue-empty" && this.isPlaying) {
 				this.debug?.(`[LifecycleController] cancelling leave (${reason}): playback is active`);
 				return;

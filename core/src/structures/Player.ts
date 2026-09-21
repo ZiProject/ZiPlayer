@@ -82,7 +82,10 @@ export class Player extends EventEmitter {
 			manager.emit("debug", message, ...optionalParams);
 		}
 	}
-
+	public get guildId(): string {
+		this.debug("Player.guildId is deprecated soon, use Player.id instead");
+		return this.playerId;
+	}
 	public get currentTrack(): Track | null {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.currentTrack);
 	}
@@ -246,7 +249,7 @@ export class Player extends EventEmitter {
 		this.playAbortController?.abort();
 	}
 	public destroyCurrentStream(): void {
-		void this.bus.action(this.playerId, { type:PLAYER_ACTION.stop });
+		void this.bus.action(this.playerId, { type: PLAYER_ACTION.stop });
 	}
 	public generateWillNext(): Track | null {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.willNext);

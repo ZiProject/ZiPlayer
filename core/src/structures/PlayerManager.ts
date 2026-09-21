@@ -432,6 +432,7 @@ export class PlayerManager extends EventEmitter {
 
 	private cleanupInactivePlayers(): void {
 		for (const [guildId, player] of this.players) {
+			if (player.playbackMode === PlaybackMode.FORWARD) continue;
 			// Clean up players that are not playing and not connected
 			if (!player.isPlaying && !player.connection && player.queueSize === 0) {
 				const idleTime = Date.now() - ((player as any)._lastActivity || Date.now());

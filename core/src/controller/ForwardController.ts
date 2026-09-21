@@ -1,7 +1,7 @@
 import { PlaybackMode, type Track, type ForwardHealthStatus } from "../types";
 import { AudioPlayerStatus } from "@discordjs/voice";
 import type { Bus } from "../structures/Bus";
-import { PLAYER_QUERY, PLAYER_RPC, BUS_EVENT } from "../structures/BusContract";
+import { PLAYER_QUERY, PLAYER_RPC, BUS_EVENT, PLAYER_ACTION } from "../structures/BusContract";
 
 interface ForwardState {
 	leaderId?: string;
@@ -140,19 +140,19 @@ export class ForwardController {
 
 		state.leaderId = leaderId;
 		this.addFollower(leaderId, playerId);
+		state.mode = (options?.forwardMode ?? true) ? PlaybackMode.FORWARD : PlaybackMode.NATIVE;
 
 		try {
-			void this.bus.action(playerId, { type: "STOP" });
+			this.bus.event(playerId, { type: BUS_EVENT.forwardModeStart, leader: leader as any });
+			void this.bus.action(playerId, { type: PLAYER_ACTION.stop });
 			this.clearFollowers(playerId, `leader changed to ${leaderId}`);
 			const track = this.bus.querySync(leaderId, PLAYER_QUERY.currentTrack) as Track | null | undefined;
 			if (track) this.bus.requestRpcSync(playerId, PLAYER_RPC.queueSetCurrent, { track });
-			state.mode = (options?.forwardMode ?? true) ? PlaybackMode.FORWARD : PlaybackMode.NATIVE;
 			if (state.mode === PlaybackMode.FORWARD) {
 				this.bus.requestRpcSync(playerId, PLAYER_RPC.connectionSetAudioPlayer, { audioPlayer: leaderAudioPlayer });
 			}
 			const leaderVolume = this.bus.querySync(leaderId, PLAYER_QUERY.volume);
 			if (typeof leaderVolume === "number") this.bus.requestRpcSync(playerId, PLAYER_RPC.volumeSet, { value: leaderVolume });
-			this.bus.event(playerId, { type: "forwardModeStart", leader: leader as any });
 			return true;
 		} catch (error) {
 			this.debug("[Forward] subscribe error:", error);
