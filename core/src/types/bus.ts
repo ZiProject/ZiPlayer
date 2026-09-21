@@ -407,12 +407,3 @@ export interface PlayerQueryMap {
 }
 export type PlayerQuery = keyof PlayerQueryMap;
 export type PlayerQueryHandler<K extends PlayerQuery> = (playerId: string) => PlayerQueryMap[K] | Promise<PlayerQueryMap[K]>;
-
-export const SEARCH_RPC_TYPES = {
-	search: "search",
-	cacheGet: "search.cache.get",
-	cacheSet: "search.cache.set",
-	cacheClear: "search.cache.clear",
-	cachePurge: "search.cache.purge",
-	debug: "search.debug",
-} as const;

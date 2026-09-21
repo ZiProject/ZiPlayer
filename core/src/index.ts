@@ -13,16 +13,7 @@ export type {
 	PlayerQueryKey,
 } from "./structures/BusContract";
 export { PlayerAction } from "./structures/PlayerAction";
-export {
-	PlayerCapabilities,
-	createPlayerCapabilities,
-	QueueCapability,
-	PluginCapability,
-	ExtensionCapability,
-	StreamCapability,
-	PreloadCapability,
-	FilterCapability,
-} from "./capabilities/PlayerCapabilities";
+
 export { PlaybackOrchestrator, createPlaybackOrchestrator } from "./structures/PlaybackOrchestrator";
 export { createSharedControllers } from "./structures/PlayerManager";
 export { PlaybackSession } from "./structures/PlaybackSession";
@@ -52,14 +43,6 @@ export type {
 	PlayerQueryMap,
 } from "./structures/Bus";
 
-export type {
-	PlaybackOrchestratorOptions,
-	PlaybackOrchestratorAttachOptions,
-	QueueControllerOptions,
-	TransitionControllerOptions,
-	TransitionPlan,
-	PreloadControllerOptions,
-} from "./types";
 export { PreloadManager } from "./structures/PreloadManager";
 export * from "./types";
 export * from "./plugins";

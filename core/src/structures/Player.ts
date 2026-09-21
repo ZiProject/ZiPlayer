@@ -30,13 +30,11 @@ import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { PlaybackSession } from "./PlaybackSession";
 import { BUS_EVENT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
-import { PlayerCapabilities, createPlayerCapabilities } from "../capabilities/PlayerCapabilities";
 import type { PlayerQueue } from "../controller/QueueController";
 
 export class Player extends EventEmitter {
 	public readonly bus: Bus;
 	public readonly actionExecutor: PlayerAction;
-	public readonly capabilities: PlayerCapabilities;
 	public readonly playerId: string;
 	public readonly manager?: PlayerManager;
 	public readonly options: PlayerOptions;
@@ -67,7 +65,6 @@ export class Player extends EventEmitter {
 		this.manager = manager;
 		this.userdata = this.options.userdata;
 		this.actionExecutor = new PlayerAction(this.bus, this.playerId);
-		this.capabilities = createPlayerCapabilities(this.bus, this.playerId);
 		this.bus.publish(this.playerId, BUS_EVENT.initialized);
 		this.bus.publish(this.playerId, BUS_EVENT.ready);
 	}
