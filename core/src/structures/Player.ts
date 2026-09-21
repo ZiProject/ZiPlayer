@@ -202,7 +202,7 @@ export class Player extends EventEmitter {
 			.then(() => {
 				if (generation !== this.playGeneration || controller.signal.aborted) return false;
 				return this.bus
-					.requestRpc(this.playerId, "play", { query, requestedBy }, { signal: controller.signal })
+					.requestRpc(this.playerId, PLAYER_RPC.play, { query, requestedBy }, { signal: controller.signal })
 					.then((result) => (generation === this.playGeneration ? result : false));
 			});
 		this.playOperation = operation;
@@ -212,33 +212,33 @@ export class Player extends EventEmitter {
 	}
 	public async playNext(): Promise<boolean> {
 		if (this.destroyed) return false;
-		return this.action({ type: "SKIP" })
+		return this.action({ type: PLAYER_ACTION.skip })
 			.then(() => this.isPlaying || this.currentTrack !== null)
 			.catch(() => false);
 	}
 	public pause(): boolean {
 		this.invalidatePlay();
-		void this.action({ type: "PAUSE" });
+		void this.action({ type: PLAYER_ACTION.pause });
 		return true;
 	}
 	public resume(): boolean {
-		void this.action({ type: "RESUME" });
+		void this.action({ type: PLAYER_ACTION.resume });
 		return true;
 	}
 	public stop(): boolean {
 		this.invalidatePlay();
-		void this.action({ type: "STOP" });
+		void this.action({ type: PLAYER_ACTION.stop });
 		return true;
 	}
 	public async seek(position: number): Promise<boolean> {
 		this.invalidatePlay();
-		return this.action({ type: "SEEK", position })
+		return this.action({ type: PLAYER_ACTION.seek, position })
 			.then(() => true)
 			.catch(() => false);
 	}
 	public skip(): boolean {
 		this.invalidatePlay();
-		void this.action({ type: "SKIP" });
+		void this.action({ type: PLAYER_ACTION.skip });
 		return true;
 	}
 	private invalidatePlay(): void {
@@ -323,10 +323,10 @@ export class Player extends EventEmitter {
 		return name === "AbortError" || /unrecoverable|unsupported|not found|invalid source/.test(message);
 	}
 	public startTrack(track: Track, ..._args: any[]): Promise<void> {
-		return this.action({ type: "PLAY", track });
+		return this.action({ type: PLAYER_ACTION.play, track });
 	}
 	public startFromPreload(track: Track, ..._args: any[]): Promise<void> {
-		return this.action({ type: "PLAY", track });
+		return this.action({ type: PLAYER_ACTION.play, track });
 	}
 	public loadFreshStream(track: Track, session: PlaybackSession): Promise<TrackLoadResult> {
 		return this.bus.requestRpc(this.playerId, PLAYER_RPC.playbackLoadFresh, { track, session });
@@ -379,7 +379,7 @@ export class Player extends EventEmitter {
 		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track });
 	}
 	public setCurrentTrack(track: Track | null): void {
-		void this.action({ type: "QUEUE_SET_CURRENT", track });
+		void this.action({ type: PLAYER_ACTION.queueSetCurrent, track });
 	}
 	public setVolume(value: number): boolean {
 		if (!Number.isFinite(value) || value < 0 || value > 100) return false;
