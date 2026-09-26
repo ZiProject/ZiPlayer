@@ -98,6 +98,8 @@ export interface AntiStuckControllerOptions {
 	reduceQualityOnRetry?: boolean;
 	controlledSkipThreshold?: number;
 	bus?: Bus;
+	/** Debug sink; see `traceBusSignal` in BusContract for the log format used. */
+	debug?: (message: string) => void;
 }
 export interface AntiStuckRetryContext {
 	session: PlaybackSession;

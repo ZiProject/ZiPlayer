@@ -8,7 +8,7 @@
  * message the bus carries now lives here, grouped by the same four
  * primitives `Bus` exposes:
  *
- *   - {@link BUS_REQUEST}      `emitInput` / `request()`     e.g. "[Player]->[Connection]:connect"
+ *   - {@link BUS_REQUEST}      `emitInput` / `request()`     e.g. "connection.connect"
  *   - {@link CONTROLLER_RPC}   `registerRpc` / `requestRpc()` (internal, controller-to-controller)
  *   - {@link PLAYER_RPC}       `registerRpc` / `requestRpc()` (public surface, keys of `PlayerRpcMap`)
  *   - {@link BUS_EVENT}        `publish` / `subscribe()`      e.g. "TRACK_LOADING", "willPlay"
@@ -25,6 +25,15 @@
  * type in `types/bus.ts`, so adding/renaming a message there and forgetting
  * to update the matching constant here is a compile error, not a silent
  * runtime mismatch.
+ *
+ * `BUS_REQUEST`/`BUS_OUTPUT` values are plain dot-notation strings, exactly
+ * like every other group here — they are matched with `===`/`switch` in
+ * `Bus`, `Player` and the controllers, so the wire value itself stays a
+ * boring identifier. The human-readable "who talks to whom" picture (e.g.
+ * `[Player]->[Connection]:connect`) is not part of that value: it lives
+ * separately in {@link traceBusSignal}, a debug-only lookup controllers use
+ * when logging, so tracing a signal's path never risks becoming a de-facto
+ * second protocol that something ends up comparing against.
  */
 import type {
 	Track,
@@ -67,37 +76,82 @@ export type {
 } from "../types";
 
 // ---------------------------------------------------------------------
-// [Player]->[Connection]:connect / [Resource]->[Player]:refreshed / ...
 // The `request()` message pairs: every `PlayerInput["type"]` the bus
 // accepts. Response/progress types live in `PlayerRequestReplyMap`.
+// Plain dot-notation values, same convention as CONTROLLER_RPC/PLAYER_RPC
+// below — see `traceBusSignal` further down for the debug-only
+// "[From]->[To]:label" annotation.
 // ---------------------------------------------------------------------
 const BUS_REQUEST_VALUES = {
-	connectionConnect: "[Player]->[Connection]:connect",
-	connectionDisconnect: "[Player]->[Connection]:disconnect",
-	connectionReconnect: "[Player]->[Connection]:reconnect",
-	preloadRequest: "[Player]->[Preload]:request",
-	recoveryRecover: "[Player]->[Recovery]:recover",
-	resourceRefresh: "[Player]->[Resource]:refresh",
+	connectionConnect: "connection.connect",
+	connectionDisconnect: "connection.disconnect",
+	connectionReconnect: "connection.reconnect",
+	preloadRequest: "preload.request",
+	recoveryRecover: "recovery.recover",
+	resourceRefresh: "resource.refresh",
 } as const;
 export const BUS_REQUEST = BUS_REQUEST_VALUES;
 export type BusRequestKey = keyof typeof BUS_REQUEST_VALUES;
 
 const BUS_OUTPUT_VALUES = {
-	connectionConnecting: "[Connection]->[Player]:connecting",
-	connectionConnected: "[Connection]->[Player]:connected",
-	connectionDisconnected: "[Connection]->[Player]:disconnected",
-	connectionError: "[Connection]->[Player]:error",
-	preloadLoading: "[Preload]->[Player]:loading",
-	preloadReady: "[Preload]->[Player]:ready",
-	preloadFailed: "[Preload]->[Player]:failed",
-	recoveryRetrying: "[Recovery]->[Player]:retrying",
-	recoveryRecovered: "[Recovery]->[Player]:recovered",
-	recoveryFailed: "[Recovery]->[Player]:failed",
-	resourceRefreshed: "[Resource]->[Player]:refreshed",
-	resourceError: "[Resource]->[Player]:error",
+	connectionConnecting: "connection.connecting",
+	connectionConnected: "connection.connected",
+	connectionDisconnected: "connection.disconnected",
+	connectionError: "connection.error",
+	preloadLoading: "preload.loading",
+	preloadReady: "preload.ready",
+	preloadFailed: "preload.failed",
+	recoveryRetrying: "recovery.retrying",
+	recoveryRecovered: "recovery.recovered",
+	recoveryFailed: "recovery.failed",
+	resourceRefreshed: "resource.refreshed",
+	resourceError: "resource.error",
 } as const;
 export const BUS_OUTPUT = BUS_OUTPUT_VALUES;
 export type BusOutputKey = keyof typeof BUS_OUTPUT_VALUES;
+
+/**
+ * Debug-only "[From]->[To]:label" annotation for each {@link BUS_REQUEST}/{@link BUS_OUTPUT}
+ * value — this is exactly the picture the wire values themselves used to encode directly (see the
+ * module doc above for why that was pulled out). Keyed by the runtime value (what a handler
+ * actually has in hand as `event.type`), not by the constant's key name, so a controller can call
+ * it straight from an `onInput`/`onOutput` callback: `traceBusSignal(event.type)`.
+ *
+ * Purely descriptive: nothing in `Bus`, `Player` or any controller compares against these strings.
+ * Extend this table whenever a new `BUS_REQUEST`/`BUS_OUTPUT` entry is added; a missing entry just
+ * falls back to the raw value instead of throwing.
+ */
+const BUS_SIGNAL_TRACE: Record<string, string> = {
+	[BUS_REQUEST_VALUES.connectionConnect]: "[Player]->[Connection]:connect",
+	[BUS_REQUEST_VALUES.connectionDisconnect]: "[Player]->[Connection]:disconnect",
+	[BUS_REQUEST_VALUES.connectionReconnect]: "[Player]->[Connection]:reconnect",
+	[BUS_REQUEST_VALUES.preloadRequest]: "[Player]->[Preload]:request",
+	[BUS_REQUEST_VALUES.recoveryRecover]: "[Player]->[Recovery]:recover",
+	[BUS_REQUEST_VALUES.resourceRefresh]: "[Player]->[Resource]:refresh",
+	[BUS_OUTPUT_VALUES.connectionConnecting]: "[Connection]->[Player]:connecting",
+	[BUS_OUTPUT_VALUES.connectionConnected]: "[Connection]->[Player]:connected",
+	[BUS_OUTPUT_VALUES.connectionDisconnected]: "[Connection]->[Player]:disconnected",
+	[BUS_OUTPUT_VALUES.connectionError]: "[Connection]->[Player]:error",
+	[BUS_OUTPUT_VALUES.preloadLoading]: "[Preload]->[Player]:loading",
+	[BUS_OUTPUT_VALUES.preloadReady]: "[Preload]->[Player]:ready",
+	[BUS_OUTPUT_VALUES.preloadFailed]: "[Preload]->[Player]:failed",
+	[BUS_OUTPUT_VALUES.recoveryRetrying]: "[Recovery]->[Player]:retrying",
+	[BUS_OUTPUT_VALUES.recoveryRecovered]: "[Recovery]->[Player]:recovered",
+	[BUS_OUTPUT_VALUES.recoveryFailed]: "[Recovery]->[Player]:failed",
+	[BUS_OUTPUT_VALUES.resourceRefreshed]: "[Resource]->[Player]:refreshed",
+	[BUS_OUTPUT_VALUES.resourceError]: "[Resource]->[Player]:error",
+};
+
+/**
+ * Renders the debug-only "[From]->[To]:label" annotation for a {@link BUS_REQUEST}/
+ * {@link BUS_OUTPUT} value, e.g. `traceBusSignal(BUS_REQUEST.connectionConnect)` ->
+ * `"[Player]->[Connection]:connect"`. Falls back to the raw value for anything not in the table
+ * (any other bus signal, or a value from a future entry someone forgot to add here) so it is
+ * always safe to call from a log line regardless of the signal's kind.
+ */
+export function traceBusSignal(type: string): string {
+	return BUS_SIGNAL_TRACE[type] ?? type;
+}
 
 // ---------------------------------------------------------------------
 // Internal controller<->controller RPC namespace. Registered/consumed only

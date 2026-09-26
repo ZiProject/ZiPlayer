@@ -3,7 +3,7 @@ import type { Bus, PlayerInput } from "../structures/Bus";
 import type { BusRpcContext } from "../types";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlaybackSessionSnapshot, StreamInfo, Track } from "../types";
-import { BUS_OUTPUT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, BUS_EVENT } from "../structures/BusContract";
+import { BUS_OUTPUT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, BUS_EVENT, traceBusSignal } from "../structures/BusContract";
 
 /** Per-player resource-refresh workflow. Owned by the shared `ResourceRefreshController`
  *  below, one instance per active player, talking to the shared bus through a
@@ -17,6 +17,7 @@ class ResourceRefreshWorker {
 	constructor(
 		private readonly bus: Bus,
 		private readonly playerId: string,
+		private readonly debug?: (message: string) => void,
 	) {}
 
 	dispose(): void {
@@ -93,6 +94,7 @@ class ResourceRefreshWorker {
 
 	async handleRefresh(event: Extract<PlayerInput, { type: typeof BUS_REQUEST.resourceRefresh }>): Promise<void> {
 		const { bus } = this;
+		this.debug?.(`[ResourceRefreshController] ${traceBusSignal(BUS_REQUEST.resourceRefresh)} guild=${this.playerId}`);
 		try {
 			const session = await bus.requestRpc(
 				this.playerId,
@@ -101,9 +103,15 @@ class ResourceRefreshWorker {
 				{ signal: this.lifecycleAbort.signal },
 			);
 			if (this.disposed) return;
+			this.debug?.(`[ResourceRefreshController] ${traceBusSignal(BUS_OUTPUT.resourceRefreshed)} guild=${this.playerId}`);
 			bus.emitOutput({ type: BUS_OUTPUT.resourceRefreshed, requestId: event.requestId, playerId: this.playerId, session });
 		} catch (error) {
 			if (this.disposed || this.lifecycleAbort.signal.aborted) return;
+			this.debug?.(
+				`[ResourceRefreshController] ${traceBusSignal(BUS_OUTPUT.resourceError)} guild=${this.playerId}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
 			bus.emitOutput({
 				type: BUS_OUTPUT.resourceError,
 				requestId: event.requestId,
@@ -119,7 +127,10 @@ class ResourceRefreshWorker {
 export class ResourceRefreshController {
 	private readonly workers = new Map<string, ResourceRefreshWorker>();
 
-	constructor(private readonly bus: Bus) {
+	constructor(
+		private readonly bus: Bus,
+		private readonly debug?: (message: string) => void,
+	) {
 		bus.registerRpc<{ position: number }, PlaybackSessionSnapshot>(
 			PLAYER_RPC.playbackRefreshResource,
 			({ position }, context) => {
@@ -135,7 +146,7 @@ export class ResourceRefreshController {
 
 	attach(playerId: string): void {
 		if (this.workers.has(playerId)) this.detach(playerId);
-		this.workers.set(playerId, new ResourceRefreshWorker(this.bus, playerId));
+		this.workers.set(playerId, new ResourceRefreshWorker(this.bus, playerId, this.debug));
 	}
 	detach(playerId: string): void {
 		this.workers.get(playerId)?.dispose();

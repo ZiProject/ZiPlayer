@@ -296,6 +296,49 @@ cả hai vẫn **chưa commit vào `tests/`**, xem lại mục "Cần làm tiế
 
 ---
 
+## 🔧 Chuẩn hóa `BusContract` — bỏ `[Player]->[Connection]` khỏi giá trị wire, chuyển sang debug-only
+
+Yêu cầu: `BUS_REQUEST`/`BUS_OUTPUT` trong `structures/BusContract.ts` từng dùng **chính giá trị runtime** dạng
+`"[Player]->[Connection]:connect"` — nghĩa là bức tranh "tín hiệu đi từ đâu đến đâu" bị nướng thẳng vào chuỗi mà
+`Bus`/`Player`/mọi controller so khớp (`===`, `switch`) — khác hẳn style dot-notation phẳng của mọi nhóm còn lại trong cùng
+file (`CONTROLLER_RPC`, `PLAYER_RPC`, `PLAYER_QUERY`, ...). Đã chuẩn hóa lại và tách phần "ký hiệu debug" ra riêng:
+
+- **Giá trị mới** (dot-notation, đồng bộ style toàn file): `BUS_REQUEST` → `"connection.connect"`,
+  `"connection.disconnect"`, `"connection.reconnect"`, `"preload.request"`, `"recovery.recover"`, `"resource.refresh"`.
+  `BUS_OUTPUT` → `"connection.connecting"`, `"connection.connected"`, `"connection.disconnected"`, `"connection.error"`,
+  `"preload.loading"`, `"preload.ready"`, `"preload.failed"`, `"recovery.retrying"`, `"recovery.recovered"`,
+  `"recovery.failed"`, `"resource.refreshed"`, `"resource.error"`.
+- **Bức tranh `[From]->[To]:label` chuyển hẳn sang debug-only**: thêm `BUS_SIGNAL_TRACE` (bảng tra cứu nội bộ, key = giá trị
+  runtime mới) + hàm `traceBusSignal(type)` export công khai — trả về đúng annotation cũ (fallback về giá trị thô nếu
+  không có trong bảng, không bao giờ throw). Không có gì trong `Bus`/`Player`/controller so sánh với chuỗi này — chỉ dùng
+  để log.
+- **Export còn thiếu trước đó**: `BUS_OUTPUT`/`BusOutputKey` chưa từng được export ra `index.ts` — đã thêm cùng
+  `traceBusSignal`.
+- **Tăng cường debug ở 4 controller** (đúng yêu cầu "tăng cường debug từ các controller"): `ConnectionController`,
+  `PreloadController`, `ResourceRefreshController`, `AntiStuckController` giờ log `traceBusSignal(...)` tại mọi điểm
+  nhận `BUS_REQUEST`/phát `BUS_OUTPUT` liên quan (connect/disconnect/reconnect, preload request/loading/ready/failed,
+  resource refresh/refreshed/error, recovery retrying/recovered/failed). Nhân tiện dùng luôn `params.debugSink` của
+  `createSharedControllers` — tham số này **trước đó được khai báo nhưng chưa từng dùng ở đâu cả** trong hàm; giờ được nối
+  vào cả 4 controller trên.
+- **2 test cũ có hardcode literal** (`tests/skip_autoplay.test.js`, `tests/playback_session_transition.test.js` — dùng thẳng
+  chuỗi `"[Player]->[Preload]:request"`/`"[Preload]->[Player]:ready"` thay vì hằng số) đã được sửa để `require` và dùng
+  `BUS_REQUEST.preloadRequest`/`BUS_OUTPUT.preloadReady` — nếu không sửa, đổi giá trị ở trên sẽ làm 2 test này fail ngay.
+- **Test mới**: `tests/bus_contract_trace.test.js` (4 test — giá trị wire không còn mang annotation, `traceBusSignal` trả
+  đúng annotation cho từng cặp request/output, fallback an toàn cho giá trị lạ, không thiếu entry nào trong bảng) và
+  `tests/controller_debug_trace.test.js` (2 test — xác nhận `ConnectionController`/`PreloadController` thực sự log qua
+  `debugSink` với đúng format `traceBusSignal`, không chỉ đọc code mà chạy thật qua `createSharedControllers({ debugSink })`).
+- **Verify**: `tsc --noEmit` sạch, `tsup build` OK, toàn bộ 74/74 test (65 test cũ hơn cộng dồn + 8 test mới của việc này +
+  1 test suite chậm `runtime_ping_registry` đã verify riêng ở mục trên) pass, không hồi quy.
+- **Chưa làm / có thể làm thêm sau này**: `LifecycleController`, `PlaybackSeekController`, `PlaybackPreparationController`
+  (nơi *gọi* `bus.request(..., BUS_REQUEST.recoveryRecover/...)` chứ không *xử lý* nó) chưa được thêm debug log riêng —
+  hiện chỉ 4 controller đóng vai trò xử lý/emit tín hiệu (Connection, Preload, ResourceRefresh, AntiStuck) có debug tăng
+  cường. Cũng phát hiện thêm (ngoài lề, chưa sửa): `BUS_REQUEST.recoveryRecover` được định nghĩa type + map ở `Bus.ts`
+  nhưng **không có nơi nào thực sự gọi `bus.request(..., BUS_REQUEST.recoveryRecover)`** — `AntiStuckController` tự phát
+  `recoveryRetrying/Recovered/Failed` trực tiếp khi phát hiện stuck, không đi qua đường request() hình thức này. Có thể là
+  dead code tương tự `runtime.ping` trước khi được nối dây — để dành cho phiên sau nếu cần điều tra thêm.
+
+---
+
 ## 🎯 Mục tiêu cuối cùng
 
 ```text

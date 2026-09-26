@@ -62,9 +62,9 @@ export function createSharedControllers(params: {
 	const sessionController = new PlaybackSessionController(bus);
 	const preloadManager = new PreloadManager(bus);
 	const trackLoader = new TrackLoader(bus, preloadManager);
-	const preloadController = new PreloadController(bus, { loader: trackLoader, manager: preloadManager });
+	const preloadController = new PreloadController(bus, { loader: trackLoader, manager: preloadManager, debug: params.debugSink });
 	const playbackController = new PlaybackController(bus);
-	const connectionController = new ConnectionController(bus);
+	const connectionController = new ConnectionController(bus, params.debugSink);
 	const trackResolver = new TrackResolver(bus);
 	const orchestrator = new PlaybackOrchestrator(bus, { sessionController });
 
@@ -633,7 +633,7 @@ export class PlayerManager extends EventEmitter {
 			initialVolume: options?.volume ?? 100,
 			loudness: options?.loudnessNormalization,
 		});
-		this.controllers.antiStuck?.attach(playerId, { ...options?.antiStuck });
+		this.controllers.antiStuck?.attach(playerId, { ...options?.antiStuck, debug: channel("AntiStuckController") });
 		this.controllers.stream?.attach(playerId, streamManager);
 		this.controllers.save?.attach(playerId, {
 			middleware: [async (track) => this.controllers.trackLoader.applyMiddleware(playerId, track)],

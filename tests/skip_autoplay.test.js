@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { Bus, PlaybackOrchestrator, createPlaybackOrchestrator, QueueController, PlaybackSessionController } = require("../core/dist");
+const { Bus, BUS_REQUEST, BUS_OUTPUT, PlaybackOrchestrator, createPlaybackOrchestrator, QueueController, PlaybackSessionController } = require("../core/dist");
 
 const waitFor = async (predicate) => {
 	for (let attempt = 0; attempt < 50; attempt++) {
@@ -47,9 +47,9 @@ const createOrchestrator = ({ autoPlay, related } = {}) => {
 	});
 	globalBus.registerRpc("controller.playback.stop", () => {});
 	globalBus.registerRpc("plugin.relatedTracks", async () => related ?? []);
-	globalBus.onInput("[Player]->[Preload]:request", (event) => {
+	globalBus.onInput(BUS_REQUEST.preloadRequest, (event) => {
 		globalBus.emitOutput({
-			type: "[Preload]->[Player]:ready",
+			type: BUS_OUTPUT.preloadReady,
 			requestId: event.requestId,
 			track: event.track,
 			playerId: event.playerId,

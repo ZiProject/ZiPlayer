@@ -9,7 +9,7 @@ import {
 } from "@discordjs/voice";
 import type { PlayerOptions, VoiceChannel, PlayerConnectionInput, ConnectionControllerOptions } from "../types";
 import { createPlayerSessionId, type Bus, type PlayerRequestId, type PlayerSessionId } from "../structures/Bus";
-import { BUS_OUTPUT, BUS_REQUEST, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
+import { BUS_OUTPUT, BUS_REQUEST, PLAYER_QUERY, PLAYER_RPC, traceBusSignal } from "../structures/BusContract";
 
 interface ConnectionSlot {
 	group?: string;
@@ -47,9 +47,12 @@ interface ConnectionSlot {
 export class ConnectionController {
 	private readonly bus?: Bus;
 	private readonly slots = new Map<string, ConnectionSlot>();
+	/** Process-wide debug sink (separate from each slot's own `debug` set at `attach()` time). */
+	private readonly debugSink?: (message: string) => void;
 
-	public constructor(bus?: Bus) {
+	public constructor(bus?: Bus, debugSink?: (message: string) => void) {
 		this.bus = bus;
+		this.debugSink = debugSink;
 
 		if (bus) {
 			bus.registerRpc<{ audioPlayer: AudioPlayer | null }, void>(PLAYER_RPC.connectionSetAudioPlayer, ({ audioPlayer }, ctx) =>
@@ -57,16 +60,31 @@ export class ConnectionController {
 			);
 			bus.registerQuery(PLAYER_QUERY.connection, (playerId) => this.slots.get(playerId)?.connection ?? null);
 			bus.registerQuery(PLAYER_QUERY.connectionState, (playerId) => this.slots.get(playerId)?.connection?.state.status);
-			bus.onInput(BUS_REQUEST.connectionConnect, (event) =>
-				this.enqueue(event.playerId, () => this.connect(event.playerId, event)),
-			);
-			bus.onInput(BUS_REQUEST.connectionDisconnect, (event) =>
-				this.enqueue(event.playerId, () => this.disconnect(event.playerId, event)),
-			);
-			bus.onInput(BUS_REQUEST.connectionReconnect, (event) =>
-				this.enqueue(event.playerId, () => this.reconnect(event.playerId, event)),
-			);
+			bus.onInput(BUS_REQUEST.connectionConnect, (event) => {
+				this.trace(event.playerId, BUS_REQUEST.connectionConnect, `channel=${event.channel.id}`);
+				this.enqueue(event.playerId, () => this.connect(event.playerId, event));
+			});
+			bus.onInput(BUS_REQUEST.connectionDisconnect, (event) => {
+				this.trace(event.playerId, BUS_REQUEST.connectionDisconnect, event.reason ? `reason=${event.reason}` : undefined);
+				this.enqueue(event.playerId, () => this.disconnect(event.playerId, event));
+			});
+			bus.onInput(BUS_REQUEST.connectionReconnect, (event) => {
+				this.trace(event.playerId, BUS_REQUEST.connectionReconnect, `channel=${event.channel.id}`);
+				this.enqueue(event.playerId, () => this.reconnect(event.playerId, event));
+			});
 		}
+	}
+
+	/**
+	 * Logs `traceBusSignal(type)` ("[From]->[To]:label") plus `detail`, through both this
+	 * controller's own process-wide `debugSink` and, when attached, the playerId's per-slot
+	 * `debug` callback — so a signal shows up in whichever debug stream is actually listening,
+	 * regardless of whether it's a global controller-level sink or a per-player one.
+	 */
+	private trace(playerId: string, type: string, detail?: string): void {
+		const message = `[ConnectionController] ${traceBusSignal(type)} guild=${playerId}${detail ? ` ${detail}` : ""}`;
+		this.debugSink?.(message);
+		this.slots.get(playerId)?.debug?.(message);
 	}
 
 	/**
@@ -223,6 +241,7 @@ export class ConnectionController {
 		slot.requestId = event.requestId;
 		slot.sessionId = sessionId;
 		slot.channel = event.channel;
+		this.trace(playerId, BUS_OUTPUT.connectionConnecting, `channel=${event.channel.id}`);
 		this.bus?.emitOutput({
 			type: BUS_OUTPUT.connectionConnecting,
 			requestId: event.requestId,
@@ -278,6 +297,7 @@ export class ConnectionController {
 				if (slot.connection !== connection) return;
 				this.cleanupSubscription(playerId);
 				slot.connection = null;
+				this.trace(playerId, BUS_OUTPUT.connectionDisconnected, "reason=destroyed");
 				this.bus?.emitOutput({
 					type: BUS_OUTPUT.connectionDisconnected,
 					requestId: slot.requestId ?? undefined,
@@ -300,6 +320,7 @@ export class ConnectionController {
 			this.cleanupSubscription(playerId);
 			slot.connection?.destroy();
 			slot.connection = null;
+			this.trace(playerId, BUS_OUTPUT.connectionError, "operation=connect");
 			this.bus?.emitOutput({
 				type: BUS_OUTPUT.connectionError,
 				requestId: event.requestId,
@@ -326,6 +347,7 @@ export class ConnectionController {
 		slot.requestId = null;
 		try {
 			connection?.destroy();
+			this.trace(playerId, BUS_OUTPUT.connectionDisconnected, event.reason ? `reason=${event.reason}` : undefined);
 			this.bus?.emitOutput({
 				type: BUS_OUTPUT.connectionDisconnected,
 				requestId: event.requestId,
@@ -334,6 +356,7 @@ export class ConnectionController {
 				reason: event.reason,
 			});
 		} catch (error) {
+			this.trace(playerId, BUS_OUTPUT.connectionError, "operation=disconnect");
 			this.bus?.emitOutput({
 				type: BUS_OUTPUT.connectionError,
 				requestId: event.requestId,
@@ -367,7 +390,7 @@ export class ConnectionController {
 		connection: VoiceConnection,
 		slot: ConnectionSlot,
 	): void {
-		slot.debug?.(`[ConnectionController] connected guild=${playerId} channel=${channel.id}`);
+		this.trace(playerId, BUS_OUTPUT.connectionConnected, `channel=${channel.id}`);
 		this.bus?.emitOutput({
 			type: BUS_OUTPUT.connectionConnected,
 			requestId,

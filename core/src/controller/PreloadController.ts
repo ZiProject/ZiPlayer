@@ -5,7 +5,7 @@ import { createPlayerRequestId } from "../structures/Bus";
 import type { TrackLoader } from "../structures/TrackLoader";
 import type { PreloadManager } from "../structures/PreloadManager";
 import type { PreloadControllerOptions } from "../types";
-import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
+import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, traceBusSignal } from "../structures/BusContract";
 
 export interface PreloadState {
 	preload?: PromotedPreload | null;
@@ -20,7 +20,8 @@ export interface PreloadState {
  * in `states = new Map<string, PreloadState>()` (opened by `attach(playerId)`, released by `detach(playerId)`); the
  * actual preload slot lives in the (also shared) `PreloadManager` this controller was
  * constructed with. Every `preload.*` RPC/query below, plus the
- * `"[Player]->[Preload]:request"` input, is registered exactly once, in the constructor,
+ * `BUS_REQUEST.preloadRequest` ("[Player]->[Preload]:request" in `traceBusSignal` terms) input,
+ * is registered exactly once, in the constructor,
  * and routes by `ctx.playerId` / `event.playerId`.
  */
 export class PreloadController {
@@ -28,11 +29,13 @@ export class PreloadController {
 	private readonly loader: TrackLoader;
 	private readonly manager: PreloadManager;
 	private readonly states = new Map<string, PreloadState>();
+	private readonly debug?: (message: string) => void;
 
 	public constructor(bus: Bus, options: PreloadControllerOptions) {
 		this.bus = bus;
 		this.loader = options.loader;
 		this.manager = options.manager;
+		this.debug = options.debug;
 
 		if (bus) {
 			bus.registerRpc<{ track: Track }, AudioResource | null>(CONTROLLER_RPC.playbackPromotePreload, ({ track }, ctx) =>
@@ -50,6 +53,9 @@ export class PreloadController {
 			bus.registerRpc(PLAYER_RPC.preloadState, (_req, ctx) => this.getState(ctx.playerId));
 			bus.onInput(BUS_REQUEST.preloadRequest, (event) => {
 				if (!this.states.has(event.playerId)) return;
+				this.debug?.(
+					`[PreloadController] ${traceBusSignal(BUS_REQUEST.preloadRequest)} guild=${event.playerId} track=${event.track.title}`,
+				);
 				void this.handleRequest(event.playerId, event);
 			});
 		}
@@ -151,20 +157,28 @@ export class PreloadController {
 		event: { type: typeof BUS_REQUEST.preloadRequest; requestId: string; track: Track },
 	): Promise<void> {
 		if (this.loader.hasPreload(playerId, event.track)) {
+			this.debug?.(`[PreloadController] ${traceBusSignal(BUS_OUTPUT.preloadReady)} guild=${playerId} track=${event.track.title} (already loaded)`);
 			if (this.bus)
 				this.bus.emitOutput({ type: BUS_OUTPUT.preloadReady, requestId: event.requestId, playerId, track: event.track });
 			return;
 		}
 
+		this.debug?.(`[PreloadController] ${traceBusSignal(BUS_OUTPUT.preloadLoading)} guild=${playerId} track=${event.track.title}`);
 		if (this.bus)
 			this.bus.emitOutput({ type: BUS_OUTPUT.preloadLoading, requestId: event.requestId, playerId, track: event.track });
 		try {
 			await this.loader.preloadNext(playerId);
 			const valid = this.loader.hasPreload(playerId, event.track);
 			if (!valid) throw new Error(`Preload did not produce the requested track: ${event.track.title}`);
+			this.debug?.(`[PreloadController] ${traceBusSignal(BUS_OUTPUT.preloadReady)} guild=${playerId} track=${event.track.title}`);
 			if (this.bus)
 				this.bus.emitOutput({ type: BUS_OUTPUT.preloadReady, requestId: event.requestId, playerId, track: event.track });
 		} catch (error) {
+			this.debug?.(
+				`[PreloadController] ${traceBusSignal(BUS_OUTPUT.preloadFailed)} guild=${playerId} track=${event.track.title}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
 			if (this.bus) {
 				this.bus.emitOutput({
 					type: BUS_OUTPUT.preloadFailed,
@@ -179,6 +193,7 @@ export class PreloadController {
 
 	public request(playerId: string, track: Track): Promise<Track> {
 		if (!this.bus) return Promise.resolve(track);
+		this.debug?.(`[PreloadController] ${traceBusSignal(BUS_REQUEST.preloadRequest)} guild=${playerId} track=${track.title}`);
 		return this.bus
 			.request(playerId, { type: BUS_REQUEST.preloadRequest, requestId: createPlayerRequestId(), track })
 			.then((event) => event.track);

@@ -11,6 +11,8 @@ const {
 	QueueController,
 	PlaybackSessionController,
 	TrackLoader,
+	BUS_REQUEST,
+	BUS_OUTPUT,
 } = require("../core/dist");
 
 const waitFor = async (predicate) => {
@@ -55,9 +57,9 @@ const createOrchestrator = ({ autoPlay, related, relatedResolver, loop = "off", 
 	});
 	globalBus.registerRpc("plugin.relatedTracks", relatedResolver ?? (async () => related ?? []));
 	globalBus.subscribe(playerId, "TRACK_ERROR", (event) => errors.push(event.error?.message ?? String(event.error)));
-	globalBus.onInput("[Player]->[Preload]:request", (event) => {
+	globalBus.onInput(BUS_REQUEST.preloadRequest, (event) => {
 		globalBus.emitOutput({
-			type: "[Preload]->[Player]:ready",
+			type: BUS_OUTPUT.preloadReady,
 			requestId: event.requestId,
 			track: event.track,
 			playerId: event.playerId,

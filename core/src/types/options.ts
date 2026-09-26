@@ -72,6 +72,8 @@ export interface QueueControllerOptions {
 export interface PreloadControllerOptions {
 	loader: TrackLoader;
 	manager: PreloadManager;
+	/** Process-wide debug sink; see `traceBusSignal` in BusContract for the log format used. */
+	debug?: (message: string) => void;
 }
 export interface TransitionControllerOptions {
 	enabled?: boolean;

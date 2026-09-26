@@ -54,7 +54,8 @@ interface PlayerEventBridgeSlot {
  * public Player event API.
  *
  * Singleton — created once and shared by every player in the process. The two RPCs and the
- * `[Connection]->[Player]:error` output are registered a single time for the whole
+ * `BUS_OUTPUT.connectionError` ("[Connection]->[Player]:error" in `traceBusSignal` terms) output
+ * are registered a single time for the whole
  * process (their dispatch is already global, routed by `ctx.playerId`/`event.playerId`).
  * The ~30 canonical event types are scoped per player by `Bus.subscribe(playerId, ...)`,
  * so those subscriptions are (re)created once per `attach(playerId, ...)` call rather
