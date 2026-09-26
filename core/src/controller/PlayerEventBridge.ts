@@ -46,6 +46,7 @@ interface PlayerEventBridgeSlot {
 	previousQueue: any[];
 	recent: Map<string, number>;
 	disposed: boolean;
+	unsubscribers: Array<() => void>;
 }
 
 /**
@@ -85,16 +86,19 @@ export class PlayerEventBridge {
 	 *  (see `attachPlayer()`) — events that fire in that window are traced but not
 	 *  emitted anywhere, matching the previous per-instance bridge's behavior. */
 	public attach(playerId: string, eventDebug: PlayerEventDebug): void {
+		if (this.slots.has(playerId)) this.detach(playerId);
 		const slot: PlayerEventBridgeSlot = {
 			player: null,
 			eventDebug,
 			previousQueue: this.bus.querySync(playerId, "queue") ?? [],
 			recent: new Map(),
 			disposed: false,
+			unsubscribers: [],
 		};
 		this.slots.set(playerId, slot);
 		this.debug(slot, "attached", { queueSize: slot.previousQueue.length });
-		for (const type of EVENT_TYPES) this.bus.subscribe(playerId, type, (event) => this.forward(playerId, event));
+		for (const type of EVENT_TYPES)
+			slot.unsubscribers.push(this.bus.subscribe(playerId, type, (event) => this.forward(playerId, event)));
 	}
 
 	/** Registers the (now-existing) Player facade for `playerId`. */
@@ -110,6 +114,7 @@ export class PlayerEventBridge {
 		if (slot) {
 			slot.disposed = true;
 			slot.recent.clear();
+			for (const unsubscribe of slot.unsubscribers.splice(0)) unsubscribe();
 		}
 		this.slots.delete(playerId);
 	}

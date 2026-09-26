@@ -22,6 +22,7 @@ export class TrackResolver {
 
 	/** Opens a slot for `playerId`. Re-attaching replaces the previous slot. */
 	public attach(playerId: string, options: TrackResolverOptions): void {
+		if (this.slots.has(playerId)) this.detach(playerId);
 		this.slots.set(playerId, options);
 	}
 

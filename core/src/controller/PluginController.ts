@@ -42,6 +42,7 @@ export class PluginController {
 	}
 
 	attach(playerId: string, pluginManager: PluginManager): void {
+		if (this.managers.has(playerId)) this.detach(playerId);
 		this.managers.set(playerId, pluginManager);
 	}
 	detach(playerId: string): void {

@@ -40,6 +40,7 @@ export class VolumeController {
 	}
 
 	attach(playerId: string, options: VolumeControllerOptions = {}): void {
+		if (this.states.has(playerId)) this.detach(playerId);
 		this.states.set(playerId, {
 			volume: this.clamp(options.initialVolume ?? 100),
 			loudness: {

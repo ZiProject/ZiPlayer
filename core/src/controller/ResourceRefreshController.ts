@@ -134,6 +134,7 @@ export class ResourceRefreshController {
 	}
 
 	attach(playerId: string): void {
+		if (this.workers.has(playerId)) this.detach(playerId);
 		this.workers.set(playerId, new ResourceRefreshWorker(this.bus, playerId));
 	}
 	detach(playerId: string): void {

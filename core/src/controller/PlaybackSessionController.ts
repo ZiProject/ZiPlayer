@@ -22,19 +22,21 @@ export class PlaybackSessionController {
 	}
 
 	attach(playerId: string): void {
+		if (this.states.has(playerId)) this.detach(playerId);
 		this.states.set(playerId, { session: null, pendingRetire: null });
 	}
 	detach(playerId: string): void {
 		this.clear(playerId);
 		this.states.delete(playerId);
 	}
+	/**
+	 * Reads the state slice for `playerId`. Only `attach()` may create a persistent entry —
+	 * a call for a playerId that was never attached (or was already `detach()`ed) gets a
+	 * throwaway default instead of silently resurrecting a permanent `Map` entry that no
+	 * future `detach()` would ever know to clean up.
+	 */
 	private state(playerId: string): SessionState {
-		let state = this.states.get(playerId);
-		if (!state) {
-			state = { session: null, pendingRetire: null };
-			this.states.set(playerId, state);
-		}
-		return state;
+		return this.states.get(playerId) ?? { session: null, pendingRetire: null };
 	}
 
 	public current(playerId: string): PlaybackSession | null {

@@ -351,6 +351,7 @@ export class FilterController {
 		debug: DebugFn = () => {},
 		options: FilterControllerOptions = {},
 	): void {
+		if (this.engines.has(playerId)) this.detach(playerId);
 		this.engines.set(playerId, new FilterEngine(resourcePort, debug, this.bus, options, playerId));
 	}
 	detach(playerId: string): void {

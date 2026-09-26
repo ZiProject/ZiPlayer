@@ -217,6 +217,7 @@ export class AntiStuckController {
 	}
 
 	attach(playerId: string, options: Omit<AntiStuckControllerOptions, "bus"> = {}): void {
+		if (this.workers.has(playerId)) this.detach(playerId);
 		this.workers.set(playerId, new AntiStuckWorker({ ...options, bus: this.bus, playerId }));
 	}
 	detach(playerId: string): void {

@@ -256,6 +256,7 @@ export class SaveController {
 	}
 
 	attach(playerId: string, options: Omit<SaveControllerOptions, "bus">): void {
+		if (this.workers.has(playerId)) this.detach(playerId);
 		this.workers.set(playerId, new SaveWorker(options));
 	}
 	detach(playerId: string): void {

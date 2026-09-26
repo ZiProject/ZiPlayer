@@ -49,6 +49,7 @@ export class ForwardController {
 	}
 
 	attach(playerId: string): void {
+		if (this.states.has(playerId)) this.detach(playerId);
 		this.states.set(playerId, { leaderId: undefined, followers: new Set(), mode: PlaybackMode.NATIVE });
 	}
 	aggregateSnapshot(): { leader: number; follower: number; healthStatus: ForwardHealthStatus[] } {
@@ -69,13 +70,14 @@ export class ForwardController {
 		this.states.delete(playerId);
 	}
 
+	/**
+	 * Reads the state slice for `playerId`. Only `attach()` may create a persistent entry —
+	 * a call for a playerId that was never attached (or was already `detach()`ed) gets a
+	 * throwaway default instead of silently resurrecting a permanent `Map` entry that no
+	 * future `detach()` would ever know to clean up.
+	 */
 	private state(playerId: string): ForwardState {
-		let state = this.states.get(playerId);
-		if (!state) {
-			state = { leaderId: undefined, followers: new Set(), mode: PlaybackMode.NATIVE };
-			this.states.set(playerId, state);
-		}
-		return state;
+		return this.states.get(playerId) ?? { leaderId: undefined, followers: new Set(), mode: PlaybackMode.NATIVE };
 	}
 
 	healthStatus(playerId: string): ForwardHealthStatus {

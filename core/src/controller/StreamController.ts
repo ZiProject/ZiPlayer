@@ -193,6 +193,7 @@ export class StreamController {
 	}
 
 	attach(playerId: string, streamManager?: StreamManager): void {
+		if (this.workers.has(playerId)) this.detach(playerId);
 		this.workers.set(playerId, new StreamWorker({ streamManager, bus: this.bus, playerId }));
 	}
 	aggregateSnapshot(): { active: number; loading: number } {

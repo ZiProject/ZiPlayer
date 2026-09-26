@@ -39,6 +39,7 @@ export class ExtensionController {
 	}
 
 	attach(playerId: string, extensionManager: ExtensionManager): void {
+		if (this.managers.has(playerId)) this.detach(playerId);
 		this.managers.set(playerId, extensionManager);
 	}
 	detach(playerId: string): void {

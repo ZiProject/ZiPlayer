@@ -69,8 +69,22 @@ export class ConnectionController {
 		}
 	}
 
-	/** Opens a slot for `playerId`. */
+	/**
+	 * Opens a slot for `playerId`. If a slot from a previous `attach()` is still around (it
+	 * should always have gone through `detach()` first — this only guards a caller that skips
+	 * that), release its voice connection synchronously instead of silently overwriting the
+	 * `Map` entry and orphaning the old `VoiceConnection`. `detach()` itself stays async (it
+	 * waits for in-flight enqueue()'d operations), so it is not called from here: the old slot
+	 * is being discarded outright, so there is nothing left to wait for.
+	 */
 	public attach(playerId: string, options: ConnectionControllerOptions): void {
+		const existing = this.slots.get(playerId);
+		if (existing && !existing.disposed) {
+			existing.disposed = true;
+			this.cleanupSubscription(playerId);
+			existing.connection?.destroy();
+			existing.connection = null;
+		}
 		const opt = options.options ?? {};
 		this.slots.set(playerId, {
 			group: opt.group,

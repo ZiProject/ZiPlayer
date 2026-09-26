@@ -220,6 +220,7 @@ export class TTSController {
 	}
 
 	attach(playerId: string, options: Omit<TTSControllerOptions, "bus"> & { bus?: never }): void {
+		if (this.workers.has(playerId)) this.detach(playerId);
 		this.workers.set(playerId, new TTSWorker({ ...options, bus: this.bus, playerId }));
 	}
 	detach(playerId: string): void {

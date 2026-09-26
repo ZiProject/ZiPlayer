@@ -48,6 +48,7 @@ import { ExtensionManager } from "../extensions";
 import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { SaveController } from "../controller/SaveController";
 import { PlaybackSessionController } from "../controller/PlaybackSessionController";
+import { GlobalControllerRegistry } from "../controller/GlobalControllerRegistry";
 import { BUS_EVENT, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
 
@@ -302,6 +303,13 @@ export class PlayerManager extends EventEmitter {
 	private plugins: SourcePlugin[];
 	/** Reused player for {@link search}; not registered in {@link players}. */
 	private searchPlayer: Player | null = null;
+	/**
+	 * Owns the "runtime.ping" heartbeat per attached playerId (own instance per manager, not the
+	 * process-wide {@link GlobalControllerRegistry.global}, so `dispose()` only ever clears this
+	 * manager's own entries). See the `runtime.ping` handler registered below for what "alive"
+	 * means, and `attachPlayerControllers`/`teardownPlayer` for register/unregister.
+	 */
+	private readonly controllerRegistry = new GlobalControllerRegistry<SharedControllerSet>();
 	private extensions: any[];
 	private B_debug: boolean = false;
 	private extractorTimeout: number = 10000;
@@ -322,6 +330,20 @@ export class PlayerManager extends EventEmitter {
 			busLatencyTrace: this.debugTracer.latencyTraceInstance,
 		});
 		this.bus = this.controllers.bus;
+
+		// Answers `GlobalControllerRegistry`'s heartbeat (see `controllerRegistry` above): a
+		// playerId is "alive" only while this manager still tracks it (or it's the live search
+		// player). Throwing (instead of resolving false) makes an unreachable/unknown playerId
+		// behave like a real timeout to `GlobalControllerRegistry.ping()`, which only treats a
+		// *rejected* request as unreachable.
+		this.bus.registerRpc<{ playerId?: string }, true>(CONTROLLER_RPC.runtimePing, (_request, ctx) => {
+			const id = ctx.playerId;
+			const alive =
+				this.players.get(id)?.destroyed === false ||
+				(id === SEARCH_PLAYER_GUILD_ID && this.searchPlayer !== null && !this.searchPlayer.destroyed);
+			if (!alive) throw new Error(`runtime.ping: player "${id}" is not tracked by this PlayerManager`);
+			return true;
+		});
 		this.monitoring = new PlayerMonitoring(this.controllers, this.bus);
 		this.plugins = [];
 		this.searchCache = new Map();
@@ -500,6 +522,29 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	private attachPlayerControllers(playerId: string, options?: PlayerOptions): void {
+		// Every controller's own attach() is now idempotent (detaches its own stale slot first),
+		// but streamManager/pluginManager/extensionManager below are owned here, not by a
+		// controller — nothing else would ever dispose the previous ones if this ran twice for
+		// the same playerId without a teardown in between (e.g. a caller that skips destroy()).
+		const stalePerPlayerResources = this.perPlayerResources.get(playerId);
+		if (stalePerPlayerResources) {
+			this.perPlayerResources.delete(playerId);
+			try {
+				stalePerPlayerResources.streamManager.dispose();
+			} catch (error) {
+				this.debug(`Error disposing stale streamManager for ${playerId}:`, error);
+			}
+			try {
+				stalePerPlayerResources.pluginManager.destroy();
+			} catch (error) {
+				this.debug(`Error disposing stale pluginManager for ${playerId}:`, error);
+			}
+			try {
+				stalePerPlayerResources.extensionManager.destroy();
+			} catch (error) {
+				this.debug(`Error disposing stale extensionManager for ${playerId}:`, error);
+			}
+		}
 		const channel = (tag: string, level: PlayerDebugLevel = "debug") => this.debugTracer.channel(tag, level);
 		const middleware: TrackMiddleware[] = [
 			...this.getTrackMiddlewareChain(),
@@ -616,6 +661,25 @@ export class PlayerManager extends EventEmitter {
 		this.controllers.eventBridge?.attach(playerId, this.debugTracer);
 
 		this.perPlayerResources.set(playerId, { streamManager, pluginManager, extensionManager });
+
+		// Ping-based cleanup: dispose callback mirrors requestDestroy's search-player special case
+		// so a player that stops answering "runtime.ping" (see the handler registered in the
+		// constructor) gets torn down through the exact same runTeardown path as an explicit
+		// destroy() — regardless of whether it's tracked in `this.players` or is the search player.
+		this.controllerRegistry.register(playerId, this.bus, this.controllers, () => {
+			if (playerId === SEARCH_PLAYER_GUILD_ID) {
+				const player = this.searchPlayer;
+				this.searchPlayer = null;
+				return this.runTeardown(playerId, player).catch((error) =>
+					this.debug(`Error disposing unreachable search player:`, error),
+				);
+			}
+			const player = this.players.get(playerId) ?? null;
+			this.players.delete(playerId);
+			return this.runTeardown(playerId, player).catch((error) =>
+				this.debug(`Error disposing unreachable player ${playerId}:`, error),
+			);
+		});
 	}
 
 	/**
@@ -1096,9 +1160,22 @@ export class PlayerManager extends EventEmitter {
 	 * Called by {@link Player.destroy}: takes over the teardown so it always runs in the manager's
 	 * order. Returns false when this manager does not track `player` (nothing was started).
 	 *
+	 * The internal search player (see {@link getSearchPlayer}) is deliberately never stored in
+	 * {@link players} — but it still gets shared-controller state via `attachPlayerControllers()`
+	 * and must go through the exact same `runTeardown` path, or that state (23 controller/manager
+	 * slots) leaks forever whenever someone calls `.destroy()` on it directly. Handle it explicitly
+	 * instead of only checking `players`.
+	 *
 	 * @internal
 	 */
 	public requestDestroy(player: Player): boolean {
+		if (player === this.searchPlayer) {
+			this.searchPlayer = null;
+			void this.runTeardown(player.playerId, player).catch((error) =>
+				this.debug(`Error destroying search player:`, error),
+			);
+			return true;
+		}
 		if (this.players.get(player.playerId) !== player) return false;
 		void this.destroy(player.playerId).catch((error) => this.debug(`Error destroying player ${player.playerId}:`, error));
 		return true;
@@ -1117,6 +1194,9 @@ export class PlayerManager extends EventEmitter {
 	 * already up to date when the caller gets the promise back.
 	 */
 	private async teardownPlayer(playerId: string, player: Player | null): Promise<void> {
+		// Stop this playerId's heartbeat first: whether teardown was requested explicitly or by
+		// the registry itself (unreachable ping), nothing should keep pinging a player mid-teardown.
+		this.controllerRegistry.unregister(playerId);
 		try {
 			// `player` is null only when creation failed before the Player existed.
 			if (player) {
@@ -1249,6 +1329,11 @@ export class PlayerManager extends EventEmitter {
 			clearInterval(this.cleanupInterval);
 			this.cleanupInterval = null;
 		}
+
+		// Stops every remaining "runtime.ping" heartbeat timer outright (teardownPlayer will also
+		// unregister each one individually below, but clear() guarantees none survive even if a
+		// teardown throws before reaching its own unregister call).
+		this.controllerRegistry.clear();
 
 		if (this.statsInterval) {
 			clearInterval(this.statsInterval);

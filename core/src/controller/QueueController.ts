@@ -458,6 +458,7 @@ export class QueueController {
 	}
 
 	attach(playerId: string): QueueState {
+		if (this.states.has(playerId)) this.detach(playerId);
 		const queueState = new QueueState(this.bus, playerId);
 		this.states.set(playerId, queueState);
 		return queueState;

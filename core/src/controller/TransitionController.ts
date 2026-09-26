@@ -32,6 +32,7 @@ export class TransitionController {
 	}
 
 	public attach(playerId: string, options: TransitionControllerOptions = {}): void {
+		if (this.states.has(playerId)) this.detach(playerId);
 		const minDurationMs = Math.max(0, options.minDurationMs ?? 120);
 		this.states.set(playerId, {
 			enabled: options.enabled ?? true,

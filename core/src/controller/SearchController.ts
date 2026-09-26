@@ -142,6 +142,7 @@ export class SearchController {
 	}
 
 	attach(playerId: string, options: SearchWorkerOptions): void {
+		if (this.workers.has(playerId)) this.detach(playerId);
 		this.workers.set(playerId, new SearchWorker(options));
 	}
 	detach(playerId: string): void {

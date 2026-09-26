@@ -154,6 +154,7 @@ export class LifecycleController {
 	}
 
 	attach(playerId: string, options: LifecycleControllerOptions["options"], debug?: (...args: any[]) => void): void {
+		if (this.workers.has(playerId)) this.detach(playerId);
 		this.workers.set(playerId, new LifecycleWorker(this.bus, playerId, options, debug));
 	}
 	detach(playerId: string): void {
