@@ -73,8 +73,16 @@ export interface StreamInfo {
 }
 
 export interface TrackMiddlewareContext {
-	player: Player;
-	manager: PlayerManager;
+	playerId: import("../structures/playerScope").PlayerId;
+	manager?: PlayerManager;
+	player?: Player;
+}
+
+export interface TrackResolverContext {
+	playerId: import("../structures/playerScope").PlayerId;
+	history?: Track[];
+	signal?: AbortSignal;
+	[key: string]: any;
 }
 
 export type TrackMiddleware = (track: Track, context: TrackMiddlewareContext) => void | Track | Promise<void | Track>;
@@ -214,8 +222,27 @@ export interface ForwardHealthStatus {
 	};
 }
 
-export interface PlayerStats {
+export interface PlayerManagerStats {
+	players: number;
 	totalPlayers: number;
+	playback: {
+		playing: number;
+		paused: number;
+		idle: number;
+	};
+	streams: {
+		active: number;
+		loading: number;
+	};
+	queues: {
+		totalTracks: number;
+	};
+	preload: {
+		active: number;
+	};
+	transitions: {
+		active: number;
+	};
 	leader: number;
 	follower: number;
 	activePlayers: number;
@@ -224,6 +251,8 @@ export interface PlayerStats {
 	totalTracksInQueue: number;
 	forwardHealthStatus: ForwardHealthStatus[];
 }
+
+export type PlayerStats = PlayerManagerStats;
 
 export interface StreamSlot {
 	resource?: AudioResource | null;

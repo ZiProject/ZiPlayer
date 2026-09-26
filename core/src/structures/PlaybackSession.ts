@@ -1,6 +1,6 @@
 import type { AudioResource } from "@discordjs/voice";
 import type { Track, PlaybackSessionStatus, PlaybackSessionSnapshot, PlayerSessionId } from "../types";
-import { createPlayerSessionId } from "./PlayerBus";
+import { createPlayerSessionId } from "./Bus";
 
 /**
  * Owns the lifecycle state of one active playback operation.

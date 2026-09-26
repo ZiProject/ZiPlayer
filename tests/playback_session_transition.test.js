@@ -2,7 +2,18 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { Readable } = require("node:stream");
 
-const { Player, PlayerBus, PlaybackOrchestrator, PlaybackSession, QueueController, TrackLoader } = require("../core/dist");
+const {
+	Player,
+	Bus,
+	PlaybackOrchestrator,
+	createPlaybackOrchestrator,
+	PlaybackSession,
+	QueueController,
+	PlaybackSessionController,
+	TrackLoader,
+	BUS_REQUEST,
+	BUS_OUTPUT,
+} = require("../core/dist");
 
 const waitFor = async (predicate) => {
 	for (let attempt = 0; attempt < 50; attempt++) {
@@ -13,20 +24,24 @@ const waitFor = async (predicate) => {
 };
 
 const createOrchestrator = ({ autoPlay, related, relatedResolver, loop = "off", preloadController } = {}) => {
-	const bus = new PlayerBus();
-	const queueController = new QueueController({ bus });
+	const playerId = "test-guild";
+	const globalBus = new Bus();
+	const queueController = new QueueController(globalBus);
+	const queue = queueController.attach(playerId);
+	const sessionController = new PlaybackSessionController(globalBus);
+	sessionController.attach(playerId);
 	const played = [];
 	const errors = [];
-	const trackLoader = new TrackLoader({
+	const trackLoader = new TrackLoader(globalBus);
+	trackLoader.attach(playerId, {
 		context: {},
-		bus,
 		resolvers: [async (track) => ({ stream: new Readable({ read() {} }), type: "arbitrary" })],
 	});
-	bus.registerQuery("filterString", () => "");
-	bus.registerRpc("preload.has", ({ track }) => Boolean(preloadController?.has?.(track)));
-	bus.registerRpc("preload.cancel", () => undefined);
-	bus.registerRpc("resource.create", ({ stream, track }) => ({ stream, metadata: track }));
-	bus.registerRpc("controller.stream.replace", ({ streamInfo, session }) => ({
+	globalBus.registerQuery("filterString", () => "");
+	globalBus.registerRpc("preload.has", ({ track }) => Boolean(preloadController?.has?.(playerId, track)));
+	globalBus.registerRpc("preload.cancel", () => undefined);
+	globalBus.registerRpc("resource.create", ({ stream, track }) => ({ stream, metadata: track }));
+	globalBus.registerRpc("controller.stream.replace", ({ streamInfo, session }) => ({
 		sessionId: session.id,
 		session,
 		track: session.track,
@@ -34,21 +49,27 @@ const createOrchestrator = ({ autoPlay, related, relatedResolver, loop = "off", 
 		streamId: null,
 		inputType: streamInfo.inputType,
 	}));
-	bus.registerRpc("controller.playback.stop", () => true);
-	bus.registerRpc("controller.track.resetRecovery", () => undefined);
-	bus.registerRpc("controller.playback.play", ({ session }) => {
+	globalBus.registerRpc("controller.playback.stop", () => true);
+	globalBus.registerRpc("controller.track.resetRecovery", () => undefined);
+	globalBus.registerRpc("controller.playback.play", ({ session }) => {
 		played.push(session.track.id);
 		return undefined;
 	});
-	bus.registerRpc("plugin.relatedTracks", relatedResolver ?? (async () => related ?? []));
-	bus.subscribe("TRACK_ERROR", (event) => errors.push(event.error?.message ?? String(event.error)));
-	bus.onInput("[Player]->[Preload]:request", (event) => {
-		bus.emitOutput({ type: "[Preload]->[Player]:ready", requestId: event.requestId, track: event.track });
+	globalBus.registerRpc("plugin.relatedTracks", relatedResolver ?? (async () => related ?? []));
+	globalBus.subscribe(playerId, "TRACK_ERROR", (event) => errors.push(event.error?.message ?? String(event.error)));
+	globalBus.onInput(BUS_REQUEST.preloadRequest, (event) => {
+		globalBus.emitOutput({
+			type: BUS_OUTPUT.preloadReady,
+			requestId: event.requestId,
+			track: event.track,
+			playerId: event.playerId,
+		});
 	});
-	queueController.setAutoPlay(autoPlay);
-	queueController.setLoop(loop);
-	const orchestrator = new PlaybackOrchestrator(bus);
-	return { bus, queueController, orchestrator, played, errors, trackLoader };
+	queue.setAutoPlay(autoPlay);
+	queue.setLoop(loop);
+	const orchestrator = createPlaybackOrchestrator(globalBus, { sessionController });
+	orchestrator.attach(playerId);
+	return { bus: globalBus, playerId, queueController: queue, orchestrator, played, errors, trackLoader };
 };
 
 const context = () => ({
@@ -57,7 +78,7 @@ const context = () => ({
 	priority: 10,
 });
 
-const play = (harness, track) => harness.bus.action({ type: "PLAY", track }, context());
+const play = (harness, track) => harness.bus.action(harness.playerId, { type: "PLAY", track }, context());
 
 test("autoplay starts the related track after TRACK_END", async () => {
 	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
@@ -65,12 +86,12 @@ test("autoplay starts the related track after TRACK_END", async () => {
 	const harness = createOrchestrator({ autoPlay: true, related: [trackB] });
 
 	await play(harness, trackA);
-	const endedSession = harness.orchestrator.currentSession;
-	harness.bus.event({ type: "TRACK_END", session: endedSession.snapshot() });
-	await waitFor(() => harness.orchestrator.currentSession?.track === trackB);
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackB);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b"], harness.errors.join("; "));
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -80,14 +101,14 @@ test("the next session keeps a valid signal after the ended session is destroyed
 	const harness = createOrchestrator({ autoPlay: true, related: [trackB] });
 
 	await play(harness, trackA);
-	const endedSession = harness.orchestrator.currentSession;
-	harness.bus.event({ type: "TRACK_END", session: endedSession.snapshot() });
-	await waitFor(() => harness.orchestrator.currentSession?.track === trackB);
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackB);
 
-	const nextSession = harness.orchestrator.currentSession;
+	const nextSession = harness.orchestrator.getCurrentSession(harness.playerId);
 	assert.equal(endedSession.signal.aborted, true);
 	assert.equal(nextSession.signal.aborted, false);
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -109,10 +130,13 @@ test("related tracks resolve without setting willNext when autoplay is disabled"
 	assert.deepEqual(harness.queueController.relatedTracks, [trackB]);
 	assert.equal(harness.queueController.willNext, null);
 
-	harness.bus.event({ type: "TRACK_END", session: harness.orchestrator.currentSession.snapshot() });
+	harness.bus.event(harness.playerId, {
+		type: "TRACK_END",
+		session: harness.orchestrator.getCurrentSession(harness.playerId).snapshot(),
+	});
 	await new Promise((resolve) => setTimeout(resolve, 20));
-	assert.equal(harness.orchestrator.currentSession.track, trackA);
-	harness.orchestrator.dispose();
+	assert.equal(harness.orchestrator.getCurrentSession(harness.playerId).track, trackA);
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -123,12 +147,12 @@ test("loop off advances to the queued track after TRACK_END", async () => {
 
 	await play(harness, trackA);
 	harness.queueController.add(trackB);
-	const endedSession = harness.orchestrator.currentSession;
-	harness.bus.event({ type: "TRACK_END", session: endedSession.snapshot() });
-	await waitFor(() => harness.orchestrator.currentSession?.track === trackB);
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackB);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b"], harness.errors.join("; "));
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -139,13 +163,13 @@ test("loop track repeats the current track without retaining an autoplay hint", 
 
 	await play(harness, trackA);
 	assert.equal(harness.queueController.willNext, null);
-	const endedSession = harness.orchestrator.currentSession;
-	harness.bus.event({ type: "TRACK_END", session: endedSession.snapshot() });
-	await waitFor(() => harness.orchestrator.currentSession?.id !== endedSession.id);
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.id !== endedSession.id);
 
-	assert.equal(harness.orchestrator.currentSession.track, trackA);
+	assert.equal(harness.orchestrator.getCurrentSession(harness.playerId).track, trackA);
 	assert.equal(harness.queueController.willNext, null);
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -156,16 +180,16 @@ test("loop queue cycles back to the first track after the queue ends", async () 
 
 	await play(harness, trackA);
 	harness.queueController.add(trackB);
-	let endedSession = harness.orchestrator.currentSession;
-	harness.bus.event({ type: "TRACK_END", session: endedSession.snapshot() });
-	await waitFor(() => harness.orchestrator.currentSession?.track === trackB);
+	let endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackB);
 
-	endedSession = harness.orchestrator.currentSession;
-	harness.bus.event({ type: "TRACK_END", session: endedSession.snapshot() });
-	await waitFor(() => harness.orchestrator.currentSession?.track === trackA);
+	endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackA);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b", "track-a"]);
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -178,7 +202,37 @@ test("Bus PLAY starts a replacement track without legacy orchestrator arguments"
 	await play(harness, trackB);
 
 	assert.deepEqual(harness.played, ["track-a", "track-b"], harness.errors.join("; "));
-	harness.orchestrator.dispose();
+	await harness.orchestrator.dispose();
+	harness.queueController.dispose();
+});
+
+test("Player.play resolves true when the next session is not materialized yet", async () => {
+	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
+	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
+	const harness = createOrchestrator();
+	const player = Object.create(Player.prototype);
+	player.bus = harness.bus;
+	player.playerId = harness.playerId;
+	player.playOperation = Promise.resolve(false);
+	player.playGeneration = 0;
+	player.playAbortController = null;
+	player.action = async () => {};
+
+	await player.play(trackA);
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
+	assert.ok(endedSession);
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
+	await waitFor(
+		() =>
+			!harness.orchestrator.getCurrentSession(harness.playerId) ||
+			harness.orchestrator.getCurrentSession(harness.playerId)?.status === "ended",
+	);
+
+	const result = await player.play(trackB);
+	assert.equal(result, true);
+	await waitFor(() => harness.played.at(-1) === "track-b");
+	assert.deepEqual(harness.played.slice(-1), ["track-b"], harness.errors.join("; "));
+	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });
 
@@ -186,15 +240,16 @@ test("TrackLoader promotes the existing preloaded stream instead of resolving ag
 	const track = { id: "track-preloaded", title: "Preloaded", duration: 180000 };
 	const preloadedStream = { name: "preloaded-stream" };
 	let takeCount = 0;
-	const loader = new TrackLoader({
-		context: {},
-		preloadManager: {
-			takePreloaded: (requestedTrack) => {
-				assert.equal(requestedTrack, track);
-				takeCount++;
-				return { track, stream: preloadedStream };
-			},
+	const loader = new TrackLoader(undefined, {
+		takePreloaded: (playerId, requestedTrack) => {
+			assert.equal(playerId, "test-guild");
+			assert.equal(requestedTrack, track);
+			takeCount++;
+			return { track, stream: preloadedStream };
 		},
+	});
+	loader.attach("test-guild", {
+		context: {},
 		resolvers: [
 			() => {
 				throw new Error("stream resolver should not run");
@@ -204,22 +259,24 @@ test("TrackLoader promotes the existing preloaded stream instead of resolving ag
 	const session = new PlaybackSession();
 	session.begin(track);
 
-	const loaded = await loader.loadWithRecovery(track, session);
+	const loaded = await loader.loadWithRecovery("test-guild", track, session);
 	assert.equal(takeCount, 1);
 	assert.equal(loaded.stream.stream, preloadedStream);
 });
 
 test("TrackLoader rejects new loads after dispose", async () => {
-	const loader = new TrackLoader({ context: {}, resolvers: [] });
+	const loader = new TrackLoader();
+	loader.attach("test-guild", { context: {}, resolvers: [] });
 	loader.dispose();
 
-	await assert.rejects(() => loader.load({ id: "disposed-track", title: "Disposed" }, new PlaybackSession()), {
+	await assert.rejects(() => loader.load("test-guild", { id: "disposed-track", title: "Disposed" }, new PlaybackSession()), {
 		message: "TrackLoader is disposed",
 	});
 });
 
 test("Player.getTime follows the active session across track transitions and seek", () => {
-	const bus = new PlayerBus();
+	const bus = new Bus();
+	const guildId = "test-guild";
 	let activeSession = new PlaybackSession();
 	const track1 = { id: "track-1", title: "Track 1", duration: 180000 };
 	const track2 = { id: "track-2", title: "Track 2", duration: 240000 };
@@ -233,6 +290,7 @@ test("Player.getTime follows the active session across track transitions and see
 	activeSession.updatePosition(12000);
 	const player = Object.create(Player.prototype);
 	player.bus = bus;
+	player.guildId = guildId;
 	assert.equal(player.getTime().current, 12000);
 
 	activeSession = new PlaybackSession();
@@ -246,13 +304,15 @@ test("Player.getTime follows the active session across track transitions and see
 });
 
 test("stop invalidates an in-flight play RPC", async () => {
-	const bus = new PlayerBus();
+	const bus = new Bus();
+	const guildId = "test-guild";
 	bus.registerRpc("play", async () => {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		return true;
 	});
 	const player = Object.create(Player.prototype);
 	player.bus = bus;
+	player.guildId = guildId;
 	player.playOperation = Promise.resolve(false);
 	player.playGeneration = 0;
 	player.playAbortController = null;
@@ -270,23 +330,24 @@ test("stop invalidates an in-flight play RPC", async () => {
 	player.stop();
 
 	assert.equal(await playResult, false);
-	bus.dispose();
+	bus.disposePlayer(guildId);
 });
 
-test("PlayerBus materializes seek and queueEnd public events", () => {
-	const bus = new PlayerBus();
+test("Bus materializes seek and queueEnd public events", () => {
+	const bus = new Bus();
+	const guildId = "test-guild";
 	const events = [];
-	bus.subscribe("seek", (event) => events.push(event));
-	bus.subscribe("queueEnd", (event) => events.push(event));
+	bus.subscribe(guildId, "seek", (event) => events.push(event));
+	bus.subscribe(guildId, "queueEnd", (event) => events.push(event));
 	const track = { id: "track-a", title: "Track A", url: "url", duration: 1000, requestedBy: "test", source: "test" };
 
-	bus.event({ type: "seek", track, position: 250 });
-	bus.event({ type: "queueEnd" });
+	bus.event(guildId, { type: "seek", track, position: 250 });
+	bus.event(guildId, { type: "queueEnd" });
 
 	assert.equal(events[0].track, track);
 	assert.equal(events[0].position, 250);
 	assert.equal(events[1].type, "queueEnd");
-	bus.dispose();
+	bus.disposePlayer(guildId);
 });
 
 test("PreloadManager manages StreamInfo directly without AudioResource and preserves stream metadata on promotion", async () => {
@@ -298,7 +359,8 @@ test("PreloadManager manages StreamInfo directly without AudioResource and prese
 	const sourceStream = new Readable({ read() {} });
 
 	let streamRequested = false;
-	const preloadManager = new PreloadManager({
+	const preloadManager = new PreloadManager();
+	preloadManager.attach("test-guild", {
 		streamManager,
 		debug: () => {},
 		getNextTrack: () => trackB,
@@ -310,15 +372,15 @@ test("PreloadManager manages StreamInfo directly without AudioResource and prese
 		isEnabled: () => true,
 	});
 
-	await preloadManager.preloadNextTrack();
+	await preloadManager.preloadNextTrack("test-guild");
 	assert.ok(streamRequested);
-	assert.ok(preloadManager.hasValidPreload(trackB));
+	assert.ok(preloadManager.hasValidPreload("test-guild", trackB));
 
 	// Preloaded stream should NOT be in flowing mode (not drained by StreamManager data counter)
 	assert.notEqual(sourceStream.readableFlowing, true);
 
 	// Promote preloaded track
-	const promoted = preloadManager.takePreloaded(trackB);
+	const promoted = preloadManager.takePreloaded("test-guild", trackB);
 	assert.ok(promoted);
 	assert.equal(promoted.track, trackB);
 	assert.equal(promoted.stream, sourceStream);
@@ -326,7 +388,7 @@ test("PreloadManager manages StreamInfo directly without AudioResource and prese
 	assert.equal(promoted.streamInfo?.inputType, 1);
 
 	// Preload slot should now be empty and not valid
-	assert.equal(preloadManager.hasValidPreload(trackB), false);
+	assert.equal(preloadManager.hasValidPreload("test-guild", trackB), false);
 
 	preloadManager.dispose();
 	streamManager.dispose();

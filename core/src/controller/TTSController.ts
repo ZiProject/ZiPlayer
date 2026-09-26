@@ -4,19 +4,20 @@ import type { Readable } from "stream";
 import type { StreamInfo, Track } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
-import type { PlayerBus } from "../structures/PlayerBus";
-import { CONTROLLER_RPC, type TtsIsTTSRequest, type TtsPlayRequest } from "./ControllerBusContract";
+import type { Bus } from "../structures/Bus";
+import { CONTROLLER_RPC, PLAYER_QUERY, type TtsIsTTSRequest, type TtsPlayRequest } from "../structures/BusContract";
 import type { TTSControllerOptions } from "../types";
 
-/** Owns TTS stream resolution and the independent interrupt playback lifecycle. */
-export class TTSController {
+/** Per-player TTS stream resolution and interrupt playback lifecycle, owned by the
+ *  shared `TTSController` below. */
+class TTSWorker {
 	public readonly ttsPlayer: AudioPlayer;
 	private readonly pluginManager: PluginManager;
 	private readonly extensionManager?: ExtensionManager;
 	private readonly debug: (...args: any[]) => void;
-	private connection: VoiceConnection | null;
 	private readonly audioPlayer?: AudioPlayer;
-	private readonly bus?: PlayerBus;
+	private readonly bus?: Bus;
+	private readonly playerId?: string;
 	private readonly maxTimeTts: number;
 	private readonly volume: number;
 	private readonly interrupt: boolean;
@@ -27,12 +28,12 @@ export class TTSController {
 	private readonly onError: (error: Error) => void;
 	private readonly detachBusHandlers: Array<() => void> = [];
 
-	constructor(options: TTSControllerOptions) {
+	constructor(options: TTSControllerOptions & { playerId?: string }) {
 		this.pluginManager = options.pluginManager;
 		this.extensionManager = options.extensionManager;
-		this.connection = options.connection ?? null;
 		this.audioPlayer = options.audioPlayer;
 		this.bus = options.bus;
+		this.playerId = options.playerId;
 		this.debug = options.debug ?? (() => undefined);
 		this.maxTimeTts =
 			Number.isFinite(options.maxTimeTts) && (options.maxTimeTts as number) > 0 ? (options.maxTimeTts as number) : 60_000;
@@ -44,20 +45,9 @@ export class TTSController {
 			this.ttsPlayer.stop(true);
 		};
 		this.ttsPlayer.on("error", this.onError);
-		if (options.bus) {
-			this.detachBusHandlers.push(
-				options.bus.registerQuery("tts.hasPlayer", () => Boolean(this.ttsPlayer)),
-				options.bus.registerQuery("ttsInterrupt", () => this.interrupt),
-				options.bus.registerRpc<TtsIsTTSRequest, boolean>(CONTROLLER_RPC.ttsIsTTS, ({ track }) => this.isTTS(track)),
-				options.bus.registerRpc<TtsPlayRequest, void>(CONTROLLER_RPC.ttsPlay, ({ track }) => this.play(track)),
-				options.bus.onOutput("[Connection]->[Player]:connected", (event) => this.setConnection(event.connection)),
-				options.bus.onOutput("[Connection]->[Player]:disconnected", () => this.setConnection(null)),
-			);
-		}
 	}
-
-	public setConnection(connection: VoiceConnection | null): void {
-		this.connection = connection;
+	get interruptSetting(): boolean {
+		return this.interrupt;
 	}
 
 	isTTS(track: Track): boolean {
@@ -90,8 +80,13 @@ export class TTSController {
 		return this.running;
 	}
 
+	private getConnection(): VoiceConnection | null {
+		if (!this.bus || !this.playerId) return null;
+		return (this.bus.querySync(this.playerId, PLAYER_QUERY.connection) as VoiceConnection | null) ?? null;
+	}
+
 	private async playInternal(track: Track): Promise<void> {
-		const connection = this.connection;
+		const connection = this.getConnection();
 		if (this.disposed || this.lifecycleAbort.signal.aborted) throw this.abortError();
 		if (!connection) throw new Error("Cannot play TTS without a voice connection");
 		const wasPlaying = this.audioPlayer?.state.status === AudioPlayerStatus.Playing;
@@ -105,9 +100,10 @@ export class TTSController {
 			resource.volume?.setVolume(this.volume / 100);
 			if (wasPlaying) this.audioPlayer?.pause(true);
 			connection.subscribe(this.ttsPlayer);
-			void this.bus
-				?.requestRpc("player.emitTtsStart", { track })
-				.catch((error) => this.debug("[TTSController] failed to publish ttsStart:", error));
+			if (this.bus && this.playerId)
+				void this.bus
+					.requestRpc(this.playerId, CONTROLLER_RPC.playerEmitTtsStart, { track })
+					.catch((error: unknown) => this.debug("[TTSController] failed to publish ttsStart:", error));
 			started = true;
 			this.ttsPlayer.play(resource);
 			await this.waitForPlayingOrIdle();
@@ -115,14 +111,15 @@ export class TTSController {
 		} finally {
 			this.activeResource = null;
 			this.ttsPlayer.stop(true);
-			if (!this.disposed && this.audioPlayer && this.connection) {
+			const connection = this.getConnection();
+			if (!this.disposed && this.audioPlayer && connection) {
 				connection.subscribe(this.audioPlayer);
 				if (wasPlaying && this.audioPlayer.state.status === AudioPlayerStatus.Paused) this.audioPlayer.unpause();
 			}
-			if (started && !this.disposed)
+			if (started && !this.disposed && this.bus && this.playerId)
 				void this.bus
-					?.requestRpc("player.emitTtsEnd", undefined)
-					.catch((error) => this.debug("[TTSController] failed to publish ttsEnd:", error));
+					.requestRpc(this.playerId, CONTROLLER_RPC.playerEmitTtsEnd, undefined)
+					.catch((error: unknown) => this.debug("[TTSController] failed to publish ttsEnd:", error));
 		}
 	}
 
@@ -197,10 +194,45 @@ export class TTSController {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.lifecycleAbort.abort();
-		for (const detach of this.detachBusHandlers.splice(0)) detach();
 		this.ttsPlayer.removeListener("error", this.onError);
 		this.ttsPlayer.stop(true);
 		this.activeResource = null;
-		this.connection = null;
+	}
+}
+
+/** Shared, singleton controller: owns TTS stream resolution and the independent
+ *  interrupt playback lifecycle for every player, keyed by playerId. */
+export class TTSController {
+	private readonly workers = new Map<string, TTSWorker>();
+
+	constructor(private readonly bus: Bus) {
+		bus.registerQuery(PLAYER_QUERY.ttsHasPlayer, (playerId) => Boolean(this.workers.get(playerId)?.ttsPlayer));
+		bus.registerQuery(PLAYER_QUERY.ttsInterrupt, (playerId) => this.workers.get(playerId)?.interruptSetting ?? true);
+		bus.registerRpc<TtsIsTTSRequest, boolean>(
+			CONTROLLER_RPC.ttsIsTTS,
+			({ track }, ctx) => this.workers.get(ctx.playerId)?.isTTS(track) ?? false,
+		);
+		bus.registerRpc<TtsPlayRequest, void>(CONTROLLER_RPC.ttsPlay, ({ track }, ctx) => {
+			const worker = this.workers.get(ctx.playerId);
+			if (!worker) return Promise.reject(new Error("TTSController is disposed"));
+			return worker.play(track);
+		});
+	}
+
+	attach(playerId: string, options: Omit<TTSControllerOptions, "bus"> & { bus?: never }): void {
+		if (this.workers.has(playerId)) this.detach(playerId);
+		this.workers.set(playerId, new TTSWorker({ ...options, bus: this.bus, playerId }));
+	}
+	detach(playerId: string): void {
+		this.workers.get(playerId)?.dispose();
+		this.workers.delete(playerId);
+	}
+
+	private getConnection(playerId: string): VoiceConnection | null {
+		return (this.bus.querySync(playerId, PLAYER_QUERY.connection) as VoiceConnection | null) ?? null;
+	}
+
+	public player(playerId: string): AudioPlayer | undefined {
+		return this.workers.get(playerId)?.player;
 	}
 }

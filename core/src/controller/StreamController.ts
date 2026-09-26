@@ -2,49 +2,46 @@ import type { StreamInfo, Track, ActiveStream, StreamControllerOptions, PlayerAc
 import { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
-import type { PlayerBus } from "../structures/PlayerBus";
-import { CONTROLLER_RPC } from "./ControllerBusContract";
+import type { Bus } from "../structures/Bus";
+import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, BUS_EVENT } from "../structures/BusContract";
 
 const STREAM_RPC_REPLACE = "controller.stream.replace";
 
-export class StreamController {
+/** Per-player active-stream tracking, owned by the shared `StreamController` below. */
+export class StreamWorker {
 	private active: ActiveStream | null = null;
 	private readonly streamManager?: StreamManager;
-	private readonly bus?: PlayerBus;
+	private readonly bus?: Bus;
+	private readonly playerId?: string;
 	private readonly detachAction?: () => void;
 	private readonly detachRpcs: Array<() => void> = [];
 	private readonly detachStreamError?: () => void;
-	constructor(options: StreamControllerOptions = {}) {
+	constructor(options: StreamControllerOptions & { playerId?: string } = {}) {
 		this.streamManager = options.streamManager;
 		this.bus = options.bus;
-		if (this.bus) {
-			this.detachAction = this.bus.onAction((action: PlayerAction, context) => {
-				if (!context.signal.aborted && action.type === "STOP") this.abortCurrent();
-			});
-			this.detachRpcs.push(
-				this.bus.registerRpc<{ track: Track; stream: { handle?: { play?: () => void | Promise<void> } } }, boolean>(
-					CONTROLLER_RPC.playbackRemote,
-					async ({ stream }) => {
-						if (stream?.handle?.play) await stream.handle.play();
-						return true;
-					},
-				),
-				this.bus.registerRpc<void, void>(CONTROLLER_RPC.playbackDestroyCurrentStream, () => {
-					this.abortCurrent();
-				}),
-				this.bus.registerRpc<{ streamInfo: StreamInfo; session: PlaybackSession }, ActiveStream>(
-					STREAM_RPC_REPLACE,
-					({ streamInfo, session }) => this.replace(streamInfo, session),
-				),
-				this.bus.registerQuery("stream.stats", () => this.streamManager?.getStats() ?? null),
-			);
-		}
-		if (this.streamManager && this.bus) {
+		this.playerId = options.playerId;
+		if (this.streamManager && this.bus && this.playerId) {
+			const bus = this.bus;
+			const playerId = this.playerId;
 			const onStreamError = ({ error }: { error: Error }) =>
-				this.bus?.event({ type: "streamError", error, track: this.bus.querySync("currentTrack") as Track | null });
+				bus.event(playerId, {
+					type: BUS_EVENT.streamError,
+					error,
+					track: bus.querySync(playerId, PLAYER_QUERY.currentTrack) as Track | null,
+				});
 			this.streamManager.on("streamError", onStreamError);
 			this.detachStreamError = () => this.streamManager?.off("streamError", onStreamError);
 		}
+	}
+	public get statsSnapshot() {
+		return this.streamManager?.getStats() ?? null;
+	}
+	public get stateSnapshot() {
+		return this.active ? { sessionId: this.active.sessionId, track: this.active.track } : null;
+	}
+	public async handleRemote(stream: { handle?: { play?: () => void | Promise<void> } }): Promise<boolean> {
+		if (stream?.handle?.play) await stream.handle.play();
+		return true;
 	}
 	get current() {
 		return this.active;
@@ -137,7 +134,8 @@ export class StreamController {
 	abort(stream: ActiveStream) {
 		if (this.active?.stream !== stream.stream) return;
 		this.active = null;
-		this.bus?.event({ type: "STREAM_ABORTED", session: stream.session.snapshot() });
+		if (this.bus && this.playerId)
+			this.bus.event(this.playerId, { type: BUS_EVENT.streamAborted, session: stream.session.snapshot() });
 		if (stream.streamId) {
 			this.streamManager?.unregisterStream(stream.streamId, true);
 			return;
@@ -150,9 +148,6 @@ export class StreamController {
 	}
 	dispose() {
 		this.detachStreamError?.();
-		this.detachAction?.();
-		for (const detach of this.detachRpcs) detach();
-		this.detachRpcs.length = 0;
 		this.abortCurrent();
 		this.active = null;
 	}
@@ -163,5 +158,66 @@ export class StreamController {
 		const error = new Error("Playback stream operation was aborted");
 		error.name = "AbortError";
 		return error;
+	}
+}
+
+/** Shared, singleton controller: owns active-stream tracking for every player, keyed
+ *  by playerId. */
+export class StreamController {
+	private readonly workers = new Map<string, StreamWorker>();
+
+	constructor(private readonly bus: Bus) {
+		bus.onAction((action, context) => {
+			if (!context.signal.aborted && action.type === "STOP") this.workers.get(context.playerId)?.abortCurrent();
+		});
+		bus.registerRpc<{ track: Track; stream: { handle?: { play?: () => void | Promise<void> } } }, boolean>(
+			CONTROLLER_RPC.playbackRemote,
+			({ stream }, ctx) => this.workers.get(ctx.playerId)?.handleRemote(stream) ?? Promise.resolve(true),
+		);
+		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackDestroyCurrentStream, (_req, ctx) =>
+			this.workers.get(ctx.playerId)?.abortCurrent(),
+		);
+		bus.registerRpc<{ streamInfo: StreamInfo; session: PlaybackSession }, ActiveStream>(
+			STREAM_RPC_REPLACE,
+			({ streamInfo, session }, ctx) => {
+				const worker = this.workers.get(ctx.playerId);
+				if (!worker) throw new Error("StreamController is disposed");
+				return worker.replace(streamInfo, session);
+			},
+		);
+		bus.registerQuery(PLAYER_QUERY.streamStats, (playerId) => this.workers.get(playerId)?.statsSnapshot ?? null);
+		bus.registerQuery(PLAYER_QUERY.streamState, (playerId) => this.workers.get(playerId)?.stateSnapshot ?? null);
+		bus.registerQuery(PLAYER_QUERY.streamCurrent, (playerId) => this.workers.get(playerId)?.current ?? null);
+		bus.registerRpc(PLAYER_RPC.streamState, (_req, ctx) => this.workers.get(ctx.playerId)?.stateSnapshot ?? null);
+		bus.registerRpc(PLAYER_RPC.streamCurrent, (_req, ctx) => this.workers.get(ctx.playerId)?.current ?? null);
+	}
+
+	attach(playerId: string, streamManager?: StreamManager): void {
+		if (this.workers.has(playerId)) this.detach(playerId);
+		this.workers.set(playerId, new StreamWorker({ streamManager, bus: this.bus, playerId }));
+	}
+	aggregateSnapshot(): { active: number; loading: number } {
+		let active = 0;
+		let loading = 0;
+		for (const worker of this.workers.values()) {
+			const current = worker.current;
+			const stats = worker.statsSnapshot as {
+				active?: number;
+				paused?: number;
+				ended?: number;
+				error?: number;
+				destroyed?: number;
+				total?: number;
+				bySource?: Record<string, number>;
+			} | null;
+			if (current) active++;
+			if (stats && typeof stats.active === "number") active += stats.active;
+			if (stats && typeof (stats as any).loading === "number") loading += (stats as any).loading;
+		}
+		return { active, loading };
+	}
+	detach(playerId: string): void {
+		this.workers.get(playerId)?.dispose();
+		this.workers.delete(playerId);
 	}
 }

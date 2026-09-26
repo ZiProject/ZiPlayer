@@ -2,40 +2,30 @@ import { LRUCache } from "lru-cache";
 import type { SearchResult, SearchRequest, SearchDebugResult } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
-import type { PlayerBus } from "../structures/PlayerBus";
-import type { SearchControllerOptions } from "../types";
+import type { Bus } from "../structures/Bus";
+import { PLAYER_RPC } from "../structures/BusContract";
 
-/** Owns search orchestration and its cache so Player remains a facade. */
-export class SearchController {
+interface SearchWorkerOptions {
+	pluginManager: PluginManager;
+	extensionManager: ExtensionManager;
+	debug: (...args: any[]) => void;
+}
+
+/** Per-player search orchestration + cache, owned by the shared `SearchController` below. */
+class SearchWorker {
 	private static readonly CACHE_TTL = 2 * 60 * 1000;
 	private readonly lifecycleAbort = new AbortController();
 	private disposed = false;
 	public readonly cache: LRUCache<string, SearchResult>;
-	private readonly detachRpcs: Array<() => void> = [];
 
-	public constructor(private readonly options: SearchControllerOptions) {
+	public constructor(private readonly options: SearchWorkerOptions) {
 		this.cache = new LRUCache<string, SearchResult>({
 			max: 200,
-			ttl: SearchController.CACHE_TTL,
+			ttl: SearchWorker.CACHE_TTL,
 			allowStale: false,
 			updateAgeOnGet: true,
 			dispose: (_value, key, reason) => options.debug(`[SearchCache] Disposed cache entry: ${key}, reason: ${reason}`),
 		});
-
-		if (options.bus) {
-			this.detachRpcs.push(
-				options.bus.registerRpc<SearchRequest, SearchResult>("search", (request, context) =>
-					this.search(request.query, request.requestedBy, context.signal),
-				),
-				options.bus.registerRpc<{ query: string }, SearchResult | null>("search.cache.get", ({ query }) => this.getCached(query)),
-				options.bus.registerRpc<{ query: string; result: SearchResult }, void>("search.cache.set", ({ query, result }) =>
-					this.cacheResult(query, result),
-				),
-				options.bus.registerRpc<void, void>("search.cache.clear", () => this.clear()),
-				options.bus.registerRpc<void, void>("search.cache.purge", () => this.purgeStale()),
-				options.bus.registerRpc<{ query: string }, SearchDebugResult>("search.debug", ({ query }) => this.debug(query)),
-			);
-		}
 	}
 
 	public async search(query: string, requestedBy: string, signal?: AbortSignal): Promise<SearchResult> {
@@ -107,7 +97,6 @@ export class SearchController {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.lifecycleAbort.abort();
-		for (const detach of this.detachRpcs.splice(0)) detach();
 		this.cache.clear();
 	}
 
@@ -117,5 +106,50 @@ export class SearchController {
 
 	private key(query: string): string {
 		return query.toLowerCase().trim();
+	}
+}
+
+/** Shared, singleton controller: owns search orchestration and its cache per player so
+ *  Player remains a facade. */
+export class SearchController {
+	private readonly workers = new Map<string, SearchWorker>();
+
+	public constructor(bus: Bus) {
+		bus.registerRpc<SearchRequest, SearchResult>(PLAYER_RPC.search, (request, context) => {
+			const worker = this.workers.get(context.playerId);
+			if (!worker) throw new Error("SearchController is disposed");
+			return worker.search(request.query, request.requestedBy, context.signal);
+		});
+		bus.registerRpc<{ query: string }, SearchResult | null>(
+			PLAYER_RPC.searchCacheGet,
+			({ query }, ctx) => this.workers.get(ctx.playerId)?.getCached(query) ?? null,
+		);
+		bus.registerRpc<{ query: string; result: SearchResult }, void>(PLAYER_RPC.searchCacheSet, ({ query, result }, ctx) =>
+			this.workers.get(ctx.playerId)?.cacheResult(query, result),
+		);
+		bus.registerRpc<void, void>(PLAYER_RPC.searchCacheClear, (_req, ctx) => this.workers.get(ctx.playerId)?.clear());
+		bus.registerRpc<void, void>(PLAYER_RPC.searchCachePurge, (_req, ctx) => this.workers.get(ctx.playerId)?.purgeStale());
+		bus.registerRpc<{ query: string }, SearchDebugResult>(
+			PLAYER_RPC.searchDebug,
+			({ query }, ctx) =>
+				this.workers.get(ctx.playerId)?.debug(query) ?? {
+					isCached: false,
+					cacheAge: undefined,
+					pluginCount: 0,
+					ttsFiltered: false,
+				},
+		);
+	}
+
+	attach(playerId: string, options: SearchWorkerOptions): void {
+		if (this.workers.has(playerId)) this.detach(playerId);
+		this.workers.set(playerId, new SearchWorker(options));
+	}
+	detach(playerId: string): void {
+		this.workers.get(playerId)?.dispose();
+		this.workers.delete(playerId);
+	}
+	public cache(playerId: string): LRUCache<string, SearchResult> | undefined {
+		return this.workers.get(playerId)?.cache;
 	}
 }

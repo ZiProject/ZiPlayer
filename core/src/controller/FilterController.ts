@@ -3,14 +3,18 @@ import { PREDEFINED_FILTERS } from "../types";
 import type { Readable } from "stream";
 import { spawn, type ChildProcess } from "child_process";
 import ffmpegStaticPath from "ffmpeg-static";
-import type { PlayerBus, PlayerAction } from "../structures/PlayerBus";
+import type { Bus, PlayerAction } from "../structures/Bus";
 import { StreamType } from "@discordjs/voice";
+import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import fs from "node:fs";
 
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 import type { FilterControllerOptions } from "../types";
 
-export class FilterController {
+/** Per-player filter engine (ffmpeg pipeline + active filter list). Used both as the
+ *  playback filter worker owned by the shared `FilterController` below, and standalone
+ *  (bus-less) by SaveController for isolated export filtering. */
+export class FilterEngine {
 	private activeFilters: AudioFilter[] = [];
 	private ffmpegOutput: Readable | null = null;
 	private currentInputStream: Readable | string | null = null;
@@ -26,16 +30,10 @@ export class FilterController {
 	constructor(
 		private readonly resourcePort: FilterControllerResourcePort | undefined,
 		private readonly debug: DebugFn = () => {},
-		private readonly bus?: PlayerBus,
+		private readonly bus?: Bus,
 		private readonly options: FilterControllerOptions = {},
+		private readonly playerId?: string,
 	) {
-		if (bus) {
-			this.detachAction = bus.onAction((action, context) => this.handleAction(action, context.signal));
-			this.detachBusHandlers.push(
-				bus.registerQuery("filterString", () => this.getFilterString()),
-				bus.registerQuery("filteredStream", () => this.lastFilteredStream),
-			);
-		}
 		if (options.initialFilters?.length) {
 			void this.applyFilters(options.initialFilters).catch((error) =>
 				this.debug("[FilterController] Initial filter error:", error),
@@ -43,7 +41,7 @@ export class FilterController {
 		}
 	}
 
-	private async handleAction(action: PlayerAction, signal: AbortSignal): Promise<void> {
+	public async handleAction(action: PlayerAction, signal: AbortSignal): Promise<void> {
 		if (signal.aborted) return;
 		switch (action.type) {
 			case "FILTER_SET_SOURCE_TYPE":
@@ -61,8 +59,6 @@ export class FilterController {
 	}
 
 	public destroy(): void {
-		this.detachAction?.();
-		for (const detach of this.detachBusHandlers.splice(0)) detach();
 		this.activeFilters = [];
 		this.teardownFFmpeg();
 		this.currentInputStream = null;
@@ -93,6 +89,9 @@ export class FilterController {
 		}
 	}
 
+	public get lastFilteredStreamValue(): StreamInfo | null {
+		return this.lastFilteredStream;
+	}
 	public getFilterString(): string {
 		return this.activeFilters.map((filter) => filter.ffmpegFilter).join(",");
 	}
@@ -158,9 +157,9 @@ export class FilterController {
 	}
 
 	private refreshPlayerResource(): Promise<boolean> {
-		if (this.bus)
+		if (this.bus && this.playerId)
 			return this.bus
-				.requestRpc("playback.refreshResource", { position: 0 })
+				.requestRpc(this.playerId, PLAYER_RPC.playbackRefreshResource, { position: 0 })
 				.then(() => true)
 				.catch(() => false);
 		return this.resourcePort?.refreshPlayerResource() ?? Promise.resolve(false);
@@ -308,5 +307,55 @@ export class FilterController {
 		const result = { ...streamInfo, stream: output, inputType, wasRecreated };
 		this.lastFilteredStream = result;
 		return result;
+	}
+}
+
+/** Shared, singleton controller: owns the playback filter pipeline for every player
+ *  (registered on the bus), keyed by playerId. */
+export class FilterController {
+	private readonly engines = new Map<string, FilterEngine>();
+
+	constructor(private readonly bus: Bus) {
+		bus.onAction((action, context) => {
+			void this.engines.get(context.playerId)?.handleAction(action, context.signal);
+		});
+		bus.registerQuery(PLAYER_QUERY.filterString, (playerId) => this.engines.get(playerId)?.getFilterString() ?? "");
+		bus.registerQuery(PLAYER_QUERY.filteredStream, (playerId) => this.engines.get(playerId)?.lastFilteredStreamValue ?? null);
+		bus.registerQuery(
+			PLAYER_QUERY.filterList,
+			(playerId) =>
+				this.engines
+					.get(playerId)
+					?.getActiveFilters()
+					.map((f) => f.name) ?? [],
+		);
+		bus.registerQuery(PLAYER_QUERY.filters, (playerId) => this.engines.get(playerId)?.getActiveFilters() ?? []);
+		bus.registerRpc(
+			PLAYER_RPC.filterList,
+			(_req, ctx) =>
+				this.engines
+					.get(ctx.playerId)
+					?.getActiveFilters()
+					.map((f) => f.name) ?? [],
+		);
+		bus.registerRpc<{ filter: string; value: unknown }, any>(PLAYER_RPC.filterSet, async ({ filter, value }, ctx) => {
+			const engine = this.engines.get(ctx.playerId);
+			if (!engine) return false;
+			return value ? engine.applyFilter(filter) : engine.removeFilter(filter);
+		});
+	}
+
+	attach(
+		playerId: string,
+		resourcePort: FilterControllerResourcePort | undefined,
+		debug: DebugFn = () => {},
+		options: FilterControllerOptions = {},
+	): void {
+		if (this.engines.has(playerId)) this.detach(playerId);
+		this.engines.set(playerId, new FilterEngine(resourcePort, debug, this.bus, options, playerId));
+	}
+	detach(playerId: string): void {
+		this.engines.get(playerId)?.destroy();
+		this.engines.delete(playerId);
 	}
 }

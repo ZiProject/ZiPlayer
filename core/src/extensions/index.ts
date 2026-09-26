@@ -34,6 +34,7 @@ interface ExtensionMetadata {
 
 export class ExtensionManager {
 	private extensions: Map<string, BaseExtension>;
+	private disabledExtensions: Map<string, BaseExtension>;
 	private extensionMetadata: Map<string, ExtensionMetadata>;
 	private player: Player;
 	private manager: PlayerManager;
@@ -62,18 +63,13 @@ export class ExtensionManager {
 		this.player = player;
 		this.manager = manager;
 		this.extensions = new Map();
+		this.disabledExtensions = new Map();
 		this.extensionMetadata = new Map();
 		this.searchCache = new Map();
 		this.streamCache = new Map();
 		this.pendingSearches = new Map();
 		this.pendingStreams = new Map();
-		this.extensionContext = Object.freeze({
-			player,
-			manager,
-			playNext: () => (player as any).playNext?.(),
-			skip: () => (player as any).skip?.(),
-			emit: (event: string, ...args: any[]) => player.emit(event as any, ...args),
-		});
+		this.extensionContext = this.createExtensionContext(player, manager);
 		// Auto-cleanup caches periodically
 		this.cacheCleanupInterval = setInterval(() => this.cleanupCaches(), 5 * 60 * 1000);
 		if (this.cacheCleanupInterval.unref) {
@@ -89,11 +85,27 @@ export class ExtensionManager {
 		}
 	}
 
+	attachPlayer(player: Player): void {
+		this.player = player;
+		this.extensionContext = this.createExtensionContext(player, this.manager);
+	}
+
+	private createExtensionContext(player: Player, manager: PlayerManager): ExtensionContext {
+		return Object.freeze({
+			player,
+			manager,
+			playNext: () => (player as any).playNext?.(),
+			skip: () => (player as any).skip?.(),
+			emit: (event: string, ...args: any[]) => player.emit(event as any, ...args),
+		});
+	}
+
 	register(extension: BaseExtension): void {
 		if (this.extensions.has(extension.name)) {
 			this.debug(`Extension ${extension.name} already registered, skipping`);
 			return;
 		}
+		this.disabledExtensions.delete(extension.name);
 
 		if (!extension.player) {
 			extension.player = this.player;
@@ -125,10 +137,25 @@ export class ExtensionManager {
 		if (result) {
 			this.extensionMetadata.delete(name);
 			this.invokeExtensionLifecycle(extension, "onDestroy");
-			if (extension.player === this.player) extension.player = null;
+			if (!this.player || extension.player === this.player) extension.player = null;
 			this.debug(`Unregistered extension: ${name}`);
 		}
 		return result;
+	}
+
+	enable(name: string): boolean {
+		const extension = this.disabledExtensions.get(name);
+		if (!extension) return this.extensions.has(name);
+		this.register(extension);
+		return this.extensions.has(name);
+	}
+
+	disable(name: string): boolean {
+		const extension = this.extensions.get(name);
+		if (!extension) return this.disabledExtensions.has(name);
+		const disabled = this.unregister(extension);
+		if (disabled) this.disabledExtensions.set(name, extension);
+		return disabled;
 	}
 
 	destroy(): void {
@@ -143,6 +170,7 @@ export class ExtensionManager {
 			this.unregister(extension);
 		}
 		this.extensions.clear();
+		this.disabledExtensions.clear();
 		this.extensionMetadata.clear();
 		this.clearAllCaches();
 		this.pendingSearches.clear();
@@ -190,6 +218,7 @@ export class ExtensionManager {
 
 	clear(): void {
 		this.extensions.clear();
+		this.disabledExtensions.clear();
 		this.extensionMetadata.clear();
 		this.clearAllCaches();
 	}

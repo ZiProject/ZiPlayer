@@ -411,7 +411,7 @@ export class PluginManager {
 	}
 
 	/**
-	 * Full teardown hook so PlayerRuntimeController's generic `.dispose()`/`.destroy()`
+	 * Full teardown hook so PlayerManager's generic `.dispose()`/`.destroy()`
 	 * duck-typed resolver can find and call this. `clear()` alone is never invoked by
 	 * that resolver (it only looks for `dispose`/`destroy`), and even `clear()` only
 	 * drops the Map entries without closing the underlying streams. Without this method,

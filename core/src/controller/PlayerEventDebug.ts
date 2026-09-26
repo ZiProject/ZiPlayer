@@ -1,7 +1,7 @@
-import type { PlayerBus, PlayerEvent, PlayerAction, PlayerEventType } from "../structures/PlayerBus";
+import type { Bus, PlayerEvent, PlayerAction, PlayerEventType, PlayerActionExecutionContext } from "../structures/Bus";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
-import { PlayerBusLatencyTrace } from "./PlayerBusLatencyTrace";
-import type { PlayerDebugLevel, PlayerEventDebugLogger } from "../types";
+import { BusLatencyTrace } from "./BusLatencyTrace";
+import type { PlayerDebugLevel, PlayerEventDebugLogger, BusLatencyKind } from "../types";
 
 /**
  * Lower number = more severe / always-shown. A level is "enabled" when the
@@ -33,27 +33,29 @@ const ERROR_LIKE = /\b(error|failed|failure|exception|timeout|aborted)\b|⚠️|
  * (`debugLevel` / `PlayerManagerOptions.debugLevel`), and tagged consistently.
  *
  * When a `bus` is supplied it additionally attaches verbose EVENT/ACTION
- * tracing for the complete PlayerBus pipeline; this part is optional so the
+ * tracing for the complete Bus pipeline; this part is optional so the
  * same class can serve as a bus-less, manager-wide tracer too.
  */
 export class PlayerEventDebug {
 	private readonly detach: Array<() => void> = [];
 	private readonly recent = new Map<string, number>();
-	private readonly latencyTrace: PlayerBusLatencyTrace;
+	private readonly latencyTrace: BusLatencyTrace;
 	private readonly internalTag: string;
 	private level: PlayerDebugLevel;
 
 	constructor(
-		private readonly bus: PlayerBus | undefined,
+		private readonly bus: Bus | undefined,
 		private readonly id = "unknown",
 		private readonly logger?: PlayerEventDebugLogger,
 		level: PlayerDebugLevel = "info",
 	) {
 		this.level = level;
 		this.internalTag = `PlayerEventDebug:${id}`;
-		this.latencyTrace = new PlayerBusLatencyTrace(logger, level);
+		this.latencyTrace = new BusLatencyTrace((record) => {
+			if (!this.enabled("time")) return;
+			this.logger?.("[BusLatency]", record);
+		}, level);
 		if (this.bus) {
-			this.bus.setLatencyTrace(this.latencyTrace);
 			const eventTypes: PlayerEventType[] = [
 				"initialized",
 				"ready",
@@ -89,8 +91,12 @@ export class PlayerEventDebug {
 				"forwardModeStart",
 				"forwardModeEnd",
 			];
-			for (const type of eventTypes) this.detach.push(this.bus.subscribe(type, (event) => this.event(event)));
-			this.detach.push(this.bus.onAction((action, context) => this.action(action, context)));
+			for (const type of eventTypes) this.detach.push(this.bus.subscribe(this.id, type, (event) => this.event(event)));
+			this.detach.push(
+				this.bus.onAction((action, context) => {
+					if (context.playerId === this.id) this.action(action, context);
+				}),
+			);
 		}
 		this.log("info", this.internalTag, "ATTACHED");
 	}
@@ -99,9 +105,21 @@ export class PlayerEventDebug {
 		return this.level;
 	}
 
+	public get latencyTraceInstance(): BusLatencyTrace {
+		return this.latencyTrace;
+	}
+
 	public setDebugLevel(level: PlayerDebugLevel): void {
 		this.level = level;
 		this.latencyTrace.setDebugLevel(level);
+	}
+
+	public measure<T>(kind: BusLatencyKind, type: string, operation: () => T): T {
+		return this.latencyTrace.measure(kind, type, operation);
+	}
+
+	public measureAsync<T>(kind: BusLatencyKind, type: string, operation: () => Promise<T>): Promise<T> {
+		return this.latencyTrace.measureAsync(kind, type, operation);
 	}
 
 	/** Whether a message logged at `level` would actually reach the logger right now. */
@@ -152,7 +170,6 @@ export class PlayerEventDebug {
 		this.log("info", this.internalTag, "DETACHED");
 		for (const detach of this.detach.splice(0)) detach();
 		this.recent.clear();
-		if (this.bus) this.bus.setLatencyTrace(undefined);
 	}
 
 	private event(event: PlayerEvent) {
@@ -167,7 +184,7 @@ export class PlayerEventDebug {
 		this.log("verbose", this.internalTag, "EVENT", data);
 	}
 
-	private action(action: PlayerAction, context: { requestId: string; priority: number; signal: AbortSignal }) {
+	private action(action: PlayerAction, context: PlayerActionExecutionContext) {
 		if (!this.enabled("debug")) return;
 		this.log("debug", this.internalTag, "ACTION", {
 			type: action.type,

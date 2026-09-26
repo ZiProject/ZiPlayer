@@ -1,28 +1,32 @@
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type {
-	PlayerBus,
 	Track,
 	AntiStuckControllerOptions,
 	AntiStuckRetryHandlers,
 	LegacyAntiStuckRetryHandlers,
 	PlayerAction,
 } from "../types";
-import { CONTROLLER_RPC, type AntiStuckReportRequest } from "./ControllerBusContract";
+import { BUS_OUTPUT, CONTROLLER_RPC, PLAYER_QUERY, BUS_EVENT, traceBusSignal, type AntiStuckReportRequest } from "../structures/BusContract";
+import type { Bus } from "../structures/Bus";
 
-export class AntiStuckController {
+/** Per-player anti-stuck retry policy + recovery state machine, owned by the shared
+ *  `AntiStuckController` below. */
+class AntiStuckWorker {
 	private readonly enabled: boolean;
 	private readonly maxRetries: number;
 	private readonly retryDelayMs: number;
 	private readonly reusePreloadFirst: boolean;
 	private readonly reduceQualityOnRetry: boolean;
 	private readonly controlledSkipThreshold: number;
-	private readonly bus?: PlayerBus;
+	private readonly bus?: Bus;
+	private readonly playerId?: string;
 	private readonly failures = new Map<string, number>();
 	private timer: NodeJS.Timeout | null = null;
 	private generation = 0;
 	private readonly detachAction?: () => void;
 	private readonly detachBusHandlers: Array<() => void> = [];
-	public constructor(options: AntiStuckControllerOptions = {}) {
+	private readonly debug?: (message: string) => void;
+	public constructor(options: AntiStuckControllerOptions & { playerId?: string } = {}) {
 		this.enabled = options.enabled ?? true;
 		this.maxRetries = Math.max(0, options.maxRetries ?? 2);
 		this.retryDelayMs = Math.max(0, options.retryDelayMs ?? 90000);
@@ -30,18 +34,8 @@ export class AntiStuckController {
 		this.reduceQualityOnRetry = options.reduceQualityOnRetry ?? true;
 		this.controlledSkipThreshold = Math.max(1, options.controlledSkipThreshold ?? 3);
 		this.bus = options.bus;
-		if (this.bus) {
-			this.detachAction = this.bus.onAction((action: PlayerAction, context) => {
-				if (context.signal.aborted) return;
-				if (action.type === "STOP" || action.type === "SEEK") this.cancelRecovery();
-			});
-			this.detachBusHandlers.push(
-				this.bus.registerQuery("retryPolicy", () => this.policy as Record<string, unknown>),
-				this.bus.registerRpc<AntiStuckReportRequest, boolean>(CONTROLLER_RPC.antiStuckReport, ({ session, reason, handlers }) =>
-					this.reportStuck(session, reason, handlers),
-				),
-			);
-		}
+		this.playerId = options.playerId;
+		this.debug = options.debug;
 	}
 	public arm(session: PlaybackSession, timeoutMs: number, handlers: AntiStuckRetryHandlers): void {
 		this.clearTimer();
@@ -114,9 +108,10 @@ export class AntiStuckController {
 		};
 	}
 	public dispose(): void {
-		this.detachAction?.();
-		for (const detach of this.detachBusHandlers.splice(0)) detach();
 		this.reset();
+	}
+	public get policySnapshot(): Record<string, unknown> {
+		return this.policy as Record<string, unknown>;
 	}
 	public requestRecovery(
 		session: PlaybackSession,
@@ -136,32 +131,58 @@ export class AntiStuckController {
 		const track = session.track;
 		if (!this.enabled || !track || !session.isActive() || generation !== this.generation) return false;
 		const retry = this.getRetryCount(track);
-		this.bus?.event({ type: "STUCK_DETECTED", session: session.snapshot(), reason });
+		if (this.bus && this.playerId)
+			this.bus.event(this.playerId, { type: BUS_EVENT.stuckDetected, session: session.snapshot(), reason });
 		if (retry >= this.maxRetries) {
 			await handlers.skip({ session, track, retry, reason });
 			return false;
 		}
 		this.failures.set(this.key(track), retry + 1);
-		this.bus?.event({ type: "RECOVERY_STARTED", session: session.snapshot() });
-		if (requestId)
-			this.bus?.emitOutput({ type: "[Recovery]->[Player]:retrying", requestId, session: session.snapshot(), attempt: retry + 1 });
+		if (this.bus && this.playerId)
+			this.bus.event(this.playerId, { type: BUS_EVENT.recoveryStarted, session: session.snapshot() });
+		if (requestId && this.bus && this.playerId) {
+			this.debug?.(
+				`[AntiStuckController] ${traceBusSignal(BUS_OUTPUT.recoveryRetrying)} guild=${this.playerId} attempt=${retry + 1} reason=${reason}`,
+			);
+			this.bus.emitOutput({
+				type: BUS_OUTPUT.recoveryRetrying,
+				requestId,
+				playerId: this.playerId,
+				session: session.snapshot(),
+				attempt: retry + 1,
+			});
+		}
 		if (this.retryDelayMs > 0) await this.delay(this.retryDelayMs, session.signal);
 		if (!session.isActive() || generation !== this.generation) return false;
 		const ok = await handlers.retry({ session, track, retry: retry + 1, reason });
 		if (ok) {
 			this.failures.delete(this.key(track));
-			if (requestId) this.bus?.emitOutput({ type: "[Recovery]->[Player]:recovered", requestId, session: session.snapshot() });
+			if (requestId && this.bus && this.playerId) {
+				this.debug?.(`[AntiStuckController] ${traceBusSignal(BUS_OUTPUT.recoveryRecovered)} guild=${this.playerId}`);
+				this.bus.emitOutput({
+					type: BUS_OUTPUT.recoveryRecovered,
+					requestId,
+					playerId: this.playerId,
+					session: session.snapshot(),
+				});
+			}
 			return true;
 		}
 		if (session.isActive()) {
-			this.bus?.event({ type: "RECOVERY_FAILED", session: session.snapshot() });
-			if (requestId)
-				this.bus?.emitOutput({
-					type: "[Recovery]->[Player]:failed",
+			if (this.bus && this.playerId)
+				this.bus.event(this.playerId, { type: BUS_EVENT.recoveryFailed, session: session.snapshot() });
+			if (requestId && this.bus && this.playerId) {
+				this.debug?.(
+					`[AntiStuckController] ${traceBusSignal(BUS_OUTPUT.recoveryFailed)} guild=${this.playerId}: ${reason}`,
+				);
+				this.bus.emitOutput({
+					type: BUS_OUTPUT.recoveryFailed,
 					requestId,
+					playerId: this.playerId,
 					session: session.snapshot(),
 					error: new Error(reason),
 				});
+			}
 			if (this.getRetryCount(track) >= this.controlledSkipThreshold)
 				await handlers.skip({ session, track, retry: this.getRetryCount(track), reason });
 		}
@@ -187,5 +208,32 @@ export class AntiStuckController {
 	}
 	private key(track: Track): string {
 		return track.id ?? track.url ?? `${track.source}:${track.title}`;
+	}
+}
+
+/** Shared, singleton controller: owns anti-stuck retry policy and recovery for every
+ *  player, keyed by playerId. */
+export class AntiStuckController {
+	private readonly workers = new Map<string, AntiStuckWorker>();
+
+	public constructor(private readonly bus: Bus) {
+		bus.onAction((action, context) => {
+			if (context.signal.aborted) return;
+			if (action.type === "STOP" || action.type === "SEEK") this.workers.get(context.playerId)?.cancelRecovery();
+		});
+		bus.registerQuery(PLAYER_QUERY.retryPolicy, (playerId) => this.workers.get(playerId)?.policySnapshot ?? {});
+		bus.registerRpc<AntiStuckReportRequest, boolean>(CONTROLLER_RPC.antiStuckReport, ({ session, reason, handlers }, ctx) => {
+			const worker = this.workers.get(ctx.playerId);
+			return worker ? worker.reportStuck(session, reason, handlers) : Promise.resolve(false);
+		});
+	}
+
+	attach(playerId: string, options: Omit<AntiStuckControllerOptions, "bus"> = {}): void {
+		if (this.workers.has(playerId)) this.detach(playerId);
+		this.workers.set(playerId, new AntiStuckWorker({ ...options, bus: this.bus, playerId }));
+	}
+	detach(playerId: string): void {
+		this.workers.get(playerId)?.dispose();
+		this.workers.delete(playerId);
 	}
 }

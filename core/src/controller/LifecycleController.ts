@@ -1,10 +1,10 @@
 import { AudioPlayerStatus } from "@discordjs/voice";
-import { createPlayerRequestId, type PlayerBus } from "../structures/PlayerBus";
-import type { LifecycleControllerOptions } from "../types";
+import { createPlayerRequestId, type Bus } from "../structures/Bus";
+import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
+import { PlaybackMode, type LifecycleControllerOptions } from "../types";
 
-/** Owns idle/leave policy and lifecycle cleanup outside the Player facade. */
-export class LifecycleController {
-	private readonly bus: PlayerBus;
+/** Per-player idle/leave policy worker, owned by the shared `LifecycleController` below. */
+class LifecycleWorker {
 	private readonly leaveOnEnd: boolean;
 	private readonly leaveOnEmpty: boolean;
 	private readonly leaveTimeout: number;
@@ -12,58 +12,74 @@ export class LifecycleController {
 	private leaveTimer: NodeJS.Timeout | null = null;
 	private disposed = false;
 	private isPlaying = false;
-	private unsubscribe: Array<() => void> = [];
-	private readonly detachRpcs: Array<() => void> = [];
+	private readonly unsubscribe: Array<() => void> = [];
 
-	public constructor(options: LifecycleControllerOptions) {
-		this.bus = options.bus;
-		this.leaveOnEnd = options.options.leaveOnEnd ?? true;
-		this.leaveOnEmpty = options.options.leaveOnEmpty ?? true;
-		this.leaveTimeout = Math.max(0, options.options.leaveTimeout ?? 100000);
-		this.debug = options.debug;
-		this.detachRpcs.push(
-			this.bus.registerRpc<{ reason?: "track-end" | "queue-empty" | "manual" }, void>("lifecycle.scheduleLeave", ({ reason }) =>
-				this.scheduleLeave(reason),
-			),
-			this.bus.registerRpc<void, void>("lifecycle.clearLeaveTimeout", () => this.clearLeaveTimeout()),
-		);
+	constructor(
+		private readonly bus: Bus,
+		private readonly playerId: string,
+		options: LifecycleControllerOptions["options"],
+		debug?: (...args: any[]) => void,
+	) {
+		this.leaveOnEnd = options.leaveOnEnd ?? true;
+		this.leaveOnEmpty = options.leaveOnEmpty ?? true;
+		this.leaveTimeout = Math.max(0, options.leaveTimeout ?? 100000);
+		this.debug = debug;
 
 		this.unsubscribe.push(
-			this.bus.subscribe("TRACK_STARTED", () => {
+			this.bus.subscribe(this.playerId, BUS_EVENT.trackStarted, () => {
 				this.isPlaying = true;
 				this.clearLeaveTimeout();
 			}),
-			this.bus.subscribe("TRACK_LOADING", () => this.clearLeaveTimeout()),
-			this.bus.subscribe("trackRequested", () => this.clearLeaveTimeout()),
-			this.bus.subscribe("stateChanged", (_event) => {
+			this.bus.subscribe(this.playerId, BUS_EVENT.trackLoading, () => this.clearLeaveTimeout()),
+			this.bus.subscribe(this.playerId, BUS_EVENT.trackRequested, () => this.clearLeaveTimeout()),
+			this.bus.subscribe(this.playerId, BUS_EVENT.stateChanged, (_event) => {
 				const status = _event.newState.status;
 				this.isPlaying = status === AudioPlayerStatus.Playing;
 				if (status !== AudioPlayerStatus.Idle) this.clearLeaveTimeout();
 			}),
-			this.bus.subscribe("TRACK_END", () => {
+			this.bus.subscribe(this.playerId, BUS_EVENT.trackEnd, () => {
 				this.isPlaying = false;
 				if (this.leaveOnEnd) this.scheduleLeave("track-end");
 			}),
-			this.bus.subscribe("queueChanged", (event) => {
+			this.bus.subscribe(this.playerId, BUS_EVENT.forwardModeStart, () => {
+				this.clearLeaveTimeout();
+				this.debug?.("[LifecycleController] clearing leave timer: forward mode started");
+			}),
+			this.bus.subscribe(this.playerId, BUS_EVENT.forwardModeEnd, () => {
+				if (!this.leaveOnEmpty || this.isPlaying || this.isForward()) return;
+				const queue = this.bus.querySync(this.playerId, PLAYER_QUERY.queue) ?? [];
+				if (queue.length === 0) {
+					this.scheduleLeave("queue-empty");
+				}
+			}),
+			this.bus.subscribe(this.playerId, BUS_EVENT.queueChanged, (event) => {
 				// An empty queue is not equivalent to an idle player: the current
 				// track may still be playing after the queue has been consumed.
 				if (this.leaveOnEmpty && event.queue.length === 0) {
-					if (this.isPlaying) {
+					if (this.isPlaying || this.isForward()) {
 						this.clearLeaveTimeout();
-						this.debug?.(`[LifecycleController] keeping connection: queue-empty while playing`);
+						this.debug?.(`[LifecycleController] keeping connection: queue-empty while playing or forwarding`);
 						return;
 					}
 					this.scheduleLeave("queue-empty");
 				} else if (event.queue.length > 0) this.clearLeaveTimeout();
 			}),
-			this.bus.onOutput("[Connection]->[Player]:connected", () => this.clearLeaveTimeout()),
-			this.bus.onOutput("[Connection]->[Player]:connecting", () => this.clearLeaveTimeout()),
+			this.bus.onOutput(BUS_OUTPUT.connectionConnected, () => this.clearLeaveTimeout()),
+			this.bus.onOutput(BUS_OUTPUT.connectionConnecting, () => this.clearLeaveTimeout()),
 		);
 	}
 
-	public scheduleLeave(reason: "track-end" | "queue-empty" | "manual" = "manual"): void {
+	private isForward(): boolean {
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode) === PlaybackMode.FORWARD;
+	}
+
+	scheduleLeave(reason: "track-end" | "queue-empty" | "manual" = "manual"): void {
 		if (this.disposed) return;
 		this.clearLeaveTimeout();
+		if (this.isForward()) {
+			this.debug?.(`[LifecycleController] ignoring leave (${reason}): forward mode`);
+			return;
+		}
 		if (reason === "queue-empty" && this.isPlaying) {
 			this.debug?.(`[LifecycleController] ignoring leave (${reason}) while playback is active`);
 			return;
@@ -77,6 +93,10 @@ export class LifecycleController {
 			this.leaveTimer = null;
 			// Playback may have started after the queue-empty event and before
 			// the timeout fired. Re-check the lifecycle condition at the edge.
+			if (this.isForward()) {
+				this.debug?.(`[LifecycleController] cancelling leave (${reason}): forward mode active`);
+				return;
+			}
 			if (reason === "queue-empty" && this.isPlaying) {
 				this.debug?.(`[LifecycleController] cancelling leave (${reason}): playback is active`);
 				return;
@@ -85,23 +105,22 @@ export class LifecycleController {
 		}, this.leaveTimeout);
 	}
 
-	public clearLeaveTimeout(): void {
+	clearLeaveTimeout(): void {
 		if (!this.leaveTimer) return;
 		clearTimeout(this.leaveTimer);
 		this.leaveTimer = null;
 	}
 
-	public async leave(reason = "manual"): Promise<void> {
+	async leave(reason = "manual"): Promise<void> {
 		if (this.disposed) return;
 		this.clearLeaveTimeout();
 		await this.disconnect(reason);
 	}
 
-	public dispose(): void {
+	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.clearLeaveTimeout();
-		for (const detach of this.detachRpcs.splice(0)) detach();
 		for (const unsubscribe of this.unsubscribe.splice(0)) unsubscribe();
 	}
 
@@ -109,15 +128,47 @@ export class LifecycleController {
 		if (this.disposed) return;
 		try {
 			await this.bus.request(
-				{
-					type: "[Player]->[Connection]:disconnect",
-					requestId: createPlayerRequestId(),
-					reason,
-				},
+				this.playerId,
+				{ type: BUS_REQUEST.connectionDisconnect, requestId: createPlayerRequestId(), reason },
 				{ timeoutMs: Math.max(5000, this.leaveTimeout || 5000) },
 			);
 		} catch (error) {
 			this.debug?.(`[LifecycleController] disconnect failed:`, error);
 		}
+	}
+}
+
+/** Shared, singleton controller: owns idle/leave policy and lifecycle cleanup outside
+ *  the Player facade, keyed by playerId. */
+export class LifecycleController {
+	private readonly workers = new Map<string, LifecycleWorker>();
+
+	public constructor(private readonly bus: Bus) {
+		bus.registerRpc<{ reason?: "track-end" | "queue-empty" | "manual" }, void>(
+			PLAYER_RPC.lifecycleScheduleLeave,
+			({ reason }, ctx) => this.workers.get(ctx.playerId)?.scheduleLeave(reason),
+		);
+		bus.registerRpc<void, void>(PLAYER_RPC.lifecycleClearLeaveTimeout, (_req, ctx) =>
+			this.workers.get(ctx.playerId)?.clearLeaveTimeout(),
+		);
+	}
+
+	attach(playerId: string, options: LifecycleControllerOptions["options"], debug?: (...args: any[]) => void): void {
+		if (this.workers.has(playerId)) this.detach(playerId);
+		this.workers.set(playerId, new LifecycleWorker(this.bus, playerId, options, debug));
+	}
+	detach(playerId: string): void {
+		this.workers.get(playerId)?.dispose();
+		this.workers.delete(playerId);
+	}
+
+	public scheduleLeave(playerId: string, reason: "track-end" | "queue-empty" | "manual" = "manual"): void {
+		this.workers.get(playerId)?.scheduleLeave(reason);
+	}
+	public clearLeaveTimeout(playerId: string): void {
+		this.workers.get(playerId)?.clearLeaveTimeout();
+	}
+	public async leave(playerId: string, reason = "manual"): Promise<void> {
+		await this.workers.get(playerId)?.leave(reason);
 	}
 }

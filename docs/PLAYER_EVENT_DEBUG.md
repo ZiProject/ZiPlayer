@@ -6,7 +6,7 @@ The intended trace is:
 
 ```text
 controller / Orchestrator
-  -> PlayerBus producer
+  -> Bus producer
   -> PlayerEventBridge: BUS EVENT
   -> PlayerEventBridge: PLAYER EMIT
   -> PlayerEventBridge: MANAGER EMIT
@@ -18,20 +18,20 @@ action/query lifecycle at the Bus boundary so a complete sequence can be reconst
 ## Expected diagnostic sequence
 
 ```text
-[PlayerBus:<guild>] ACTION IN ...
-[PlayerBus:<guild>] ACTION DISPATCH ...
-[PlayerBus:<guild>] EVENT ... TRACK_LOADING
+[Bus:<guild>] ACTION IN ...
+[Bus:<guild>] ACTION DISPATCH ...
+[Bus:<guild>] EVENT ... TRACK_LOADING
 [PlayerEventBridge:<guild>] BUS EVENT ...
 [PlayerEventBridge:<guild>] PLAYER EMIT ...
 [PlayerEventBridge:<guild>] MANAGER EMIT ...
 ...
-[PlayerBus:<guild>] EVENT ... TRACK_STARTED
+[Bus:<guild>] EVENT ... TRACK_STARTED
 ...
 ```
 
 ## What to verify
 
-- Every PlayerBus event has exactly one bridge trace.
+- Every Bus event has exactly one bridge trace.
 - Every mapped public Player event has a corresponding PLAYER EMIT trace.
 - Every mapped Manager event has a corresponding MANAGER EMIT trace.
 - `requestId` and `sessionId` remain stable through async playback work.

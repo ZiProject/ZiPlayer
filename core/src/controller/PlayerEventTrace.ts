@@ -1,4 +1,4 @@
-import type { PlayerEvent } from "../structures/PlayerBus";
+import type { PlayerEvent } from "../structures/Bus";
 import type { PlayerEventTraceInfo } from "../types";
 
 const sequenceByEvent = new WeakMap<object, number>();

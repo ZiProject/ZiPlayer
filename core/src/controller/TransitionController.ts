@@ -1,16 +1,40 @@
 import type { Track } from "../types";
-import type { PlayerBus } from "../structures/PlayerBus";
-import { CONTROLLER_RPC, type TransitionBeatWaitRequest, type TransitionPlanRequest } from "./ControllerBusContract";
+import type { Bus } from "../structures/Bus";
+import {
+	CONTROLLER_RPC,
+	PLAYER_QUERY,
+	type TransitionBeatWaitRequest,
+	type TransitionPlanRequest,
+} from "../structures/BusContract";
 import type { TransitionControllerOptions, TransitionPlan } from "../types";
 
+type ResolvedOptions = Required<Omit<TransitionControllerOptions, "genreDurations" | "bus">> & {
+	genreDurations: Record<string, number>;
+};
+
+/** Shared, singleton controller: owns per-player transition (crossfade) settings, keyed by playerId. */
 export class TransitionController {
-	private readonly options: Required<Omit<TransitionControllerOptions, "genreDurations" | "bus">> & {
-		genreDurations: Record<string, number>;
-	};
-	private readonly detachBusHandlers: Array<() => void> = [];
-	public constructor(options: TransitionControllerOptions = {}) {
+	private readonly states = new Map<string, ResolvedOptions>();
+
+	public constructor(bus?: Bus) {
+		if (bus) {
+			bus.registerQuery(
+				PLAYER_QUERY.transitionSettings,
+				(playerId) => (this.states.get(playerId) ?? {}) as Record<string, unknown>,
+			);
+			bus.registerRpc<TransitionPlanRequest, TransitionPlan>(CONTROLLER_RPC.transitionPlan, ({ from, to }, ctx) =>
+				this.plan(ctx.playerId, from, to),
+			);
+			bus.registerRpc<TransitionBeatWaitRequest, number>(CONTROLLER_RPC.transitionBeatWait, ({ track, positionMs }, ctx) =>
+				this.beatWaitMs(ctx.playerId, track, positionMs),
+			);
+		}
+	}
+
+	public attach(playerId: string, options: TransitionControllerOptions = {}): void {
+		if (this.states.has(playerId)) this.detach(playerId);
 		const minDurationMs = Math.max(0, options.minDurationMs ?? 120);
-		this.options = {
+		this.states.set(playerId, {
 			enabled: options.enabled ?? true,
 			durationMs: Math.max(0, options.durationMs ?? 5000),
 			smartEnabled: options.smartEnabled ?? true,
@@ -31,53 +55,54 @@ export class TransitionController {
 				techno: 200,
 				...(options.genreDurations ?? {}),
 			},
-		};
-		if (options.bus) {
-			this.detachBusHandlers.push(
-				options.bus.registerQuery("transitionSettings", () => this.settings as Record<string, unknown>),
-				options.bus.registerRpc<TransitionPlanRequest, TransitionPlan>(CONTROLLER_RPC.transitionPlan, ({ from, to }) =>
-					this.plan(from, to),
-				),
-				options.bus.registerRpc<TransitionBeatWaitRequest, number>(CONTROLLER_RPC.transitionBeatWait, ({ track, positionMs }) =>
-					this.beatWaitMs(track, positionMs),
-				),
-			);
-		}
+		});
 	}
-	public plan(from: Track | null, to: Track | null): TransitionPlan {
-		if (!this.options.enabled || !from || !to)
-			return { enabled: false, durationMs: 0, waitForBeat: false, beatAlignMaxWaitMs: 0 };
-		let duration = this.options.smartEnabled ? this.options.baseDurationMs : this.options.durationMs;
-		if (this.options.genreAware) {
+	public detach(playerId: string): void {
+		this.states.delete(playerId);
+	}
+
+	public plan(playerId: string, from: Track | null, to: Track | null): TransitionPlan {
+		const options = this.states.get(playerId);
+		if (!options?.enabled || !from || !to) return { enabled: false, durationMs: 0, waitForBeat: false, beatAlignMaxWaitMs: 0 };
+		let duration = options.smartEnabled ? options.baseDurationMs : options.durationMs;
+		if (options.genreAware) {
 			const genre = this.genreOf(to) ?? this.genreOf(from);
-			if (genre) duration = this.options.genreDurations[genre] ?? duration;
+			if (genre) duration = options.genreDurations[genre] ?? duration;
 		}
-		duration = Math.min(this.options.maxDurationMs, Math.max(this.options.minDurationMs, duration));
+		duration = Math.min(options.maxDurationMs, Math.max(options.minDurationMs, duration));
 		return {
 			enabled: duration > 0,
 			durationMs: duration,
-			waitForBeat: this.options.smartEnabled && this.options.beatAlign,
-			beatAlignMaxWaitMs: this.options.beatAlignMaxWaitMs,
+			waitForBeat: options.smartEnabled && options.beatAlign,
+			beatAlignMaxWaitMs: options.beatAlignMaxWaitMs,
 		};
 	}
-	public beatWaitMs(track: Track | null, positionMs: number): number {
-		if (!track || !this.options.smartEnabled || !this.options.beatAlign) return 0;
+	public beatWaitMs(playerId: string, track: Track | null, positionMs: number): number {
+		const options = this.states.get(playerId);
+		if (!track || !options?.smartEnabled || !options.beatAlign) return 0;
 		const bpmRaw = (track as Track & { metadata?: Record<string, unknown> }).metadata?.bpm;
 		const bpm = typeof bpmRaw === "number" ? bpmRaw : Number(bpmRaw);
 		if (!Number.isFinite(bpm) || bpm <= 0) return 0;
 		const beatMs = 60000 / bpm;
 		const remainder = Math.max(0, positionMs) % beatMs;
 		const waitMs = beatMs - remainder;
-		return waitMs > 0 && waitMs <= this.options.beatAlignMaxWaitMs ? waitMs : 0;
+		return waitMs > 0 && waitMs <= options.beatAlignMaxWaitMs ? waitMs : 0;
 	}
-	public get settings(): Readonly<typeof this.options> {
-		return this.options;
+	public aggregateSnapshot(): { active: number } {
+		let active = 0;
+		for (const settings of this.states.values()) {
+			if (settings.enabled) active++;
+		}
+		return { active };
 	}
-	public get enabled(): boolean {
-		return this.options.enabled;
+	public settings(playerId: string): Readonly<ResolvedOptions> | undefined {
+		return this.states.get(playerId);
+	}
+	public enabled(playerId: string): boolean {
+		return this.states.get(playerId)?.enabled ?? false;
 	}
 	public dispose(): void {
-		for (const detach of this.detachBusHandlers.splice(0)) detach();
+		this.states.clear();
 	}
 	private genreOf(track: Track): string | null {
 		const metadata = (track as Track & { metadata?: Record<string, unknown> }).metadata;

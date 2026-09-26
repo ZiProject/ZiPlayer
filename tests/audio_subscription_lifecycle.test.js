@@ -5,15 +5,19 @@ const { Readable } = require("node:stream");
 const {
 	ConnectionController,
 	PlaybackOrchestrator,
+	createPlaybackOrchestrator,
 	PlaybackController,
 	StreamController,
+	StreamWorker,
 	TrackLoader,
-	PlayerBus,
+	Bus,
 	PlaybackSession,
+	PlaybackSessionController,
 	QueueController,
 	VolumeController,
 	TransitionController,
 	SaveController,
+	SaveWorker,
 } = require("../core/dist");
 
 const createContext = () => ({
@@ -23,13 +27,10 @@ const createContext = () => ({
 });
 
 test("ConnectionController ensures subscription on Ready and cleans up on Destroyed", () => {
-	const bus = new PlayerBus();
+	const bus = new Bus();
 	const mockAudioPlayer = {};
-	const controller = new ConnectionController({
-		guildId: "g-test",
-		bus,
-		audioPlayer: mockAudioPlayer,
-	});
+	const controller = new ConnectionController(bus);
+	controller.attach("g-test", { audioPlayer: mockAudioPlayer });
 
 	let subscribedPlayer = null;
 	const mockConnection = Object.assign(new EventEmitter(), {
@@ -50,26 +51,31 @@ test("ConnectionController ensures subscription on Ready and cleans up on Destro
 		},
 	});
 
-	const sub = controller.ensureSubscription(mockConnection);
+	const sub = controller.ensureSubscription("g-test", mockConnection);
 	assert.ok(sub);
 	assert.equal(subscribedPlayer, mockAudioPlayer);
 
 	// When subscription is active, ensureSubscription returns existing subscription
-	const sub2 = controller.ensureSubscription(mockConnection);
+	const sub2 = controller.ensureSubscription("g-test", mockConnection);
 	assert.equal(sub2, sub);
 
 	// Cleaning up subscription unsubscribes
-	controller.cleanupSubscription();
+	controller.cleanupSubscription("g-test");
 	assert.equal(sub.unsubscribed, true);
-	assert.equal(controller.activeSubscription, null);
+	assert.equal(controller.getActiveSubscription("g-test"), null);
 
-	bus.dispose();
+	bus.disposePlayer("g-test");
 });
 
 test("Bus PLAY replaces the previous stream through StreamController", async () => {
-	const bus = new PlayerBus();
-	const queueController = new QueueController({ bus });
-	const streamController = new StreamController({ bus });
+	const playerId = "g-stream-test";
+	const bus = new Bus();
+	const queueController = new QueueController(bus);
+	queueController.attach(playerId);
+	const streamController = new StreamController(bus);
+	streamController.attach(playerId);
+	const sessionController = new PlaybackSessionController(bus);
+	sessionController.attach(playerId);
 
 	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
 	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
@@ -77,9 +83,9 @@ test("Bus PLAY replaces the previous stream through StreamController", async () 
 	const streamA = new Readable({ read() {} });
 	const streamB = new Readable({ read() {} });
 
-	const trackLoader = new TrackLoader({
+	const trackLoader = new TrackLoader(bus);
+	trackLoader.attach(playerId, {
 		context: {},
-		bus,
 		resolvers: [async (track) => ({ stream: track.id === "track-a" ? streamA : streamB, type: "arbitrary" })],
 	});
 
@@ -93,32 +99,32 @@ test("Bus PLAY replaces the previous stream through StreamController", async () 
 		playedArgs = { resource, session, from, to };
 		return undefined;
 	});
-	bus.registerRpc("plugin.relatedTracks", () => []);
-	const orchestrator = new PlaybackOrchestrator(bus);
+	const orchestrator = createPlaybackOrchestrator(bus, { sessionController });
+	orchestrator.attach(playerId);
 
 	// Start track A
-	await bus.action({ type: "PLAY", track: trackA }, createContext());
-	assert.equal(streamController.current?.track.id, "track-a");
+	await bus.action(playerId, { type: "PLAY", track: trackA }, createContext());
+	assert.equal(bus.querySync(playerId, "stream.current")?.track.id, "track-a");
 	assert.equal(playedArgs.to.id, "track-a");
 	assert.equal(playedArgs.from, null);
 
 	// Start track B through the public Bus action
-	await bus.action({ type: "PLAY", track: trackB }, createContext());
-	assert.equal(streamController.current?.track.id, "track-b");
+	await bus.action(playerId, { type: "PLAY", track: trackB }, createContext());
+	assert.equal(bus.querySync(playerId, "stream.current")?.track.id, "track-b");
 	assert.equal(playedArgs.to.id, "track-b");
 
 	// Stream A should have been destroyed by streamController.replace -> abortCurrent
 	assert.equal(streamA.destroyed, true);
 
-	orchestrator.dispose();
-	streamController.dispose();
+	await orchestrator.dispose();
+	streamController.detach(playerId);
 	trackLoader.dispose();
-	queueController.dispose();
-	bus.dispose();
+	queueController.detach(playerId);
 });
 
 test("PlaybackController.cancelFade restores resource volume to 100% when active", () => {
-	const bus = new PlayerBus();
+	const playerId = "g-cancelfade-test";
+	const bus = new Bus();
 	const mockAudioPlayer = Object.assign(new EventEmitter(), {
 		state: { status: "idle" },
 		play() {},
@@ -133,43 +139,50 @@ test("PlaybackController.cancelFade restores resource volume to 100% when active
 		},
 	});
 
-	const volumeController = new VolumeController(bus, { initialVolume: 100 });
-	const playbackController = new PlaybackController({
-		audioPlayer: mockAudioPlayer,
-		bus,
-		volumeController,
-	});
+	const volumeController = new VolumeController(bus);
+	volumeController.attach(playerId, { initialVolume: 100 });
+	// A long crossfade so the fade is still in flight when it gets cancelled.
+	bus.registerRpc("controller.transition.plan", () => ({ enabled: true, durationMs: 60_000, waitForBeat: false, beatAlignMaxWaitMs: 0 }));
+	const playbackController = new PlaybackController(bus);
+	playbackController.attach(playerId, { audioPlayer: mockAudioPlayer });
 
-	let currentVolume = 0;
-	const mockResource = {
-		metadata: { id: "track-1", title: "Track 1" },
-		volume: {
-			volume: 0,
-			setVolume(v) {
-				currentVolume = v;
-				this.volume = v;
+	const makeResource = (id) => {
+		const resource = {
+			metadata: { id, title: id },
+			volume: {
+				volume: 0,
+				setVolume(v) {
+					this.volume = v;
+				},
 			},
-		},
+		};
+		return resource;
 	};
+	const outgoing = makeResource("track-1");
+	const incoming = makeResource("track-2");
 
-	playbackController.activeResource = mockResource;
-	// Simulate fade in progress
-	playbackController.fadeGain = 0;
-	mockResource.volume.setVolume(0);
+	playbackController.play(playerId, outgoing);
+	assert.equal(playbackController.getActiveResource(playerId), outgoing);
+
+	// Second track while the first is audible -> crossfade starts, fade gain is tracked per player
+	mockAudioPlayer.state.status = "playing";
+	playbackController.play(playerId, incoming, undefined, outgoing.metadata, incoming.metadata);
+	assert.equal(playbackController.getFadeGain(playerId), 0);
+	assert.equal(incoming.volume.volume, 0);
 
 	// cancelFade should reset fadeGain and restore volume to 1.0 (100% volume / 100 = 1)
-	playbackController.cancelFade();
+	playbackController.cancelFade(playerId);
 
-	assert.equal(playbackController.fadeGain, null);
-	assert.equal(currentVolume, 1);
+	assert.equal(playbackController.getFadeGain(playerId), null);
+	assert.equal(incoming.volume.volume, 1);
 
 	playbackController.dispose();
-	volumeController.dispose();
-	bus.dispose();
+	volumeController.detach(playerId);
 });
 
 test("PlaybackController aborts an in-flight fade during dispose", async () => {
-	const bus = new PlayerBus();
+	const playerId = "g-fade-abort-test";
+	const bus = new Bus();
 	const mockAudioPlayer = Object.assign(new EventEmitter(), {
 		state: { status: "idle" },
 		play() {},
@@ -177,7 +190,8 @@ test("PlaybackController aborts an in-flight fade during dispose", async () => {
 			return true;
 		},
 	});
-	const playbackController = new PlaybackController({ audioPlayer: mockAudioPlayer, bus });
+	const playbackController = new PlaybackController(bus);
+	playbackController.attach(playerId, { audioPlayer: mockAudioPlayer });
 	let volumeWrites = 0;
 	const resource = {
 		volume: {
@@ -187,7 +201,7 @@ test("PlaybackController aborts an in-flight fade during dispose", async () => {
 		},
 	};
 
-	const fade = playbackController.fadeResourceVolume(resource, 0, 1, 100);
+	const fade = playbackController.fadeResourceVolume(playerId, resource, 0, 1, 100);
 	await new Promise((resolve) => setTimeout(resolve, 5));
 	playbackController.dispose();
 	const writesAtDispose = volumeWrites;
@@ -195,11 +209,10 @@ test("PlaybackController aborts an in-flight fade during dispose", async () => {
 	await new Promise((resolve) => setTimeout(resolve, 40));
 
 	assert.equal(volumeWrites, writesAtDispose);
-	bus.dispose();
 });
 
 test("SaveController aborts a pending resolver during dispose", async () => {
-	const controller = new SaveController({
+	const controller = new SaveWorker({
 		middlewareContext: {},
 		resolveStream: () => new Promise(() => {}),
 		resolveVideoStream: async () => null,
@@ -211,8 +224,7 @@ test("SaveController aborts a pending resolver during dispose", async () => {
 });
 
 test("StreamController.resolve follows fallback chain: stream -> url -> recreate -> throw", async () => {
-	const bus = new PlayerBus();
-	const streamController = new StreamController({ bus });
+	const streamController = new StreamWorker({});
 	const session = new PlaybackSession();
 	session.begin({ id: "t-1", title: "Track 1" });
 
@@ -276,5 +288,4 @@ test("StreamController.resolve follows fallback chain: stream -> url -> recreate
 
 	session.destroy();
 	streamController.dispose();
-	bus.dispose();
 });

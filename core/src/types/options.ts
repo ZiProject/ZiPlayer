@@ -1,40 +1,18 @@
 import type { AudioPlayer, AudioResource } from "@discordjs/voice";
 import type { VoiceConnection } from "@discordjs/voice";
-import type { Player } from "../structures/Player";
 import type { PlayerManager } from "../structures/PlayerManager";
-import type { PlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
 import type { TrackResolver } from "../structures/TrackResolver";
-import type { TrackLoader } from "../structures/TrackLoader";
 import type { PreloadManager } from "../structures/PreloadManager";
-import type { ConnectionController } from "../controller/ConnectionController";
+import type { PlaybackSessionController } from "../controller/PlaybackSessionController";
+import type { TrackLoader } from "../structures/TrackLoader";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
-import type { PlayerEventDebug } from "../controller/PlayerEventDebug";
-import type { PlayerConnectionBridge } from "../controller/PlayerConnectionBridge";
-import type { PlayerEventBridge } from "../controller/PlayerEventBridge";
-import type { PlaybackController } from "../controller/PlaybackController";
-import type { PlaybackSessionController } from "../controller/PlaybackSessionController";
-import type { StreamController } from "../controller/StreamController";
-import type { FilterController } from "../controller/FilterController";
-import type { QueueController } from "../controller/QueueController";
-import type { AntiStuckController } from "../controller/AntiStuckController";
-import type { TransitionController } from "../controller/TransitionController";
-import type { VolumeController } from "../controller/VolumeController";
-import type { PreloadController } from "../controller/PreloadController";
-import type { ResourceRefreshController } from "../controller/ResourceRefreshController";
-import type { PlaybackOrchestrator } from "../structures/PlaybackOrchestrator";
-import type { TTSController } from "../controller/TTSController";
-import type { SaveController } from "../controller/SaveController";
-import type { SearchController } from "../controller/SearchController";
-import type { PluginController } from "../controller/PluginController";
-import type { ExtensionController } from "../controller/ExtensionController";
-import type { LifecycleController } from "../controller/LifecycleController";
-import type { ForwardController } from "../controller/ForwardController";
 import type { PlayerOptions, Track, TrackMiddleware, StreamInfo, TrackLoadResult } from "./index";
 export interface PlaybackStartControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 	sessionController: PlaybackSessionController;
 	transitionEnabled: () => boolean;
 	stopPlayback: (signal: AbortSignal, cancelPreload?: boolean) => void;
@@ -42,20 +20,20 @@ export interface PlaybackStartControllerOptions {
 	adapters?: PlaybackOrchestratorAdapters;
 }
 export interface PlaybackPreparationControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 	isCurrentSession: (session: PlaybackSession, context: import("./bus").PlayerMessageContext) => boolean;
 	queueSnapshot: () => Track[];
 	setQueueRelated: (tracks: Track[]) => void;
 }
 export interface PlaybackSkipControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 	nextThroughBus: (ignoreLoop: boolean, context: import("./bus").PlayerMessageContext) => Promise<Track | null>;
 	stopPlayback: (signal: AbortSignal) => void;
 	publishState: () => void;
 	setWaitingForQueue: (waiting: boolean) => void;
 }
 export interface PlaybackTrackEndControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 	nextThroughBus: (ignoreLoop: boolean, context: import("./bus").PlayerMessageContext) => Promise<Track | null>;
 	stopPlayback: (signal: AbortSignal) => void;
 	publishState: () => void;
@@ -63,14 +41,14 @@ export interface PlaybackTrackEndControllerOptions {
 	lifecycleSignal: AbortSignal;
 }
 export interface PlaybackPlayControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 	isWaitingForQueue: () => boolean;
 	debug: (message?: any, ...optionalParams: any[]) => void;
 	lifecycleSignal: AbortSignal;
 	adapters?: PlaybackOrchestratorAdapters;
 }
 export interface ResourceRefreshControllerOptions {
-	bus: PlayerBus;
+	bus: Bus;
 }
 export interface SaveControllerOptions {
 	middleware?: TrackMiddleware[];
@@ -79,21 +57,23 @@ export interface SaveControllerOptions {
 	resolveVideoStream: (track: Track) => Promise<StreamInfo | null | undefined>;
 	ffmpegPath?: string | null;
 	debug?: (...args: any[]) => void;
-	bus?: PlayerBus;
+	bus?: Bus;
 }
 export interface SearchControllerOptions {
 	extensionManager: ExtensionManager;
 	pluginManager: PluginManager;
 	debug: (...args: any[]) => void;
-	bus?: PlayerBus;
+	bus?: Bus;
 }
 export interface QueueControllerOptions {
-	bus?: PlayerBus;
+	bus?: Bus;
 }
+/** Collaborators of the shared `PreloadController` (both are process-wide singletons too). */
 export interface PreloadControllerOptions {
 	loader: TrackLoader;
 	manager: PreloadManager;
-	bus?: PlayerBus;
+	/** Process-wide debug sink; see `traceBusSignal` in BusContract for the log format used. */
+	debug?: (message: string) => void;
 }
 export interface TransitionControllerOptions {
 	enabled?: boolean;
@@ -106,7 +86,7 @@ export interface TransitionControllerOptions {
 	maxDurationMs?: number;
 	beatAlignMaxWaitMs?: number;
 	genreDurations?: Record<string, number>;
-	bus?: PlayerBus;
+	bus?: Bus;
 }
 export interface TransitionPlan {
 	enabled: boolean;
@@ -123,7 +103,7 @@ export interface TTSControllerOptions {
 	maxTimeTts?: number;
 	volume?: number;
 	interrupt?: boolean;
-	bus?: PlayerBus;
+	bus?: Bus;
 }
 export interface VolumeControllerOptions {
 	initialVolume?: number;
@@ -140,17 +120,11 @@ export interface FilterControllerOptions {
 }
 export interface ExtensionControllerOptions {
 	extensionManager: ExtensionManager;
-	bus: PlayerBus;
+	bus: Bus;
 }
 export interface PluginControllerOptions {
 	pluginManager: PluginManager;
-	bus: PlayerBus;
-}
-export interface PlayerConnectionBridgeOptions {
-	player: Player;
-	bus: PlayerBus;
-	debug?: (...args: any[]) => void;
-	guildId: string;
+	bus: Bus;
 }
 /**
  * Optional fallback adapters used when the corresponding controller RPC is not
@@ -165,51 +139,25 @@ export interface PlaybackOrchestratorAdapters {
 	isTTS?: (track: Track) => boolean;
 	playTTS?: (track: Track) => void | Promise<void>;
 }
+/** Collaborators of the shared `PlaybackOrchestrator` singleton. */
 export interface PlaybackOrchestratorOptions {
+	sessionController: PlaybackSessionController;
+}
+/** Per-player configuration handed to the shared `PlaybackOrchestrator` via `attach(playerId, options)`. */
+export interface PlaybackOrchestratorAttachOptions {
 	debug?: (...args: any[]) => void;
-	sessionController?: PlaybackSessionController;
 	adapters?: PlaybackOrchestratorAdapters;
 }
-export interface PlayerRuntimeGraph {
-	connectionController: ConnectionController;
-	lifecycleController: LifecycleController;
-	forwardController: ForwardController;
-	audioPlayer: AudioPlayer;
-	streamManager: StreamManager;
-	preloadManager: PreloadManager;
-	trackResolver: TrackResolver;
-	pluginManager: PluginManager;
-	extensionManager: ExtensionManager;
-	pluginController: PluginController;
-	extensionController: ExtensionController;
-	queueController: QueueController;
-	trackLoader: TrackLoader;
-	playbackController: PlaybackController;
-	streamController: StreamController;
-	saveController: SaveController;
-	filterController: FilterController;
-	antiStuckController: AntiStuckController;
-	transitionController: TransitionController;
-	volumeController: VolumeController;
-	preloadController: PreloadController;
-	resourceRefreshController: ResourceRefreshController;
-	playerConnectionBridge: PlayerConnectionBridge;
-	orchestrator: PlaybackOrchestrator;
-	sessionController: PlaybackSessionController;
-	ttsController: TTSController;
-	debugTracer: PlayerEventDebug;
-	searchController: SearchController;
-	eventBridge: PlayerEventBridge;
-}
+export type { SharedControllerSet } from "./controllerSet";
 export interface PromotedPreload {
 	track: Track;
 	stream: NodeJS.ReadableStream;
 	streamInfo?: StreamInfo;
 	streamId: string | null;
 }
-export type PlayerBusLatencyKind = "action" | "rpc" | "query" | "event";
-export interface PlayerBusLatencyRecord {
-	kind: PlayerBusLatencyKind;
+export type BusLatencyKind = "action" | "rpc" | "query" | "event";
+export interface BusLatencyRecord {
+	kind: BusLatencyKind;
 	type: string;
 	durationUs: number;
 	requestId?: string;
