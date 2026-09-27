@@ -7,7 +7,7 @@ import {
 	type AudioPlayer,
 	type PlayerSubscription,
 } from "@discordjs/voice";
-import type { PlayerOptions, VoiceChannel, PlayerConnectionInput, ConnectionControllerOptions } from "../types";
+import type { VoiceChannel, PlayerConnectionInput, ConnectionControllerOptions } from "../types";
 import { createPlayerSessionId, type Bus, type PlayerRequestId, type PlayerSessionId } from "../structures/Bus";
 import { BUS_OUTPUT, BUS_REQUEST, PLAYER_QUERY, PLAYER_RPC, traceBusSignal } from "../structures/BusContract";
 
@@ -257,7 +257,7 @@ export class ConnectionController {
 				slot.connection.state.status === VoiceConnectionStatus.Ready
 			) {
 				this.ensureSubscription(playerId, slot.connection);
-				this.emitConnected(playerId, event.requestId, sessionId, event.channel, slot.connection, slot);
+				this.emitConnected(playerId, event.requestId, sessionId, event.channel, slot.connection);
 				return;
 			}
 
@@ -314,7 +314,7 @@ export class ConnectionController {
 				return;
 			}
 			this.ensureSubscription(playerId, connection);
-			this.emitConnected(playerId, event.requestId, sessionId, event.channel, connection, slot);
+			this.emitConnected(playerId, event.requestId, sessionId, event.channel, connection);
 		} catch (error) {
 			if (slot.sessionId !== sessionId) return;
 			this.cleanupSubscription(playerId);
@@ -388,7 +388,6 @@ export class ConnectionController {
 		sessionId: PlayerSessionId,
 		channel: VoiceChannel,
 		connection: VoiceConnection,
-		slot: ConnectionSlot,
 	): void {
 		this.trace(playerId, BUS_OUTPUT.connectionConnected, `channel=${channel.id}`);
 		this.bus?.emitOutput({

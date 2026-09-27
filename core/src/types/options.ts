@@ -1,16 +1,13 @@
-import type { AudioPlayer, AudioResource } from "@discordjs/voice";
+import type { AudioPlayer } from "@discordjs/voice";
 import type { VoiceConnection } from "@discordjs/voice";
-import type { PlayerManager } from "../structures/PlayerManager";
 import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
-import type { StreamManager } from "../structures/StreamManager";
-import type { TrackResolver } from "../structures/TrackResolver";
 import type { PreloadManager } from "../structures/PreloadManager";
 import type { PlaybackSessionController } from "../controller/PlaybackSessionController";
 import type { TrackLoader } from "../structures/TrackLoader";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
-import type { PlayerOptions, Track, TrackMiddleware, StreamInfo, TrackLoadResult } from "./index";
+import type { PlayerOptions, Track, TrackMiddleware, StreamInfo } from "./index";
 export interface PlaybackStartControllerOptions {
 	bus: Bus;
 	sessionController: PlaybackSessionController;
@@ -47,9 +44,6 @@ export interface PlaybackPlayControllerOptions {
 	lifecycleSignal: AbortSignal;
 	adapters?: PlaybackOrchestratorAdapters;
 }
-export interface ResourceRefreshControllerOptions {
-	bus: Bus;
-}
 export interface SaveControllerOptions {
 	middleware?: TrackMiddleware[];
 	middlewareContext: import("./core").TrackMiddlewareContext;
@@ -57,12 +51,6 @@ export interface SaveControllerOptions {
 	resolveVideoStream: (track: Track) => Promise<StreamInfo | null | undefined>;
 	ffmpegPath?: string | null;
 	debug?: (...args: any[]) => void;
-	bus?: Bus;
-}
-export interface SearchControllerOptions {
-	extensionManager: ExtensionManager;
-	pluginManager: PluginManager;
-	debug: (...args: any[]) => void;
 	bus?: Bus;
 }
 export interface QueueControllerOptions {
@@ -117,14 +105,6 @@ export interface FilterControllerOptions {
 	onFilterRemoved?: (filter: import("./filter").AudioFilter) => void;
 	onFiltersCleared?: () => void;
 	onProcessingError?: (error: Error) => void;
-}
-export interface ExtensionControllerOptions {
-	extensionManager: ExtensionManager;
-	bus: Bus;
-}
-export interface PluginControllerOptions {
-	pluginManager: PluginManager;
-	bus: Bus;
 }
 /**
  * Optional fallback adapters used when the corresponding controller RPC is not

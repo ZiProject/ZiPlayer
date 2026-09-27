@@ -1,6 +1,6 @@
 import { createPlayerRequestId } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
-import type { PlayerMessageContext, PlaybackSessionSnapshot, Track } from "../types";
+import type { PlayerMessageContext, PlaybackSessionSnapshot } from "../types";
 import type { Bus } from "../structures/Bus";
 import type { PlaybackTrackEndControllerOptions } from "../types";
 import { PlayerActionPriority } from "../types";
@@ -28,7 +28,6 @@ export class PlaybackTrackEndController {
 	private waitingForQueue = false;
 	private queueStartPromise: Promise<void> | null = null;
 	private queueStartGeneration = 0;
-	private readonly detachRpcs: Array<() => void> = [];
 
 	public constructor(playerId: string, options: PlaybackTrackEndControllerOptions) {
 		this.playerId = playerId;

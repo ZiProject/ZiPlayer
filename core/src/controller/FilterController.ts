@@ -17,14 +17,11 @@ import type { FilterControllerOptions } from "../types";
 export class FilterEngine {
 	private activeFilters: AudioFilter[] = [];
 	private ffmpegOutput: Readable | null = null;
-	private currentInputStream: Readable | string | null = null;
 	private ffmpegProcess: ChildProcess | null = null;
 	private ffmpegAbortController: AbortController | null = null;
 	private ffmpegGeneration = 0;
 	private seekStartupTimer: ReturnType<typeof setTimeout> | null = null;
 	private lastFilteredStream: StreamInfo | null = null;
-	private readonly detachAction?: () => void;
-	private readonly detachBusHandlers: Array<() => void> = [];
 	public StreamType: FilterControllerStreamType = "arbitrary";
 
 	constructor(
@@ -61,7 +58,6 @@ export class FilterEngine {
 	public destroy(): void {
 		this.activeFilters = [];
 		this.teardownFFmpeg();
-		this.currentInputStream = null;
 		this.lastFilteredStream = null;
 	}
 
@@ -178,7 +174,6 @@ export class FilterEngine {
 			}
 			if (!recreated) throw new Error("Stream recreation returned no stream");
 			const result = { ...streamInfo, stream: recreated, url: undefined, inputType: StreamType.Arbitrary, wasRecreated: true };
-			this.currentInputStream = recreated;
 			this.lastFilteredStream = result;
 			return result;
 		}
@@ -197,7 +192,6 @@ export class FilterEngine {
 		const sourceStream: Readable | string = source;
 		const wasRecreated = false;
 		if (generation !== this.ffmpegGeneration) throw new Error("FFmpeg generation outdated");
-		this.currentInputStream = sourceStream;
 		const filterString = this.getFilterString();
 		const ffmpegSeekSeconds = hasSeek ? (position / 1000).toFixed(3) : null;
 		if (!hasSeek && !filterString) {

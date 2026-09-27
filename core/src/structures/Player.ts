@@ -1,5 +1,5 @@
 import { EventEmitter } from "events";
-import { Stream } from "stream";
+import type { Stream } from "stream";
 import type { VoiceConnection } from "@discordjs/voice";
 import type { PlayerManager } from "./PlayerManager";
 import type {

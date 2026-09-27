@@ -1,6 +1,5 @@
 import type { LoopMode, SearchResult, Track } from "../types";
 import type { Bus, PlayerAction, PlayerActionExecutionContext } from "../structures/Bus";
-import type { QueueControllerOptions } from "../types";
 import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 
 type QueueInsertRequest = { query: string | Track | Track[]; index?: number; requestedBy?: string };

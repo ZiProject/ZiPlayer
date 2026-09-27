@@ -6,12 +6,10 @@ import {
 	PlaybackMode,
 	PlayerManagerOptions,
 	PlayerOptions,
-	type Track,
 	SourcePlugin,
 	SearchResult,
 	ManagerEvents,
 	PlayerStats,
-	type ForwardHealthStatus,
 	type PlaybackMirrorOptions,
 	type TrackMiddleware,
 	type PlayerDebugLevel,
@@ -49,7 +47,7 @@ import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { SaveController } from "../controller/SaveController";
 import { PlaybackSessionController } from "../controller/PlaybackSessionController";
 import { GlobalControllerRegistry } from "../controller/GlobalControllerRegistry";
-import { BUS_EVENT, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
+import { BUS_EVENT, CONTROLLER_RPC, PLAYER_RPC } from "./BusContract";
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
 
 export function createSharedControllers(params: {
@@ -133,47 +131,8 @@ interface ManagerCacheEntry<T> {
 	expiresAt: number;
 }
 
-/**
- * The main class for managing players across multiple Discord guilds.
- *
- * @example
- * // Basic setup with plugins and extensions
- * const manager = new PlayerManager({
- *   plugins: [
- *     new YouTubePlugin(),
- *     new SoundCloudPlugin(),
- *     new SpotifyPlugin(),
- *     new TTSPlugin({ defaultLang: "en" })
- *   ],
- *   extensions: [
- *     new voiceExt(null, { lang: "en-US" }),
- *     new lavalinkExt(null, {
- *       nodes: [{ host: "localhost", port: 2333, password: "youshallnotpass" }]
- *     })
- *   ],
- *   extractorTimeout: 10000,
- *   autoCleanup: true,
- *   cleanupInterval: 60000
- * });
- *
- * // Create a player for a guild
- * const player = await manager.create(guildId, {
- *   tts: { interrupt: true, volume: 1 },
- *   leaveOnEnd: true,
- *   leaveTimeout: 30000
- * });
- *
- * // Get existing player
- * const existingPlayer = manager.get(guildId);
- * if (existingPlayer) {
- *   await existingPlayer.play("Never Gonna Give You Up", userId);
- * }
- */
 class PlayerMonitoring {
-	constructor(
-		private readonly controllers: SharedControllerSet,
-		private readonly bus: Bus,
-	) {}
+	constructor(private readonly controllers: SharedControllerSet) {}
 
 	getSnapshot(): PlayerStats {
 		const playback = this.controllers.playback?.aggregateSnapshot() ?? { playing: 0, paused: 0, idle: 0, total: 0 };
@@ -217,6 +176,42 @@ class PlayerMonitoring {
 	}
 }
 
+/**
+ * The main class for managing players across multiple Discord guilds.
+ *
+ * @example
+ * // Basic setup with plugins and extensions
+ * const manager = new PlayerManager({
+ *   plugins: [
+ *     new YouTubePlugin(),
+ *     new SoundCloudPlugin(),
+ *     new SpotifyPlugin(),
+ *     new TTSPlugin({ defaultLang: "en" })
+ *   ],
+ *   extensions: [
+ *     new voiceExt(null, { lang: "en-US" }),
+ *     new lavalinkExt(null, {
+ *       nodes: [{ host: "localhost", port: 2333, password: "youshallnotpass" }]
+ *     })
+ *   ],
+ *   extractorTimeout: 10000,
+ *   autoCleanup: true,
+ *   cleanupInterval: 60000
+ * });
+ *
+ * // Create a player for a guild
+ * const player = await manager.create(guildId, {
+ *   tts: { interrupt: true, volume: 1 },
+ *   leaveOnEnd: true,
+ *   leaveTimeout: 30000
+ * });
+ *
+ * // Get existing player
+ * const existingPlayer = manager.get(guildId);
+ * if (existingPlayer) {
+ *   await existingPlayer.play("Never Gonna Give You Up", userId);
+ * }
+ */
 export class PlayerManager extends EventEmitter {
 	private _debugLevel: PlayerDebugLevel = "info";
 	/**
@@ -245,7 +240,6 @@ export class PlayerManager extends EventEmitter {
 		this._debugLevel = level;
 		this.debugTracer.setDebugLevel(level);
 	}
-	private static instance: PlayerManager | null = null;
 	private players: Map<string, Player> = new Map();
 	public readonly bus: Bus;
 	private readonly controllers: SharedControllerSet;
@@ -269,10 +263,6 @@ export class PlayerManager extends EventEmitter {
 			this.emit("debug", message, ...optionalParams);
 		}
 	};
-
-	private createPlayerBus(_playerId: string): Bus {
-		return this.bus;
-	}
 
 	/**
 	 * Shared LRU cache available to all registered plugins.
@@ -344,7 +334,7 @@ export class PlayerManager extends EventEmitter {
 			if (!alive) throw new Error(`runtime.ping: player "${id}" is not tracked by this PlayerManager`);
 			return true;
 		});
-		this.monitoring = new PlayerMonitoring(this.controllers, this.bus);
+		this.monitoring = new PlayerMonitoring(this.controllers);
 		this.plugins = [];
 		this.searchCache = new Map();
 
@@ -510,8 +500,8 @@ export class PlayerManager extends EventEmitter {
 		this.statsInterval = setInterval(() => {
 			const stats = this.getStats();
 			this.emit("stats", stats);
-		}, 30000); 
-		
+		}, 30000);
+
 		this.statsInterval.unref?.();
 	}
 
@@ -729,12 +719,11 @@ export class PlayerManager extends EventEmitter {
 				this.assertNotDisposed();
 				this.debug(`Creating player for guildId: ${guildId}`);
 				const playerId = guildId;
-				const bus = this.createPlayerBus(playerId);
 
 				controllersAttached = true;
 				this.attachPlayerControllers(playerId, options);
 
-				const player = new Player(playerId, bus, options, this);
+				const player = new Player(playerId, this.bus, options, this);
 				created = player;
 				this.perPlayerResources.get(playerId)?.extensionManager.attachPlayer(player);
 				this.controllers.eventBridge?.attachPlayer(playerId, player);
@@ -1183,9 +1172,7 @@ export class PlayerManager extends EventEmitter {
 	public requestDestroy(player: Player): boolean {
 		if (player === this.searchPlayer) {
 			this.searchPlayer = null;
-			void this.runTeardown(player.playerId, player).catch((error) =>
-				this.debug(`Error destroying search player:`, error),
-			);
+			void this.runTeardown(player.playerId, player).catch((error) => this.debug(`Error destroying search player:`, error));
 			return true;
 		}
 		if (this.players.get(player.playerId) !== player) return false;
@@ -1533,18 +1520,4 @@ export class PlayerManager extends EventEmitter {
 			playersCount: this.players.size,
 		};
 	}
-}
-
-/**
- * Get the global PlayerManager instance
- *
- * @returns {PlayerManager | null} Global instance or null
- */
-export function getInstance(): PlayerManager | null {
-	const globalInst = getGlobalManager();
-	if (!globalInst) {
-		console.error("[PlayerManager] Global instance not found, make sure to initialize with new PlayerManager(options)");
-		return null;
-	}
-	return globalInst;
 }

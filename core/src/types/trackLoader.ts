@@ -17,14 +17,6 @@ export interface TrackAttemptQualityController {
 	get(): "high" | "low" | undefined;
 	set(quality: "high" | "low"): void;
 }
-export interface TrackLoadAttemptContext {
-	track: Track;
-	session: PlaybackSession;
-	retry: number;
-	qualityReduced: boolean;
-	usedPreload: boolean;
-	reason?: unknown;
-}
 export interface TrackRecoveryPolicy {
 	enabled?: boolean;
 	maxRetries?: number;

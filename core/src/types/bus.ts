@@ -246,12 +246,6 @@ export interface PlayerRequestOptions<K extends PlayerRequestInputType = PlayerR
 }
 export type BusRequestErrorReason = "timeout" | "aborted" | "disposed" | "unhandled";
 
-export interface PlayerRpcOptions {
-	timeoutMs?: number;
-	signal?: AbortSignal;
-	source?: string;
-	priority?: PlayerActionPriority;
-}
 export interface BusRpcContext {
 	readonly playerId: string;
 	readonly requestId: PlayerRequestId;
@@ -343,10 +337,6 @@ export interface PlayerRpcMap {
 	"lifecycle.scheduleLeave": { request: { reason?: "track-end" | "queue-empty" | "manual" }; response: void };
 	"lifecycle.clearLeaveTimeout": { request: undefined; response: void };
 }
-export type PlayerRpcHandler<TRequest, TResponse> = (
-	request: TRequest,
-	context: PlayerMessageContext,
-) => TResponse | Promise<TResponse>;
 
 export interface PlayerQueryMap {
 	audioPlayer: import("@discordjs/voice").AudioPlayer | null;

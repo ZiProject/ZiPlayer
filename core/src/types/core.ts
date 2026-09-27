@@ -73,13 +73,13 @@ export interface StreamInfo {
 }
 
 export interface TrackMiddlewareContext {
-	playerId: import("../structures/playerScope").PlayerId;
+	playerId: string;
 	manager?: PlayerManager;
 	player?: Player;
 }
 
 export interface TrackResolverContext {
-	playerId: import("../structures/playerScope").PlayerId;
+	playerId: string;
 	history?: Track[];
 	signal?: AbortSignal;
 	[key: string]: any;
@@ -185,19 +185,6 @@ export interface SaveOptions {
 }
 
 export type SaveVideoOptions = Pick<SaveOptions, "filename" | "quality" | "timeout" | "metadata" | "signal">;
-
-export interface PlayerSession {
-	guildId: string;
-	queue: Track[];
-	currentTrack: Track | null;
-	volume: number;
-	loopMode: LoopMode;
-	autoPlay: boolean;
-	position: number | null;
-	extensions: string[];
-	plugins: string[];
-	userdata?: Record<string, any>;
-}
 
 export interface PreloadState {
 	resource: AudioResource | null;
@@ -305,33 +292,4 @@ export interface ManagerEvents {
 	forwardModeEnd: [player: Player, leader: Player, reason: string | undefined];
 	seek: [player: Player, payload: { track: Track; position: number }];
 	trackStuck: [player: Player, track: Track | null];
-}
-
-export interface PlayerEvents {
-	debug: [message: string, ...args: any[]];
-	willPlay: [track: Track, upcomingTracks: Track[]];
-	trackStart: [track: Track];
-	trackEnd: [track: Track];
-	queueEnd: [];
-	playerError: [error: Error, track?: Track];
-	connectionError: [error: Error];
-	volumeChange: [oldVolume: number, newVolume: number];
-	queueAdd: [track: Track];
-	queueAddList: [tracks: Track[]];
-	queueRemove: [track: Track, index: number];
-	playerPause: [track: Track];
-	playerResume: [track: Track];
-	playerStop: [];
-	playerDestroy: [];
-	seek: [payload: { track: Track; position: number }];
-	ttsStart: [payload: { text?: string; track?: Track }];
-	ttsEnd: [];
-	filterApplied: [filter: AudioFilter];
-	filterRemoved: [filter: AudioFilter];
-	filtersCleared: [];
-	trackStuck: [track: Track | null];
-	streamError: [error: Error, track: Track | null];
-	stats: [stats: PlayerStats];
-	forwardModeStart: [leader: Player];
-	forwardModeEnd: [leader: Player, reason: string | undefined];
 }

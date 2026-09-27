@@ -1,4 +1,4 @@
-import type { StreamInfo, Track, ActiveStream, StreamControllerOptions, PlayerAction } from "../types";
+import type { StreamInfo, Track, ActiveStream, StreamControllerOptions } from "../types";
 import { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
@@ -13,8 +13,6 @@ export class StreamWorker {
 	private readonly streamManager?: StreamManager;
 	private readonly bus?: Bus;
 	private readonly playerId?: string;
-	private readonly detachAction?: () => void;
-	private readonly detachRpcs: Array<() => void> = [];
 	private readonly detachStreamError?: () => void;
 	constructor(options: StreamControllerOptions & { playerId?: string } = {}) {
 		this.streamManager = options.streamManager;

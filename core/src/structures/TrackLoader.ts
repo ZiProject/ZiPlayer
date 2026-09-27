@@ -47,14 +47,12 @@ interface TrackLoaderSlot {
  * already-buffered stream before resolving a fresh one.
  */
 export class TrackLoader {
-	private readonly bus?: Bus;
 	private readonly preloadManager?: PreloadManager;
 	private readonly slots = new Map<string, TrackLoaderSlot>();
 	private disposed = false;
 
 	/** `bus` is what the per-player RPCs are registered on; `preloadManager` lets loads reuse a buffered stream. */
 	public constructor(bus?: Bus, preloadManager?: PreloadManager) {
-		this.bus = bus;
 		this.preloadManager = preloadManager;
 
 		if (bus) {

@@ -36,9 +36,6 @@
  * second protocol that something ends up comparing against.
  */
 import type {
-	Track,
-	AntiStuckRetryHandlers,
-	TrackLoadResult,
 	ControllerCommandContext,
 	ControllerCommandHandler,
 	TransitionPlanRequest,
@@ -52,7 +49,6 @@ import type {
 	TrackGetRecoveryCountRequest,
 	TtsIsTTSRequest,
 	TtsPlayRequest,
-	PlayerRequestInputType,
 	PlayerEventType,
 	PlayerActionType,
 	PlayerQuery,

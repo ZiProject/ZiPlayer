@@ -131,7 +131,7 @@ export class PlaybackOrchestrator {
 
 	public constructor(
 		bus: Bus,
-		private readonly options: PlaybackOrchestratorOptions,
+		options: PlaybackOrchestratorOptions,
 	) {
 		this.bus = bus;
 		this.sessionController = options.sessionController;

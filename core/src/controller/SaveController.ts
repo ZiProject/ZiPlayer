@@ -1,17 +1,8 @@
 import { Readable } from "stream";
-import type {
-	AudioFilter,
-	SaveOptions,
-	SaveVideoOptions,
-	StreamInfo,
-	Track,
-	TrackMiddleware,
-	TrackMiddlewareContext,
-} from "../types";
+import type { AudioFilter, SaveOptions, SaveVideoOptions, Track, TrackMiddleware, TrackMiddlewareContext } from "../types";
 import { FilterEngine } from "./FilterController";
 import type { Bus } from "../structures/Bus";
 import { PLAYER_RPC } from "../structures/BusContract";
-import type { BusRpcContext } from "../types";
 import type { SaveControllerOptions } from "../types";
 
 /**
@@ -30,7 +21,6 @@ export class SaveWorker {
 	private readonly resolveVideoStream: SaveControllerOptions["resolveVideoStream"];
 	private readonly ffmpegPath?: string | null;
 	private readonly debug: NonNullable<SaveControllerOptions["debug"]>;
-	private readonly detachRpcs: Array<() => void> = [];
 
 	public constructor(options: SaveControllerOptions) {
 		this.middleware = [...(options.middleware ?? [])];

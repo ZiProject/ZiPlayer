@@ -85,9 +85,9 @@ có cơ chế nào dọn state của nó trong 15 controller dùng-chung không?
 (`core/src/controller/GlobalControllerRegistry.ts`) — class duy nhất trong repo có khái niệm "ping" (`CONTROLLER_RPC.runtimePing`,
 heartbeat, `staleAfterMs`, tự `dispose()` khi stale.
 
-**Đã verify bằng build thật + script thật** (`tsc --noEmit` 0 lỗi, `tsup build` OK, `node --test` toàn bộ suite cũ vẫn pass như audit
-log ở trên, cộng thêm 1 script probe mới chạy trực tiếp trên `core/dist` — `/tmp/probe/probe.js`, chưa commit, xem mục "Cần làm
-tiếp" bên dưới):
+**Đã verify bằng build thật + script thật** (`tsc --noEmit` 0 lỗi, `tsup build` OK, `node --test` toàn bộ suite cũ vẫn pass như
+audit log ở trên, cộng thêm 1 script probe mới chạy trực tiếp trên `core/dist` — `/tmp/probe/probe.js`, chưa commit, xem mục "Cần
+làm tiếp" bên dưới):
 
 ### Phát hiện 1 — `GlobalControllerRegistry` (cơ chế ping) **hoàn toàn chưa được nối dây, là dead code**
 
@@ -97,8 +97,8 @@ tiếp" bên dưới):
   `core/src`, không có chỗ nào đăng ký `runtime.ping`. Verify bằng script: `bus.hasRpc(CONTROLLER_RPC.runtimePing) === false`, và
   gọi `bus.requestRpc(playerId, CONTROLLER_RPC.runtimePing, ...)` luôn reject với `"No RPC handler registered"` — **kể cả với một
   player đang sống bình thường**.
-- Hệ quả: nếu ai đó bật `GlobalControllerRegistry` lên đúng như thiết kế hiện tại (gọi `register()` cho mỗi player, để heartbeat tự
-  chạy), **mọi player sẽ bị coi là "unreachable" ngay từ ping đầu tiên** (vì không ai trả lời RPC) và bị auto-dispose sau
+- Hệ quả: nếu ai đó bật `GlobalControllerRegistry` lên đúng như thiết kế hiện tại (gọi `register()` cho mỗi player, để heartbeat
+  tự chạy), **mọi player sẽ bị coi là "unreachable" ngay từ ping đầu tiên** (vì không ai trả lời RPC) và bị auto-dispose sau
   `staleAfterMs` (mặc định 10s) — verify bằng script: tạo `GlobalControllerRegistry` mới, `register()` một player đang sống,
   `ping()` đầu tiên trả `false`, giả lập quá `staleAfterMs` rồi `ping()` lần 2 → registry tự gọi `dispose` callback dù player đó
   **hoàn toàn khỏe mạnh**. Đây là lý do hợp lý khiến cơ chế này chưa từng được bật trong `PlayerManager`: bật lên nguyên trạng sẽ
@@ -108,8 +108,8 @@ tiếp" bên dưới):
 
 ### Phát hiện 2 — có 1 con đường "player không ping được" **thật, đang xảy ra**, mà `PlayerManager.destroy()` không dọn: search player
 
-- `getSearchPlayer()` tạo player nội bộ với `playerId = "__ziplayer_search__"` và **cố ý không đưa vào `this.players`** (comment có
-  ghi rõ "Not added to players and does not forward manager events").
+- `getSearchPlayer()` tạo player nội bộ với `playerId = "__ziplayer_search__"` và **cố ý không đưa vào `this.players`** (comment
+  có ghi rõ "Not added to players and does not forward manager events").
 - `Player.destroy()` luôn thử `this.manager?.requestDestroy(this)` trước; `requestDestroy` chỉ nhận nếu
   `this.players.get(player.playerId) === player`. Vì search player không nằm trong `this.players`, `requestDestroy` trả `false`,
   nên `Player.destroy()` **tự chạy `abortWorkflow()` + `completeDestroy()`** — **không bao giờ đi qua
@@ -122,28 +122,28 @@ tiếp" bên dưới):
 - Gọi lại `getSearchPlayer()` sau đó (ví dụ lần `search()` kế tiếp) sẽ **`attachPlayerControllers()` lần nữa đè lên state cũ chưa
   dọn** (xem Phát hiện 3) — verify bằng script: `LifecycleController` worker cũ bị thay bằng worker mới nhưng **worker cũ chưa bao
   giờ được `dispose()`** (timer/leave-timeout cũ vẫn treo), `StreamManager` cũ cũng bị thay mà không `dispose()`.
-- Đây chính là ví dụ thật của "player không còn sống nhưng controller vẫn giữ data" — không cần cơ chế ping mới phát hiện được, chỉ
-  cần sửa đường teardown của search player để nó cũng đi qua `runTeardown`/`detachControllers` như mọi player khác.
+- Đây chính là ví dụ thật của "player không còn sống nhưng controller vẫn giữ data" — không cần cơ chế ping mới phát hiện được,
+  chỉ cần sửa đường teardown của search player để nó cũng đi qua `runTeardown`/`detachControllers` như mọi player khác.
 
 ### Phát hiện 3 — 18/23 thành phần có `attach()` **không idempotent**, đè state cũ mà không dispose
 
 Kiểm lại toàn bộ `attach(playerId, ...)` trong 15 controller dùng-chung + `PreloadController`/`PreloadManager`/`TrackLoader`/
 `TrackResolver`/`PlaybackOrchestrator`/`PlayerEventBridge`:
 
-- **Có guard đúng** (detach state cũ trước khi set state mới, hoặc no-op nếu đã tồn tại):
-  `PlaybackController` (`if (this.slots.has(playerId)) this.detach(playerId)`), `PreloadManager` (tương tự),
-  `TrackLoader` (tương tự), `PreloadController` (`if (this.states.has(playerId)) return`),
-  `PlaybackOrchestrator` (`if (this.workers.has(playerId)) return`).
-- **Không có guard** (gọi `attach()` 2 lần cho cùng `playerId` mà không `detach()` ở giữa sẽ **leak** worker/timer/subscription cũ,
-  vì `Map.set()` ghi đè tham chiếu mà không gọi `dispose()`/`destroy()` trên giá trị cũ):
-  `ConnectionController`, `QueueController`, `VolumeController`, `FilterController`, `TransitionController`,
-  `AntiStuckController`, `StreamController`, `SaveController`, `LifecycleController`, `TTSController`, `SearchController`,
-  `ForwardController`, `ResourceRefreshController`, `PlaybackSessionController`, `PluginController`, `ExtensionController`,
-  `TrackResolver`, `PlayerEventBridge` — **18 thành phần**.
+- **Có guard đúng** (detach state cũ trước khi set state mới, hoặc no-op nếu đã tồn tại): `PlaybackController`
+  (`if (this.slots.has(playerId)) this.detach(playerId)`), `PreloadManager` (tương tự), `TrackLoader` (tương tự),
+  `PreloadController` (`if (this.states.has(playerId)) return`), `PlaybackOrchestrator`
+  (`if (this.workers.has(playerId)) return`).
+- **Không có guard** (gọi `attach()` 2 lần cho cùng `playerId` mà không `detach()` ở giữa sẽ **leak** worker/timer/subscription
+  cũ, vì `Map.set()` ghi đè tham chiếu mà không gọi `dispose()`/`destroy()` trên giá trị cũ): `ConnectionController`,
+  `QueueController`, `VolumeController`, `FilterController`, `TransitionController`, `AntiStuckController`, `StreamController`,
+  `SaveController`, `LifecycleController`, `TTSController`, `SearchController`, `ForwardController`, `ResourceRefreshController`,
+  `PlaybackSessionController`, `PluginController`, `ExtensionController`, `TrackResolver`, `PlayerEventBridge` — **18 thành
+  phần**.
 - Verify bằng script: gọi thẳng `attachPlayerControllers(playerId, {})` lần 2 cho 1 playerId đã attach (mô phỏng đúng lỗi search
   player ở Phát hiện 2, hoặc 1 bug tương lai ở đường recreate/reconnect) → `QueueState` cũ bị thay bằng cái mới (mất queue hiện
-  tại mà không có cảnh báo), `ConnectionSlot` cũ (`disposed === false`) bị bỏ rơi, `LifecycleWorker` cũ (`disposed === false`) bị bỏ
-  rơi — tức connection/leave-timer cũ **không bị huỷ**, chỉ đơn giản không còn ai trỏ tới.
+  tại mà không có cảnh báo), `ConnectionSlot` cũ (`disposed === false`) bị bỏ rơi, `LifecycleWorker` cũ (`disposed === false`) bị
+  bỏ rơi — tức connection/leave-timer cũ **không bị huỷ**, chỉ đơn giản không còn ai trỏ tới.
 - Hiện tại `create()`/`getSearchPlayer()` trong `PlayerManager` chỉ gọi `attachPlayerControllers` một lần cho playerId thường
   (guard bằng `this.players.has(guildId)`), nên bug này **chưa lộ ra ở guild player bình thường** — chỉ lộ qua đường search player
   (Phát hiện 2) và sẽ lộ thêm nếu sau này có tính năng "player mất kết nối lâu → tạo lại mà không destroy player cũ trước" (đúng
@@ -162,46 +162,46 @@ Kiểm lại toàn bộ `attach(playerId, ...)` trong 15 controller dùng-chung 
   ```
 - `ForwardController.healthStatus(playerId)` gọi `this.state(playerId)` trực tiếp (không qua `attach()`). Verify bằng script:
   `detach(playerId)` xong (map rỗng), gọi lại `forward.healthStatus(playerId)` (1 lời gọi hoàn toàn hợp lệ về mặt API, không có gì
-  báo lỗi) → `states` **có lại 1 entry cho playerId đó**, và **entry này sẽ tồn tại vĩnh viễn** vì không có `attach()` nào tương ứng
-  để một `detach()` trong tương lai biết cần dọn nó (playerId đã bị coi là "đã destroy" ở phía `PlayerManager`, sẽ không bao giờ
-  gọi `detach()` lại cho id đó nữa).
-- `PlaybackSessionController.replace()`/`retirePendingPrevious()` dùng cùng pattern `state()` — `current(playerId)` thì an toàn (dùng
-  `.get()` trực tiếp, không resurrect), nhưng `replace()` (dùng khi bắt đầu track mới) thì **sẽ** resurrect nếu lỡ gọi sau khi
-  player đã destroy.
+  báo lỗi) → `states` **có lại 1 entry cho playerId đó**, và **entry này sẽ tồn tại vĩnh viễn** vì không có `attach()` nào tương
+  ứng để một `detach()` trong tương lai biết cần dọn nó (playerId đã bị coi là "đã destroy" ở phía `PlayerManager`, sẽ không bao
+  giờ gọi `detach()` lại cho id đó nữa).
+- `PlaybackSessionController.replace()`/`retirePendingPrevious()` dùng cùng pattern `state()` — `current(playerId)` thì an toàn
+  (dùng `.get()` trực tiếp, không resurrect), nhưng `replace()` (dùng khi bắt đầu track mới) thì **sẽ** resurrect nếu lỡ gọi sau
+  khi player đã destroy.
 - Đây là dạng leak nhỏ (1 object state) nhưng đúng chất "controller không biết player đã chết, tiếp tục giữ data" — là chính xác
   loại vấn đề "không ping được player thì cần xoá data" mà câu hỏi gốc đặt ra, chỉ khác là ở đây state được **tạo mới** thay vì
-  *giữ lại* state cũ.
+  _giữ lại_ state cũ.
 
 ### Định hướng đề xuất — nối `GlobalControllerRegistry` (ping) vào `PlayerManager` để dọn data khi player "không ping được"
 
 Thứ tự đề xuất (mỗi bước có thể merge độc lập, không phá API công khai):
 
 1. **Vá rò rỉ đã biết trước khi bật ping** (nếu không, bật ping sẽ chỉ che triệu chứng chứ không phải nguyên nhân):
-   - Cho search player đi qua đúng 1 đường teardown: hoặc (a) đăng ký nó vào `this.players` dưới key
-     `SEARCH_PLAYER_GUILD_ID` (và loại trừ key này khỏi các API public như `getAll()`/`broadcast()`), để `requestDestroy` nhận
-     đúng nó và chạy `runTeardown` như player thường; hoặc (b) thêm 1 nhánh riêng trong `teardownPlayer`/`dispose()` xử lý
-     `searchPlayer` giống hệt logic đã có sẵn trong `dispose()` (nó *đã* làm việc này khi `PlayerManager.dispose()` toàn bộ — chỉ
-     thiếu ở đường `destroy()` từng phần/`Player.destroy()` trực tiếp).
+   - Cho search player đi qua đúng 1 đường teardown: hoặc (a) đăng ký nó vào `this.players` dưới key `SEARCH_PLAYER_GUILD_ID` (và
+     loại trừ key này khỏi các API public như `getAll()`/`broadcast()`), để `requestDestroy` nhận đúng nó và chạy `runTeardown`
+     như player thường; hoặc (b) thêm 1 nhánh riêng trong `teardownPlayer`/`dispose()` xử lý `searchPlayer` giống hệt logic đã có
+     sẵn trong `dispose()` (nó _đã_ làm việc này khi `PlayerManager.dispose()` toàn bộ — chỉ thiếu ở đường `destroy()` từng
+     phần/`Player.destroy()` trực tiếp).
    - Thêm guard `if (this.<map>.has(playerId)) this.detach(playerId);` (hoặc `return` nếu đã tồn tại — tuỳ ngữ nghĩa mong muốn)
      vào 18 `attach()` liệt kê ở Phát hiện 3, đồng bộ với cách `PlaybackController`/`PreloadManager`/`TrackLoader` đã làm.
-   - Đổi `ForwardController.state()`/`PlaybackSessionController.state()` thành không tự tạo entry ngầm (throw hoặc trả giá trị
-     mặc định không ghi vào map) khi chưa `attach()`; chỉ `attach()` mới được phép tạo entry.
+   - Đổi `ForwardController.state()`/`PlaybackSessionController.state()` thành không tự tạo entry ngầm (throw hoặc trả giá trị mặc
+     định không ghi vào map) khi chưa `attach()`; chỉ `attach()` mới được phép tạo entry.
 2. **Cho `runtime.ping` có người trả lời** — đăng ký 1 `registerRpc(CONTROLLER_RPC.runtimePing, ...)` **đúng 1 lần cho cả
    process** (giống pattern mọi RPC dùng-chung khác), trả lời dựa trên nguồn sự thật duy nhất là `PlayerManager`: player còn
    `this.players.has(playerId)` (hoặc là search player còn sống) **và** chưa `destroyed`. Cách sạch nhất là thêm handler này ngay
    trong `PlayerManager` constructor (nó là nơi duy nhất biết `this.players`), không đặt trong `createSharedControllers()` (hàm đó
    không có tham chiếu tới `PlayerManager`).
-3. **Khởi tạo `GlobalControllerRegistry` từ `PlayerManager`**, gọi `registry.register(playerId, bus, this.controllers, () =>
-   this.destroy(playerId))` ngay sau mỗi `attachPlayerControllers(playerId, ...)` thành công (kể cả nhánh search player sau khi
-   sửa ở bước 1), và `registry.unregister(playerId)`/`registry.dispose(playerId)` trong `teardownPlayer` — để "dọn khi không ping
-   được" và "dọn khi destroy chủ động" dùng chung 1 callback (`this.destroy(playerId)`), tránh 2 đường dọn khác nhau cho cùng 1
-   player.
+3. **Khởi tạo `GlobalControllerRegistry` từ `PlayerManager`**, gọi
+   `registry.register(playerId, bus, this.controllers, () => this.destroy(playerId))` ngay sau mỗi
+   `attachPlayerControllers(playerId, ...)` thành công (kể cả nhánh search player sau khi sửa ở bước 1), và
+   `registry.unregister(playerId)`/`registry.dispose(playerId)` trong `teardownPlayer` — để "dọn khi không ping được" và "dọn khi
+   destroy chủ động" dùng chung 1 callback (`this.destroy(playerId)`), tránh 2 đường dọn khác nhau cho cùng 1 player.
 4. **Chỉ sau khi bước 2 xong** mới an toàn để heartbeat của `GlobalControllerRegistry` chạy thật (nó tự `setInterval` ngay khi
    `register()` được gọi) — nếu làm bước 3 trước bước 2, mọi player sẽ bị auto-dispose sau `staleAfterMs` giống hệt kịch bản đã
    verify ở Phát hiện 1.
 5. Viết test commit (không chỉ script) cho: search player destroy dọn hết controller state; double-attach không leak; late-call
-   sau detach không resurrect state; `runtime.ping` trả đúng true/false theo trạng thái `PlayerManager`; registry tự dispose đúng 1
-   player "mất tích" (mô phỏng bằng cách gỡ nó khỏi `this.players` mà không qua `destroy()`) mà không đụng player khác.
+   sau detach không resurrect state; `runtime.ping` trả đúng true/false theo trạng thái `PlayerManager`; registry tự dispose đúng
+   1 player "mất tích" (mô phỏng bằng cách gỡ nó khỏi `this.players` mà không qua `destroy()`) mà không đụng player khác.
 
 ### Cần làm tiếp (để phiên sau kế thừa đúng, không suy đoán lại)
 
@@ -221,45 +221,45 @@ Thứ tự đề xuất (mỗi bước có thể merge độc lập, không phá
 
 ### ✅ Đã code + verify (phiên sau nữa) — tất cả 5 bước ở "Định hướng đề xuất" đã làm xong
 
-Đã sửa trực tiếp trong `core/src` (không chỉ audit nữa), build lại (`tsc --noEmit` 0 lỗi, `tsup build` OK), chạy lại toàn bộ
-49/49 test cũ (không hồi quy), và verify bằng 2 script probe mới (`/tmp/probe/probe.js` chạy lại + `/tmp/probe/probe2.js` mới —
-cả hai vẫn **chưa commit vào `tests/`**, xem lại mục "Cần làm tiếp" đã cập nhật bên dưới):
+Đã sửa trực tiếp trong `core/src` (không chỉ audit nữa), build lại (`tsc --noEmit` 0 lỗi, `tsup build` OK), chạy lại toàn bộ 49/49
+test cũ (không hồi quy), và verify bằng 2 script probe mới (`/tmp/probe/probe.js` chạy lại + `/tmp/probe/probe2.js` mới — cả hai
+vẫn **chưa commit vào `tests/`**, xem lại mục "Cần làm tiếp" đã cập nhật bên dưới):
 
-- **Bước 1a (Phát hiện 2 — search player)**: `PlayerManager.requestDestroy()` giờ nhận diện riêng
-  `player === this.searchPlayer`, tự `this.searchPlayer = null` rồi gọi thẳng `runTeardown()` — search player giờ đi qua
-  đúng 1 đường teardown như mọi player khác. Verify: sau `getSearchPlayer().destroy()`, cả 23 controller đều rỗng
-  (`p2_search_holders_after_destroy: []`, trước đó là danh sách đầy đủ 23 tên).
-- **Bước 1b (Phát hiện 3 — 18 `attach()` không idempotent)**: thêm guard `if (has) detach()` (hoặc tương đương an toàn) vào
-  cả 18 nơi: `AntiStuckController`, `ResourceRefreshController`, `SaveController`, `TTSController`, `SearchController`,
+- **Bước 1a (Phát hiện 2 — search player)**: `PlayerManager.requestDestroy()` giờ nhận diện riêng `player === this.searchPlayer`,
+  tự `this.searchPlayer = null` rồi gọi thẳng `runTeardown()` — search player giờ đi qua đúng 1 đường teardown như mọi player
+  khác. Verify: sau `getSearchPlayer().destroy()`, cả 23 controller đều rỗng (`p2_search_holders_after_destroy: []`, trước đó là
+  danh sách đầy đủ 23 tên).
+- **Bước 1b (Phát hiện 3 — 18 `attach()` không idempotent)**: thêm guard `if (has) detach()` (hoặc tương đương an toàn) vào cả 18
+  nơi: `AntiStuckController`, `ResourceRefreshController`, `SaveController`, `TTSController`, `SearchController`,
   `StreamController`, `ExtensionController`, `PluginController`, `TransitionController`, `VolumeController`, `QueueController`,
   `FilterController`, `TrackResolver`, `LifecycleController`, `ForwardController`, `PlaybackSessionController` (guard bình
-  thường), và 2 trường hợp đặc biệt: `ConnectionController.attach()` (detach cũ **đồng bộ, inline** vì `detach()` gốc là async
-  và không thể gọi thẳng bên trong `attach()` đồng bộ mà không tạo race — xem comment trong code), `PlayerEventBridge.attach()`
-  (lưu lại các hàm `unsubscribe` của `bus.subscribe()` vào slot và gọi hết trong `detach()` — trước đây bị bỏ qua, gây tích tụ
-  listener trùng nếu double-attach). Thêm 1 guard nữa ở chính `attachPlayerControllers()`: nếu `perPlayerResources` cũ còn tồn
-  tại cho playerId, `dispose()`/`destroy()` `streamManager`/`pluginManager`/`extensionManager` cũ trước khi tạo bộ mới (3 object
-  này do `PlayerManager` sở hữu trực tiếp, không phải controller). Verify: double-attach giờ cho
-  `p6_old_connection_slot_disposed: true`, `p6_old_lifecycle_worker_disposed: true` (trước đó cả hai đều `false`).
-- **Bước 1c (Phát hiện 4 — zombie state resurrection)**: `ForwardController.state()` và `PlaybackSessionController.state()` hết
-  tự `states.set()` khi thiếu — giờ trả về 1 object mặc định dùng-1-lần, không lưu vào map. Chỉ `attach()` mới được tạo entry
-  thật. Verify: gọi `forward.healthStatus()` sau `detach()` không còn hồi sinh entry (`p5_holders_after_late_calls: []`, trước
-  đó có `"forward"`).
+  thường), và 2 trường hợp đặc biệt: `ConnectionController.attach()` (detach cũ **đồng bộ, inline** vì `detach()` gốc là async và
+  không thể gọi thẳng bên trong `attach()` đồng bộ mà không tạo race — xem comment trong code), `PlayerEventBridge.attach()` (lưu
+  lại các hàm `unsubscribe` của `bus.subscribe()` vào slot và gọi hết trong `detach()` — trước đây bị bỏ qua, gây tích tụ listener
+  trùng nếu double-attach). Thêm 1 guard nữa ở chính `attachPlayerControllers()`: nếu `perPlayerResources` cũ còn tồn tại cho
+  playerId, `dispose()`/`destroy()` `streamManager`/`pluginManager`/`extensionManager` cũ trước khi tạo bộ mới (3 object này do
+  `PlayerManager` sở hữu trực tiếp, không phải controller). Verify: double-attach giờ cho `p6_old_connection_slot_disposed: true`,
+  `p6_old_lifecycle_worker_disposed: true` (trước đó cả hai đều `false`).
+- **Bước 1c (Phát hiện 4 — zombie state resurrection)**: `ForwardController.state()` và `PlaybackSessionController.state()` hết tự
+  `states.set()` khi thiếu — giờ trả về 1 object mặc định dùng-1-lần, không lưu vào map. Chỉ `attach()` mới được tạo entry thật.
+  Verify: gọi `forward.healthStatus()` sau `detach()` không còn hồi sinh entry (`p5_holders_after_late_calls: []`, trước đó có
+  `"forward"`).
 - **Bước 2 (Phát hiện 1 — `runtime.ping` chưa có ai trả lời)**: đăng ký `bus.registerRpc(CONTROLLER_RPC.runtimePing, ...)` ngay
-  trong `PlayerManager` constructor — trả `true` nếu playerId còn `this.players.has(id) && !destroyed` (hoặc là search player
-  còn sống), **throw** nếu không (để khớp đúng ngữ nghĩa "unreachable = promise reject" mà `GlobalControllerRegistry.ping()` đã
-  cài sẵn). Verify: `mgr.bus.hasRpc(CONTROLLER_RPC.runtimePing) === true`, ping một player khỏe mạnh trả `true`.
+  trong `PlayerManager` constructor — trả `true` nếu playerId còn `this.players.has(id) && !destroyed` (hoặc là search player còn
+  sống), **throw** nếu không (để khớp đúng ngữ nghĩa "unreachable = promise reject" mà `GlobalControllerRegistry.ping()` đã cài
+  sẵn). Verify: `mgr.bus.hasRpc(CONTROLLER_RPC.runtimePing) === true`, ping một player khỏe mạnh trả `true`.
 - **Bước 3 (nối `GlobalControllerRegistry` vào `PlayerManager`)**: thêm field riêng
   `private readonly controllerRegistry = new GlobalControllerRegistry<SharedControllerSet>()` (instance riêng của từng
-  `PlayerManager`, không dùng `GlobalControllerRegistry.global()` — để `dispose()` chỉ dọn đúng registry của chính nó, không
-  đụng registry của một `PlayerManager` khác trong cùng process). Gọi `controllerRegistry.register(playerId, this.bus,
-  this.controllers, disposeCallback)` ở cuối `attachPlayerControllers()` (chokepoint duy nhất, dùng chung cho cả player thường
-  lẫn search player); `disposeCallback` xử lý riêng case `playerId === SEARCH_PLAYER_GUILD_ID` (giống hệt nhánh mới trong
-  `requestDestroy`) rồi mới tới case thường (xoá khỏi `this.players`, `runTeardown`). Gọi
-  `controllerRegistry.unregister(playerId)` ở đầu `teardownPlayer()` (chokepoint teardown duy nhất, an toàn gọi nhiều lần) và
-  `controllerRegistry.clear()` ở đầu `PlayerManager.dispose()` (dừng toàn bộ heartbeat timer trước khi tự tay teardown từng
-  player, tránh 1 timer bắn nhầm giữa lúc đang dispose cả manager).
-- **Bước 4 (thứ tự bật ping)**: đã tự nhiên đúng thứ tự vì code bước 2 (đăng ký handler) nằm trong constructor — chạy trước bất
-  kỳ `attachPlayerControllers()`/`controllerRegistry.register()` nào có thể xảy ra.
+  `PlayerManager`, không dùng `GlobalControllerRegistry.global()` — để `dispose()` chỉ dọn đúng registry của chính nó, không đụng
+  registry của một `PlayerManager` khác trong cùng process). Gọi
+  `controllerRegistry.register(playerId, this.bus, this.controllers, disposeCallback)` ở cuối `attachPlayerControllers()`
+  (chokepoint duy nhất, dùng chung cho cả player thường lẫn search player); `disposeCallback` xử lý riêng case
+  `playerId === SEARCH_PLAYER_GUILD_ID` (giống hệt nhánh mới trong `requestDestroy`) rồi mới tới case thường (xoá khỏi
+  `this.players`, `runTeardown`). Gọi `controllerRegistry.unregister(playerId)` ở đầu `teardownPlayer()` (chokepoint teardown duy
+  nhất, an toàn gọi nhiều lần) và `controllerRegistry.clear()` ở đầu `PlayerManager.dispose()` (dừng toàn bộ heartbeat timer trước
+  khi tự tay teardown từng player, tránh 1 timer bắn nhầm giữa lúc đang dispose cả manager).
+- **Bước 4 (thứ tự bật ping)**: đã tự nhiên đúng thứ tự vì code bước 2 (đăng ký handler) nằm trong constructor — chạy trước bất kỳ
+  `attachPlayerControllers()`/`controllerRegistry.register()` nào có thể xảy ra.
 - **Kết quả kiểm tra đầu-cuối bằng probe2.js** (không phải suy đoán):
   - Player khỏe mạnh: `runtime.ping` trả `true`; để trôi qua 2 chu kỳ heartbeat mặc định (2s/lần, tổng ~4.5s) — player **không**
     bị đụng tới, vẫn còn đủ 23 controller, vẫn `tracked && !destroyed` (`q1_holders_after_2_heartbeats_healthy: 23`,
@@ -274,22 +274,20 @@ cả hai vẫn **chưa commit vào `tests/`**, xem lại mục "Cần làm tiế
 
 ### Cần làm tiếp (cập nhật lần 3 — đã test-hoá xong, chỉ còn 2 việc nhỏ)
 
-- [x] Chuyển 2 script probe thành test commit thật trong `tests/` — **xong**, 4 file mới, 14 test, tất cả pass cùng 49 test
-      cũ (tổng 63/63):
-      - `tests/search_player_teardown.test.js` (2 test) — Phát hiện 2 + fix.
-      - `tests/attach_idempotency.test.js` (5 test) — Phát hiện 3 + fix; test còn phân loại đúng nhóm "detach-rồi-set" (18
-        controller/manager) và nhóm "no-op nếu đã attach" (`preload`, `orchestrator` — sửa lại danh sách so với bản audit ban
-        đầu vì lúc chạy thử phát hiện `preloadManager`/`trackLoader` thật ra thuộc nhóm "detach-rồi-set", không phải "no-op" như
-        đoán ban đầu).
-      - `tests/no_zombie_state_resurrection.test.js` (3 test) — Phát hiện 4 + fix; test đúng hàm `replace()` (không phải
-        `current()`) cho `PlaybackSessionController`, vì `current()` vốn đã dùng `.get()` an toàn từ trước.
-      - `tests/runtime_ping_registry.test.js` (4 test) — Phát hiện 1 + fix cho `runtime.ping`/`GlobalControllerRegistry`; 2 test
-        cuối chờ thời gian thật (~4.5s và ~13s) để xác nhận player khỏe mạnh sống sót qua heartbeat và player mồ côi tự bị dọn
-        sau `staleAfterMs` mặc định — không mock thời gian, đúng chất "end-to-end", nhưng khiến suite chạy chậm hơn (~20s riêng
-        file này).
-- [ ] Cân nhắc expose `heartbeatMs`/`pingTimeoutMs`/`staleAfterMs` qua `PlayerManagerOptions` — vẫn **chưa làm**; hiện `staleAfterMs`
-      mặc định 10s khiến `tests/runtime_ping_registry.test.js` phải chờ thật ~13s, nên khi làm việc này nên đồng thời cho phép
-      test set nhỏ hơn để suite chạy nhanh hơn.
+- [x] Chuyển 2 script probe thành test commit thật trong `tests/` — **xong**, 4 file mới, 14 test, tất cả pass cùng 49 test cũ
+      (tổng 63/63): - `tests/search_player_teardown.test.js` (2 test) — Phát hiện 2 + fix. - `tests/attach_idempotency.test.js` (5
+      test) — Phát hiện 3 + fix; test còn phân loại đúng nhóm "detach-rồi-set" (18 controller/manager) và nhóm "no-op nếu đã
+      attach" (`preload`, `orchestrator` — sửa lại danh sách so với bản audit ban đầu vì lúc chạy thử phát hiện
+      `preloadManager`/`trackLoader` thật ra thuộc nhóm "detach-rồi-set", không phải "no-op" như đoán ban đầu). -
+      `tests/no_zombie_state_resurrection.test.js` (3 test) — Phát hiện 4 + fix; test đúng hàm `replace()` (không phải
+      `current()`) cho `PlaybackSessionController`, vì `current()` vốn đã dùng `.get()` an toàn từ trước. -
+      `tests/runtime_ping_registry.test.js` (4 test) — Phát hiện 1 + fix cho `runtime.ping`/`GlobalControllerRegistry`; 2 test
+      cuối chờ thời gian thật (~4.5s và ~13s) để xác nhận player khỏe mạnh sống sót qua heartbeat và player mồ côi tự bị dọn sau
+      `staleAfterMs` mặc định — không mock thời gian, đúng chất "end-to-end", nhưng khiến suite chạy chậm hơn (~20s riêng file
+      này).
+- [ ] Cân nhắc expose `heartbeatMs`/`pingTimeoutMs`/`staleAfterMs` qua `PlayerManagerOptions` — vẫn **chưa làm**; hiện
+      `staleAfterMs` mặc định 10s khiến `tests/runtime_ping_registry.test.js` phải chờ thật ~13s, nên khi làm việc này nên đồng
+      thời cho phép test set nhỏ hơn để suite chạy nhanh hơn.
 - [ ] Ghi chú giới hạn còn lại của `ConnectionController.attach()` guard (chưa dọn hộ `slot.operation` cũ đang chạy dở) vẫn giữ
       nguyên như đã ghi ở lần cập nhật trước — chưa cần sửa, chỉ là rủi ro lý thuyết với double-attach hiếm gặp.
 - [x] Mọi mục còn lại — xong.
@@ -300,42 +298,40 @@ cả hai vẫn **chưa commit vào `tests/`**, xem lại mục "Cần làm tiế
 
 Yêu cầu: `BUS_REQUEST`/`BUS_OUTPUT` trong `structures/BusContract.ts` từng dùng **chính giá trị runtime** dạng
 `"[Player]->[Connection]:connect"` — nghĩa là bức tranh "tín hiệu đi từ đâu đến đâu" bị nướng thẳng vào chuỗi mà
-`Bus`/`Player`/mọi controller so khớp (`===`, `switch`) — khác hẳn style dot-notation phẳng của mọi nhóm còn lại trong cùng
-file (`CONTROLLER_RPC`, `PLAYER_RPC`, `PLAYER_QUERY`, ...). Đã chuẩn hóa lại và tách phần "ký hiệu debug" ra riêng:
+`Bus`/`Player`/mọi controller so khớp (`===`, `switch`) — khác hẳn style dot-notation phẳng của mọi nhóm còn lại trong cùng file
+(`CONTROLLER_RPC`, `PLAYER_RPC`, `PLAYER_QUERY`, ...). Đã chuẩn hóa lại và tách phần "ký hiệu debug" ra riêng:
 
-- **Giá trị mới** (dot-notation, đồng bộ style toàn file): `BUS_REQUEST` → `"connection.connect"`,
-  `"connection.disconnect"`, `"connection.reconnect"`, `"preload.request"`, `"recovery.recover"`, `"resource.refresh"`.
-  `BUS_OUTPUT` → `"connection.connecting"`, `"connection.connected"`, `"connection.disconnected"`, `"connection.error"`,
-  `"preload.loading"`, `"preload.ready"`, `"preload.failed"`, `"recovery.retrying"`, `"recovery.recovered"`,
-  `"recovery.failed"`, `"resource.refreshed"`, `"resource.error"`.
+- **Giá trị mới** (dot-notation, đồng bộ style toàn file): `BUS_REQUEST` → `"connection.connect"`, `"connection.disconnect"`,
+  `"connection.reconnect"`, `"preload.request"`, `"recovery.recover"`, `"resource.refresh"`. `BUS_OUTPUT` →
+  `"connection.connecting"`, `"connection.connected"`, `"connection.disconnected"`, `"connection.error"`, `"preload.loading"`,
+  `"preload.ready"`, `"preload.failed"`, `"recovery.retrying"`, `"recovery.recovered"`, `"recovery.failed"`,
+  `"resource.refreshed"`, `"resource.error"`.
 - **Bức tranh `[From]->[To]:label` chuyển hẳn sang debug-only**: thêm `BUS_SIGNAL_TRACE` (bảng tra cứu nội bộ, key = giá trị
-  runtime mới) + hàm `traceBusSignal(type)` export công khai — trả về đúng annotation cũ (fallback về giá trị thô nếu
-  không có trong bảng, không bao giờ throw). Không có gì trong `Bus`/`Player`/controller so sánh với chuỗi này — chỉ dùng
-  để log.
-- **Export còn thiếu trước đó**: `BUS_OUTPUT`/`BusOutputKey` chưa từng được export ra `index.ts` — đã thêm cùng
-  `traceBusSignal`.
+  runtime mới) + hàm `traceBusSignal(type)` export công khai — trả về đúng annotation cũ (fallback về giá trị thô nếu không có
+  trong bảng, không bao giờ throw). Không có gì trong `Bus`/`Player`/controller so sánh với chuỗi này — chỉ dùng để log.
+- **Export còn thiếu trước đó**: `BUS_OUTPUT`/`BusOutputKey` chưa từng được export ra `index.ts` — đã thêm cùng `traceBusSignal`.
 - **Tăng cường debug ở 4 controller** (đúng yêu cầu "tăng cường debug từ các controller"): `ConnectionController`,
-  `PreloadController`, `ResourceRefreshController`, `AntiStuckController` giờ log `traceBusSignal(...)` tại mọi điểm
-  nhận `BUS_REQUEST`/phát `BUS_OUTPUT` liên quan (connect/disconnect/reconnect, preload request/loading/ready/failed,
-  resource refresh/refreshed/error, recovery retrying/recovered/failed). Nhân tiện dùng luôn `params.debugSink` của
-  `createSharedControllers` — tham số này **trước đó được khai báo nhưng chưa từng dùng ở đâu cả** trong hàm; giờ được nối
-  vào cả 4 controller trên.
-- **2 test cũ có hardcode literal** (`tests/skip_autoplay.test.js`, `tests/playback_session_transition.test.js` — dùng thẳng
-  chuỗi `"[Player]->[Preload]:request"`/`"[Preload]->[Player]:ready"` thay vì hằng số) đã được sửa để `require` và dùng
+  `PreloadController`, `ResourceRefreshController`, `AntiStuckController` giờ log `traceBusSignal(...)` tại mọi điểm nhận
+  `BUS_REQUEST`/phát `BUS_OUTPUT` liên quan (connect/disconnect/reconnect, preload request/loading/ready/failed, resource
+  refresh/refreshed/error, recovery retrying/recovered/failed). Nhân tiện dùng luôn `params.debugSink` của
+  `createSharedControllers` — tham số này **trước đó được khai báo nhưng chưa từng dùng ở đâu cả** trong hàm; giờ được nối vào cả
+  4 controller trên.
+- **2 test cũ có hardcode literal** (`tests/skip_autoplay.test.js`, `tests/playback_session_transition.test.js` — dùng thẳng chuỗi
+  `"[Player]->[Preload]:request"`/`"[Preload]->[Player]:ready"` thay vì hằng số) đã được sửa để `require` và dùng
   `BUS_REQUEST.preloadRequest`/`BUS_OUTPUT.preloadReady` — nếu không sửa, đổi giá trị ở trên sẽ làm 2 test này fail ngay.
-- **Test mới**: `tests/bus_contract_trace.test.js` (4 test — giá trị wire không còn mang annotation, `traceBusSignal` trả
-  đúng annotation cho từng cặp request/output, fallback an toàn cho giá trị lạ, không thiếu entry nào trong bảng) và
-  `tests/controller_debug_trace.test.js` (2 test — xác nhận `ConnectionController`/`PreloadController` thực sự log qua
-  `debugSink` với đúng format `traceBusSignal`, không chỉ đọc code mà chạy thật qua `createSharedControllers({ debugSink })`).
-- **Verify**: `tsc --noEmit` sạch, `tsup build` OK, toàn bộ 74/74 test (65 test cũ hơn cộng dồn + 8 test mới của việc này +
-  1 test suite chậm `runtime_ping_registry` đã verify riêng ở mục trên) pass, không hồi quy.
-- **Chưa làm / có thể làm thêm sau này**: `LifecycleController`, `PlaybackSeekController`, `PlaybackPreparationController`
-  (nơi *gọi* `bus.request(..., BUS_REQUEST.recoveryRecover/...)` chứ không *xử lý* nó) chưa được thêm debug log riêng —
-  hiện chỉ 4 controller đóng vai trò xử lý/emit tín hiệu (Connection, Preload, ResourceRefresh, AntiStuck) có debug tăng
-  cường. Cũng phát hiện thêm (ngoài lề, chưa sửa): `BUS_REQUEST.recoveryRecover` được định nghĩa type + map ở `Bus.ts`
-  nhưng **không có nơi nào thực sự gọi `bus.request(..., BUS_REQUEST.recoveryRecover)`** — `AntiStuckController` tự phát
-  `recoveryRetrying/Recovered/Failed` trực tiếp khi phát hiện stuck, không đi qua đường request() hình thức này. Có thể là
-  dead code tương tự `runtime.ping` trước khi được nối dây — để dành cho phiên sau nếu cần điều tra thêm.
+- **Test mới**: `tests/bus_contract_trace.test.js` (4 test — giá trị wire không còn mang annotation, `traceBusSignal` trả đúng
+  annotation cho từng cặp request/output, fallback an toàn cho giá trị lạ, không thiếu entry nào trong bảng) và
+  `tests/controller_debug_trace.test.js` (2 test — xác nhận `ConnectionController`/`PreloadController` thực sự log qua `debugSink`
+  với đúng format `traceBusSignal`, không chỉ đọc code mà chạy thật qua `createSharedControllers({ debugSink })`).
+- **Verify**: `tsc --noEmit` sạch, `tsup build` OK, toàn bộ 74/74 test (65 test cũ hơn cộng dồn + 8 test mới của việc này + 1 test
+  suite chậm `runtime_ping_registry` đã verify riêng ở mục trên) pass, không hồi quy.
+- **Chưa làm / có thể làm thêm sau này**: `LifecycleController`, `PlaybackSeekController`, `PlaybackPreparationController` (nơi
+  _gọi_ `bus.request(..., BUS_REQUEST.recoveryRecover/...)` chứ không _xử lý_ nó) chưa được thêm debug log riêng — hiện chỉ 4
+  controller đóng vai trò xử lý/emit tín hiệu (Connection, Preload, ResourceRefresh, AntiStuck) có debug tăng cường. Cũng phát
+  hiện thêm (ngoài lề, chưa sửa): `BUS_REQUEST.recoveryRecover` được định nghĩa type + map ở `Bus.ts` nhưng **không có nơi nào
+  thực sự gọi `bus.request(..., BUS_REQUEST.recoveryRecover)`** — `AntiStuckController` tự phát
+  `recoveryRetrying/Recovered/Failed` trực tiếp khi phát hiện stuck, không đi qua đường request() hình thức này. Có thể là dead
+  code tương tự `runtime.ping` trước khi được nối dây — để dành cho phiên sau nếu cần điều tra thêm.
 
 ---
 
@@ -343,67 +339,68 @@ file (`CONTROLLER_RPC`, `PLAYER_RPC`, `PLAYER_QUERY`, ...). Đã chuẩn hóa l�
 
 Người dùng chỉ ra chính xác 1 kịch bản thật: nếu code khởi tạo `new PlayerManager()` rồi gặp exception trước khi kịp gọi
 `.destroy()` (retry loop, hot-reload, restart module...), `PlayerManager` cũ không bao giờ được giải phóng — toàn bộ
-Map/cache/players bên trong vẫn sống, và 2 timer (`cleanupInterval`, `statsInterval`) chạy vĩnh viễn, giữ cả tiến trình
-Node sống theo. Lặp lại nhiều lần → rò rỉ bộ nhớ tăng dần theo thời gian chạy. Đã sửa cả 3 việc được yêu cầu, cộng thêm 2
-phát hiện phụ trong lúc rà soát:
+Map/cache/players bên trong vẫn sống, và 2 timer (`cleanupInterval`, `statsInterval`) chạy vĩnh viễn, giữ cả tiến trình Node sống
+theo. Lặp lại nhiều lần → rò rỉ bộ nhớ tăng dần theo thời gian chạy. Đã sửa cả 3 việc được yêu cầu, cộng thêm 2 phát hiện phụ
+trong lúc rà soát:
 
 ### 1. `.unref()` cho `cleanupInterval`/`statsInterval` trong `PlayerManager`
 
-Cả 2 timer trong `startAutoCleanup()`/`startStatsCollection()` trước đó **không có `.unref()`** — khác với mọi timer dài hạn
-khác trong cùng codebase (`StreamManager.cleanupTimer`, `ExtensionManager.cacheCleanupInterval`,
-`GlobalControllerRegistry`'s heartbeat) đều đã unref từ trước. Đã thêm `.unref?.()` cho cả hai, đúng convention sẵn có.
+Cả 2 timer trong `startAutoCleanup()`/`startStatsCollection()` trước đó **không có `.unref()`** — khác với mọi timer dài hạn khác
+trong cùng codebase (`StreamManager.cleanupTimer`, `ExtensionManager.cacheCleanupInterval`, `GlobalControllerRegistry`'s
+heartbeat) đều đã unref từ trước. Đã thêm `.unref?.()` cho cả hai, đúng convention sẵn có.
 
 **Verify hai chiều** (không chỉ đọc code): viết script con chạy `new PlayerManager({autoCleanup:true})` rồi không destroy —
+
 - Trước khi sửa (tạm gỡ `.unref()`, build lại): process **treo thật**, phải `timeout` kill sau 3s.
-- Sau khi sửa: process **tự thoát ngay** (exit code 0, ~150ms).
-Chuyển thành test commit `tests/manager_timer_unref.test.js` (spawn subprocess con thật qua `node:child_process`, không mock).
+- Sau khi sửa: process **tự thoát ngay** (exit code 0, ~150ms). Chuyển thành test commit `tests/manager_timer_unref.test.js`
+  (spawn subprocess con thật qua `node:child_process`, không mock).
 
 ### 2. Sửa `tests/plugin_cache_leak.test.js` cho khớp API hiện tại
 
 Test cũ dùng `player.capabilities.plugins.register(...)` — **`Player` không có `.capabilities`** và chưa từng có (không phải
-regression, test này lỗi thời so với API thật). `PluginManager` là per-player resource nội bộ (`PlayerManager` sở hữu, không
-qua `Player` public surface — `getStream()`/`getStats()` là chi tiết nội bộ, không nằm trong RPC surface
+regression, test này lỗi thời so với API thật). `PluginManager` là per-player resource nội bộ (`PlayerManager` sở hữu, không qua
+`Player` public surface — `getStream()`/`getStats()` là chi tiết nội bộ, không nằm trong RPC surface
 `plugin.add/remove/get/list/clear/stats`). Sửa lại toàn bộ 4 test để lấy đúng instance qua
 `mgr.perPlayerResources.get(guildId).pluginManager` (chính instance mà `player.addPlugin()` và pipeline thật dùng, theo
-`PluginController.attach()`), giữ nguyên ý định gốc của từng test. Cả 4 test giờ pass, xác nhận `PluginManager.destroy()`
-(gọi từ `teardownPlayer`) đã dọn sạch cache + plugin đăng ký khi player bị destroy — hành vi này **đã đúng từ trước**, chỉ
-là test cũ không gọi được nó.
+`PluginController.attach()`), giữ nguyên ý định gốc của từng test. Cả 4 test giờ pass, xác nhận `PluginManager.destroy()` (gọi từ
+`teardownPlayer`) đã dọn sạch cache + plugin đăng ký khi player bị destroy — hành vi này **đã đúng từ trước**, chỉ là test cũ
+không gọi được nó.
 
 ### 3. Đảm bảo rollback try/catch khi khởi tạo/đăng ký plugin — phát hiện thêm 1 bug thật
 
 Kiểm tra theo đúng gợi ý "luôn đảm bảo destroy() được gọi kể cả khi có exception": `PlayerManager.create()` **đã có sẵn**
-try/catch/finally rollback đầy đủ (gọi `runTeardown` nếu bất kỳ bước nào giữa chừng — kể cả vòng lặp `player.addPlugin(plugin)`
-— throw). Nhưng `getSearchPlayer()` thì **hoàn toàn không có** cơ chế này: nếu `player.addPlugin(plugin)` throw giữa vòng lặp
-plugin (ví dụ 1 plugin lỗi), 23 controller slot đã attach qua `attachPlayerControllers(SEARCH_PLAYER_GUILD_ID, ...)` ngay phía
-trên bị bỏ rơi vĩnh viễn — vì `this.searchPlayer` chưa kịp gán nên không có gì để trỏ tới nó nhằm dọn dẹp sau này. Cùng họ
-bug với Phát hiện 2 ở mục audit trước, nhưng nằm ở phía **tạo** thay vì phía **hủy**.
+try/catch/finally rollback đầy đủ (gọi `runTeardown` nếu bất kỳ bước nào giữa chừng — kể cả vòng lặp `player.addPlugin(plugin)` —
+throw). Nhưng `getSearchPlayer()` thì **hoàn toàn không có** cơ chế này: nếu `player.addPlugin(plugin)` throw giữa vòng lặp plugin
+(ví dụ 1 plugin lỗi), 23 controller slot đã attach qua `attachPlayerControllers(SEARCH_PLAYER_GUILD_ID, ...)` ngay phía trên bị bỏ
+rơi vĩnh viễn — vì `this.searchPlayer` chưa kịp gán nên không có gì để trỏ tới nó nhằm dọn dẹp sau này. Cùng họ bug với Phát hiện
+2 ở mục audit trước, nhưng nằm ở phía **tạo** thay vì phía **hủy**.
 
 Đã sửa: bọc đoạn từ `new Player(...)` đến hết vòng lặp `addPlugin` trong try/catch; nếu lỗi, gọi
-`void this.runTeardown(SEARCH_PLAYER_GUILD_ID, player).catch(...)` (fire-and-forget vì `getSearchPlayer()` là hàm đồng bộ)
-rồi rethrow lỗi gốc.
+`void this.runTeardown(SEARCH_PLAYER_GUILD_ID, player).catch(...)` (fire-and-forget vì `getSearchPlayer()` là hàm đồng bộ) rồi
+rethrow lỗi gốc.
 
 **Test mới**: `tests/search_player_teardown.test.js` thêm 1 test — đăng ký 1 plugin có `name` getter throw (đẩy thẳng vào
-`mgr.plugins` để tránh `registerPlugin()` tự đọc `.name` sớm hơn dự kiến), gọi `mgr.getSearchPlayer()`, xác nhận nó throw
-đúng lỗi VÀ (sau khi chờ 1 tick, vì rollback là fire-and-forget) không còn controller slot nào bị bỏ sót.
+`mgr.plugins` để tránh `registerPlugin()` tự đọc `.name` sớm hơn dự kiến), gọi `mgr.getSearchPlayer()`, xác nhận nó throw đúng lỗi
+VÀ (sau khi chờ 1 tick, vì rollback là fire-and-forget) không còn controller slot nào bị bỏ sót.
 
 ### 4. Phát hiện phụ: `AntiStuckWorker.failures` Map tăng dần không giới hạn theo uptime
 
-Rà soát toàn bộ `setInterval`/Map dài hạn trong codebase để trả lời đúng câu hỏi gốc "để lâu có bị lỗi không": mọi timer dài
-hạn khác (`StreamManager`, `ExtensionManager`, `PlaybackController`'s fade timer, `GlobalControllerRegistry`) đều được dọn
-đúng lúc `detach()`/`dispose()`. Riêng `AntiStuckWorker.failures` (đếm số lần retry mỗi track, key theo
-`track.id ?? track.url ?? source:title`) chỉ bị xóa entry khi: (a) chính track đó retry thành công lại, hoặc (b) toàn bộ
-worker bị `reset()`/`dispose()` (destroy cả player). **Không nơi nào trong codebase gọi `clearTrack()`/`clear()`** khi 1 track
-bị bỏ qua sau khi hết `maxRetries` (`handlers.skip(...)`) — track khác lỗi lần sau lại thêm 1 entry mới, vĩnh viễn không dọn
-cho tới khi player bị destroy. Với bot chạy 24/7, nhiều guild phát nhạc liên tục nhiều tuần/tháng, số track khác nhau từng
-lỗi ít nhất 1 lần có thể tích lũy thành hàng nghìn entry cho 1 player — rò rỉ bộ nhớ chậm nhưng không giới hạn.
+Rà soát toàn bộ `setInterval`/Map dài hạn trong codebase để trả lời đúng câu hỏi gốc "để lâu có bị lỗi không": mọi timer dài hạn
+khác (`StreamManager`, `ExtensionManager`, `PlaybackController`'s fade timer, `GlobalControllerRegistry`) đều được dọn đúng lúc
+`detach()`/`dispose()`. Riêng `AntiStuckWorker.failures` (đếm số lần retry mỗi track, key theo
+`track.id ?? track.url ?? source:title`) chỉ bị xóa entry khi: (a) chính track đó retry thành công lại, hoặc (b) toàn bộ worker bị
+`reset()`/`dispose()` (destroy cả player). **Không nơi nào trong codebase gọi `clearTrack()`/`clear()`** khi 1 track bị bỏ qua sau
+khi hết `maxRetries` (`handlers.skip(...)`) — track khác lỗi lần sau lại thêm 1 entry mới, vĩnh viễn không dọn cho tới khi player
+bị destroy. Với bot chạy 24/7, nhiều guild phát nhạc liên tục nhiều tuần/tháng, số track khác nhau từng lỗi ít nhất 1 lần có thể
+tích lũy thành hàng nghìn entry cho 1 player — rò rỉ bộ nhớ chậm nhưng không giới hạn.
 
 Đã sửa bằng cách giới hạn kích thước Map kiểu LRU (evict entry cũ nhất khi vượt ngưỡng), đúng convention đã có sẵn
-(`QueueState.MAX_HISTORY_SIZE`): thêm `AntiStuckWorker.MAX_FAILURE_ENTRIES = 500` + helper `recordFailure()` dùng ở cả 2 nơi
-từng `this.failures.set(...)` trực tiếp (`recover()` và `recoverTrack()` — đường hiện hành và đường legacy).
+(`QueueState.MAX_HISTORY_SIZE`): thêm `AntiStuckWorker.MAX_FAILURE_ENTRIES = 500` + helper `recordFailure()` dùng ở cả 2 nơi từng
+`this.failures.set(...)` trực tiếp (`recover()` và `recoverTrack()` — đường hiện hành và đường legacy).
 
-**Test mới**: `tests/antistuck_failures_bounded.test.js` (3 test) — gọi trực tiếp `recordFailure()` 2000 lần xác nhận Map
-không vượt quá 500, entry cũ nhất bị evict/entry mới nhất còn giữ, cập nhật entry đã có không gây evict thừa, và
-`detach()` vẫn dọn sạch hoàn toàn như trước.
+**Test mới**: `tests/antistuck_failures_bounded.test.js` (3 test) — gọi trực tiếp `recordFailure()` 2000 lần xác nhận Map không
+vượt quá 500, entry cũ nhất bị evict/entry mới nhất còn giữ, cập nhật entry đã có không gây evict thừa, và `detach()` vẫn dọn sạch
+hoàn toàn như trước.
 
 ### Đã rà nhưng xác nhận KHÔNG có vấn đề (để tránh sửa nhầm chỗ không cần)
 
@@ -411,12 +408,113 @@ không vượt quá 500, entry cũ nhất bị evict/entry mới nhất còn gi�
 - `PlayerEventBridge`/`PlayerEventDebug`'s `recent: Map<string, number>` (dedup theo fingerprint) — key hữu hạn (không phải
   track/user), và bị `.clear()` toàn bộ khi `detach()`.
 - `QueueState.history` — đã bounded sẵn bởi `MAX_HISTORY_SIZE = 200` từ trước.
-- `structures/PlayerStateRegistry.ts` — vẫn là dead code hoàn toàn (không nơi nào khởi tạo), không có rủi ro runtime dù có
-  khai báo 1 field `fadeTimer` chưa dùng.
+- `structures/PlayerStateRegistry.ts` — vẫn là dead code hoàn toàn (không nơi nào khởi tạo), không có rủi ro runtime dù có khai
+  báo 1 field `fadeTimer` chưa dùng.
 
-**Verify tổng**: `tsc --noEmit` sạch, `tsup build` OK, **99/99 test pass** (91 test cũ hơn cộng dồn qua các phiên trước + 4
-test `manager_timer_unref` mới + 1 test rollback mới trong `search_player_teardown` + 3 test `antistuck_failures_bounded`
-mới − không tính trùng), không hồi quy.
+**Verify tổng**: `tsc --noEmit` sạch, `tsup build` OK, **99/99 test pass** (91 test cũ hơn cộng dồn qua các phiên trước + 4 test
+`manager_timer_unref` mới + 1 test rollback mới trong `search_player_teardown` + 3 test `antistuck_failures_bounded` mới − không
+tính trùng), không hồi quy.
+
+---
+
+## 🧹 Audit dead code toàn bộ `core/src` — đã liệt kê và dọn
+
+Quét bằng 3 phương pháp kết hợp (không chỉ đọc mắt): (1) script Python đếm số lần mỗi symbol `export` được tham chiếu trên toàn
+repo, lọc symbol ≤2 lần xuất hiện; (2) `tsc --noEmit --noUnusedLocals --noUnusedParameters` (cờ tạm thời, không sửa
+`tsconfig.json`) để có danh sách unused import/field/param đáng tin cậy từ chính compiler; (3) `grep` chéo từng file để xác nhận
+thủ công — loại bỏ false-positive (kiểu `import X từ A rồi export type {X}` mà `noUnusedLocals` không nhận ra là "đã dùng", hay
+tham số của các hàm trừu tượng `BasePlugin`/`BaseExtension` cố ý không dùng trong impl mặc định).
+
+### Đã xóa — dead code xác nhận 100%, đã verify build+test sau khi xóa
+
+**A. 3 file chết hoàn toàn (361 dòng, tạo thành 1 cụm phụ thuộc lẫn nhau, không ai khác đụng tới):**
+
+- `structures/playerScope.ts` — cơ chế scoping theo `AsyncLocalStorage` (`runWithPlayerId`, `currentPlayerId`, `peekPlayerId`,
+  `isPlayerScopedId`, `requirePlayerId`, `readPlayerId`, `resolvePlayerId`, `playerIdsMatch`, `PLAYER_ID_WILDCARD`,
+  `DEFAULT_PLAYER_ID`) — không có lời gọi nào tới bất kỳ hàm nào trong file này ở bất kỳ đâu khác; chỉ có type `PlayerId` (=
+  `string`) được 2 interface khác tham chiếu như type, đã đổi thẳng sang `string`.
+- `structures/PlayerKeyedStore.ts` — class generic bọc `Map<playerId, T>` với lazy-create, không controller nào dùng (mọi
+  controller tự quản Map riêng bằng tay).
+- `structures/PlayerStateRegistry.ts` — cả một module state-container song song/cũ: `QueueState` (⚠️ **trùng tên nhưng khác hẳn**
+  `QueueState` thật đang dùng trong `controller/QueueController.ts` — rủi ro thật nếu ai `grep` nhầm file khi sửa), `VolumeState`,
+  `FilterState`, `ConnectionState`, `PlaybackNodeState`, `StreamNodeState`, `PreloadNodeState`, `SessionNodeState`,
+  `LifecycleNodeState`, `ForwardNodeState`, `AntiStuckNodeState`, `ResourceRefreshNodeState`, `PlayerContext`,
+  `createPlayerContext()`, class `PlayerStateRegistry`, singleton `playerStateRegistry` — không ai import.
+
+**B. 1 method + 2 type hỗ trợ (legacy retry path, bị `recover()`/`requestRecovery()` thay thế từ lâu):**
+
+- `AntiStuckWorker.recoverTrack()` (controller/AntiStuckController.ts) — không có call site nào; bản thân `AntiStuckWorker` cũng
+  không được export public (chỉ singleton `AntiStuckController` được export), nên kể cả code ngoài cũng không gọi được.
+- `LegacyAntiStuckRetryHandlers`, `LegacyAntiStuckRetryContext` (types/controller.ts) — chỉ tồn tại để làm type cho
+  `recoverTrack()` ở trên.
+
+**C. 1 method trùng lặp:** `TTSController` (singleton) có 2 hàm `getConnection()` — bản trong `TTSWorker` (per-player) đang sống
+và được dùng; bản thứ 2 nằm trong chính class singleton `TTSController` không bao giờ được gọi — xóa bản thừa.
+
+**D. 6 interface options mô tả hình dạng constructor/attach mà controller thật **không còn dùng** (đã bị refactor nhưng type cũ
+chưa bị xóa theo):** `ExtensionControllerOptions`, `PluginControllerOptions`, `ResourceRefreshControllerOptions`,
+`SearchControllerOptions` (types/options.ts), `ForwardControllerOptions` (types/controller.ts), `QueueControllerOptions`
+(types/options.ts, chỉ được import ở `QueueController.ts` rồi không dùng).
+
+**E. 4 type/interface độc lập, không ai dùng, không được re-export:**
+
+- `PlayerRpcHandler<TRequest,TResponse>`, `PlayerRpcOptions` (types/bus.ts) — `Bus.registerRpc`/`requestRpc` dùng generic
+  signature riêng, không qua 2 type này.
+- `PlayerEvents` (types/core.ts) — bộ type đầy đủ ánh xạ tên event `Player` → tuple tham số, đúng hình dạng để làm
+  `class Player extends EventEmitter<PlayerEvents>`, nhưng `Player` thực tế **chỉ `extends EventEmitter` trơn**, không type nào
+  ràng buộc — interface này chưa từng được nối vào.
+- `PlayerSession` (types/core.ts) — bị thay thế bởi `PlaybackSessionSnapshot` (types/controller.ts), type thực sự đang dùng ở mọi
+  nơi cho session snapshot.
+- `TrackLoadAttemptContext` (types/trackLoader.ts) — `TrackLoader` dùng `TrackAttemptQualityController` (interface khác, vẫn sống)
+  thay vì type này.
+
+**F. `getInstance()`** (structures/PlayerManager.ts, cuối file) — hàm export nhưng **không được re-export từ `index.ts`** (không
+ai bên ngoài gọi được) và không có call site nội bộ nào; trùng chức năng với `getGlobalManager()` đang sống.
+
+**G. Field/property "khai báo nhưng không bao giờ đọc" (compiler xác nhận qua `noUnusedLocals`, không phải suy đoán):**
+
+- `AntiStuckWorker.detachAction`/`detachBusHandlers`, `FilterEngine.detachAction`/`detachBusHandlers`,
+  `PlaybackTrackEndController.detachRpcs`, `SaveController.detachRpcs`, `StreamController.detachAction`/`detachRpcs`,
+  `TTSWorker.detachBusHandlers` — 6 file cùng 1 pattern: khai báo field giữ "hàm huỷ đăng ký" nhưng chưa từng gán/đọc ở đâu (khác
+  `StreamController.detachStreamError`, `PlayerEventBridge.unsubscribers` — 2 cái này **đang sống**, đã verify riêng, không đụng).
+- `FilterEngine.currentInputStream` — field ghi 3 chỗ, đọc 0 chỗ (write-only), xóa cả field lẫn 3 điểm gán.
+- `PlayerManager.PlayerMonitoring`'s constructor param `bus: Bus` — lưu vào field nhưng field đó không bao giờ đọc; xóa tham số,
+  sửa lại 1 call site.
+- `PlayerManager.instance` (static field, default `null`) — không có chỗ nào gán cũng không có chỗ nào đọc; cơ chế singleton thật
+  dùng `GLOBAL_MANAGER_KEY` (symbol trên `globalThis`) chứ không dùng field này.
+- `TrackLoader.bus` (field) — constructor param `bus` vẫn dùng để đăng ký RPC (sống), nhưng field `this.bus` lưu lại thì không đọc
+  ở đâu nữa; xóa field, giữ param.
+- `PlaybackOrchestrator`'s constructor param property `options: PlaybackOrchestratorOptions` — `this.options` không đọc ở đâu; đổi
+  từ parameter property sang param thường (vẫn destructure `options.sessionController` ngay trong constructor).
+
+**H. ~15 unused import** rải rác (không đổi hành vi, chỉ dọn): `types/options.ts` (`AudioResource`, `PlayerManager`,
+`StreamManager`, `TrackResolver`, `TrackLoadResult`), `structures/PlayerManager.ts` (`Track`, `ForwardHealthStatus`,
+`PLAYER_QUERY`), `structures/Bus.ts` (`BusLatencyKind` — type vẫn sống, chỉ import thừa ở đây), `structures/BusContract.ts`
+(`Track`, `AntiStuckRetryHandlers`, `TrackLoadResult`, `PlayerRequestInputType`), `controller/ConnectionController.ts`
+(`PlayerOptions`), `controller/StreamController.ts` (`PlayerAction`), `controller/PlaybackTrackEndController.ts` (`Track`),
+`controller/SaveController.ts` (`BusRpcContext`, `StreamInfo`), `controller/AntiStuckController.ts` (`PlayerAction`, sau khi xóa
+`recoverTrack`).
+
+### Đã rà nhưng **KHÔNG xóa** — false positive hoặc cố ý (ghi rõ để phiên sau không hiểu nhầm là bỏ sót)
+
+- **13 type trong `structures/BusContract.ts`** (`ControllerCommandContext`, `ControllerCommandHandler`,
+  `TransitionPlanRequest/Response`, `TransitionBeatWaitRequest`, `VolumeTargetRequest`, `VolumeSetRequest`,
+  `AntiStuckReportRequest`, `TrackLoadRequest`, `TrackResetRecoveryRequest`, `TrackGetRecoveryCountRequest`, `TtsIsTTSRequest`,
+  `TtsPlayRequest`) + **`BusEvents` trong `structures/Bus.ts`** — compiler báo "declared but never used" ở dòng
+  `import type {...}`, nhưng cả 14 type này **đều được re-export** bằng 1 khối `export type {...}` riêng ngay bên dưới, và ít nhất
+  4 controller khác (`AntiStuckController`, `TransitionController`, `TTSController`, `VolumeController`) thực sự `import` chúng
+  **từ `BusContract`/`Bus`**, không phải từ `types/` gốc — xóa sẽ làm vỡ build ở 4 file đó. Đây là hạn chế đã biết của
+  `noUnusedLocals` với pattern "import rồi export lại bằng khối `export type` riêng", không phải dead code.
+- Tham số hàm trong `plugins/BasePlugin.ts` (`track`, `signal`, `trackURL`, `opts`, `url`, `requestedBy`),
+  `extensions/BaseExtension.ts` (`level`), `plugins/index.ts` (`isPrimary`) — đây là tham số của **method trừu tượng/mặc định để
+  plugin/extension con override**, bản thân impl mặc định không cần dùng — đúng thiết kế, không phải sót.
+
+### Verify
+
+`tsc --noEmit` sạch (cả bản thường lẫn bản bật `--noUnusedLocals --noUnusedParameters` — chỉ còn đúng danh sách false-positive
+
+- tham số cố ý ở trên), `tsup build` OK (kích thước `.d.ts` giảm từ 7.13 KB → 6.78 KB, phản ánh đúng lượng type công khai đã gỡ),
+  toàn bộ **99/99 test pass**, không hồi quy.
 
 ---
 
@@ -1051,9 +1149,9 @@ new ConnectionController(...)  → chỉ 1 chỗ/player (GlobalPlayerRuntime, Đ
 
 ## Việc nên làm tiếp theo (ưu tiên theo mức ảnh hưởng)
 
-0. **(Đã xong)** Cả 3 rò rỉ + việc nối `runtime.ping`/`GlobalControllerRegistry` ở mục "Audit bổ sung" phía trên đã được sửa
-   trong code, build/test lại sạch. Việc còn lại chỉ là biến 2 script probe thành test commit thật trong `tests/` — xem checklist
-   "Cần làm tiếp" ngay phía trên mục này.
+0. **(Đã xong)** Cả 3 rò rỉ + việc nối `runtime.ping`/`GlobalControllerRegistry` ở mục "Audit bổ sung" phía trên đã được sửa trong
+   code, build/test lại sạch. Việc còn lại chỉ là biến 2 script probe thành test commit thật trong `tests/` — xem checklist "Cần
+   làm tiếp" ngay phía trên mục này.
 1. **Viết test isolation/lifecycle thật** trong `tests/` từ các script `/tmp/smoke_*.js` đã dùng để verify thủ công — rủi ro cao
    nhất hiện tại là hồi quy im lặng (như 2 bug đã tìm thấy) không bị CI bắt được.
 2. Audit lại **Concurrency** khi ≥2 player cùng resource-refresh/preload/autoplay/recovery đồng thời qua controller dùng chung —

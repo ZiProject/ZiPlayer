@@ -1,11 +1,5 @@
 import type { PlaybackSession } from "../structures/PlaybackSession";
-import type {
-	Track,
-	AntiStuckControllerOptions,
-	AntiStuckRetryHandlers,
-	LegacyAntiStuckRetryHandlers,
-	PlayerAction,
-} from "../types";
+import type { Track, AntiStuckControllerOptions, AntiStuckRetryHandlers } from "../types";
 import {
 	BUS_OUTPUT,
 	CONTROLLER_RPC,
@@ -29,11 +23,9 @@ class AntiStuckWorker {
 	private readonly playerId?: string;
 	private readonly failures = new Map<string, number>();
 
-	private static readonly MAX_FAILURE_ENTRIES = 3000;
+	private static readonly MAX_FAILURE_ENTRIES = 500;
 	private timer: NodeJS.Timeout | null = null;
 	private generation = 0;
-	private readonly detachAction?: () => void;
-	private readonly detachBusHandlers: Array<() => void> = [];
 	private readonly debug?: (message: string) => void;
 	public constructor(options: AntiStuckControllerOptions & { playerId?: string } = {}) {
 		this.enabled = options.enabled ?? true;
@@ -54,31 +46,6 @@ class AntiStuckWorker {
 	}
 	public async reportStuck(session: PlaybackSession, reason: string, handlers: AntiStuckRetryHandlers): Promise<boolean> {
 		return this.recover(session, ++this.generation, reason, handlers);
-	}
-	public async recoverTrack(
-		track: Track,
-		signal: AbortSignal,
-		reason: unknown,
-		handlers: LegacyAntiStuckRetryHandlers,
-	): Promise<boolean> {
-		if (!this.enabled || signal.aborted) return false;
-		const generation = ++this.generation;
-		const key = this.key(track);
-		let attempted = 0;
-		while (attempted < this.maxRetries) {
-			attempted++;
-			if (signal.aborted || generation !== this.generation) return false;
-			if (this.retryDelayMs > 0) await this.delay(this.retryDelayMs, signal);
-			if (signal.aborted || generation !== this.generation) return false;
-			const ok = await handlers.retry({ track, retry: attempted, reason, signal });
-			if (ok) {
-				this.failures.delete(key);
-				return true;
-			}
-		}
-		if (signal.aborted || generation !== this.generation) return false;
-		this.recordFailure(key, (this.failures.get(key) ?? 0) + 1);
-		return false;
 	}
 	public clear(session?: PlaybackSession): void {
 		this.clearTimer();

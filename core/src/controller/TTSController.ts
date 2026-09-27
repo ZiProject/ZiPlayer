@@ -26,7 +26,6 @@ class TTSWorker {
 	private activeResource: AudioResource | null = null;
 	private running: Promise<void> | null = null;
 	private readonly onError: (error: Error) => void;
-	private readonly detachBusHandlers: Array<() => void> = [];
 
 	constructor(options: TTSControllerOptions & { playerId?: string }) {
 		this.pluginManager = options.pluginManager;
@@ -226,10 +225,6 @@ export class TTSController {
 	detach(playerId: string): void {
 		this.workers.get(playerId)?.dispose();
 		this.workers.delete(playerId);
-	}
-
-	private getConnection(playerId: string): VoiceConnection | null {
-		return (this.bus.querySync(playerId, PLAYER_QUERY.connection) as VoiceConnection | null) ?? null;
 	}
 
 	public player(playerId: string): AudioPlayer | undefined {

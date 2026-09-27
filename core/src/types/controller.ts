@@ -17,11 +17,6 @@ export interface LifecycleControllerOptions {
 	options: Pick<PlayerOptions, "leaveOnEnd" | "leaveOnEmpty" | "leaveTimeout">;
 	debug?: (...args: any[]) => void;
 }
-export interface ForwardControllerOptions {
-	playerId?: string;
-	bus?: Bus;
-	debug?: (...args: any[]) => void;
-}
 /** Per-player resources handed to the shared `PlaybackController` via `attach(playerId, options)`. */
 export interface PlaybackControllerOptions {
 	audioPlayer: AudioPlayer;
@@ -110,15 +105,6 @@ export interface AntiStuckRetryContext {
 export interface AntiStuckRetryHandlers {
 	retry: (context: AntiStuckRetryContext) => Promise<boolean>;
 	skip: (context: AntiStuckRetryContext) => Promise<void> | void;
-}
-export interface LegacyAntiStuckRetryContext {
-	track: Track;
-	retry: number;
-	reason?: unknown;
-	signal: AbortSignal;
-}
-export interface LegacyAntiStuckRetryHandlers {
-	retry: (context: LegacyAntiStuckRetryContext) => Promise<boolean>;
 }
 export interface SearchRequest {
 	query: string;

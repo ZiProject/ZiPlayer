@@ -5,7 +5,6 @@ import type {
 	BusRequestErrorReason,
 	BusRpcContext,
 	BusRpcOptions,
-	BusLatencyKind,
 	PlayerEvent,
 	PlayerEventArgsMap,
 	PlayerEventType,
