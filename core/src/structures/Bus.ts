@@ -1,7 +1,6 @@
 import type {
 	PlayerAction,
 	PlayerActionExecutionContext,
-	BusEvents,
 	BusRequestErrorReason,
 	BusRpcContext,
 	BusRpcOptions,

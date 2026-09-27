@@ -1002,8 +1002,8 @@ Player
 - [x] Không giữ Queue internals — `Player` không có field `tracks`/`history`, chỉ có `capabilities.queue` (wrapper mỏng gọi bus).
 - [x] Không giữ connection internals — có field `connection` (do `PlayerConnectionBridge` set khi có sự kiện connected/
       disconnected) nhưng đó là cache hiển thị, không phải nguồn sự thật (nguồn thật vẫn ở `ConnectionController`).
-- [ ] Không giữ concurrency state (`playOperation`, `playGeneration`, `playAbortController`) — **vẫn còn** trên `Player.ts`, chưa
-      dọn theo đúng tinh thần tài liệu gốc (xem mục Concurrency/Xóa LegacyPlayer).
+- [x] `playOperation`, `playGeneration`, `playAbortController` đã được audit: **không phải dead code**. Chúng vẫn cần thiết để
+      serialize `Player.play()`, hủy play RPC đang chạy và loại stale result khi `stop()`/`skip()`/`seek()`/destroy xảy ra.
 - [ ] Không giữ recovery state trên `Player` — chưa audit lại riêng.
 
 ---
@@ -1016,7 +1016,8 @@ thay vì tick — không có gì để xoá.
 
 State dạng generation-counter **thật sự tồn tại** trong codebase (tên khác với tài liệu gốc đoán) và **chưa bị xoá**:
 
-- [ ] `playGeneration`, `playOperation`, `playAbortController` trong `Player.ts`.
+- [x] `playGeneration`, `playOperation`, `playAbortController` trong `Player.ts` — đã audit; đây là concurrency state đang được sử dụng,
+  không phải dead code.
 - [ ] `queueStartGeneration` trong `PlaybackTrackEndController`.
 - [ ] `refreshSequence` trong `ResourceRefreshController`.
 - [ ] `ffmpegGeneration` trong `FilterController`/`FilterEngine`.
@@ -1132,7 +1133,8 @@ new ConnectionController(...)  → chỉ 1 chỗ/player (GlobalPlayerRuntime, Đ
 
 - [x] `Player` là facade, không chứa controller instance/audioPlayer/StreamManager/queue internals.
 - [x] Mọi request route bằng `playerId`.
-- [ ] Vẫn còn concurrency bookkeeping (`playGeneration`, `playOperation`, `playAbortController`) trên `Player.ts` — chưa dọn.
+- [x] `playGeneration`, `playOperation`, `playAbortController` trên `Player.ts` đã được audit và giữ lại vì còn được `play()`/`invalidatePlay()`
+  sử dụng để hủy và loại stale play operation.
 - [ ] Kiểm tra với `LegacyPlayer` (Player.old.ts).
 
 ## 🟢 Verification

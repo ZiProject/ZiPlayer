@@ -83,7 +83,7 @@ export class PlayerEventBridge {
 	}
 
 	/** Opens a slot for `playerId` and subscribes to every canonical event type for it.
-	 *  Called from `createControllerGraph()`, before the Player instance exists yet
+	 *  Called by the controller setup before the Player instance exists yet
 	 *  (see `attachPlayer()`) — events that fire in that window are traced but not
 	 *  emitted anywhere, matching the previous per-instance bridge's behavior. */
 	public attach(playerId: string, eventDebug: PlayerEventDebug): void {

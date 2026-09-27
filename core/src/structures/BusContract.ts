@@ -36,19 +36,6 @@
  * second protocol that something ends up comparing against.
  */
 import type {
-	ControllerCommandContext,
-	ControllerCommandHandler,
-	TransitionPlanRequest,
-	TransitionPlanResponse,
-	TransitionBeatWaitRequest,
-	VolumeTargetRequest,
-	VolumeSetRequest,
-	AntiStuckReportRequest,
-	TrackLoadRequest,
-	TrackResetRecoveryRequest,
-	TrackGetRecoveryCountRequest,
-	TtsIsTTSRequest,
-	TtsPlayRequest,
 	PlayerEventType,
 	PlayerActionType,
 	PlayerQuery,

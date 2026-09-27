@@ -767,10 +767,7 @@ export class PluginManager {
 		 *   2. validate stream
 		 *   3. if failed -> plugin.getFallback()
 		 */
-		const tryPlugin = async (
-			plugin: BasePlugin,
-			isPrimary: boolean = false,
-		): Promise<{ result: StreamInfo | null; similarity: number }> => {
+		const tryPlugin = async (plugin: BasePlugin): Promise<{ result: StreamInfo | null; similarity: number }> => {
 			const controller = new AbortController();
 
 			let result: StreamInfo | null = null;
@@ -842,7 +839,7 @@ export class PluginManager {
 		// =========================================================
 		// PRIMARY PLUGIN
 		// =========================================================
-		const primaryResult = await tryPlugin(primary, true);
+		const primaryResult = await tryPlugin(primary);
 
 		if (primaryResult.result?.stream) {
 			this.setCachedStream(track, primaryResult.result);
