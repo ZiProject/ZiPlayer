@@ -462,6 +462,8 @@ export class PlayerManager extends EventEmitter {
 			this.clearExpiredCache();
 		}, this.cleanupTimeout);
 
+		this.cleanupInterval.unref?.();
+
 		this.debug(`Auto-cleanup started with interval: ${this.cleanupTimeout}ms`);
 	}
 
@@ -480,11 +482,19 @@ export class PlayerManager extends EventEmitter {
 		this.assertNotDisposed();
 
 		this.attachPlayerControllers(SEARCH_PLAYER_GUILD_ID, { extractorTimeout: this.extractorTimeout });
-		const player = new Player(SEARCH_PLAYER_GUILD_ID, this.bus, { extractorTimeout: this.extractorTimeout }, this);
-		this.perPlayerResources.get(SEARCH_PLAYER_GUILD_ID)?.extensionManager.attachPlayer(player);
-		this.controllers.eventBridge?.attachPlayer(SEARCH_PLAYER_GUILD_ID, player);
-		for (const plugin of this.plugins) {
-			player.addPlugin(plugin);
+		let player: Player | null = null;
+		try {
+			player = new Player(SEARCH_PLAYER_GUILD_ID, this.bus, { extractorTimeout: this.extractorTimeout }, this);
+			this.perPlayerResources.get(SEARCH_PLAYER_GUILD_ID)?.extensionManager.attachPlayer(player);
+			this.controllers.eventBridge?.attachPlayer(SEARCH_PLAYER_GUILD_ID, player);
+			for (const plugin of this.plugins) {
+				player.addPlugin(plugin);
+			}
+		} catch (error) {
+			void this.runTeardown(SEARCH_PLAYER_GUILD_ID, player).catch((err) =>
+				this.debug(`Error rolling back search player creation:`, err),
+			);
+			throw error;
 		}
 
 		this.searchPlayer = player;
@@ -500,7 +510,9 @@ export class PlayerManager extends EventEmitter {
 		this.statsInterval = setInterval(() => {
 			const stats = this.getStats();
 			this.emit("stats", stats);
-		}, 30000); // Every 30 seconds
+		}, 30000); 
+		
+		this.statsInterval.unref?.();
 	}
 
 	private cleanupInactivePlayers(): void {

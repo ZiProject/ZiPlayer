@@ -339,6 +339,87 @@ file (`CONTROLLER_RPC`, `PLAYER_RPC`, `PLAYER_QUERY`, ...). Đã chuẩn hóa l�
 
 ---
 
+## 🩺 Rà soát ổn định khi chạy lâu (long-uptime) + 3 việc người dùng yêu cầu trực tiếp
+
+Người dùng chỉ ra chính xác 1 kịch bản thật: nếu code khởi tạo `new PlayerManager()` rồi gặp exception trước khi kịp gọi
+`.destroy()` (retry loop, hot-reload, restart module...), `PlayerManager` cũ không bao giờ được giải phóng — toàn bộ
+Map/cache/players bên trong vẫn sống, và 2 timer (`cleanupInterval`, `statsInterval`) chạy vĩnh viễn, giữ cả tiến trình
+Node sống theo. Lặp lại nhiều lần → rò rỉ bộ nhớ tăng dần theo thời gian chạy. Đã sửa cả 3 việc được yêu cầu, cộng thêm 2
+phát hiện phụ trong lúc rà soát:
+
+### 1. `.unref()` cho `cleanupInterval`/`statsInterval` trong `PlayerManager`
+
+Cả 2 timer trong `startAutoCleanup()`/`startStatsCollection()` trước đó **không có `.unref()`** — khác với mọi timer dài hạn
+khác trong cùng codebase (`StreamManager.cleanupTimer`, `ExtensionManager.cacheCleanupInterval`,
+`GlobalControllerRegistry`'s heartbeat) đều đã unref từ trước. Đã thêm `.unref?.()` cho cả hai, đúng convention sẵn có.
+
+**Verify hai chiều** (không chỉ đọc code): viết script con chạy `new PlayerManager({autoCleanup:true})` rồi không destroy —
+- Trước khi sửa (tạm gỡ `.unref()`, build lại): process **treo thật**, phải `timeout` kill sau 3s.
+- Sau khi sửa: process **tự thoát ngay** (exit code 0, ~150ms).
+Chuyển thành test commit `tests/manager_timer_unref.test.js` (spawn subprocess con thật qua `node:child_process`, không mock).
+
+### 2. Sửa `tests/plugin_cache_leak.test.js` cho khớp API hiện tại
+
+Test cũ dùng `player.capabilities.plugins.register(...)` — **`Player` không có `.capabilities`** và chưa từng có (không phải
+regression, test này lỗi thời so với API thật). `PluginManager` là per-player resource nội bộ (`PlayerManager` sở hữu, không
+qua `Player` public surface — `getStream()`/`getStats()` là chi tiết nội bộ, không nằm trong RPC surface
+`plugin.add/remove/get/list/clear/stats`). Sửa lại toàn bộ 4 test để lấy đúng instance qua
+`mgr.perPlayerResources.get(guildId).pluginManager` (chính instance mà `player.addPlugin()` và pipeline thật dùng, theo
+`PluginController.attach()`), giữ nguyên ý định gốc của từng test. Cả 4 test giờ pass, xác nhận `PluginManager.destroy()`
+(gọi từ `teardownPlayer`) đã dọn sạch cache + plugin đăng ký khi player bị destroy — hành vi này **đã đúng từ trước**, chỉ
+là test cũ không gọi được nó.
+
+### 3. Đảm bảo rollback try/catch khi khởi tạo/đăng ký plugin — phát hiện thêm 1 bug thật
+
+Kiểm tra theo đúng gợi ý "luôn đảm bảo destroy() được gọi kể cả khi có exception": `PlayerManager.create()` **đã có sẵn**
+try/catch/finally rollback đầy đủ (gọi `runTeardown` nếu bất kỳ bước nào giữa chừng — kể cả vòng lặp `player.addPlugin(plugin)`
+— throw). Nhưng `getSearchPlayer()` thì **hoàn toàn không có** cơ chế này: nếu `player.addPlugin(plugin)` throw giữa vòng lặp
+plugin (ví dụ 1 plugin lỗi), 23 controller slot đã attach qua `attachPlayerControllers(SEARCH_PLAYER_GUILD_ID, ...)` ngay phía
+trên bị bỏ rơi vĩnh viễn — vì `this.searchPlayer` chưa kịp gán nên không có gì để trỏ tới nó nhằm dọn dẹp sau này. Cùng họ
+bug với Phát hiện 2 ở mục audit trước, nhưng nằm ở phía **tạo** thay vì phía **hủy**.
+
+Đã sửa: bọc đoạn từ `new Player(...)` đến hết vòng lặp `addPlugin` trong try/catch; nếu lỗi, gọi
+`void this.runTeardown(SEARCH_PLAYER_GUILD_ID, player).catch(...)` (fire-and-forget vì `getSearchPlayer()` là hàm đồng bộ)
+rồi rethrow lỗi gốc.
+
+**Test mới**: `tests/search_player_teardown.test.js` thêm 1 test — đăng ký 1 plugin có `name` getter throw (đẩy thẳng vào
+`mgr.plugins` để tránh `registerPlugin()` tự đọc `.name` sớm hơn dự kiến), gọi `mgr.getSearchPlayer()`, xác nhận nó throw
+đúng lỗi VÀ (sau khi chờ 1 tick, vì rollback là fire-and-forget) không còn controller slot nào bị bỏ sót.
+
+### 4. Phát hiện phụ: `AntiStuckWorker.failures` Map tăng dần không giới hạn theo uptime
+
+Rà soát toàn bộ `setInterval`/Map dài hạn trong codebase để trả lời đúng câu hỏi gốc "để lâu có bị lỗi không": mọi timer dài
+hạn khác (`StreamManager`, `ExtensionManager`, `PlaybackController`'s fade timer, `GlobalControllerRegistry`) đều được dọn
+đúng lúc `detach()`/`dispose()`. Riêng `AntiStuckWorker.failures` (đếm số lần retry mỗi track, key theo
+`track.id ?? track.url ?? source:title`) chỉ bị xóa entry khi: (a) chính track đó retry thành công lại, hoặc (b) toàn bộ
+worker bị `reset()`/`dispose()` (destroy cả player). **Không nơi nào trong codebase gọi `clearTrack()`/`clear()`** khi 1 track
+bị bỏ qua sau khi hết `maxRetries` (`handlers.skip(...)`) — track khác lỗi lần sau lại thêm 1 entry mới, vĩnh viễn không dọn
+cho tới khi player bị destroy. Với bot chạy 24/7, nhiều guild phát nhạc liên tục nhiều tuần/tháng, số track khác nhau từng
+lỗi ít nhất 1 lần có thể tích lũy thành hàng nghìn entry cho 1 player — rò rỉ bộ nhớ chậm nhưng không giới hạn.
+
+Đã sửa bằng cách giới hạn kích thước Map kiểu LRU (evict entry cũ nhất khi vượt ngưỡng), đúng convention đã có sẵn
+(`QueueState.MAX_HISTORY_SIZE`): thêm `AntiStuckWorker.MAX_FAILURE_ENTRIES = 500` + helper `recordFailure()` dùng ở cả 2 nơi
+từng `this.failures.set(...)` trực tiếp (`recover()` và `recoverTrack()` — đường hiện hành và đường legacy).
+
+**Test mới**: `tests/antistuck_failures_bounded.test.js` (3 test) — gọi trực tiếp `recordFailure()` 2000 lần xác nhận Map
+không vượt quá 500, entry cũ nhất bị evict/entry mới nhất còn giữ, cập nhật entry đã có không gây evict thừa, và
+`detach()` vẫn dọn sạch hoàn toàn như trước.
+
+### Đã rà nhưng xác nhận KHÔNG có vấn đề (để tránh sửa nhầm chỗ không cần)
+
+- `PlaybackController`'s fade timer (`setInterval`) — dọn đúng qua `cancelTransition()`→`cancelFadeSlot()`, gọi từ `detach()`.
+- `PlayerEventBridge`/`PlayerEventDebug`'s `recent: Map<string, number>` (dedup theo fingerprint) — key hữu hạn (không phải
+  track/user), và bị `.clear()` toàn bộ khi `detach()`.
+- `QueueState.history` — đã bounded sẵn bởi `MAX_HISTORY_SIZE = 200` từ trước.
+- `structures/PlayerStateRegistry.ts` — vẫn là dead code hoàn toàn (không nơi nào khởi tạo), không có rủi ro runtime dù có
+  khai báo 1 field `fadeTimer` chưa dùng.
+
+**Verify tổng**: `tsc --noEmit` sạch, `tsup build` OK, **99/99 test pass** (91 test cũ hơn cộng dồn qua các phiên trước + 4
+test `manager_timer_unref` mới + 1 test rollback mới trong `search_player_teardown` + 3 test `antistuck_failures_bounded`
+mới − không tính trùng), không hồi quy.
+
+---
+
 ## 🎯 Mục tiêu cuối cùng
 
 ```text

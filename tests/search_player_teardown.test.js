@@ -62,6 +62,30 @@ test("getSearchPlayer().destroy() detaches every shared controller and perPlayer
 	assert.equal(mgr.perPlayerResources.has(SEARCH_PLAYER_GUILD_ID), false);
 });
 
+test("getSearchPlayer() rolls back attached controller state if plugin registration throws", async (t) => {
+	const mgr = new PlayerManager({ autoCleanup: false });
+	t.after(() => mgr.destroy());
+
+	// Pushed directly (bypassing `registerPlugin()`, which itself eagerly reads `plugin.name` for
+	// its own debug log) so the *only* place this throws is inside `getSearchPlayer()`'s own
+	// `player.addPlugin(plugin)` loop — `PluginManager.register()` reads `plugin.name` there.
+	mgr.plugins.push({
+		get name() {
+			throw new Error("boom: plugin.name accessor is broken");
+		},
+		canHandle: () => false,
+	});
+
+	assert.throws(() => mgr.getSearchPlayer(), /boom/);
+	await sleep(20); // the rollback's runTeardown() is fire-and-forget (getSearchPlayer() is sync)
+	assert.deepEqual(
+		holders(mgr, SEARCH_PLAYER_GUILD_ID),
+		[],
+		"a failed getSearchPlayer() must not leave any controller state attached for the search player",
+	);
+	assert.equal(mgr.perPlayerResources.has(SEARCH_PLAYER_GUILD_ID), false);
+});
+
 test("getSearchPlayer() called again after destroy re-attaches without leaking the old worker/streamManager", async (t) => {
 	const mgr = new PlayerManager({ autoCleanup: false });
 	t.after(() => mgr.destroy());

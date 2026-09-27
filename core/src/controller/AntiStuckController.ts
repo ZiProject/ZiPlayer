@@ -6,7 +6,14 @@ import type {
 	LegacyAntiStuckRetryHandlers,
 	PlayerAction,
 } from "../types";
-import { BUS_OUTPUT, CONTROLLER_RPC, PLAYER_QUERY, BUS_EVENT, traceBusSignal, type AntiStuckReportRequest } from "../structures/BusContract";
+import {
+	BUS_OUTPUT,
+	CONTROLLER_RPC,
+	PLAYER_QUERY,
+	BUS_EVENT,
+	traceBusSignal,
+	type AntiStuckReportRequest,
+} from "../structures/BusContract";
 import type { Bus } from "../structures/Bus";
 
 /** Per-player anti-stuck retry policy + recovery state machine, owned by the shared
@@ -21,6 +28,8 @@ class AntiStuckWorker {
 	private readonly bus?: Bus;
 	private readonly playerId?: string;
 	private readonly failures = new Map<string, number>();
+
+	private static readonly MAX_FAILURE_ENTRIES = 3000;
 	private timer: NodeJS.Timeout | null = null;
 	private generation = 0;
 	private readonly detachAction?: () => void;
@@ -68,7 +77,7 @@ class AntiStuckWorker {
 			}
 		}
 		if (signal.aborted || generation !== this.generation) return false;
-		this.failures.set(key, (this.failures.get(key) ?? 0) + 1);
+		this.recordFailure(key, (this.failures.get(key) ?? 0) + 1);
 		return false;
 	}
 	public clear(session?: PlaybackSession): void {
@@ -137,7 +146,7 @@ class AntiStuckWorker {
 			await handlers.skip({ session, track, retry, reason });
 			return false;
 		}
-		this.failures.set(this.key(track), retry + 1);
+		this.recordFailure(this.key(track), retry + 1);
 		if (this.bus && this.playerId)
 			this.bus.event(this.playerId, { type: BUS_EVENT.recoveryStarted, session: session.snapshot() });
 		if (requestId && this.bus && this.playerId) {
@@ -172,9 +181,7 @@ class AntiStuckWorker {
 			if (this.bus && this.playerId)
 				this.bus.event(this.playerId, { type: BUS_EVENT.recoveryFailed, session: session.snapshot() });
 			if (requestId && this.bus && this.playerId) {
-				this.debug?.(
-					`[AntiStuckController] ${traceBusSignal(BUS_OUTPUT.recoveryFailed)} guild=${this.playerId}: ${reason}`,
-				);
+				this.debug?.(`[AntiStuckController] ${traceBusSignal(BUS_OUTPUT.recoveryFailed)} guild=${this.playerId}: ${reason}`);
 				this.bus.emitOutput({
 					type: BUS_OUTPUT.recoveryFailed,
 					requestId,
@@ -208,6 +215,13 @@ class AntiStuckWorker {
 	}
 	private key(track: Track): string {
 		return track.id ?? track.url ?? `${track.source}:${track.title}`;
+	}
+	private recordFailure(key: string, value: number): void {
+		if (!this.failures.has(key) && this.failures.size >= AntiStuckWorker.MAX_FAILURE_ENTRIES) {
+			const oldest = this.failures.keys().next().value;
+			if (oldest !== undefined) this.failures.delete(oldest);
+		}
+		this.failures.set(key, value);
 	}
 }
 
