@@ -1,256 +1,231 @@
-# ZiPlayer Core Agent Guide
+# ZiPlayer Core Architecture & AI Agent Guide
 
-This file applies to work inside `core/`. Keep changes focused on the core package and do not edit generated output in
-`core/dist/` or dependencies in `node_modules/`.
+> **Notice for AI Assistants**: This document is an authoritative, in-depth architectural blueprint and behavioral specification for the `core/` package of ZiPlayer. Any changes you make to `core/src/**` MUST adhere to the invariants, contracts, and design patterns specified herein.
 
-## Package scope
+---
 
-`core` is the TypeScript runtime for ZiPlayer. It owns player lifecycle, playback state, queue operations, stream resolution,
-plugins, extensions, and the internal player bus.
+## 1. Architectural Philosophy & Hard Invariants
 
-Related packages live beside it:
+### 1.1 The Global Bus & Distributed Controller Architecture
 
-- `plugins/`: source and stream providers
-- `extension/`: optional player extensions
-- `adapters/`: adapter interfaces and implementations
-- `infinity/`: Infinity source integration
-- `ytbexecplug/`: YouTube executable plugin
-- `tests/`: repository-level Node tests
+Prior to refactoring, ZiPlayer had a monolithic `Player_old.ts` (3,300+ lines) where every player instance owned its own queue, plugins, extensions, voice connection, audio player, and filters.
 
-## Source map
+The new architecture decouples this into three distinct layers:
+1. **`PlayerManager` (Process-Wide Coordinator)**:
+   - Owns a single global instance of `Bus`.
+   - Instantiates process-wide singleton controllers via `ensureSharedControllers()`.
+   - Maps `playerId` (guildId) to `Player` facade instances.
+   - Coordinates multi-step asynchronous teardown.
+2. **`Bus` (Unified Event, Action, RPC, and Query Highway)**:
+   - Connects controllers to each other and to the `Player` facade.
+   - Handles 5 distinct communication primitives: `BUS_REQUEST/BUS_OUTPUT`, `PLAYER_ACTION`, `PLAYER_RPC`, `CONTROLLER_RPC`, and `PLAYER_QUERY`.
+3. **Shared Controllers (`core/src/controller/**`)**:
+   - **Singleton Pattern**: A controller is created **once** for the entire Node.js process and shared across all guilds.
+   - **Per-Player Slots**: Each controller stores per-player state in an internal `Map<playerId, Slot>` (e.g. `slots.get(playerId)`).
+   - Controllers attach state when a player is created (`attach(playerId, options)`) and release state when destroyed (`detach(playerId)`).
+4. **`Player` (`core/src/structures/Player.ts`)**:
+   - **Lightweight Facade Proxy**: `Player` holds **no internal queue, no audio player, no voice connection, and no filter state**.
+   - Every getter and method delegates directly to the Bus (`bus.querySync`, `bus.requestRpc`, `bus.action`, `bus.subscribe`).
 
-Start from the public API in `src/index.ts`, then follow the owning abstraction:
+### 1.2 Non-Negotiable Hard Invariants
 
-| Area               | Location                                    | Responsibility                                           |
-| ------------------ | ------------------------------------------- | -------------------------------------------------------- |
-| Public player API  | `src/structures/Player.ts`                  | Per-guild controls and public getters                    |
-| Player lifecycle   | `src/structures/PlayerManager.ts`           | Create, find, destroy, and broadcast players             |
-| Internal bus       | `src/structures/Bus.ts`                     | RPC, synchronous queries, actions, and events            |
-| Runtime wiring     | `createSharedControllers(): src/structures/PlayerManager.ts ` | Registers controllers, plugins, extensions, and handlers |
-| Playback state     | `src/structures/PlaybackSession.ts`         | Active stream/session state and transitions              |
-| Queue behavior     | `src/controller/QueueController.ts`         | Queue, history, loop, autoplay, and queue queries        |
-| Search             | `src/controller/SearchController.ts`        | Search RPC, caching, and provider coordination           |
-| Plugin behavior    | `src/plugins/`                              | Provider ordering, fallback, cache, and stream lookup    |
-| Extension behavior | `src/extensions/`                           | Extension hooks and custom providers                     |
-| Shared contracts   | `src/types/`                                | Public and internal TypeScript types                     |
+1. **NEVER Edit `core/dist/` Directly**:
+   - `core/dist/` is generated output. Always edit TypeScript sources in `core/src/**` and compile using `npm run build --prefix core`.
+2. **NEVER Store Guild State in `Player.ts`**:
+   - Any mutable playback, queue, audio, or filter state must belong to its respective controller. `Player.ts` must remain a pure facade.
+3. **Preserve `querySync` Synchronicity**:
+   - `bus.querySync()` and `bus.requestRpcSync()` MUST return immediate, non-Promise values. If a handler returns a Promise, `Bus.ts` will throw: `Query "..." is asynchronous; use query() instead`.
+4. **Serialize Mutating Playback Commands**:
+   - All state-mutating commands (`PLAY`, `PAUSE`, `RESUME`, `SEEK`, `STOP`, `SKIP`, `SET_VOLUME`) MUST be dispatched through `PlayerActionExecutor` (`this.action(...)` or `bus.action(...)`) to guarantee sequential FIFO execution and prevent race conditions.
+5. **Enforce FORWARD Mode Guards**:
+   - When a player is subscribed to another player as a follower (`playbackMode === PlaybackMode.FORWARD`), it MUST NOT mutate playback. Facade methods (`play`, `playNext`, `pause`, `resume`, `stop`, `seek`, `skip`, `previous`, `insert`, `clearQueue`, `setVolume`) MUST return `false` (or return early) and log a debug message.
+6. **Controlled Error Recovery**:
+   - When a track fails to start, the player must never freeze in an idle limbo. Follow the controlled skip threshold (`consecutiveFailures >= controlledSkipThreshold`) to emit `queueEnd` and leave, or skip with `ignoreLoop = true`.
 
-## Control flow
+---
 
-Use the closest owning controller instead of adding behavior to `Player` when possible.
+## 2. Bus Communication Primitives
 
-- Synchronous state reads use `player.bus.querySync(...)` and are exposed as getters on `Player`.
-- Async operations use `player.bus.requestRpc(...)`; the RPC handler is registered by a controller during runtime initialization.
-- Mutating playback actions go through `Player.action(...)` and `PlayerAction` so they remain ordered.
-- Search flows through `Player.search()` -> `SearchController` -> extensions/plugins, with cache and fallback layers.
-- Playback transitions must preserve the active `PlaybackSession` and its stream ownership. Check neighboring transition tests
-  before changing this path.
-- Bus events are published asynchronously; do not assume event listeners have completed when an RPC resolves unless the handler
-  explicitly awaits them.
+The Bus contract is defined in [`core/src/structures/BusContract.ts`](file:///e:/GIT/ZiPlayer/core/src/structures/BusContract.ts) and typed in [`core/src/types/bus.ts`](file:///e:/GIT/ZiPlayer/core/src/types/bus.ts).
 
-## Initialization and usage
+### 2.1 Communication Channels
 
-Create one `PlayerManager` for the application and provide source plugins and optional extensions at startup. A manager can own
-players for multiple guilds.
-
-```ts
-import { PlayerManager } from "ziplayer";
-import { YouTubePlugin, SoundCloudPlugin } from "@ziplayer/plugin";
-
-const manager = new PlayerManager({
-	plugins: [new YouTubePlugin(), new SoundCloudPlugin()],
-	extensions: [],
-	autoCleanup: true,
-	cleanupInterval: 60_000,
-	extractorTimeout: 10_000,
-	enableSearchCache: true,
-});
-
-const player = await manager.create(guildId, {
-	leaveOnEnd: true,
-	leaveOnEmpty: true,
-	leaveTimeout: 100_000,
-	volume: 100,
-	quality: "high",
-	selfDeaf: true,
-	selfMute: false,
-});
-
-await player.connect(voiceChannel);
-await player.play(query, userId);
-
-player.pause();
-player.resume();
-await player.seek(30_000);
-player.skip();
-player.stop();
-
-player.destroy();
-manager.destroy();
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                               Player Bus                                   │
+├────────────────────┬───────────────────────────────────────────────────────┤
+│ Primitive          │ Semantic & Characteristics                            │
+├────────────────────┼───────────────────────────────────────────────────────┤
+│ BUS_REQUEST        │ Asynchronous, long-running workflow input             │
+│ BUS_OUTPUT         │ Intermediate progress & terminal output events        │
+│ PLAYER_ACTION      │ Serialized, priority-queued mutating commands         │
+│ PLAYER_RPC         │ Public request-response operations (Sync or Async)    │
+│ CONTROLLER_RPC     │ Private controller-to-controller request-response     │
+│ PLAYER_QUERY       │ Instantaneous, synchronous state inspection           │
+│ BUS_EVENT          │ Typed internal event stream across controllers        │
+└────────────────────┴───────────────────────────────────────────────────────┘
 ```
 
-`PlayerManager.default(options?)` is available for a default/global player. Prefer an explicit manager in application code so
-plugins, extensions, cleanup, and event ownership remain clear.
+1. **`BUS_REQUEST` & `BUS_OUTPUT`**:
+   - Used for long-running I/O operations: `connectionConnect`, `connectionDisconnect`, `connectionReconnect`, `preloadRequest`, `resourceRefresh`.
+   - Handled via `bus.request(playerId, request, options)` which returns a Promise resolving on successful output.
+2. **`PLAYER_ACTION`**:
+   - Enqueued through `PlayerAction.ts` (`actionExecutor.enqueue(action)`).
+   - Priority levels: `CRITICAL` (100: STOP, SKIP), `HIGH` (50), `NORMAL` (10), `BACKGROUND` (0).
+   - Executed sequentially with an `AbortSignal`.
+3. **`PLAYER_QUERY`**:
+   - Synchronous lookups executed via `bus.querySync(playerId, query)`.
+   - Examples: `currentTrack`, `queue`, `queueSize`, `isPlaying`, `isPaused`, `volume`, `filterState`, `playbackMode`.
+4. **`PLAYER_RPC` & `CONTROLLER_RPC`**:
+   - Request-response mechanism.
+   - Synchronous RPCs: `bus.requestRpcSync(playerId, rpcKey, payload)`.
+   - Asynchronous RPCs: `bus.requestRpc(playerId, rpcKey, payload, { signal, timeoutMs })`.
 
-## PlayerManager API
+---
 
-The manager is an `EventEmitter` with typed events. The most common public surface is:
+## 3. Controller Ownership & Topology Matrix
 
-| Prototype                                                                   | Purpose                                                     |
-| --------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `new PlayerManager(options?)`                                               | Create the application-level manager                        |
-| `create(guildOrId, options?): Promise<Player>`                              | Create or retrieve a player for a guild                     |
-| `get(guildOrId): Player \| undefined`                                       | Get an existing player                                      |
-| `getPlayer(guildOrId): Player \| undefined`                                 | Alias for `get`                                             |
-| `getAll(): Player[]`                                                        | List managed players                                        |
-| `has(guildOrId): boolean`                                                   | Check whether a player exists                               |
-| `delete(guildOrId): boolean`                                                | Destroy and remove one player                               |
-| `deleteWhere(filter): number`                                               | Destroy players matching a filter                           |
-| `getStats(): PlayerStats`                                                   | Read manager/player statistics                              |
-| `broadcast(action, ...args): void`                                          | Send a synchronous player API call to all players           |
-| `broadcastAsync(action, ...args): Promise<PromiseSettledResult<unknown>[]>` | Send and await calls across players                         |
-| `search(query, requestedBy): Promise<SearchResult>`                         | Search through the internal search player                   |
-| `registerPlugin(plugin): void`                                              | Add a plugin to existing and future players                 |
-| `unregisterPlugin(name): boolean`                                           | Remove a registered plugin from manager search state        |
-| `getPlugins(): SourcePlugin[]`                                              | List registered plugins                                     |
-| `registerExtension(extension): void`                                        | Add an extension to existing players                        |
-| `clearSearchCache(): void`                                                  | Clear manager-level search cache                            |
-| `getConfig(): object`                                                       | Read effective manager configuration                        |
-| `destroy(): void`                                                           | Stop timers, destroy all players, and clear listeners/cache |
+The following table provides the exhaustive map of controllers, their files, and their exact state ownership:
 
-Manager options include `plugins`, `extensions`, `extractorTimeout`, `autoCleanup`, `cleanupInterval`, `enableSearchCache`,
-`enableStatsCollection`, `trackMiddleware`, and `debugLevel`.
+| Controller Name | File Location | Responsibility & State Owned |
+|---|---|---|
+| **`ConnectionController`** | `core/src/controller/ConnectionController.ts` | Owns Discord `@discordjs/voice` `VoiceConnection`, joins voice channels, manages connection status, reconnects, auto-subscribes `AudioPlayer`, and detects disconnection. |
+| **`QueueController`** | `core/src/controller/QueueController.ts` | Owns the track queue (`tracks[]`), playback history (`history[]`), `currentTrack`, `loopMode`, `autoPlay` flag, and directly emits queue events (`queueAdd`, `queueAddList`, `queueRemove`). |
+| **`FilterController`** | `core/src/controller/FilterController.ts` | Owns `FilterEngine` instances, real-time FFmpeg child processes, audio filter chains, and executes `applyFiltersAndSeek` with rollback support on failure. |
+| **`PlaybackController`** | `core/src/controller/PlaybackController.ts` | Owns `@discordjs/voice` `AudioPlayer` instances, creates `AudioResource`, tracks audio buffering/idle/playing states, and executes crossfades and volume fading. |
+| **`PlaybackPlayController`** | `core/src/controller/PlaybackPlayController.ts` | Handles `player.play()`, queries `SearchController`, invokes `beforePlay` and `afterPlay` extension hooks across all 5 branches, and handles TTS queries. |
+| **`PlaybackStartController`** | `core/src/controller/PlaybackStartController.ts` | Spawns `PlaybackSession`, manages `consecutiveFailures` counter, handles `controlledSkipThreshold` (3) to skip or schedule leave on failure, emits `trackStarted`. |
+| **`PlaybackSkipController`** | `core/src/controller/PlaybackSkipController.ts` | Executes skip with optional target `index`, acquires transition lock, applies fadeout, and triggers autoplay fallback when queue is empty. |
+| **`PlaybackSeekController`** | `core/src/controller/PlaybackSeekController.ts` | Validates position, manages seek timeouts (65s outer timeout), and triggers stream recreation or FFmpeg pipe seeking. |
+| **`PlaybackPreparationController`** | `core/src/controller/PlaybackPreparationController.ts` | Computes autoplay next track, resolves related tracks from `previousTracks.at(-1) ?? session.track`, emits `willPlay` with full arguments. |
+| **`TrackLoader`** | `core/src/structures/TrackLoader.ts` | Resolves playable streams through plugins, manages stream recovery slots, and immediately skips unrecoverable errors (`UNRECOVERABLE_NO_PLUGIN`, `No stream available`). |
+| **`TrackResolverController`**| `core/src/controller/TrackResolverController.ts` | Routes stream resolution requests to `StreamManager`, `PluginManager`, and `ExtensionManager`. |
+| **`PreloadManager`** | `core/src/structures/PreloadManager.ts` | Preloads upcoming tracks into memory, promotes preloaded streams to active resources, and cleans up broken streams. |
+| **`AntiStuckController`** | `core/src/controller/AntiStuckController.ts` | Monitors stalled buffering states (`stuckTimeoutMs = 10000ms`), attempts track recovery, and triggers skip if unrecoverable. |
+| **`TransitionController`** | `core/src/controller/TransitionController.ts` | Computes transition plans: base duration (1000ms), genre-aware durations, min/max durations (600ms..8000ms), and beat alignment wait time (700ms). |
+| **`VolumeController`** | `core/src/controller/VolumeController.ts` | Clamps volume (0%..200%), calculates volume scaling targets, and executes LUFS loudness normalization with soft limiter. |
+| **`ForwardController`** | `core/src/controller/ForwardController.ts` | Coordinates multi-guild stream mirroring: followers subscribe to leader's `AudioPlayer`, mirrors all events (`trackStart`, `pause`, `volume`), and tracks leader health. |
+| **`LifecycleController`** | `core/src/controller/LifecycleController.ts` | Manages voice channel inactivity: `leaveTimeout = 0` (disabled), schedules leave on `queueEnd`, verifies idle state before disconnecting with `"leave-timeout"`. |
+| **`SearchController`** | `core/src/controller/SearchController.ts` | Two-tier search with LRU caching: delegates first to extensions (`provideSearch`), then to plugins (`pluginManager.search`), and stores cached results. |
+| **`PluginController`** | `core/src/controller/PluginController.ts` | Manages plugin registrations, queries available plugins, and resolves related tracks via `pluginRelatedTracks`. |
+| **`ExtensionController`** | `core/src/controller/ExtensionController.ts` | Manages extension lifecycle, registers `extensionBeforePlay` and `extensionAfterPlay` RPCs. |
+| **`SaveController`** | `core/src/controller/SaveController.ts` | Pipes track audio to a stream for file saving, applying filters and seek offsets via dedicated `FilterEngine`. |
+| **`PlayerEventBridge`** | `core/src/controller/PlayerEventBridge.ts` | Subscribes to internal Bus events and maps them directly to public `Player` and `PlayerManager` EventEmitter events. |
+| **`PlayerEventTrace`** | `core/src/controller/PlayerEventTrace.ts` | Provides structured telemetry, event fingerprinting, and latency tracing across Bus operations. |
 
-## Player API
+---
 
-`Player` is an `EventEmitter` for one guild. Common getters and operations are:
+## 4. Key Subsystem Workflows & Edge Cases
 
-| Group              | Public prototype                                                                                                                                                                           |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Identity/state     | `guildId`, `manager`, `options`, `connection`, `destroyed`, `playbackMode`, `userdata`                                                                                                     |
-| State getters      | `currentTrack`, `queueSize`, `isPlaying`, `isPaused`, `isLive`, `isIdle`, `isBuffering`, `volume`, `previousTrack`, `upcomingTracks`, `previousTracks`, `relatedTracks`, `currentResource` |
-| Voice/playback     | `connect(channel)`, `disconnect()`, `play(query, requestedBy?)`, `pause()`, `resume()`, `stop()`, `seek(position)`, `skip()`, `playNext()`, `previous()`                                   |
-| Queue/volume       | `loop(mode?)`, `autoPlay(enabled?)`, `setVolume(value)`, `shuffle()`, `clearQueue()`, `insert(query, index?, requestedBy?)`, `remove(index)`                                               |
-| Search/cache       | `search(query, requestedBy)`, `getCachedSearchResult(query)`, `cacheSearchResult(query, result)`, `clearSearchCache()`, `clearExpiredSearchCache()`, `debugSearchQuery(query)`             |
-| Plugins/extensions | `addPlugin(plugin)`, `removePlugin(name)`, `attachExtension(extension)`, `detachExtension(extension)`, `getExtensions()`                                                                   |
-| Forward mode       | `subscribeTo(leader, options?)`, `unsubscribeForward(reason?)`, `getForwardHealthStatus()`                                                                                                 |
-| Playback helpers   | `getTime()`, `getProgressBar(options?)`, `save(track, options?)`, `saveVideo(track, options?)`, `getStreamManagerStats()`                                                                  |
-| Lifecycle          | `scheduleLeave()`, `clearLeaveTimeout()`, `getSerializableState()`, `restoreState(state)`, `destroy()`, `dispose()`                                                                        |
+### 4.1 Track Playback Lifecycle
 
-Use `player.action(...)`, `player.query(...)`, and `player.subscribe(...)` when a feature needs the typed bus rather than a
-convenience method. Methods such as `startTrack`, `loadFreshStream`, `promotePreloadToCurrent`, and `createResource` are runtime
-integration points; do not call them from application code unless the owning controller requires it.
+1. **`player.play(query, requestedBy)` called**:
+   - Checks `playbackMode !== PlaybackMode.FORWARD`.
+   - Generates a new `playGeneration` and an `AbortController`.
+   - Dispatches `PLAYER_RPC.play` to `PlaybackPlayController`.
+2. **Search & Pre-processing**:
+   - Executes `extensionBeforePlay` hook. If `handled: true`, terminates search early.
+   - If query is a string, checks `SearchController` LRU cache. If missed, queries extensions then plugins.
+   - Executes `extensionAfterPlay` hook.
+3. **Session Startup (`PlaybackStartController.start`)**:
+   - Replaces current session in `PlaybackSessionController`.
+   - Emits `BUS_EVENT.trackLoading`.
+   - Resolves stream via `TrackLoader`.
+   - If audio player is ready, creates `AudioResource` and starts playback.
+   - Resets `consecutiveFailures = 0`.
+   - Emits `BUS_EVENT.trackStarted`.
+   - Calls `prepareTrack()` in `PlaybackPreparationController` to compute related tracks, set `willNext`, and trigger preload.
+4. **Error Handling & Controlled Skip**:
+   - If `start()` throws:
+     - Emits `BUS_EVENT.trackError`.
+     - Increments `consecutiveFailures`.
+     - If `consecutiveFailures >= controlledSkipThreshold` (3): resets counter, emits `queueEnd`, and calls `lifecycleScheduleLeave`.
+     - Else: enqueues action `PLAYER_ACTION.skip` with `ignoreLoop = true`.
 
-## Events
+### 4.2 Autoplay & Related Tracks Workflow
 
-Listen on the manager for events that include the originating player:
+- **Source Track Selection**: Related tracks are computed based on the track that just finished (`previousTracks.at(-1)`). Only on the very first track does it fall back to `session.track`.
+- **Deduplication**: Filters out the source track and any tracks already in upcoming queue.
+- **Autoplay Disabled**:
+  - If `queueAutoPlay === false`: `willNext` is set to the next track in the queue (`queueNextTrack`). If the queue is empty, `willNext` is set to `null` (never set to a related track).
+  - If `queueAutoPlay === true`: If the queue is empty, `willNext` selects randomly from the top 5 related tracks and emits `willPlay` with `(track, upcomingTracks, relatedTracks)`.
 
-```ts
-manager.on("trackStart", (player, track) => {
-	console.log(`${player.guildId}: ${track.title}`);
-});
+### 4.3 Forward Mode & Mirroring Invariants
 
-manager.on("playerError", (player, error, track) => {
-	console.error(player.guildId, track?.title, error);
-});
+- **Subscription**: When `follower.subscribeTo(leader)` is called:
+  - Validates that follower has an active voice connection and audio player.
+  - Gracefully stops follower's independent playback.
+  - Subscribes follower's Discord voice connection directly to leader's `AudioPlayer`.
+  - Sets `playbackMode = PlaybackMode.FORWARD`.
+  - Emits `forwardModeStart(follower, leader)`.
+- **Event Mirroring**: Leader's events (`trackStart`, `trackEnd`, `playerPause`, `playerResume`, `playerStop`, `volumeChange`) are mirrored onto all registered followers.
+- **Mutation Guards**: Follower players cannot initiate playback actions. Methods `play`, `playNext`, `pause`, `resume`, `stop`, `seek`, `skip`, `previous`, `insert`, `clearQueue`, and `setVolume` are guarded and return `false`.
 
-manager.on("queueEnd", (player) => {
-	console.log(`Queue ended in ${player.guildId}`);
-});
+### 4.4 Teardown Sequence (Idempotent Destruction)
 
-manager.on("playerDestroy", (player) => {
-	console.log(`Destroyed ${player.guildId}`);
-});
+To prevent resource leaks and dangling voice connections, teardown must follow this exact order:
+
+```
+1. player.destroy() (Facade Entry)
+   └── If managed: calls manager.requestDestroy(player) -> manager.destroy(playerId)
+   └── If unmanaged: runs local abortWorkflow() + completeDestroy()
+
+2. manager.destroy(playerId) (Manager Orchestration)
+   ├── Step 1: player.abortWorkflow()
+   │     ├── Sets player.destroyed = true
+   │     ├── Aborts in-flight play generation (playAbortController.abort())
+   │     └── Disposes player.actionExecutor
+   ├── Step 2: Detach Shared Controllers (Idempotent)
+   │     ├── connection.detach(playerId) (destroys voice connection)
+   │     ├── playback.detach(playerId) (stops audio player & cancels watchdogs)
+   │     ├── filter.detach(playerId) (terminates FFmpeg processes)
+   │     ├── queue.detach(playerId) (clears queue & history)
+   │     ├── forward.detach(playerId) (cleans follower links)
+   │     └── other controllers detach their slots
+   └── Step 3: player.completeDestroy()
+         ├── Detaches extension back-references
+         ├── Emits "playerDestroy" public event
+         ├── Publishes BUS_EVENT.destroyed
+         └── Disposes player bus subscriptions and slots
 ```
 
-Manager event names include `debug`, `willPlay`, `trackStart`, `trackEnd`, `queueEnd`, `playerError`, `connectionError`,
-`volumeChange`, `queueAdd`, `queueAddList`, `queueRemove`, `playerPause`, `playerResume`, `playerStop`, `playerDestroy`,
-`ttsStart`, `ttsEnd`, `filterApplied`, `filterRemoved`, `filtersCleared`, `lyricsCreate`, `lyricsChange`, `voiceCreate`, `stats`,
-`streamError`, `forwardModeStart`, `forwardModeEnd`, `seek`, and `trackStuck`.
+---
 
-Player events use the same names but omit the leading `player` argument. For example:
+## 5. Development & Testing Reference
 
-```ts
-player.on("trackStart", (track) => console.log(track.title));
-player.on("playerError", (error, track) => console.error(track?.title, error));
-player.on("volumeChange", (oldVolume, newVolume) => console.log(oldVolume, newVolume));
-player.once("playerDestroy", () => console.log("player destroyed"));
-```
-
-For internal typed bus events, use the unsubscribe function returned by `player.subscribe(...)`:
-
-```ts
-const unsubscribe = player.subscribe("playbackStateChanged", (event) => {
-	console.log(event.session);
-});
-
-unsubscribe();
-```
-
-Typed bus event names include `initialized`, `ready`, `destroyed`, `TRACK_LOADING`, `TRACK_LOADED`, `TRACK_STARTED`,
-`TRACK_ERROR`, `TRACK_END`, `STREAM_ABORTED`, `playbackStateChanged`, `playbackSessionCreated`, `trackRequested`, `stateChanged`,
-`STUCK_DETECTED`, `RECOVERY_STARTED`, `RECOVERY_FAILED`, `preloadStateChanged`, `preloadPromoted`, `preloadCancelled`,
-`queueChanged`, and `volumeRequested`.
-
-## Development commands
-
-Run commands from the repository root unless noted otherwise:
+### 5.1 Compilation & Build
 
 ```powershell
-# Build the core package
+# Build the TypeScript core package (runs tsup producing CJS, ESM, and DTS)
 npm run build --prefix core
 
-# Run the complete repository test suite after building core
-npm test
-
-# Run focused playback tests
-node --test tests/playback_session_transition.test.js
-
-# Run focused plugin tests
-node --test tests/plugin_manager.test.js
+# Watch mode during active development
+npm run dev --prefix core
 ```
 
-The core package also supports `npm run build` and `npm run dev` when the working directory is `core/`. Tests import build
-artifacts, so rebuild `core` after changing TypeScript source.
+### 5.2 Running Tests
 
-## Implementation rules
+The test suite runs using Node.js built-in test runner (`node:test`):
 
-- Keep TypeScript strictness intact; do not weaken `core/tsconfig.json` to silence an error.
-- Preserve the public API and existing return types unless the task explicitly requires a breaking change.
-- Prefer an existing controller, manager, bus registration, cache, or utility over a new parallel abstraction.
-- Keep state ownership explicit. Queue state belongs to queue controllers; active stream/session state belongs to
-  `PlaybackSession` and its controllers.
-- Use `requestRpcSync` only for handlers that are synchronous. Use `requestRpc` for async work and preserve abort/timeout
-  behavior.
-- Treat plugin and extension calls as untrusted boundaries: handle failures according to the existing fallback and error
-  conventions.
-- Avoid network, Discord, FFmpeg, and plugin side effects in unit tests; use small fakes or stubs.
-- Do not edit `dist/`, source maps, package-lock metadata, or copied package files unless the task specifically concerns generated
-  artifacts.
+```powershell
+# Run the entire test suite (110+ tests)
+npm test
 
-## Testing expectations
+# Run specific test suites
+node --test tests/player_facade_migration.test.js
+node --test tests/playback_session_transition.test.js
+node --test tests/queue.test.js
+node --test tests/audio_subscription_lifecycle.test.js
+```
 
-For a narrow change, run the nearest focused test first, then the core build. For changes involving shared bus contracts, playback
-transitions, plugin ordering, or public API types, run the full repository suite after the focused check.
+### 5.3 Guidelines When Modifying Code
 
-When adding behavior, cover at least the relevant success path and one failure, cancellation, or cleanup path. For lifecycle
-changes, verify that sessions, streams, timers, listeners, and bus registrations are disposed exactly once.
-
-## Common pitfalls
-
-- `Player` mostly forwards calls. If it only exposes a method or getter, locate the registered bus handler before changing
-  behavior.
-- `querySync` selects synchronous state; putting async work behind it creates invalid return values and race conditions.
-- `requestRpc` timeout does not automatically cancel work already running in a plugin or extension. Preserve the existing
-  `AbortSignal` flow.
-- Search and stream caching exist at multiple layers. Check cache ownership and invalidation before adding another cache.
-- A passing TypeScript build does not prove playback correctness. Run the relevant transition or manager tests.
-- Root tests depend on generated `core/dist` files. A missing dist submodule or stale build is a setup issue, not necessarily a
-  source regression.
-
-## Change checklist
-
-1. Identify the public entry point and the controller that owns the behavior.
-2. Read the nearest test and the relevant type contract before editing.
-3. Make the smallest source change that preserves bus and lifecycle semantics.
-4. Run the focused test or build immediately, then broaden validation as needed.
-5. Report any unrelated baseline test or generated-artifact failure separately.
+1. **Before Adding a Feature or Bugfix**:
+   - Check which controller owns the domain logic. Do not put business logic into `Player.ts`.
+   - Check if an existing Bus RPC, Query, or Action already covers the communication need.
+2. **When Adding New Bus Contracts**:
+   - Register the identifier in `core/src/structures/BusContract.ts` (`PLAYER_RPC`, `CONTROLLER_RPC`, `PLAYER_QUERY`, etc.).
+   - Define the request/response types in `core/src/types/bus.ts` (`PlayerRpcMap`, `PlayerQueryMap`).
+3. **Strict Validation**:
+   - Always run `npm run build --prefix core` to ensure TypeScript strictness passes with zero errors and declaration files (`.d.ts`) generate cleanly.
+   - Always run `npm test` to verify that no existing or migration tests regress.

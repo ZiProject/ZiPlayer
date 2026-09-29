@@ -329,7 +329,8 @@ export class PreloadManager {
 		const existingStream = streamManager.getStreamByTrack(track.id || track.title);
 		if (existingStream && !existingStream.destroyed && existingStream.readable !== false) {
 			if (abortHandler) signal.removeEventListener("abort", abortHandler);
-			return { stream: existingStream, type: "arbitrary" };
+			const streamType = (existingStream as any).streamType ?? (existingStream as any).type ?? "arbitrary";
+			return { stream: existingStream, type: streamType };
 		}
 		const streamPromise = this.getStream(slot, track);
 		void streamPromise.then(
@@ -343,8 +344,6 @@ export class PreloadManager {
 			settled = true;
 			return result as StreamInfo | null;
 		} finally {
-			if (!settled && signal.aborted) {
-			}
 			if (abortHandler) signal.removeEventListener("abort", abortHandler);
 		}
 	}
