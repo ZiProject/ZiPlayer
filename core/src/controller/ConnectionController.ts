@@ -105,11 +105,11 @@ export class ConnectionController {
 		}
 		const opt = options.options ?? {};
 		this.slots.set(playerId, {
-			group: opt.group,
+			group: opt.group ?? "Ziplayer",
 			selfDeaf: opt.selfDeaf ?? true,
 			selfMute: opt.selfMute ?? false,
 			debug: options.debug,
-			readyTimeoutMs: options.readyTimeoutMs ?? 15_000,
+			readyTimeoutMs: options.readyTimeoutMs ?? 50_000,
 			connection: null,
 			channel: null,
 			sessionId: null,
@@ -267,15 +267,32 @@ export class ConnectionController {
 			const existing = getVoiceConnection(playerId);
 			if (existing) existing.destroy();
 
+			const group = event.options?.group ?? slot.group;
+			const selfDeaf = event.options?.deaf ?? slot.selfDeaf;
+			const selfMute = event.options?.mute ?? slot.selfMute;
+
 			const connection = joinVoiceChannel({
 				channelId: event.channel.id,
 				guildId: event.channel.guildId || playerId,
 				adapterCreator: event.channel.guild.voiceAdapterCreator,
-				group: slot.group,
-				selfDeaf: slot.selfDeaf,
-				selfMute: slot.selfMute,
+				group,
+				selfDeaf,
+				selfMute,
 			});
 			slot.connection = connection;
+
+			connection.on("error", (error: Error) => {
+				if (slot.connection !== connection) return;
+				this.trace(playerId, BUS_OUTPUT.connectionError, `operation=connection error=${error.message}`);
+				this.bus?.emitOutput({
+					type: BUS_OUTPUT.connectionError,
+					requestId: slot.requestId ?? event.requestId,
+					playerId,
+					sessionId,
+					operation: "connect",
+					error: this.toError(error),
+				});
+			});
 
 			connection.on(VoiceConnectionStatus.Ready, () => {
 				if (slot.connection !== connection) return;

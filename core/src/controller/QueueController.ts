@@ -1,6 +1,6 @@
 import type { LoopMode, SearchResult, Track } from "../types";
 import type { Bus, PlayerAction, PlayerActionExecutionContext } from "../structures/Bus";
-import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
+import { BUS_EVENT, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 
 type QueueInsertRequest = { query: string | Track | Track[]; index?: number; requestedBy?: string };
 
@@ -60,6 +60,7 @@ export class QueueState {
 		if (this.tracks.length >= this.MAX_QUEUE_SIZE) throw new Error(`Queue size limit reached (${this.MAX_QUEUE_SIZE})`);
 		this.tracks.push(track);
 		this.publishChanged();
+		if (this.bus && this.playerId) this.bus.event(this.playerId, { type: BUS_EVENT.queueAdd, track });
 		return this.tracks.length;
 	}
 	public addMultiple(tracks: Track[]): number {
@@ -67,6 +68,7 @@ export class QueueState {
 			throw new Error(`Adding ${tracks.length} tracks would exceed queue size limit (${this.MAX_QUEUE_SIZE})`);
 		this.tracks.push(...tracks);
 		this.publishChanged();
+		if (this.bus && this.playerId && tracks.length > 0) this.bus.event(this.playerId, { type: BUS_EVENT.queueAddList, tracks });
 		return this.tracks.length;
 	}
 	public insert(track: Track, index = this.tracks.length): number {
@@ -74,6 +76,7 @@ export class QueueState {
 		const position = Number.isFinite(index) ? Math.max(0, Math.min(Math.floor(index), this.tracks.length)) : this.tracks.length;
 		this.tracks.splice(position, 0, track);
 		this.publishChanged();
+		if (this.bus && this.playerId) this.bus.event(this.playerId, { type: BUS_EVENT.queueAdd, track });
 		return this.tracks.length;
 	}
 	public insertMultiple(tracks: Track[], index = this.tracks.length): number {
@@ -83,12 +86,14 @@ export class QueueState {
 		const position = Number.isFinite(index) ? Math.max(0, Math.min(Math.floor(index), this.tracks.length)) : this.tracks.length;
 		this.tracks.splice(position, 0, ...tracks);
 		this.publishChanged();
+		if (this.bus && this.playerId) this.bus.event(this.playerId, { type: BUS_EVENT.queueAddList, tracks });
 		return this.tracks.length;
 	}
 	public remove(index: number): Track | null {
 		if (index < 0 || index >= this.tracks.length) return null;
 		const [track] = this.tracks.splice(index, 1);
 		this.publishChanged();
+		if (track && this.bus && this.playerId) this.bus.event(this.playerId, { type: BUS_EVENT.queueRemove, track, index });
 		return track ?? null;
 	}
 	public removeMultiple(indices: number[]): Track[] {
@@ -97,7 +102,10 @@ export class QueueState {
 		for (const index of sorted) {
 			if (index >= 0 && index < this.tracks.length) {
 				const [track] = this.tracks.splice(index, 1);
-				if (track) removed.unshift(track);
+				if (track) {
+					removed.unshift(track);
+					if (this.bus && this.playerId) this.bus.event(this.playerId, { type: BUS_EVENT.queueRemove, track, index });
+				}
 			}
 		}
 		if (removed.length) this.publishChanged();
@@ -165,15 +173,32 @@ export class QueueState {
 		this.publishChanged();
 		return this.currentTrack;
 	}
-	public setLoop(mode: LoopMode): LoopMode {
-		if (mode !== this.loopMode) {
-			this.loopMode = mode;
+	private normalizeLoopMode(mode: LoopMode | number): LoopMode {
+		if (typeof mode === "number") {
+			switch (mode) {
+				case 0:
+					return "off";
+				case 1:
+					return "track";
+				case 2:
+					return "queue";
+				default:
+					return "off";
+			}
+		}
+		if (mode === "track" || mode === "queue") return mode;
+		return "off";
+	}
+	public setLoop(mode: LoopMode | number): LoopMode {
+		const normalized = this.normalizeLoopMode(mode);
+		if (normalized !== this.loopMode) {
+			this.loopMode = normalized;
 			this.willNext = null;
 			this.publishChanged();
 		}
 		return this.loopMode;
 	}
-	public loop(mode?: LoopMode): LoopMode {
+	public loop(mode?: LoopMode | number): LoopMode {
 		return mode === undefined ? this.loopMode : this.setLoop(mode);
 	}
 	public isLooping(): boolean {
@@ -359,9 +384,24 @@ export class QueueState {
 				: Array.isArray(request.query) ? request.query
 				: [request.query];
 			if (!tracks.length) return false;
-			tracks.forEach((track, index) => this.insert(track, (request.index ?? this.tracks.length) + index));
+			this.insertMultiple(tracks, request.index ?? this.tracks.length);
 			return true;
-		} catch {
+		} catch (error) {
+			if (this.bus && this.playerId) {
+				const session = this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSession);
+				this.bus.event(this.playerId, {
+					type: BUS_EVENT.trackError,
+					session: session ?? {
+						id: 0,
+						track: null,
+						resource: null,
+						status: "idle",
+						position: null,
+						startedAt: null,
+					},
+					error: error instanceof Error ? error : new Error(String(error)),
+				});
+			}
 			return false;
 		}
 	}
@@ -433,7 +473,9 @@ export class QueueController {
 		bus.registerRpc<{ index: number }, Track | null>(PLAYER_RPC.queueRemove, ({ index }, ctx) =>
 			state(ctx.playerId).remove(index),
 		);
-		bus.registerRpc<{ mode: LoopMode }, LoopMode>(PLAYER_RPC.queueLoop, ({ mode }, ctx) => state(ctx.playerId).setLoop(mode));
+		bus.registerRpc<{ mode: LoopMode | number }, LoopMode>(PLAYER_RPC.queueLoop, ({ mode }, ctx) =>
+			state(ctx.playerId).setLoop(mode),
+		);
 		bus.registerRpc<{ enabled: boolean }, boolean>(PLAYER_RPC.queueAutoPlay, ({ enabled }, ctx) =>
 			state(ctx.playerId).setAutoPlay(enabled),
 		);

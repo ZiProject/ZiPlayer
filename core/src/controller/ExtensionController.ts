@@ -1,7 +1,8 @@
 import type { Bus } from "../structures/Bus";
-import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
+import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import type { ExtensionManager } from "../extensions";
 import type { BaseExtension } from "../extensions/BaseExtension";
+import type { ExtensionPlayRequest, ExtensionPlayResponse, ExtensionAfterPlayPayload } from "../types";
 
 /**
  * Shared, singleton controller: owns extension-related Bus RPC/query
@@ -35,6 +36,21 @@ export class ExtensionController {
 		bus.registerRpc<{ extension: BaseExtension }, boolean>(
 			PLAYER_RPC.extensionRemove,
 			({ extension }, ctx) => this.manager(ctx.playerId)?.unregister(extension) ?? false,
+		);
+		bus.registerRpc<ExtensionPlayRequest, { request: ExtensionPlayRequest; response: ExtensionPlayResponse }>(
+			CONTROLLER_RPC.extensionBeforePlay,
+			async (request, ctx) => {
+				const mgr = this.manager(ctx.playerId);
+				if (!mgr) return { request, response: {} };
+				return mgr.beforePlayHooks(request);
+			},
+		);
+		bus.registerRpc<ExtensionAfterPlayPayload, void>(
+			CONTROLLER_RPC.extensionAfterPlay,
+			async (payload, ctx) => {
+				const mgr = this.manager(ctx.playerId);
+				if (mgr) await mgr.afterPlayHooks(payload);
+			},
 		);
 	}
 

@@ -28,13 +28,24 @@ export class PlaybackSkipController {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSessionInternal) ?? null;
 	}
 
-	public async skip(context: PlayerMessageContext): Promise<void> {
+	public async skip(context: PlayerMessageContext, index?: number): Promise<void> {
 		if (context.signal.aborted) return;
 		const oldSession = this.currentSession();
 		const from = oldSession?.track ?? null;
 		if (oldSession && context.sessionId && oldSession.sessionId !== context.sessionId) return;
 		this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackTransitionLock, { active: true });
 		try {
+			if (typeof index === "number" && index >= 0) {
+				for (let i = 0; i < index; i++) {
+					this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueRemove, { index: 0 });
+				}
+			}
+			if (oldSession?.isActive()) {
+				const transition = this.bus.querySync(this.playerId, PLAYER_QUERY.transitionSettings) as { enabled?: boolean } | undefined;
+				if (transition?.enabled) {
+					await this.bus.requestRpc(this.playerId, PLAYER_RPC.transitionFadeOutCurrent, undefined).catch(() => undefined);
+				}
+			}
 			let next = await this.nextThroughBus(true, context);
 			if (!next && this.bus.querySync(this.playerId, PLAYER_QUERY.queueAutoPlay) && oldSession) {
 				const candidate = await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackPrepareAutoplay, {

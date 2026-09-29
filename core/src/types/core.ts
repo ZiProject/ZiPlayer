@@ -255,6 +255,19 @@ export interface StreamSlot {
 
 export type LoopMode = "off" | "track" | "queue";
 
+export interface PlayerSession {
+	guildId: string;
+	queue: Track[];
+	currentTrack: Track | null;
+	volume: number;
+	loopMode: LoopMode;
+	autoPlay: boolean;
+	position: number | null;
+	extensions: string[];
+	plugins: string[];
+	userdata?: Record<string, any>;
+}
+
 export interface VoiceChannel {
 	id: string;
 	guildId: string;

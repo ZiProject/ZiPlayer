@@ -188,11 +188,19 @@ export class PreloadManager {
 		try {
 			await loadPromise;
 		} catch (err) {
-			if (err instanceof Error && err.message === "PRELOAD_CANCELLED") debug(`[Preload] Cancelled for ${nextTrack.title}`);
-			else if (err instanceof Error && err.message === "No stream available") {
+			const isUnplayable =
+				err instanceof Error &&
+				(err.message.startsWith("No stream available") || err.message.startsWith("UNRECOVERABLE_NO_PLUGIN:"));
+			if (err instanceof Error && err.message === "PRELOAD_CANCELLED") {
+				debug(`[Preload] Cancelled for ${nextTrack.title}`);
+			} else if (isUnplayable) {
 				debug(`[Preload] Skipped unplayable track: ${nextTrack.title}`);
+				this.removeTrack(slot, nextTrack);
 				this.clearPreloadSlot(id);
-				slot.preloadNext = true;
+				const loop = this.bus ? this.bus.querySync(slot.playerId, PLAYER_QUERY.queueLoop) : "off";
+				if (loop !== "track") {
+					slot.preloadNext = true;
+				}
 			} else {
 				debug(`[Preload] Failed for ${nextTrack.title}:`, err);
 				this.clearPreloadSlot(id);

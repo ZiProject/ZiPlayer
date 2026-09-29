@@ -39,7 +39,9 @@ class LifecycleWorker {
 			}),
 			this.bus.subscribe(this.playerId, BUS_EVENT.trackEnd, () => {
 				this.isPlaying = false;
-				if (this.leaveOnEnd) this.scheduleLeave("track-end");
+			}),
+			this.bus.subscribe(this.playerId, BUS_EVENT.queueEnd, () => {
+				if (this.leaveOnEnd) this.scheduleLeave("queue-end");
 			}),
 			this.bus.subscribe(this.playerId, BUS_EVENT.forwardModeStart, () => {
 				this.clearLeaveTimeout();
@@ -73,35 +75,35 @@ class LifecycleWorker {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode) === PlaybackMode.FORWARD;
 	}
 
-	scheduleLeave(reason: "track-end" | "queue-empty" | "manual" = "manual"): void {
+	scheduleLeave(reason: "queue-end" | "queue-empty" | "track-end" | "manual" = "manual"): void {
 		if (this.disposed) return;
 		this.clearLeaveTimeout();
+		if (this.leaveTimeout <= 0) {
+			this.debug?.(`[LifecycleController] leaveTimeout is 0 (disabled), not scheduling leave (${reason})`);
+			return;
+		}
 		if (this.isForward()) {
 			this.debug?.(`[LifecycleController] ignoring leave (${reason}): forward mode`);
 			return;
 		}
-		if (reason === "queue-empty" && this.isPlaying) {
+		if (this.isPlaying) {
 			this.debug?.(`[LifecycleController] ignoring leave (${reason}) while playback is active`);
-			return;
-		}
-		if (this.leaveTimeout === 0) {
-			void this.disconnect(reason);
 			return;
 		}
 		this.debug?.(`[LifecycleController] scheduling leave in ${this.leaveTimeout}ms (${reason})`);
 		this.leaveTimer = setTimeout(() => {
 			this.leaveTimer = null;
-			// Playback may have started after the queue-empty event and before
-			// the timeout fired. Re-check the lifecycle condition at the edge.
 			if (this.isForward()) {
 				this.debug?.(`[LifecycleController] cancelling leave (${reason}): forward mode active`);
 				return;
 			}
-			if (reason === "queue-empty" && this.isPlaying) {
-				this.debug?.(`[LifecycleController] cancelling leave (${reason}): playback is active`);
+			const currentTrack = this.bus.querySync(this.playerId, PLAYER_QUERY.currentTrack);
+			const queue = this.bus.querySync(this.playerId, PLAYER_QUERY.queue) ?? [];
+			if (this.isPlaying || currentTrack || queue.length > 0) {
+				this.debug?.(`[LifecycleController] cancelling leave (${reason}): player is playing or has queued tracks`);
 				return;
 			}
-			void this.disconnect(reason);
+			void this.disconnect("leave-timeout");
 		}, this.leaveTimeout);
 	}
 

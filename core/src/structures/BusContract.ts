@@ -177,6 +177,8 @@ export const CONTROLLER_RPC = {
 	playerEmitTtsEnd: "player.emitTtsEnd",
 	ttsIsTTS: "controller.tts.isTTS",
 	ttsPlay: "controller.tts.play",
+	extensionBeforePlay: "extension.beforePlay",
+	extensionAfterPlay: "extension.afterPlay",
 } as const;
 export type ControllerRpcKey = keyof typeof CONTROLLER_RPC;
 
@@ -302,6 +304,9 @@ export const BUS_EVENT = {
 	streamError: "streamError",
 	forwardModeStart: "forwardModeStart",
 	forwardModeEnd: "forwardModeEnd",
+	queueAdd: "queueAdd",
+	queueAddList: "queueAddList",
+	queueRemove: "queueRemove",
 } as const satisfies Record<string, PlayerEventType>;
 export type BusEventKey = keyof typeof BUS_EVENT;
 
@@ -364,6 +369,7 @@ export const PLAYER_QUERY = {
 	isBuffering: "isBuffering",
 	filterString: "filterString",
 	filteredStream: "filteredStream",
+	filterState: "filterState",
 	filterList: "filter.list",
 	filters: "filters",
 	transitionSettings: "transitionSettings",

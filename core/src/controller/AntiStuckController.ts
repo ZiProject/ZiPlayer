@@ -30,6 +30,7 @@ class AntiStuckWorker {
 	public constructor(options: AntiStuckControllerOptions & { playerId?: string } = {}) {
 		this.enabled = options.enabled ?? true;
 		this.maxRetries = Math.max(0, options.maxRetries ?? 2);
+		// AntiStuckController retryDelayMs defaults to 90000ms (90s): stuck detection stall threshold to avoid premature recovery triggers while audio buffer is naturally filling.
 		this.retryDelayMs = Math.max(0, options.retryDelayMs ?? 90000);
 		this.reusePreloadFirst = options.reusePreloadFirst ?? true;
 		this.reduceQualityOnRetry = options.reduceQualityOnRetry ?? true;

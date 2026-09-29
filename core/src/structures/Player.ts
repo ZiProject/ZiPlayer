@@ -13,8 +13,11 @@ import type {
 	SaveOptions,
 	SaveVideoOptions,
 	SearchDebugResult,
+	LoopMode,
+	PlayerSession,
 } from "../types";
 import { PlaybackMode } from "../types";
+import type { FilterEngine } from "../controller/FilterController";
 import {
 	Bus,
 	createPlayerRequestId,
@@ -116,6 +119,11 @@ export class Player extends EventEmitter {
 		if (!queue) throw new Error(`Queue is not available for player "${this.playerId}" (destroyed or not attached)`);
 		return queue;
 	}
+	public get filter(): FilterEngine {
+		const engine = this.bus.querySync(this.playerId, PLAYER_QUERY.filterState);
+		if (!engine) throw new Error(`Filter engine is not available for player "${this.playerId}" (destroyed or not attached)`);
+		return engine;
+	}
 	public get queueSize(): number {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.queue)?.length ?? 0;
 	}
@@ -179,13 +187,21 @@ export class Player extends EventEmitter {
 	public createRelatedTracks(track?: Track | null): Promise<Track[]> {
 		return this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackCreateRelatedTracks, { track });
 	}
-	public async connect(channel: VoiceChannel): Promise<VoiceConnection> {
+	public async connect(
+		channel: VoiceChannel,
+		options?: { group?: string; selfDeaf?: boolean; selfMute?: boolean; deaf?: boolean; mute?: boolean },
+	): Promise<VoiceConnection> {
 		const request = {
 			type: BUS_REQUEST.connectionConnect,
 			requestId: createPlayerRequestId(),
 			channel,
+			options: options ? {
+				group: options.group,
+				deaf: options.deaf ?? options.selfDeaf,
+				mute: options.mute ?? options.selfMute,
+			} : undefined,
 		} as const;
-		return (this.bus.request(this.playerId, request) as Promise<{ connection: VoiceConnection }>).then((e) => e.connection);
+		return (this.bus.request(this.playerId, request as any) as Promise<{ connection: VoiceConnection }>).then((e) => e.connection);
 	}
 	public async disconnect(): Promise<void> {
 		return this.bus
@@ -193,6 +209,10 @@ export class Player extends EventEmitter {
 			.then(() => undefined);
 	}
 	public async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
+			this.debug("[Player] Cannot play while subscribed to another player. Call unsubscribeForward() first.");
+			return false;
+		}
 		const generation = ++this.playGeneration;
 		const controller = new AbortController();
 		this.playAbortController?.abort();
@@ -212,33 +232,75 @@ export class Player extends EventEmitter {
 	}
 	public async playNext(): Promise<boolean> {
 		if (this.destroyed) return false;
+		if (this.playbackMode === PlaybackMode.FORWARD) {
+			this.debug("[Player] Cannot playNext while subscribed to another player");
+			return false;
+		}
 		return this.action({ type: PLAYER_ACTION.skip })
 			.then(() => this.isPlaying || this.currentTrack !== null)
 			.catch(() => false);
 	}
 	public pause(): boolean {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
+			this.debug("[Player] Cannot pause while subscribed to another player");
+			return false;
+		}
+		if (!this.isPlaying || this.isPaused) return false;
 		this.invalidatePlay();
 		void this.action({ type: PLAYER_ACTION.pause });
 		return true;
 	}
 	public resume(): boolean {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
+			this.debug("[Player] Cannot resume while subscribed to another player");
+			return false;
+		}
+		if (!this.isPaused) return false;
 		void this.action({ type: PLAYER_ACTION.resume });
 		return true;
 	}
 	public stop(): boolean {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
+			this.debug("[Player] Cannot stop while subscribed to another player");
+			return false;
+		}
 		this.invalidatePlay();
 		void this.action({ type: PLAYER_ACTION.stop });
 		return true;
 	}
 	public async seek(position: number): Promise<boolean> {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
+			this.debug("[Player] Cannot seek while subscribed to another player");
+			return false;
+		}
+		const track = this.currentTrack;
+		if (!track) {
+			this.debug("[Player] No current track to seek");
+			return false;
+		}
+		const totalDuration = track.duration > 1000 ? track.duration : track.duration * 1000;
+		if (position < 0 || position > totalDuration) {
+			this.debug(`[Player] Invalid seek position: ${position}ms (track duration: ${totalDuration}ms)`);
+			return false;
+		}
 		this.invalidatePlay();
 		return this.action({ type: PLAYER_ACTION.seek, position })
 			.then(() => true)
 			.catch(() => false);
 	}
-	public skip(): boolean {
+	public skip(index?: number): boolean {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
+			this.debug("[Player] Cannot skip while subscribed to another player");
+			return false;
+		}
+		if (typeof index === "number") {
+			if (index < 0 || index >= this.queueSize) {
+				this.debug(`[Player] No track found at index ${index}`);
+				return false;
+			}
+		}
 		this.invalidatePlay();
-		void this.action({ type: PLAYER_ACTION.skip });
+		void this.action({ type: PLAYER_ACTION.skip, index });
 		return true;
 	}
 	private invalidatePlay(): void {
@@ -341,10 +403,16 @@ export class Player extends EventEmitter {
 		return this.play(track);
 	}
 	public async previous(): Promise<boolean> {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
+			this.debug("[Player] Cannot previous while subscribed to another player");
+			return false;
+		}
 		const track = this.bus.requestRpcSync<void, Track | null>(this.playerId, PLAYER_RPC.queuePrevious, undefined);
 		if (!track) return false;
-		await this.startTrack(track);
-		return true;
+		this.clearLeaveTimeout();
+		return this.startTrack(track)
+			.then(() => true)
+			.catch(() => false);
 	}
 	async save(track: Track, options?: SaveOptions | string): Promise<Stream.Readable> {
 		try {
@@ -365,7 +433,7 @@ export class Player extends EventEmitter {
 			throw error;
 		}
 	}
-	public loop(mode?: any): any {
+	public loop(mode?: LoopMode | number): any {
 		return mode === undefined ?
 				this.bus.querySync(this.playerId, PLAYER_QUERY.queueLoop)
 			:	this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueLoop, { mode });
@@ -382,7 +450,11 @@ export class Player extends EventEmitter {
 		void this.action({ type: PLAYER_ACTION.queueSetCurrent, track });
 	}
 	public setVolume(value: number): boolean {
-		if (!Number.isFinite(value) || value < 0 || value > 100) return false;
+		if (this.playbackMode === PlaybackMode.FORWARD) {
+			this.debug("[Player] Cannot setVolume while subscribed to another player");
+			return false;
+		}
+		if (!Number.isFinite(value) || value < 0 || value > 200) return false;
 		this.bus.requestRpcSync(this.playerId, PLAYER_RPC.volumeSet, { value });
 		return true;
 	}
@@ -390,9 +462,17 @@ export class Player extends EventEmitter {
 		this.bus.requestRpcSync<void, void>(this.playerId, PLAYER_RPC.queueShuffle, undefined);
 	}
 	public clearQueue(): void {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
+			this.debug("[Player] Cannot clearQueue while subscribed to another player");
+			return;
+		}
 		this.bus.requestRpcSync<void, void>(this.playerId, PLAYER_RPC.queueClear, undefined);
 	}
 	public async insert(query: string | Track | Track[], index = 0, requestedBy?: string): Promise<boolean> {
+		if (this.playbackMode === PlaybackMode.FORWARD) {
+			this.debug("[Player] Cannot insert while subscribed to another player");
+			return false;
+		}
 		return this.bus
 			.requestRpc<
 				{ query: string | Track | Track[]; index: number; requestedBy?: string },
@@ -418,23 +498,62 @@ export class Player extends EventEmitter {
 	public getExtensions(): any[] {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.extensions) ?? [];
 	}
-	public saveSession(_options?: any): any {
-		return this.getSerializableState();
-	}
-	public exitRemoteMode(): void {
-		this.unsubscribeForward("remote mode exited");
-	}
-	public getSerializableState(): any {
+	public saveSession(_options?: any): PlayerSession {
+		const plugins = (this.bus.querySync(this.playerId, PLAYER_QUERY.pluginList) as any[] | null) ?? [];
 		return {
-			playerId: this.playerId,
-			queue: this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueSerialize, undefined),
+			guildId: this.guildId,
+			currentTrack: this.currentTrack,
+			position: this.currentResource?.playbackDuration || null,
 			volume: this.volume,
-			playbackMode: this.playbackMode,
+			queue: this.queue.getTracks(),
+			loopMode: this.queue.loop(),
+			autoPlay: this.queue.autoPlay(),
+			extensions: this.getExtensions().map((ext: any) => ext.name ?? ext),
+			plugins: plugins.map((plugin: any) => plugin.name ?? plugin),
 		};
 	}
-	public restoreState(state: any): void {
-		if (state?.queue) this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueRestore, { state: state.queue });
-		if (typeof state?.volume === "number") this.setVolume(state.volume);
+	public exitRemoteMode(): void {
+		if (this.playbackMode !== PlaybackMode.REMOTE) return;
+		this.debug("[Player] Exiting REMOTE mode, restoring native playback");
+	}
+	public getSerializableState(): object {
+		return {
+			guildId: this.guildId,
+			queue: this.queue.getTracks(),
+			currentTrack: this.currentTrack,
+			volume: this.volume,
+			isPlaying: this.isPlaying,
+			isPaused: this.isPaused,
+			loopMode: this.queue.loop(),
+			autoPlay: this.queue.autoPlay(),
+			filters: this.filter.getFilterString(),
+			timestamp: Date.now(),
+		};
+	}
+	public async restoreState(state: any): Promise<boolean> {
+		try {
+			if (typeof state?.volume === "number") this.setVolume(state.volume);
+			if (state?.loopMode) this.queue.loop(state.loopMode);
+			if (typeof state?.autoPlay === "boolean") this.queue.autoPlay(state.autoPlay);
+			if (state?.filters) {
+				const filterList = typeof state.filters === "string" ? state.filters.split(",").filter(Boolean) : state.filters;
+				if (Array.isArray(filterList) && filterList.length > 0) {
+					await this.filter.applyFilters(filterList);
+				}
+			}
+
+			// Restore queue
+			if (state?.queue && Array.isArray(state.queue)) {
+				this.queue.clear();
+				this.queue.addMultiple(state.queue);
+			}
+
+			this.debug("[Player] State restored");
+			return true;
+		} catch (error) {
+			this.debug("[Player] Failed to restore state:", error);
+			return false;
+		}
 	}
 	public getStreamManagerStats(): any {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.streamStats) ?? {};

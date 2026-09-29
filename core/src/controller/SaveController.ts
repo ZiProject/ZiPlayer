@@ -58,7 +58,7 @@ export class SaveWorker {
 			this.debug(`[SaveController] filename=${saveOptions.filename}, quality=${saveOptions.quality ?? "default"}`);
 		}
 
-		if (!saveOptions.filter?.length && saveOptions.seek === undefined) {
+		if (!saveOptions.filter?.length && (!saveOptions.seek || saveOptions.seek <= 0)) {
 			return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions);
 		}
 

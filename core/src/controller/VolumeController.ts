@@ -46,9 +46,9 @@ export class VolumeController {
 			loudness: {
 				enabled: options.loudness?.enabled ?? false,
 				targetLUFS: options.loudness?.targetLUFS ?? -14,
-				maxBoostDb: Math.max(0, options.loudness?.maxBoostDb ?? 6),
-				maxCutDb: Math.max(0, options.loudness?.maxCutDb ?? 12),
-				limiterCeiling: Math.min(1, Math.max(0, options.loudness?.limiterCeiling ?? 1)),
+				maxBoostDb: Math.max(0, options.loudness?.maxBoostDb ?? 8),
+				maxCutDb: Math.max(0, options.loudness?.maxCutDb ?? 10),
+				limiterCeiling: Math.min(1, Math.max(0, options.loudness?.limiterCeiling ?? 0.95)),
 			},
 			activeResourceResolver: null,
 		});
@@ -140,7 +140,7 @@ export class VolumeController {
 	}
 
 	private clamp(value: number): number {
-		return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 100;
+		return Number.isFinite(value) ? Math.min(200, Math.max(0, value)) : 100;
 	}
 
 	private clampGain(value: number): number {

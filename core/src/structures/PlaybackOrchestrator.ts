@@ -51,6 +51,7 @@ export class PlaybackOrchestratorWorker {
 			isCurrentSession: (session, context) => callbacks.matchesContext(session, context),
 			queueSnapshot: () => callbacks.queueSnapshot(playerId),
 			setQueueRelated: (tracks) => callbacks.setQueueRelated(playerId, tracks),
+			debug: this.debug,
 		});
 
 		this.start = new PlaybackStartController(playerId, {
@@ -266,7 +267,7 @@ export class PlaybackOrchestrator {
 				await this.seekController.seek(a.position, context);
 				break;
 			case "SKIP":
-				await worker.skip.skip(context);
+				await worker.skip.skip(context, (a as any).index);
 				break;
 			case "PAUSE": {
 				const session = this.sessionController.current(playerId);
@@ -298,6 +299,7 @@ export class PlaybackOrchestrator {
 				const session = this.sessionController.current(playerId);
 				if (session && !this.matchesContext(session, context)) break;
 				this.stopPlayback(playerId, context.signal);
+				this.bus.requestRpcSync(playerId, PLAYER_RPC.queueClear, undefined);
 				if (session?.isActive()) session.markStopped();
 				this.publishState(playerId);
 				this.bus.event(playerId, { type: BUS_EVENT.playerStop });

@@ -498,25 +498,35 @@ export class PluginManager {
 
 		// Check in-flight request
 		const dedupeKey = this.getSearchCacheKey(trimmedQuery, requestedBy);
-		if (this.pendingSearches.has(dedupeKey)) {
+		let searchPromise = this.pendingSearches.get(dedupeKey);
+		if (!searchPromise) {
+			searchPromise = this.searchInternal(trimmedQuery, requestedBy).finally(() => {
+				this.pendingSearches.delete(dedupeKey);
+			});
+			this.pendingSearches.set(dedupeKey, searchPromise);
+		} else {
 			this.debug(`[Search] Waiting for in-flight request: ${trimmedQuery}`);
-			return this.pendingSearches.get(dedupeKey)!;
 		}
 
-		// Create new search request
-		const searchPromise = this.searchInternal(trimmedQuery, requestedBy, signal);
-		this.pendingSearches.set(dedupeKey, searchPromise);
+		if (!signal) return searchPromise;
 
-		try {
-			const result = await searchPromise;
-
-			return result;
-		} finally {
-			this.pendingSearches.delete(dedupeKey);
-		}
+		return new Promise<SearchResult | null>((resolve, reject) => {
+			const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+			if (signal.aborted) return onAbort();
+			signal.addEventListener("abort", onAbort, { once: true });
+			searchPromise!
+				.then((result) => {
+					signal.removeEventListener("abort", onAbort);
+					resolve(result);
+				})
+				.catch((err) => {
+					signal.removeEventListener("abort", onAbort);
+					reject(err);
+				});
+		});
 	}
 
-	private async searchInternal(query: string, requestedBy: string, signal?: AbortSignal): Promise<SearchResult | null> {
+	private async searchInternal(query: string, requestedBy: string): Promise<SearchResult | null> {
 		const timeoutMs = this.options.extractorTimeout ?? 15000;
 
 		const plugins = this.getAll().filter((p) => typeof p.search === "function");
@@ -526,13 +536,11 @@ export class PluginManager {
 		const settled = await Promise.allSettled(
 			plugins.map(async (plugin) => {
 				try {
-					if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 					const result = await withTimeout(
-						plugin.search(query, requestedBy, signal),
+						plugin.search(query, requestedBy),
 						timeoutMs,
 						`Search timeout for ${plugin.name}`,
 					);
-					if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
 					if (!result?.tracks?.length) {
 						return null;

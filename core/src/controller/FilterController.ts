@@ -104,7 +104,14 @@ export class FilterEngine {
 		return Object.values(PREDEFINED_FILTERS).filter((filter) => filter.category === category);
 	}
 	private resolveFilter(filter: string | AudioFilter): AudioFilter | undefined {
-		return typeof filter === "string" ? PREDEFINED_FILTERS[filter] : filter;
+		if (typeof filter !== "string") return filter;
+		if (PREDEFINED_FILTERS[filter]) return PREDEFINED_FILTERS[filter];
+		return {
+			name: filter,
+			description: "Custom filter",
+			ffmpegFilter: filter,
+			category: "custom",
+		};
 	}
 
 	public async applyFilter(filter?: string | AudioFilter): Promise<boolean> {
@@ -112,14 +119,21 @@ export class FilterEngine {
 		const audioFilter = this.resolveFilter(filter);
 		if (!audioFilter || this.hasFilter(audioFilter.name)) return false;
 		this.activeFilters.push(audioFilter);
+		const refreshed = await this.refreshPlayerResource();
+		if (!refreshed) {
+			const index = this.activeFilters.lastIndexOf(audioFilter);
+			if (index !== -1) this.activeFilters.splice(index, 1);
+			return false;
+		}
 		this.options.onFilterApplied?.(audioFilter);
 		this.debug(`Applied filter: ${audioFilter.name} - ${audioFilter.description}`);
-		return this.refreshPlayerResource();
+		return true;
 	}
 
 	public async applyFilters(filters: (string | AudioFilter)[]): Promise<boolean> {
 		let changed = false,
 			allApplied = true;
+		const newlyAdded: AudioFilter[] = [];
 		for (const filter of filters) {
 			const audioFilter = this.resolveFilter(filter);
 			if (!audioFilter) {
@@ -128,11 +142,22 @@ export class FilterEngine {
 			}
 			if (this.hasFilter(audioFilter.name)) continue;
 			this.activeFilters.push(audioFilter);
-			this.options.onFilterApplied?.(audioFilter);
+			newlyAdded.push(audioFilter);
 			changed = true;
 		}
 		if (!changed) return allApplied;
-		return allApplied && (await this.refreshPlayerResource());
+		const refreshed = await this.refreshPlayerResource();
+		if (!refreshed) {
+			for (const added of newlyAdded) {
+				const idx = this.activeFilters.lastIndexOf(added);
+				if (idx !== -1) this.activeFilters.splice(idx, 1);
+			}
+			return false;
+		}
+		for (const added of newlyAdded) {
+			this.options.onFilterApplied?.(added);
+		}
+		return allApplied;
 	}
 
 	public async removeFilter(filterName: string): Promise<boolean> {
@@ -151,6 +176,9 @@ export class FilterEngine {
 		this.debug(`Cleared ${count} filters`);
 		return this.refreshPlayerResource();
 	}
+	public clearFilters(): Promise<boolean> {
+		return this.clearAll();
+	}
 
 	private refreshPlayerResource(): Promise<boolean> {
 		if (this.bus && this.playerId)
@@ -168,11 +196,11 @@ export class FilterEngine {
 
 		if (hasSeek && streamInfo.recreate) {
 			const recreated = await streamInfo.recreate(position);
+			if (!recreated) throw new Error("Stream recreation returned no stream");
 			if (generation !== this.ffmpegGeneration) {
 				recreated.destroy();
 				throw new Error("FFmpeg generation outdated");
 			}
-			if (!recreated) throw new Error("Stream recreation returned no stream");
 			const result = { ...streamInfo, stream: recreated, url: undefined, inputType: StreamType.Arbitrary, wasRecreated: true };
 			this.lastFilteredStream = result;
 			return result;
@@ -276,7 +304,7 @@ export class FilterEngine {
 			cleanup();
 		});
 		if (hasSeek) {
-			const timeoutMs = Math.max(5000, this.options.seekStartupTimeoutMs ?? 50000);
+			const timeoutMs = Math.max(5000, this.options.seekStartupTimeoutMs ?? 60000);
 			this.seekStartupTimer = setTimeout(() => {
 				failProcessing(new Error(`FFmpeg produced no seek output within ${timeoutMs}ms`));
 			}, timeoutMs);
@@ -313,6 +341,7 @@ export class FilterController {
 		bus.onAction((action, context) => {
 			void this.engines.get(context.playerId)?.handleAction(action, context.signal);
 		});
+		bus.registerQuery(PLAYER_QUERY.filterState, (playerId) => this.engines.get(playerId) ?? null);
 		bus.registerQuery(PLAYER_QUERY.filterString, (playerId) => this.engines.get(playerId)?.getFilterString() ?? "");
 		bus.registerQuery(PLAYER_QUERY.filteredStream, (playerId) => this.engines.get(playerId)?.lastFilteredStreamValue ?? null);
 		bus.registerQuery(

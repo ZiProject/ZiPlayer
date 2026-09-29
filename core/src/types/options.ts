@@ -21,6 +21,7 @@ export interface PlaybackPreparationControllerOptions {
 	isCurrentSession: (session: PlaybackSession, context: import("./bus").PlayerMessageContext) => boolean;
 	queueSnapshot: () => Track[];
 	setQueueRelated: (tracks: Track[]) => void;
+	debug?: (...args: any[]) => void;
 }
 export interface PlaybackSkipControllerOptions {
 	bus: Bus;

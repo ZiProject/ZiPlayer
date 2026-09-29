@@ -119,6 +119,7 @@ export class TrackLoader {
 			recovery: {
 				enabled: options.recovery?.enabled ?? true,
 				maxRetries: Math.max(0, options.recovery?.maxRetries ?? 2),
+				// TrackLoader retryDelayMs defaults to 900ms: rapid first-load retry interval when fetching track stream from source plugins.
 				retryDelayMs: Math.max(0, options.recovery?.retryDelayMs ?? 900),
 				reusePreloadFirst: options.recovery?.reusePreloadFirst ?? true,
 				reduceQualityOnRetry: options.recovery?.reduceQualityOnRetry ?? true,
@@ -247,7 +248,7 @@ export class TrackLoader {
 				return { track, stream, sessionId: session.id, retry, usedFallback: retry > 0 };
 			} catch (error) {
 				lastError = error;
-				if (this.isAbort(error) || !slot.recovery.enabled || attempt >= slot.recovery.maxRetries) break;
+				if (this.isAbort(error) || this.isUnrecoverable(error) || !slot.recovery.enabled || attempt >= slot.recovery.maxRetries) break;
 				retry++;
 				slot.failures.set(key, retry);
 				if (slot.recovery.reduceQualityOnRetry) this.reduceQualityForRetry(slot, track, retry);
@@ -315,6 +316,10 @@ export class TrackLoader {
 		return (
 			(error instanceof DOMException && error.name === "AbortError") || (error instanceof Error && error.name === "AbortError")
 		);
+	}
+	private isUnrecoverable(error: unknown): boolean {
+		if (!(error instanceof Error)) return false;
+		return error.message.startsWith("UNRECOVERABLE_NO_PLUGIN:") || error.message.startsWith("No stream available");
 	}
 	private key(track: Track): string {
 		return track.id ?? track.url ?? `${track.source}:${track.title}`;

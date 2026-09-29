@@ -15,14 +15,19 @@ export class PlaybackSeekController {
 		const { playerId } = context;
 		const bus = this.bus;
 		const session = this.sessionController.current(playerId);
-		if (!session?.track || context.signal.aborted || !session.ownsContext(context.sessionId)) return;
+		if (context.signal.aborted) return;
+		if (!session?.track || !session.ownsContext(context.sessionId)) {
+			throw new Error("No current track to seek");
+		}
 		const duration = session.track.duration > 1000 ? session.track.duration : session.track.duration * 1000;
-		if (position < 0 || position > duration) return;
+		if (position < 0 || position > duration) {
+			throw new Error(`Invalid seek position: ${position}ms (track duration: ${duration}ms)`);
+		}
 		try {
 			await bus.request(
 				playerId,
 				{ type: BUS_REQUEST.resourceRefresh, requestId: context.requestId, position },
-				{ signal: context.signal, timeoutMs: 30000 },
+				{ signal: context.signal, timeoutMs: 65000 },
 			);
 			if (context.signal.aborted || !this.isCurrent(playerId, session, context)) return;
 			bus.event(playerId, { type: BUS_EVENT.seek, track: session.track, position });
@@ -34,6 +39,7 @@ export class PlaybackSeekController {
 					error: error instanceof Error ? error : new Error(String(error)),
 				});
 			}
+			throw error;
 		}
 	}
 

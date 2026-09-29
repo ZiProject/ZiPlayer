@@ -2,7 +2,7 @@ import type { AudioResource } from "@discordjs/voice";
 import type { Bus } from "../structures/Bus";
 import { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlaybackSessionController } from "./PlaybackSessionController";
-import { CONTROLLER_RPC, PLAYER_ACTION, BUS_EVENT, PLAYER_QUERY } from "../structures/BusContract";
+import { CONTROLLER_RPC, PLAYER_ACTION, BUS_EVENT, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import type { PlayerMessageContext, StreamInfo, Track, TrackLoadResult } from "../types";
 import type { PlaybackStartControllerOptions } from "../types";
 
@@ -22,6 +22,7 @@ export class PlaybackStartController {
 	private readonly stopPlayback: PlaybackStartControllerOptions["stopPlayback"];
 	private readonly prepareTrack: PlaybackStartControllerOptions["prepareTrack"];
 	private readonly adapters: PlaybackStartControllerOptions["adapters"];
+	private consecutiveFailures = 0;
 
 	constructor(playerId: string, options: PlaybackStartControllerOptions) {
 		this.playerId = playerId;
@@ -52,7 +53,6 @@ export class PlaybackStartController {
 		const context = this.childContext(parentContext, session.sessionId, session.signal);
 		await this.setCurrentThroughBus(track, context);
 		this.bus.event(this.playerId, { type: BUS_EVENT.trackLoading, session: session.snapshot() });
-		this.bus.event(this.playerId, { type: BUS_EVENT.willPlay, track, upcomingTracks: this.queueSnapshot() });
 
 		try {
 			const loaded = await this.bus.requestRpc<{ track: Track; session: PlaybackSession }, TrackLoadResult>(
@@ -68,6 +68,7 @@ export class PlaybackStartController {
 				session.setResource(null);
 				await loaded.stream.handle.play();
 				session.markPlaying(0);
+				this.consecutiveFailures = 0;
 				this.bus.event(this.playerId, { type: BUS_EVENT.trackStarted, session: session.snapshot(), track });
 				await this.prepareTrack(session, context);
 				return;
@@ -96,18 +97,36 @@ export class PlaybackStartController {
 			session.setResource(resource);
 			this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackPlay, { resource, session, from, to: track });
 			session.markPlaying(0);
+			this.consecutiveFailures = 0;
 			if (transition) this.sessionController.retirePendingPrevious(this.playerId);
 			this.bus.event(this.playerId, { type: BUS_EVENT.trackStarted, session: session.snapshot(), track });
 			await this.prepareTrack(session, context);
 		} catch (error) {
 			if (transition) this.sessionController.retirePendingPrevious(this.playerId);
+			const normalized = error instanceof Error ? error : new Error(String(error));
 			if (!context.signal.aborted && this.isCurrentSession(session, context)) {
 				this.bus.event(this.playerId, {
 					type: BUS_EVENT.trackError,
 					session: session.snapshot(),
-					error: error instanceof Error ? error : new Error(String(error)),
+					error: normalized,
 				});
 			}
+			this.consecutiveFailures++;
+			const controlledSkipThreshold = 3;
+			if (this.consecutiveFailures >= controlledSkipThreshold) {
+				this.consecutiveFailures = 0;
+				this.bus.event(this.playerId, { type: BUS_EVENT.queueEnd });
+				if (this.bus.hasRpc(PLAYER_RPC.lifecycleScheduleLeave)) {
+					void this.bus.requestRpc(this.playerId, PLAYER_RPC.lifecycleScheduleLeave, {});
+				}
+			} else if (!parentContext.signal.aborted) {
+				void this.bus.action(
+					this.playerId,
+					{ type: PLAYER_ACTION.skip, ignoreLoop: true, requestId: parentContext.requestId },
+					parentContext,
+				);
+			}
+			throw error;
 		}
 	}
 

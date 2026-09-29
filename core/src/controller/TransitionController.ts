@@ -33,17 +33,17 @@ export class TransitionController {
 
 	public attach(playerId: string, options: TransitionControllerOptions = {}): void {
 		if (this.states.has(playerId)) this.detach(playerId);
-		const minDurationMs = Math.max(0, options.minDurationMs ?? 120);
+		const minDurationMs = Math.max(0, options.minDurationMs ?? 600);
 		this.states.set(playerId, {
 			enabled: options.enabled ?? true,
-			durationMs: Math.max(0, options.durationMs ?? 5000),
+			durationMs: Math.max(0, options.durationMs ?? 1000),
 			smartEnabled: options.smartEnabled ?? true,
 			genreAware: options.genreAware ?? true,
 			beatAlign: options.beatAlign ?? true,
-			baseDurationMs: Math.max(0, options.baseDurationMs ?? options.durationMs ?? 5000),
+			baseDurationMs: Math.max(0, options.baseDurationMs ?? options.durationMs ?? 1000),
 			minDurationMs,
 			maxDurationMs: Math.max(minDurationMs, options.maxDurationMs ?? 8000),
-			beatAlignMaxWaitMs: Math.max(0, options.beatAlignMaxWaitMs ?? 180),
+			beatAlignMaxWaitMs: Math.max(0, options.beatAlignMaxWaitMs ?? 700),
 			genreDurations: {
 				chill: 700,
 				ambient: 750,

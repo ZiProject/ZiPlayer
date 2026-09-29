@@ -52,7 +52,7 @@ export type PlayerAction =
 	| { type: "RESUME"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| { type: "SEEK"; position: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| { type: "STOP"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "SKIP"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+	| { type: "SKIP"; index?: number; ignoreLoop?: boolean; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| { type: "SET_VOLUME"; volume: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| { type: "QUEUE_NEXT"; ignoreLoop?: boolean; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
 	| { type: "QUEUE_SET_CURRENT"; track: Track | null; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
@@ -67,7 +67,12 @@ export type PlayerAction =
 export type PlayerActionType = PlayerAction["type"];
 
 export type PlayerConnectionInput =
-	| { type: typeof BUS_REQUEST.connectionConnect; requestId: PlayerRequestId; channel: VoiceChannel }
+	| {
+			type: typeof BUS_REQUEST.connectionConnect;
+			requestId: PlayerRequestId;
+			channel: VoiceChannel;
+			options?: { deaf?: boolean; mute?: boolean; group?: string };
+	  }
 	| { type: typeof BUS_REQUEST.connectionDisconnect; requestId: PlayerRequestId; reason?: string }
 	| { type: typeof BUS_REQUEST.connectionReconnect; requestId: PlayerRequestId; channel: VoiceChannel };
 export type PlayerPreloadInput = { type: typeof BUS_REQUEST.preloadRequest; requestId: PlayerRequestId; track: Track };
@@ -133,7 +138,10 @@ export type PlayerPlaybackEvents =
 	| { type: "trackRequested"; track: Track; session: PlaybackSessionSnapshot }
 	| { type: "stateChanged"; oldState: AudioPlayerState; newState: AudioPlayerState };
 export type PlayerPublicEvents =
-	| { type: "willPlay"; track: Track; upcomingTracks: Track[] }
+	| { type: "willPlay"; track: Track | null; upcomingTracks?: Track[]; relatedTracks?: Track[] }
+	| { type: "queueAdd"; track: Track }
+	| { type: "queueAddList"; tracks: Track[] }
+	| { type: "queueRemove"; track: Track; index: number }
 	| { type: "queueEnd" }
 	| { type: "playerPause"; track: Track | null }
 	| { type: "playerResume"; track: Track | null }
@@ -189,12 +197,15 @@ export type PlayerEventArgsMap = {
 	: K extends "TRACK_ERROR" ? [PlaybackSessionSnapshot, Error]
 	: K extends "STUCK_DETECTED" ? [PlaybackSessionSnapshot, string]
 	: K extends "trackRequested" ? [Track, PlaybackSessionSnapshot]
+	: K extends "queueAdd" ? [Track]
+	: K extends "queueAddList" ? [Track[]]
+	: K extends "queueRemove" ? [Track, number]
 	: K extends "queueChanged" ? [Track[]]
 	: K extends "volumeRequested" ? [number, number, number]
 	: K extends "stateChanged" ? [AudioPlayerState, AudioPlayerState]
 	: K extends "preloadStateChanged" ? [PlayerPreloadState]
 	: K extends "preloadPromoted" ? [Track]
-	: K extends "willPlay" ? [Track, Track[]]
+	: K extends "willPlay" ? [Track | null, Track[]?, Track[]?]
 	: K extends "playerPause" | "playerResume" ? [Track | null]
 	: K extends "seek" ? [Track, number]
 	: K extends "filterApplied" | "filterRemoved" ? [import("./filter").AudioFilter]
@@ -272,7 +283,7 @@ export interface PlayerRpcMap {
 	"queue.addMultiple": { request: { tracks: Track[] }; response: number };
 	"queue.insert": { request: { query: string | Track | Track[]; index?: number; requestedBy?: string }; response: boolean };
 	"queue.remove": { request: { index: number }; response: Track | null };
-	"queue.loop": { request: { mode: LoopMode }; response: LoopMode };
+	"queue.loop": { request: { mode: LoopMode | number }; response: LoopMode };
 	"queue.autoPlay": { request: { enabled: boolean }; response: boolean };
 	"queue.willNext": { request: { track: Track | null }; response: Track | null };
 	"queue.setCurrent": { request: { track: Track | null }; response: void };
@@ -381,6 +392,7 @@ export interface PlayerQueryMap {
 	isBuffering: boolean;
 	filterString: string;
 	filteredStream: StreamInfo | null;
+	filterState: import("../controller/FilterController").FilterEngine | null;
 	"filter.list": any;
 	filters: any[];
 	transitionSettings: Record<string, unknown>;

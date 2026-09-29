@@ -478,7 +478,13 @@ export class Bus {
 			case BUS_EVENT.filtersCleared:
 				return { type } as any;
 			case BUS_EVENT.willPlay:
-				return { type, track: args[0], upcomingTracks: args[1] } as any;
+				return { type, track: args[0], upcomingTracks: args[1], relatedTracks: args[2] } as any;
+			case BUS_EVENT.queueAdd:
+				return { type, track: args[0] } as any;
+			case BUS_EVENT.queueAddList:
+				return { type, tracks: args[0] } as any;
+			case BUS_EVENT.queueRemove:
+				return { type, track: args[0], index: args[1] } as any;
 			case BUS_EVENT.playerPause:
 			case BUS_EVENT.playerResume:
 				return { type, track: args[0] } as any;
@@ -493,6 +499,8 @@ export class Bus {
 				return { type, leader: args[0] } as any;
 			case BUS_EVENT.forwardModeEnd:
 				return { type, leader: args[0], reason: args[1] } as any;
+			default:
+				return { type } as any;
 		}
 	}
 	private addFlatListener<T extends string, E>(

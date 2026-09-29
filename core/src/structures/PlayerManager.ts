@@ -47,7 +47,7 @@ import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { SaveController } from "../controller/SaveController";
 import { PlaybackSessionController } from "../controller/PlaybackSessionController";
 import { GlobalControllerRegistry } from "../controller/GlobalControllerRegistry";
-import { BUS_EVENT, CONTROLLER_RPC, PLAYER_RPC } from "./BusContract";
+import { BUS_EVENT, BUS_OUTPUT, CONTROLLER_RPC, PLAYER_RPC } from "./BusContract";
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
 
 export function createSharedControllers(params: {
@@ -334,6 +334,14 @@ export class PlayerManager extends EventEmitter {
 			if (!alive) throw new Error(`runtime.ping: player "${id}" is not tracked by this PlayerManager`);
 			return true;
 		});
+		this.bus.onOutput(BUS_OUTPUT.connectionDisconnected, (event) => {
+			if (event.type === BUS_OUTPUT.connectionDisconnected && (event.reason === "destroyed" || event.reason === "leave-timeout")) {
+				const player = this.players.get(event.playerId);
+				if (player && !player.destroyed) {
+					void this.requestDestroy(player);
+				}
+			}
+		});
 		this.monitoring = new PlayerMonitoring(this.controllers);
 		this.plugins = [];
 		this.searchCache = new Map();
@@ -580,12 +588,13 @@ export class PlayerManager extends EventEmitter {
 		});
 		pluginManager.setStreamManager(streamManager);
 		const extensionManager = new ExtensionManager(null as any, this, channel("Extensions"));
+		const isLowPerf = Boolean(options?.lowPerformance || options?.quality === "low");
 		this.controllers.preloadManager.attach(playerId, {
 			streamManager,
 			debug: channel("Preload"),
 			isDestroyed: () => this.disposed || !this.perPlayerResources.has(playerId),
 			isEnabled: () =>
-				options?.lowPerformance && options?.preload?.autoDisableInLowPerformance ? false : (options?.preload?.enabled ?? true),
+				isLowPerf && (options?.preload?.autoDisableInLowPerformance ?? true) ? false : (options?.preload?.enabled ?? true),
 		});
 		this.controllers.orchestrator.attach(playerId, { debug: channel("PlaybackOrchestrator") });
 		this.controllers.trackLoader.attach(playerId, {
@@ -618,7 +627,7 @@ export class PlayerManager extends EventEmitter {
 		this.controllers.queue?.attach(playerId);
 		this.controllers.transition?.attach(playerId, {
 			enabled:
-				options?.lowPerformance && options?.crossfade?.autoDisableInLowPerformance ?
+				isLowPerf && (options?.crossfade?.autoDisableInLowPerformance ?? true) ?
 					false
 				:	(options?.crossfade?.enabled ?? options?.crossfade?.autoEnable ?? true),
 			durationMs: options?.crossfade?.durationMs,

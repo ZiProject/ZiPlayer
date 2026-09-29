@@ -24,6 +24,9 @@ const EVENT_TYPES: PlayerEventType[] = [
 	"preloadStateChanged",
 	"preloadPromoted",
 	"preloadCancelled",
+	"queueAdd",
+	"queueAddList",
+	"queueRemove",
 	"queueChanged",
 	"volumeRequested",
 	"willPlay",
@@ -43,7 +46,6 @@ const EVENT_TYPES: PlayerEventType[] = [
 interface PlayerEventBridgeSlot {
 	player: Player | null;
 	eventDebug: PlayerEventDebug;
-	previousQueue: any[];
 	recent: Map<string, number>;
 	disposed: boolean;
 	unsubscribers: Array<() => void>;
@@ -91,13 +93,12 @@ export class PlayerEventBridge {
 		const slot: PlayerEventBridgeSlot = {
 			player: null,
 			eventDebug,
-			previousQueue: this.bus.querySync(playerId, "queue") ?? [],
 			recent: new Map(),
 			disposed: false,
 			unsubscribers: [],
 		};
 		this.slots.set(playerId, slot);
-		this.debug(slot, "attached", { queueSize: slot.previousQueue.length });
+		this.debug(slot, "attached");
 		for (const type of EVENT_TYPES)
 			slot.unsubscribers.push(this.bus.subscribe(playerId, type, (event) => this.forward(playerId, event)));
 	}
@@ -152,7 +153,6 @@ export class PlayerEventBridge {
 		});
 		try {
 			slot.player?.emit(publicType, ...args);
-			this.emitQueueCompatibilityEvents(slot, event);
 			this.debug(slot, "PLAYER EMIT OK", { sequence: trace.sequence, event: publicType });
 		} catch (error) {
 			this.debug(slot, "PLAYER EMIT ERROR", { sequence: trace.sequence, event: publicType, error });
@@ -221,6 +221,12 @@ export class PlayerEventBridge {
 				return "filterRemoved";
 			case "filtersCleared":
 				return "filtersCleared";
+			case "queueAdd":
+				return "queueAdd";
+			case "queueAddList":
+				return "queueAddList";
+			case "queueRemove":
+				return "queueRemove";
 			case "streamError":
 				return "streamError";
 			case "forwardModeStart":
@@ -248,12 +254,18 @@ export class PlayerEventBridge {
 				return [event.track, event.session];
 			case "stateChanged":
 				return [event.oldState, event.newState];
+			case "queueAdd":
+				return [event.track];
+			case "queueAddList":
+				return [event.tracks];
+			case "queueRemove":
+				return [event.track, event.index];
 			case "queueChanged":
 				return [event.queue];
 			case "volumeRequested":
 				return [event.oldVolume, event.newVolume];
 			case "willPlay":
-				return [event.track, event.upcomingTracks];
+				return [event.track, event.relatedTracks ?? event.upcomingTracks];
 			case "playerPause":
 			case "playerResume":
 				return [event.track];
@@ -281,30 +293,6 @@ export class PlayerEventBridge {
 			default:
 				return "session" in event && event.session ? [event.session] : [];
 		}
-	}
-
-	private emitQueueCompatibilityEvents(slot: PlayerEventBridgeSlot, event: PlayerEvent): void {
-		if (event.type !== "queueChanged") return;
-		const next = event.queue;
-		const previous = slot.previousQueue;
-		slot.previousQueue = [...next];
-		if (next.length > previous.length) {
-			const added = next.filter((track) => !previous.some((old) => this.trackIdentity(old) === this.trackIdentity(track)));
-			if (added.length === 1) slot.player?.emit("queueAdd", added[0]);
-			else if (added.length > 1) slot.player?.emit("queueAddList", added);
-		} else if (next.length < previous.length) {
-			const removed = previous.filter(
-				(track) => !next.some((current) => this.trackIdentity(current) === this.trackIdentity(track)),
-			);
-			if (removed.length === 1) {
-				const track = removed[0];
-				slot.player?.emit("queueRemove", track, previous.indexOf(track));
-			}
-		}
-	}
-
-	private trackIdentity(track: any): string | undefined {
-		return track?.id ?? track?.url;
 	}
 	private describeArgs(slot: PlayerEventBridgeSlot, event: PlayerEvent, args: any[]): any {
 		if (event.type === "TRACK_ERROR") return { error: event.error?.message, track: event.session.track?.id };
