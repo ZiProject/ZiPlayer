@@ -1,4 +1,10 @@
-import type { StreamInfo, Track, TrackResolveContext, TrackResolverOptions } from "../types";
+import {
+	type StreamInfo,
+	type Track,
+	type TrackResolveContext,
+	type TrackResolverOptions,
+	normalizeStreamInfo,
+} from "../types";
 import type { Bus } from "./Bus";
 import { PLAYER_RPC } from "./BusContract";
 
@@ -57,31 +63,31 @@ export class TrackResolver {
 		if (isDestroyed()) throw new Error("PLAYER_DESTROYED");
 		const trackId = track.id || track.url || track.title;
 		const existing = options?.fresh ? null : streamManager.getStreamByTrack(trackId);
-		if (existing && !existing.destroyed) return { stream: existing, type: "arbitrary" };
+		if (existing && !existing.destroyed) return normalizeStreamInfo(track, { stream: existing, type: "arbitrary" });
 
 		let stream = await extensionManager.provideStream(track);
 		if (isDestroyed()) {
 			stream?.stream?.destroy?.();
 			throw new Error("PLAYER_DESTROYED");
 		}
-		if (stream?.remote && stream.handle) return stream;
-		if (stream?.stream || stream?.url || stream?.recreate) return stream;
+		if (stream?.remote && stream.handle) return normalizeStreamInfo(track, stream);
+		if (stream?.stream || stream?.url || stream?.recreate) return normalizeStreamInfo(track, stream);
 
 		stream = await pluginManager.getStream(track, options);
 		if (isDestroyed()) {
 			stream?.stream?.destroy?.();
 			throw new Error("PLAYER_DESTROYED");
 		}
-		if (stream?.remote && stream.handle) return stream;
+		if (stream?.remote && stream.handle) return normalizeStreamInfo(track, stream);
 		if (stream?.stream || stream?.url || stream?.recreate) {
 			if (stream.stream) {
 				const existingAgain = options?.fresh ? null : streamManager.getStreamByTrack(trackId);
 				if (existingAgain && !existingAgain.destroyed) {
 					stream.stream.destroy?.();
-					return { stream: existingAgain, type: "arbitrary" };
+					return normalizeStreamInfo(track, { stream: existingAgain, type: "arbitrary" });
 				}
 			}
-			return stream;
+			return normalizeStreamInfo(track, stream);
 		}
 		if (!pluginManager.hasStreamCandidate(track)) throw new Error(`UNRECOVERABLE_NO_PLUGIN:${track.title}`);
 		throw new Error(`No stream available for track: ${track.title}`);

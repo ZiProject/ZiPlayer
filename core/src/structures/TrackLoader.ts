@@ -1,13 +1,14 @@
-import type {
-	StreamInfo,
-	Track,
-	TrackMiddleware,
-	TrackLoadResult,
-	TrackLoaderContext,
-	TrackLoaderOptions,
-	TrackStreamResolver,
-	TrackRecoveryPolicy,
-	TrackAttemptQualityController,
+import {
+	type StreamInfo,
+	type Track,
+	type TrackMiddleware,
+	type TrackLoadResult,
+	type TrackLoaderContext,
+	type TrackLoaderOptions,
+	type TrackStreamResolver,
+	type TrackRecoveryPolicy,
+	type TrackAttemptQualityController,
+	normalizeStreamInfo,
 } from "../types";
 import type { PlaybackSession } from "./PlaybackSession";
 import type { PreloadManager } from "./PreloadManager";
@@ -232,7 +233,9 @@ export class TrackLoader {
 				slot.debugLog(`[TrackLoader] Using preloaded stream for: ${track.title}`);
 				return {
 					track,
-					stream: preload.streamInfo ?? { stream: preload.stream as any, type: "arbitrary" },
+					stream: preload.streamInfo
+						? normalizeStreamInfo(track, preload.streamInfo)
+						: normalizeStreamInfo(track, { stream: preload.stream as any, type: "arbitrary" }),
 					sessionId: session.id,
 					retry: 0,
 					usedFallback: false,

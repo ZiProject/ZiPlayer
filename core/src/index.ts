@@ -1,6 +1,6 @@
 import { PlayerManager, getGlobalManager } from "./structures/PlayerManager";
 
-export { Player } from "./structures/Player";
+export { Player, assertVoiceChannel } from "./structures/Player";
 export { PlayerManager } from "./structures/PlayerManager";
 export { Bus } from "./structures/Bus";
 export {
@@ -30,7 +30,7 @@ export { PlaybackSession } from "./structures/PlaybackSession";
 export { TrackLoader } from "./structures/TrackLoader";
 export { PlaybackController } from "./controller/PlaybackController";
 export { ConnectionController } from "./controller/ConnectionController";
-export { VolumeController } from "./controller/VolumeController";
+export { VolumeController, defaults } from "./controller/VolumeController";
 export { StreamController, StreamWorker } from "./controller/StreamController";
 export { QueueController, QueueState, QueueState as Queue } from "./controller/QueueController";
 export type { PlayerQueue } from "./controller/QueueController";
@@ -40,6 +40,7 @@ export { TransitionController } from "./controller/TransitionController";
 export { PreloadController } from "./controller/PreloadController";
 export { SaveController, SaveWorker } from "./controller/SaveController";
 export { BusLatencyTrace } from "./controller/BusLatencyTrace";
+export { PlayerEventBridge } from "./controller/PlayerEventBridge";
 export { PlayerEventDebug, DEBUG_PRIORITY } from "./controller/PlayerEventDebug";
 export { GlobalControllerRegistry, globalControllerRegistry } from "./controller/GlobalControllerRegistry";
 export { StreamManager } from "./structures/StreamManager";

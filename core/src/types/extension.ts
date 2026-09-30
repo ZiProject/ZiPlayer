@@ -35,18 +35,22 @@ export interface SourceExtension {
 	): Promise<StreamInfo | null | undefined> | StreamInfo | null | undefined;
 }
 
+import type { Bus } from "../structures/Bus";
+
 /**
  * Context for the extension
- *
- * @example
- * const context: ExtensionContext = {
- *   player: player,
- *   manager: manager
- * };
  */
 export interface ExtensionContext {
-	player: Player;
-	manager: PlayerManager;
+	playerId: string;
+	bus: Bus;
+	signal?: AbortSignal;
+	track?: Track;
+	query?: string;
+	requestedBy?: any;
+	/** @deprecated Use bus or playerId */
+	player?: Player | null;
+	/** @deprecated Use bus or playerId */
+	manager?: PlayerManager | null;
 	playNext?: () => Promise<void>;
 	skip?: () => void;
 	emit?: (event: string, ...args: any[]) => void;

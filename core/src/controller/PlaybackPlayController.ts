@@ -80,8 +80,9 @@ export class PlaybackPlayController {
 		query: string | Track | SearchResult | null,
 		requestedBy: string | undefined,
 		rpcContext: BusRpcContext,
-	): Promise<boolean> {
-		if (rpcContext.signal.aborted || this.lifecycleSignal.aborted) return false;
+		pluginSelection?: string | string[],
+	): Promise<{ ok: boolean; track: Track | null } | boolean> {
+		if (rpcContext.signal.aborted || this.lifecycleSignal.aborted) return { ok: false, track: null };
 		const context: PlayerMessageContext = {
 			playerId: this.playerId,
 			requestId: rpcContext.requestId,
@@ -98,11 +99,13 @@ export class PlaybackPlayController {
 		try {
 			if (query === null) {
 				const session = this.currentSession();
-				if (session?.status === "playing" || session?.status === "paused") return true;
+				if (session?.status === "playing" || session?.status === "paused") {
+					return { ok: true, track: session.track };
+				}
 				const queueLength = (this.bus.querySync(this.playerId, PLAYER_QUERY.queue) ?? []).length;
-				if (queueLength === 0) return false;
+				if (queueLength === 0) return { ok: false, track: null };
 				await this.skipThroughBus(context);
-				return true;
+				return { ok: true, track: this.currentSession()?.track ?? null };
 			}
 
 			if (query && typeof query === "object" && "tracks" in query && Array.isArray((query as SearchResult).tracks)) {
@@ -144,17 +147,24 @@ export class PlaybackPlayController {
 							error: hookResponse.error,
 						});
 					}
-					return hookResponse.success ?? true;
+					return { ok: hookResponse.success ?? true, track: null };
 				}
 
 				if (hookTracks && hookTracks.length > 0) {
 					tracksToAdd = hookTracks;
 					isPlaylist = hookResponse.isPlaylist ?? hookTracks.length > 1;
 				} else if (typeof effectiveRequest.query === "string") {
-					const result = await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>(
+					const result = await this.bus.requestRpc<
+						{ query: string; requestedBy: string; plugin?: string | string[] },
+						SearchResult
+					>(
 						this.playerId,
 						PLAYER_RPC.search,
-						{ query: effectiveRequest.query, requestedBy: effectiveRequest.requestedBy || "Unknown" },
+						{
+							query: effectiveRequest.query,
+							requestedBy: effectiveRequest.requestedBy || "Unknown",
+							plugin: pluginSelection,
+						},
 						{ signal: context.signal },
 					);
 					tracksToAdd = result.tracks;
@@ -204,7 +214,7 @@ export class PlaybackPlayController {
 					tracks: tracksToAdd,
 					isPlaylist,
 				});
-				return true;
+				return { ok: true, track: tracksToAdd[0] ?? null };
 			}
 
 			if (isPlaylist) {
@@ -234,7 +244,7 @@ export class PlaybackPlayController {
 					tracks: tracksToAdd,
 					isPlaylist,
 				});
-				return true;
+				return { ok: true, track: tracksToAdd[0] ?? null };
 			}
 
 			let started = true;
@@ -254,7 +264,7 @@ export class PlaybackPlayController {
 				tracks: tracksToAdd,
 				isPlaylist,
 			});
-			return started;
+			return { ok: started, track: tracksToAdd[0] ?? null };
 		} catch (error) {
 			this.debug("[PlaybackPlayController] Play error:", error);
 			const err = error instanceof Error ? error : new Error(String(error));
@@ -281,7 +291,7 @@ export class PlaybackPlayController {
 					error: err,
 				});
 			}
-			return false;
+			return { ok: false, track: null };
 		}
 	}
 }

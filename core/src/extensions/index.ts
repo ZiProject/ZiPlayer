@@ -90,13 +90,23 @@ export class ExtensionManager {
 		this.extensionContext = this.createExtensionContext(player, this.manager);
 	}
 
-	private createExtensionContext(player: Player, manager: PlayerManager): ExtensionContext {
+	private createExtensionContext(player?: Player | null, manager?: PlayerManager | null, extra?: Partial<ExtensionContext>): ExtensionContext {
+		const p = player ?? this.player;
+		const m = manager ?? this.manager;
+		const bus = extra?.bus ?? (p as any)?.bus ?? (m as any)?.bus;
+		const playerId = extra?.playerId ?? p?.playerId ?? "unknown";
 		return Object.freeze({
-			player,
-			manager,
-			playNext: () => (player as any).playNext?.(),
-			skip: () => (player as any).skip?.(),
-			emit: (event: string, ...args: any[]) => player.emit(event as any, ...args),
+			playerId,
+			bus,
+			signal: extra?.signal ?? new AbortController().signal,
+			track: extra?.track,
+			query: extra?.query,
+			requestedBy: extra?.requestedBy,
+			player: p ?? null,
+			manager: m ?? null,
+			playNext: () => (p as any)?.playNext?.(),
+			skip: () => (p as any)?.skip?.(),
+			emit: (event: string, ...args: any[]) => p?.emit(event as any, ...args),
 		});
 	}
 
@@ -182,6 +192,38 @@ export class ExtensionManager {
 
 	get(name: string): BaseExtension | undefined {
 		return this.extensions.get(name);
+	}
+
+	resolve(name: string): BaseExtension | undefined {
+		return this.get(name);
+	}
+
+	async invoke(name: string, method: string, context: any, payload?: any): Promise<any> {
+		const ext = this.get(name);
+		if (!ext) return undefined;
+		const fn = (ext as any)[method];
+		if (typeof fn !== "function") return undefined;
+		return Promise.resolve(fn.call(ext, context, payload));
+	}
+
+	async beforePlay(
+		name: string,
+		context: ExtensionContext,
+		request: ExtensionPlayRequest,
+	): Promise<ExtensionPlayResponse | void> {
+		const ext = this.get(name);
+		if (!ext || typeof (ext as any).beforePlay !== "function") return;
+		return Promise.resolve((ext as any).beforePlay.call(ext, context, request));
+	}
+
+	async afterPlay(
+		name: string,
+		context: ExtensionContext,
+		payload: ExtensionAfterPlayPayload,
+	): Promise<void> {
+		const ext = this.get(name);
+		if (!ext || typeof (ext as any).afterPlay !== "function") return;
+		return Promise.resolve((ext as any).afterPlay.call(ext, context, payload));
 	}
 
 	getAll(): BaseExtension[] {

@@ -1,6 +1,7 @@
 import { BasePlugin } from "./BasePlugin";
 import { withTimeout } from "../utils/timeout";
 import type { Track, StreamInfo, SearchResult, VideoResolveOptions, TrackResolveContext, PluginManagerOptions } from "../types";
+import { normalizeStreamInfo } from "../types";
 import type { PlayerManager } from "../structures/PlayerManager";
 import type { Player } from "../structures/Player";
 import { StreamManager } from "../structures/StreamManager";
@@ -437,14 +438,14 @@ export class PluginManager {
 	}
 	//#region Search advanced scoring
 
-	private getSearchCacheKey(query: string, requestedBy: string): string {
-		return `${query.toLowerCase().trim()}:${requestedBy}`;
+	private getSearchCacheKey(query: string, requestedBy: string, pluginsKey?: string): string {
+		return `${query.toLowerCase().trim()}:${requestedBy}:${pluginsKey ?? "all"}`;
 	}
 
-	private getCachedSearch(query: string, requestedBy: string): SearchResult | null {
+	private getCachedSearch(query: string, requestedBy: string, pluginsKey?: string): SearchResult | null {
 		if (!this.options.enableCache) return null;
 
-		const key = this.getSearchCacheKey(query, requestedBy);
+		const key = this.getSearchCacheKey(query, requestedBy, pluginsKey);
 		const cached = this.searchCache.get(key);
 
 		if (cached && Date.now() < cached.expiresAt) {
@@ -460,10 +461,10 @@ export class PluginManager {
 		return null;
 	}
 
-	private setCachedSearch(query: string, requestedBy: string, result: SearchResult): void {
+	private setCachedSearch(query: string, requestedBy: string, result: SearchResult, pluginsKey?: string): void {
 		if (!this.options.enableCache || this.destroyed) return;
 
-		const key = this.getSearchCacheKey(query, requestedBy);
+		const key = this.getSearchCacheKey(query, requestedBy, pluginsKey);
 		this.searchCache.set(key, {
 			result,
 			timestamp: Date.now(),
@@ -475,11 +476,20 @@ export class PluginManager {
 	/**
 	 * Search with deduplication and evaluation of results
 	 * @param query Search query
-	 * @param requestedBy User who requested the search
+	 * @param requestedByOrOptions User who requested the search, or an options object
 	 * @returns Evaluated search result
 	 */
-	async search(query: string, requestedBy: string, signal?: AbortSignal): Promise<SearchResult | null> {
-		if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+	async search(
+		query: string,
+		requestedByOrOptions: string | { requestedBy?: string; plugins?: string | string[]; signal?: AbortSignal },
+		signal?: AbortSignal,
+	): Promise<SearchResult | null> {
+		const opts = typeof requestedByOrOptions === "object" ? requestedByOrOptions : { requestedBy: requestedByOrOptions };
+		const requestedBy = opts.requestedBy ?? "Unknown";
+		const effectiveSignal = opts.signal ?? signal;
+		const pluginsFilter = opts.plugins;
+
+		if (effectiveSignal?.aborted) throw new DOMException("Aborted", "AbortError");
 		if (this.destroyed) return null;
 		if (!query || !query.trim()) {
 			this.debug(`[Search] Empty query provided`);
@@ -487,20 +497,25 @@ export class PluginManager {
 		}
 
 		const trimmedQuery = query.trim();
-		this.debug(`[Search] Called with query: "${trimmedQuery}", requestedBy: ${requestedBy}`);
+		const selectedPluginNames = pluginsFilter ?
+			(Array.isArray(pluginsFilter) ? pluginsFilter : [pluginsFilter]).map((p) => p.toLowerCase())
+			: null;
+		const pluginsKey = selectedPluginNames ? [...selectedPluginNames].sort().join(",") : "all";
+
+		this.debug(`[Search] Called with query: "${trimmedQuery}", requestedBy: ${requestedBy}, plugins: ${pluginsKey}`);
 
 		// Check cache
-		const cached = this.getCachedSearch(trimmedQuery, requestedBy);
+		const cached = this.getCachedSearch(trimmedQuery, requestedBy, pluginsKey);
 		if (cached) {
 			this.debug(`[Search] Returning cached result for: ${trimmedQuery}`);
 			return cached;
 		}
 
 		// Check in-flight request
-		const dedupeKey = this.getSearchCacheKey(trimmedQuery, requestedBy);
+		const dedupeKey = this.getSearchCacheKey(trimmedQuery, requestedBy, pluginsKey);
 		let searchPromise = this.pendingSearches.get(dedupeKey);
 		if (!searchPromise) {
-			searchPromise = this.searchInternal(trimmedQuery, requestedBy).finally(() => {
+			searchPromise = this.searchInternal(trimmedQuery, requestedBy, selectedPluginNames, pluginsKey).finally(() => {
 				this.pendingSearches.delete(dedupeKey);
 			});
 			this.pendingSearches.set(dedupeKey, searchPromise);
@@ -508,28 +523,36 @@ export class PluginManager {
 			this.debug(`[Search] Waiting for in-flight request: ${trimmedQuery}`);
 		}
 
-		if (!signal) return searchPromise;
+		if (!effectiveSignal) return searchPromise;
 
 		return new Promise<SearchResult | null>((resolve, reject) => {
 			const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
-			if (signal.aborted) return onAbort();
-			signal.addEventListener("abort", onAbort, { once: true });
+			if (effectiveSignal.aborted) return onAbort();
+			effectiveSignal.addEventListener("abort", onAbort, { once: true });
 			searchPromise!
 				.then((result) => {
-					signal.removeEventListener("abort", onAbort);
+					effectiveSignal.removeEventListener("abort", onAbort);
 					resolve(result);
 				})
 				.catch((err) => {
-					signal.removeEventListener("abort", onAbort);
+					effectiveSignal.removeEventListener("abort", onAbort);
 					reject(err);
 				});
 		});
 	}
 
-	private async searchInternal(query: string, requestedBy: string): Promise<SearchResult | null> {
+	private async searchInternal(
+		query: string,
+		requestedBy: string,
+		selectedPluginNames?: string[] | null,
+		pluginsKey?: string,
+	): Promise<SearchResult | null> {
 		const timeoutMs = this.options.extractorTimeout ?? 15000;
 
-		const plugins = this.getAll().filter((p) => typeof p.search === "function");
+		let plugins = this.getAll().filter((p) => typeof p.search === "function");
+		if (selectedPluginNames && selectedPluginNames.length > 0) {
+			plugins = plugins.filter((p) => selectedPluginNames.includes(p.name.toLowerCase()));
+		}
 
 		if (!plugins.length) return null;
 
@@ -582,7 +605,7 @@ export class PluginManager {
 		const playlistResult = results.find((r) => r.playlist);
 
 		if (playlistResult) {
-			this.setCachedSearch(query, requestedBy, playlistResult);
+			this.setCachedSearch(query, requestedBy, playlistResult, pluginsKey);
 
 			this.debug(`[Search] Returning playlist: ${playlistResult.playlist?.name} (${playlistResult.tracks.length} tracks)`);
 
@@ -628,7 +651,7 @@ export class PluginManager {
 			source: "multi-search",
 		};
 
-		this.setCachedSearch(query, requestedBy, finalResult);
+		this.setCachedSearch(query, requestedBy, finalResult, pluginsKey);
 
 		this.debug(`[Search] Aggregated ${tracks.length} tracks from ${plugins.length} plugins`);
 		return finalResult;
@@ -747,10 +770,10 @@ export class PluginManager {
 			if (existingStream) {
 				this.debug(`[Stream] Using existing stream from manager`);
 
-				return {
+				return normalizeStreamInfo(track, {
 					stream: existingStream,
 					type: "arbitrary",
-				};
+				});
 			}
 		}
 
@@ -783,7 +806,8 @@ export class PluginManager {
 				try {
 					this.debug(`[Stream] ${plugin.name} trying direct stream`);
 
-					result = await withTimeout(plugin.getStream(track, controller.signal), timeoutMs, `${plugin.name} getStream timeout`);
+					const rawResult = await withTimeout(plugin.getStream(track, controller.signal), timeoutMs, `${plugin.name} getStream timeout`);
+					result = rawResult ? normalizeStreamInfo(track, rawResult) : null;
 
 					if (result?.remote && result?.handle) {
 						this.debug(`[Stream] ${plugin.name} direct remote stream success`);
@@ -822,7 +846,8 @@ export class PluginManager {
 				try {
 					this.debug(`[Stream] ${plugin.name} trying fallback resolver`);
 
-					result = await withTimeout(plugin.getFallback(track, controller.signal), timeoutMs, `${plugin.name} fallback timeout`);
+					const rawResult = await withTimeout(plugin.getFallback(track, controller.signal), timeoutMs, `${plugin.name} fallback timeout`);
+					result = rawResult ? normalizeStreamInfo(track, rawResult) : null;
 
 					if (result?.stream) {
 						const similarity = this.calculateTrackSimilarity(track, {
@@ -1092,7 +1117,7 @@ export class PluginManager {
 
 				if (result?.stream) {
 					this.debug(`[Video] ${plugin.name} video stream ready: ${track.title}`);
-					return result;
+					return normalizeStreamInfo(track, result);
 				}
 			} catch (error) {
 				this.debug(`[Video] ${plugin.name} getVideo failed:`, error instanceof Error ? error.message : error);

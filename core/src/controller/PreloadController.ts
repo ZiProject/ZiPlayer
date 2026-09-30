@@ -1,5 +1,5 @@
 import type { AudioResource } from "@discordjs/voice";
-import type { Track, TrackLoadResult, PromotedPreload, StreamInfo, StreamSlot } from "../types";
+import { type Track, type TrackLoadResult, type PromotedPreload, type StreamInfo, type StreamSlot, normalizeStreamInfo } from "../types";
 import type { Bus } from "../structures/Bus";
 import { createPlayerRequestId } from "../structures/Bus";
 import type { TrackLoader } from "../structures/TrackLoader";
@@ -120,7 +120,9 @@ export class PreloadController {
 			track,
 		});
 		if (!promoted) return null;
-		const streamInfo: StreamInfo = promoted.streamInfo ?? { stream: promoted.stream as any, type: "arbitrary" };
+		const streamInfo: StreamInfo = promoted.streamInfo
+			? normalizeStreamInfo(promoted.track, promoted.streamInfo)
+			: normalizeStreamInfo(promoted.track, { stream: promoted.stream as any, type: "arbitrary" });
 		const resource = this.bus.requestRpcSync<
 			{ stream: import("stream").Readable; track: Track; inputType?: import("@discordjs/voice").StreamType },
 			AudioResource

@@ -28,35 +28,42 @@ class SearchWorker {
 		});
 	}
 
-	public async search(query: string, requestedBy: string, signal?: AbortSignal): Promise<SearchResult> {
+	public async search(query: string, requestedBy: string, signal?: AbortSignal, plugin?: string | string[]): Promise<SearchResult> {
 		if (this.disposed) throw new Error("SearchController is disposed");
 		const operationSignal = signal ? AbortSignal.any([signal, this.lifecycleAbort.signal]) : this.lifecycleAbort.signal;
 		this.throwIfAborted(operationSignal);
-		this.options.debug(`[SearchController] Search called with query: ${query}, requestedBy: ${requestedBy}`);
-		const cached = this.cache.get(this.key(query));
+		this.options.debug(`[SearchController] Search called with query: ${query}, requestedBy: ${requestedBy}, plugin: ${plugin}`);
+		const cacheKey = plugin ? `${this.key(query)}:${Array.isArray(plugin) ? plugin.slice().sort().join(",") : plugin}` : this.key(query);
+		const cached = this.cache.get(cacheKey);
 		if (cached) {
 			this.options.debug(`[SearchCache] Using cached search result for: ${query}`);
 			return cached;
 		}
 
 		this.throwIfAborted(operationSignal);
-		const extensionResult = await this.options.extensionManager.provideSearch(query, requestedBy, operationSignal);
-		this.throwIfAborted(operationSignal);
-		if (extensionResult?.tracks?.length) {
-			this.options.debug(`[SearchController] Extension handled search for query: ${query}`);
-			this.cacheResult(query, extensionResult);
-			return extensionResult;
+		if (!plugin) {
+			const extensionResult = await this.options.extensionManager.provideSearch(query, requestedBy, operationSignal);
+			this.throwIfAborted(operationSignal);
+			if (extensionResult?.tracks?.length) {
+				this.options.debug(`[SearchController] Extension handled search for query: ${query}`);
+				this.cacheResult(cacheKey, extensionResult);
+				return extensionResult;
+			}
 		}
 
 		this.throwIfAborted(operationSignal);
-		const pluginResult = await this.options.pluginManager.search(query, requestedBy, operationSignal);
+		const pluginResult = await this.options.pluginManager.search(
+			query,
+			{ requestedBy, plugins: plugin, signal: operationSignal },
+			operationSignal,
+		);
 		this.throwIfAborted(operationSignal);
 		if (pluginResult?.tracks?.length) {
 			this.options.debug(
 				`[SearchController] Plugin search returned ${pluginResult.tracks.length} tracks (score: ${pluginResult.score?.score}%)`,
 			);
 			if (pluginResult.score) this.options.debug(`[SearchController] Search evaluation - ${pluginResult.score.reason}`);
-			this.cacheResult(query, pluginResult);
+			this.cacheResult(cacheKey, pluginResult);
 			return pluginResult;
 		}
 
@@ -118,7 +125,7 @@ export class SearchController {
 		bus.registerRpc<SearchRequest, SearchResult>(PLAYER_RPC.search, (request, context) => {
 			const worker = this.workers.get(context.playerId);
 			if (!worker) throw new Error("SearchController is disposed");
-			return worker.search(request.query, request.requestedBy, context.signal);
+			return worker.search(request.query, request.requestedBy, context.signal, request.plugin);
 		});
 		bus.registerRpc<{ query: string }, SearchResult | null>(
 			PLAYER_RPC.searchCacheGet,

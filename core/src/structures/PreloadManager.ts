@@ -1,4 +1,4 @@
-import type { Track, StreamInfo, StreamSlot, PromotedPreload } from "../types";
+import { type Track, type StreamInfo, type StreamSlot, type PromotedPreload, normalizeStreamInfo } from "../types";
 import type { StreamManager } from "./StreamManager";
 import type { Bus } from "./Bus";
 import { PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
@@ -330,7 +330,7 @@ export class PreloadManager {
 		if (existingStream && !existingStream.destroyed && existingStream.readable !== false) {
 			if (abortHandler) signal.removeEventListener("abort", abortHandler);
 			const streamType = (existingStream as any).streamType ?? (existingStream as any).type ?? "arbitrary";
-			return { stream: existingStream, type: streamType };
+			return normalizeStreamInfo(track, { stream: existingStream, streamType });
 		}
 		const streamPromise = this.getStream(slot, track);
 		void streamPromise.then(

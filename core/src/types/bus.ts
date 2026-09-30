@@ -46,24 +46,27 @@ export interface PlayerMessageContext {
 
 export type PlayerActionExecutionContext = PlayerMessageContext;
 
-export type PlayerAction =
-	| { type: "PLAY"; track?: Track; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "PAUSE"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "RESUME"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "SEEK"; position: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "STOP"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "SKIP"; index?: number; ignoreLoop?: boolean; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "SET_VOLUME"; volume: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "QUEUE_NEXT"; ignoreLoop?: boolean; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "QUEUE_SET_CURRENT"; track: Track | null; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "FILTER_SET_SOURCE_TYPE"; streamType: string; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+export type PlayerAction = (
+	| { type: "PLAY"; track?: Track }
+	| { type: "PAUSE" }
+	| { type: "RESUME" }
+	| { type: "SEEK"; position: number }
+	| { type: "STOP" }
+	| { type: "SKIP"; index?: number; ignoreLoop?: boolean }
+	| { type: "SET_VOLUME"; volume: number }
+	| { type: "QUEUE_NEXT"; ignoreLoop?: boolean }
+	| { type: "QUEUE_SET_CURRENT"; track: Track | null }
+	| { type: "FILTER_SET_SOURCE_TYPE"; streamType: string }
 	| {
 			type: "FILTER_APPLY_AND_SEEK";
 			streamInfo: StreamInfo;
 			position?: number;
-			priority?: PlayerActionPriority;
-			requestId?: PlayerRequestId;
-	  };
+	  }
+) & {
+	priority?: PlayerActionPriority;
+	requestId?: PlayerRequestId;
+	signal?: AbortSignal;
+};
 export type PlayerActionType = PlayerAction["type"];
 
 export type PlayerConnectionInput =
@@ -268,7 +271,10 @@ export interface BusRpcOptions {
 	signal?: AbortSignal;
 }
 export interface PlayerRpcMap {
-	play: { request: { query: string | Track | SearchResult | null; requestedBy?: string }; response: boolean };
+	play: {
+		request: { query: string | Track | SearchResult | null; requestedBy?: string; plugin?: string | string[] };
+		response: { ok: boolean; track: Track | null } | boolean;
+	};
 	"volume.set": { request: { value: number }; response: number };
 	search: { request: { query: string; requestedBy: string }; response: SearchResult };
 	"search.cache.get": { request: { query: string }; response: SearchResult | null };
@@ -336,12 +342,15 @@ export interface PlayerRpcMap {
 	"plugin.clear": { request: undefined; response: void };
 	"plugin.stats": { request: undefined; response: object };
 	"plugin.relatedTracks": { request: { track: Track; history?: Track[] }; response: Track[] };
+	"plugin.search": { request: { plugin?: string | string[]; query: string; requestedBy?: string }; response: SearchResult | null };
+	"plugin.getStream": { request: { plugin?: string; track: Track }; response: StreamInfo | null };
 	"extension.add": { request: { extension: BaseExtension }; response: void };
 	"extension.remove": { request: { extension: BaseExtension }; response: boolean };
 	"extension.get": { request: { name: string }; response: BaseExtension | undefined };
 	"extension.list": { request: Record<string, never> | undefined; response: BaseExtension[] };
 	"extension.enable": { request: { name: string }; response: boolean };
 	"extension.disable": { request: { name: string }; response: boolean };
+	"extension.invoke": { request: { extension: string; method: string; context: any; payload?: any }; response: any };
 	"filter.list": { request: Record<string, never> | undefined; response: any };
 	"filter.set": { request: { filter: string; value: unknown }; response: any };
 	save: { request: { track: Track; options?: SaveOptions | string }; response: Readable };

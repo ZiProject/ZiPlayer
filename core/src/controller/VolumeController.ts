@@ -25,6 +25,14 @@ interface VolumeState {
 
 /** Shared, singleton controller: owns per-player volume state and resource-level volume
  *  application, keyed by playerId. */
+export const defaults = {
+	loudness: {
+		maxBoostDb: 6,
+		maxCutDb: 12,
+		limiterCeiling: 1,
+	},
+} as const;
+
 export class VolumeController {
 	private readonly states = new Map<string, VolumeState>();
 	private disposed = false;
@@ -41,14 +49,19 @@ export class VolumeController {
 
 	attach(playerId: string, options: VolumeControllerOptions = {}): void {
 		if (this.states.has(playerId)) this.detach(playerId);
+		const isLowPerf = Boolean(options.lowPerformance);
+		const autoDisable = options.loudness?.autoDisableInLowPerformance ?? true;
+		const enabled = isLowPerf && autoDisable ? false : (options.loudness?.enabled ?? false);
+
 		this.states.set(playerId, {
 			volume: this.clamp(options.initialVolume ?? 100),
 			loudness: {
-				enabled: options.loudness?.enabled ?? false,
+				enabled,
 				targetLUFS: options.loudness?.targetLUFS ?? -14,
-				maxBoostDb: Math.max(0, options.loudness?.maxBoostDb ?? 8),
-				maxCutDb: Math.max(0, options.loudness?.maxCutDb ?? 10),
-				limiterCeiling: Math.min(1, Math.max(0, options.loudness?.limiterCeiling ?? 0.95)),
+				maxBoostDb: Math.max(0, options.loudness?.maxBoostDb ?? defaults.loudness.maxBoostDb),
+				maxCutDb: Math.max(0, options.loudness?.maxCutDb ?? defaults.loudness.maxCutDb),
+				limiterCeiling: Math.min(1, Math.max(0, options.loudness?.limiterCeiling ?? defaults.loudness.limiterCeiling)),
+				autoDisableInLowPerformance: autoDisable,
 			},
 			activeResourceResolver: null,
 		});

@@ -49,6 +49,14 @@ export class ExtensionController {
 			const mgr = this.manager(ctx.playerId);
 			if (mgr) await mgr.afterPlayHooks(payload);
 		});
+		bus.registerRpc<{ extension: string; method: string; context: any; payload?: any }, any>(
+			PLAYER_RPC.extensionInvoke,
+			async ({ extension, method, context, payload }, ctx) => {
+				const mgr = this.manager(ctx.playerId);
+				if (!mgr) return undefined;
+				return mgr.invoke(extension, method, context, payload);
+			},
+		);
 	}
 
 	attach(playerId: string, extensionManager: ExtensionManager): void {

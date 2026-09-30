@@ -1,6 +1,6 @@
 import { createPlayerRequestId } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
-import type { PlayerMessageContext, PlaybackSessionSnapshot } from "../types";
+import type { PlayerMessageContext, PlaybackSessionSnapshot, Track } from "../types";
 import type { Bus } from "../structures/Bus";
 import type { PlaybackTrackEndControllerOptions } from "../types";
 import { PlayerActionPriority } from "../types";
@@ -92,32 +92,77 @@ export class PlaybackTrackEndController {
 			const from = current.track;
 			const endedSession = current;
 			const context = this.createContext("PlaybackTrackEndController:track-end");
-			let next = await this.nextThroughBus(false, context);
-			if (next) {
-				endedSession.markEnded();
-				this.waitingForQueue = false;
-				await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackStart, { track: next, context, from });
-				return;
+
+			const loopMode = this.bus.querySync(this.playerId, PLAYER_QUERY.queueLoop);
+			let next: Track | null = null;
+			let relatedTracks: Track[] = (this.bus.querySync(this.playerId, PLAYER_QUERY.relatedTracks) as Track[] | null) ?? [];
+			let isFromQueueOrLoop = false;
+
+			if (loopMode === "track") {
+				next = endedSession.track;
+				isFromQueueOrLoop = true;
+			} else {
+				const queueSnapshot = this.queueSnapshot();
+				if (queueSnapshot.length > 0) {
+					next = queueSnapshot[0];
+					isFromQueueOrLoop = true;
+				} else if (loopMode === "queue") {
+					const history = (this.bus.querySync(this.playerId, PLAYER_QUERY.previousTracks) as Track[] | null) ?? [];
+					next = history[0] ?? endedSession.track;
+					isFromQueueOrLoop = true;
+				} else {
+					// Queue is empty -> generateRelated()
+					const previousTracks = (this.bus.querySync(this.playerId, PLAYER_QUERY.previousTracks) as Track[] | null) ?? [];
+					const source = previousTracks.at(-1) ?? endedSession.track;
+					relatedTracks = await this.bus
+						.requestRpc<{ track?: Track | null }, Track[]>(this.playerId, CONTROLLER_RPC.playbackCreateRelatedTracks, { track: source })
+						.catch(() => []);
+					relatedTracks = relatedTracks ?? [];
+					next = relatedTracks[0] ?? null;
+					isFromQueueOrLoop = false;
+				}
 			}
-			if (this.bus.querySync(this.playerId, PLAYER_QUERY.queueAutoPlay)) {
-				const candidate = await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackPrepareAutoplay, {
-					session: endedSession,
-					context,
+
+			// Emit willNext
+			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track: next });
+
+			// Emit willPlay
+			if (next) {
+				this.bus.event(this.playerId, {
+					type: BUS_EVENT.willPlay,
+					track: next,
+					relatedTracks,
+					upcomingTracks: this.queueSnapshot(),
 				});
-				const stillCurrent = this.currentSession();
-				if (candidate && stillCurrent?.id === snapshot.id && stillCurrent.isActive()) {
+			}
+
+			// Actually start next?
+			if (isFromQueueOrLoop) {
+				const queueNext = await this.nextThroughBus(false, context);
+				if (queueNext) {
+					endedSession.markEnded();
+					this.waitingForQueue = false;
+					await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackStart, { track: queueNext, context, from });
+					return;
+				}
+			} else {
+				const autoPlay = Boolean(this.bus.querySync(this.playerId, PLAYER_QUERY.queueAutoPlay));
+				if (autoPlay && next) {
 					endedSession.markEnded();
 					this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track: null });
-					if (!this.bus.querySync(this.playerId, PLAYER_QUERY.queueNextTrack))
-						this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueAddMultiple, { tracks: [candidate] });
-					next = await this.nextThroughBus(false, context);
-					if (next) {
+					if (!this.bus.querySync(this.playerId, PLAYER_QUERY.queueNextTrack)) {
+						this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueAddMultiple, { tracks: [next] });
+					}
+					const autoNext = await this.nextThroughBus(false, context);
+					if (autoNext) {
 						this.waitingForQueue = false;
-						await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackStart, { track: next, context, from });
+						await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackStart, { track: autoNext, context, from });
 						return;
 					}
 				}
 			}
+
+			// autoPlay=false or no next candidate -> stop here
 			const finalSession = this.currentSession();
 			if (!finalSession || finalSession.id !== snapshot.id || !finalSession.isActive()) return;
 			endedSession.markEnded();

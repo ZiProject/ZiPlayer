@@ -96,6 +96,7 @@ export interface TTSControllerOptions {
 }
 export interface VolumeControllerOptions {
 	initialVolume?: number;
+	lowPerformance?: boolean;
 	loudness?: PlayerOptions["loudnessNormalization"];
 }
 export interface FilterControllerOptions {

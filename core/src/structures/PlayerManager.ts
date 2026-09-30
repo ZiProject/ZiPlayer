@@ -645,6 +645,7 @@ export class PlayerManager extends EventEmitter {
 		});
 		this.controllers.volume?.attach(playerId, {
 			initialVolume: options?.volume ?? 100,
+			lowPerformance: isLowPerf,
 			loudness: options?.loudnessNormalization,
 		});
 		this.controllers.antiStuck?.attach(playerId, { ...options?.antiStuck, debug: channel("AntiStuckController") });

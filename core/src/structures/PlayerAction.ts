@@ -88,15 +88,16 @@ export class PlayerAction {
 
 	private runCritical(action: PlayerActionMessage): Promise<void> {
 		const controller = new AbortController();
+		const signal = action.signal ? AbortSignal.any([controller.signal, action.signal]) : controller.signal;
 		const context: Partial<PlayerActionExecutionContext> = {
-			signal: controller.signal,
+			signal,
 			priority: action.priority ?? PlayerActionPriority.CRITICAL,
 			requestId: action.requestId ?? createPlayerRequestId(),
 		};
 		this.criticalRunning += 1;
 		this.criticalControllers.add(controller);
 		const execution = this.criticalTail.then(() => {
-			if (this.disposed || controller.signal.aborted) return;
+			if (this.disposed || signal.aborted) return;
 			return this.bus.action(this.playerId, action, context);
 		});
 		this.criticalTail = execution.then(
@@ -119,8 +120,9 @@ export class PlayerAction {
 
 		const pending = this.pending.shift()!;
 		const controller = new AbortController();
+		const signal = pending.action.signal ? AbortSignal.any([controller.signal, pending.action.signal]) : controller.signal;
 		const context: Partial<PlayerActionExecutionContext> = {
-			signal: controller.signal,
+			signal,
 			priority: pending.priority,
 			requestId: pending.action.requestId ?? createPlayerRequestId(),
 		};

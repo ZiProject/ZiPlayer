@@ -15,6 +15,8 @@ import type {
 	SearchDebugResult,
 	LoopMode,
 	PlayerSession,
+	PlayOptions,
+	PlayResult,
 } from "../types";
 import { PlaybackMode } from "../types";
 import type { FilterEngine } from "../controller/FilterController";
@@ -34,6 +36,17 @@ import type { AudioResource } from "@discordjs/voice";
 import type { PlaybackSession } from "./PlaybackSession";
 import { BUS_EVENT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
 import type { PlayerQueue } from "../controller/QueueController";
+
+export function assertVoiceChannel(channel: VoiceChannel): asserts channel is VoiceChannel {
+	if (
+		!channel ||
+		typeof channel !== "object" ||
+		!("type" in channel) ||
+		((channel as any).type !== 2 && (channel as any).type !== "GuildVoice")
+	) {
+		throw new TypeError("play({ voiceChannel }) requires a Guild VoiceChannel");
+	}
+}
 
 export class Player extends EventEmitter {
 	public readonly bus: Bus;
@@ -170,6 +183,12 @@ export class Player extends EventEmitter {
 	public get availablePlugins(): string[] {
 		return (this.bus.querySync(this.playerId, PLAYER_QUERY.availablePlugins) ?? []).map((plugin) => plugin.name);
 	}
+	public get pluginNames(): string[] {
+		return (this.bus.querySync(this.playerId, PLAYER_QUERY.availablePlugins) ?? []).map((plugin: any) => plugin.name ?? plugin);
+	}
+	public get extensionNames(): string[] {
+		return (this.bus.querySync(this.playerId, PLAYER_QUERY.extensions) ?? []).map((ext: any) => ext.name ?? ext);
+	}
 	public get relatedTracks(): Track[] {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.relatedTracks) ?? [];
 	}
@@ -181,9 +200,6 @@ export class Player extends EventEmitter {
 	}
 	public cacheSearchResult(query: string, result: SearchResult): Promise<void> {
 		return this.bus.requestRpc(this.playerId, PLAYER_RPC.searchCacheSet, { query, result });
-	}
-	public clearSearchCache(): Promise<void> {
-		return this.bus.requestRpc(this.playerId, PLAYER_RPC.searchCacheClear, {});
 	}
 	public clearExpiredSearchCache(): Promise<void> {
 		return this.bus.requestRpc(this.playerId, PLAYER_RPC.searchCachePurge, {});
@@ -198,6 +214,7 @@ export class Player extends EventEmitter {
 		channel: VoiceChannel,
 		options?: { group?: string; selfDeaf?: boolean; selfMute?: boolean; deaf?: boolean; mute?: boolean },
 	): Promise<VoiceConnection> {
+		assertVoiceChannel(channel);
 		const request = {
 			type: BUS_REQUEST.connectionConnect,
 			requestId: createPlayerRequestId(),
@@ -220,24 +237,90 @@ export class Player extends EventEmitter {
 			.request(this.playerId, { type: BUS_REQUEST.connectionDisconnect, requestId: createPlayerRequestId() })
 			.then(() => undefined);
 	}
-	public async play(query: string | Track | SearchResult | null, requestedBy?: string): Promise<boolean> {
+	public async play(
+		query: string | Track | SearchResult | null,
+		optionsOrRequestedBy?: PlayOptions | string,
+	): Promise<PlayResult | false> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot play while subscribed to another player. Call unsubscribeForward() first.");
 			return false;
 		}
+
+		let options: PlayOptions;
+		if (!optionsOrRequestedBy) {
+			options = {};
+		} else if (typeof optionsOrRequestedBy === "string") {
+			options = { requestedBy: optionsOrRequestedBy };
+		} else if (
+			typeof optionsOrRequestedBy === "object" &&
+			("voiceChannel" in optionsOrRequestedBy ||
+				"plugin" in optionsOrRequestedBy ||
+				"signal" in optionsOrRequestedBy ||
+				"requestedBy" in optionsOrRequestedBy)
+		) {
+			options = optionsOrRequestedBy;
+		} else {
+			options = { requestedBy: optionsOrRequestedBy };
+		}
+
+		if (options.signal?.aborted) return false;
+
+		if (options.voiceChannel !== undefined) {
+			const connection = this.connection;
+			const isReady = connection && (connection.state?.status === "ready" || (connection.state as any)?.status === 0);
+			const currentChannelId = (connection as any)?.joinConfig?.channelId;
+			if (!isReady || (currentChannelId && currentChannelId !== options.voiceChannel.id)) {
+				assertVoiceChannel(options.voiceChannel);
+				await this.connect(options.voiceChannel);
+			}
+		}
+
+		if (options.signal?.aborted) return false;
+
 		const generation = ++this.playGeneration;
 		const controller = new AbortController();
 		this.playAbortController?.abort();
 		this.playAbortController = controller;
+
+		const combinedSignal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
+
+		const reqBy =
+			typeof options.requestedBy === "string" ?
+				options.requestedBy
+			:	(options.requestedBy?.id ??
+				options.requestedBy?.username ??
+				(options.requestedBy ? String(options.requestedBy) : undefined));
+
 		const operation = this.playOperation
-			.catch(() => false)
-			.then(() => {
-				if (generation !== this.playGeneration || controller.signal.aborted) return false;
-				return this.bus
-					.requestRpc(this.playerId, PLAYER_RPC.play, { query, requestedBy }, { signal: controller.signal })
-					.then((result) => (generation === this.playGeneration ? result : false));
+			.catch(() => false as const)
+			.then(async () => {
+				if (generation !== this.playGeneration || combinedSignal.aborted) return false;
+				const rpcResult = await this.bus.requestRpc<
+					{ query: string | Track | SearchResult | null; requestedBy?: string; plugin?: string | string[] },
+					{ ok: boolean; track: Track | null } | boolean
+				>(this.playerId, PLAYER_RPC.play, { query, requestedBy: reqBy, plugin: options.plugin }, { signal: combinedSignal });
+
+				if (generation !== this.playGeneration || combinedSignal.aborted) return false;
+
+				const ok = typeof rpcResult === "object" ? rpcResult.ok : Boolean(rpcResult);
+				if (!ok) return false;
+
+				const track = typeof rpcResult === "object" && rpcResult.track ? rpcResult.track : this.currentTrack;
+				if (!track) return false;
+
+				const queryStr = typeof query === "string" ? query : (track.title ?? track.url ?? "");
+
+				const playResult: PlayResult = {
+					track,
+					query: queryStr,
+					requestedBy: options.requestedBy,
+					voiceConnection: this.connection ?? undefined,
+					player: this,
+				};
+				return playResult;
 			});
-		this.playOperation = operation;
+
+		this.playOperation = operation.then((res) => Boolean(res));
 		return operation.finally(() => {
 			if (this.playAbortController === controller) this.playAbortController = null;
 		});
@@ -303,11 +386,26 @@ export class Player extends EventEmitter {
 			.then(() => true)
 			.catch(() => false);
 	}
-	public async skip(index?: number): Promise<boolean> {
+	public async skip(
+		indexOrOptions?: number | { index?: number; signal?: AbortSignal },
+		maybeOptions?: { signal?: AbortSignal },
+	): Promise<boolean> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot skip while subscribed to another player");
 			return false;
 		}
+		let index: number | undefined;
+		let signal: AbortSignal | undefined;
+		if (typeof indexOrOptions === "number") {
+			index = indexOrOptions;
+			signal = maybeOptions?.signal;
+		} else if (indexOrOptions && typeof indexOrOptions === "object") {
+			index = indexOrOptions.index;
+			signal = indexOrOptions.signal;
+		} else if (maybeOptions && typeof maybeOptions === "object") {
+			signal = maybeOptions.signal;
+		}
+		if (signal?.aborted) return false;
 		if (typeof index === "number") {
 			if (index < 0 || index >= this.queueSize) {
 				this.debug(`[Player] No track found at index ${index}`);
@@ -315,8 +413,8 @@ export class Player extends EventEmitter {
 			}
 		}
 		this.invalidatePlay();
-		return this.action({ type: PLAYER_ACTION.skip, index })
-			.then(() => true)
+		return this.action({ type: PLAYER_ACTION.skip, index, signal } as any)
+			.then(() => !signal?.aborted)
 			.catch(() => false);
 	}
 	private invalidatePlay(): void {
@@ -416,7 +514,7 @@ export class Player extends EventEmitter {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.ttsHasPlayer) ?? false;
 	}
 	public interruptWithTTSTrack(track: Track, ..._args: any[]): Promise<boolean> {
-		return this.play(track);
+		return this.play(track).then((res) => Boolean(res));
 	}
 	public async previous(): Promise<boolean> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {

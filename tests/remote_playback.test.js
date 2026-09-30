@@ -152,7 +152,8 @@ test("plugin returning remote: true sets REMOTE mode and exitRemoteMode restores
 	};
 
 	const playOk = await player.play(track);
-	assert.equal(playOk, true);
+	assert.ok(playOk);
+	assert.equal(playOk.track.id, "track-plugin-remote");
 
 	// Wait for stream to be loaded and remote handle attached
 	await new Promise((r) => setTimeout(r, 50));

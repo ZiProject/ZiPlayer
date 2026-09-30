@@ -47,15 +47,16 @@ export interface SearchScore {
 }
 
 /**
- * Contains streaming information for audio playback.
- * `inputType` describes the actual bytes exposed by `stream`, which is
- * especially important for raw PCM produced by filter/seek operations.
+ * Raw streaming information returned by plugins or custom resolvers.
  */
-export interface StreamInfo {
+export interface RawStreamInfo {
 	stream?: Readable;
 	url?: string;
-	type: "webm/opus" | "ogg/opus" | "arbitrary" | "url" | string;
-	/** Actual @discordjs/voice input type for the returned stream. */
+	track?: Track;
+	streamType?: StreamType;
+	/** @deprecated Use streamType */
+	type?: "webm/opus" | "ogg/opus" | "arbitrary" | "url" | string;
+	/** @deprecated Use streamType */
 	inputType?: StreamType;
 	metadata?: Record<string, any>;
 	position?: number;
@@ -69,6 +70,42 @@ export interface StreamInfo {
 		seek(position: number): Promise<void>;
 		setVolume(volume: number): Promise<void>;
 		destroy(): Promise<void>;
+	};
+}
+
+/**
+ * Normalized streaming information for audio playback.
+ * Guaranteed to have `track` and `streamType`.
+ */
+export interface StreamInfo extends RawStreamInfo {
+	stream?: Readable;
+	track: Track;
+	streamType: StreamType;
+	/** @deprecated Use streamType */
+	inputType?: StreamType;
+	/** @deprecated Use streamType */
+	type?: "webm/opus" | "ogg/opus" | "arbitrary" | "url" | string;
+}
+
+export function inferStreamType(info: Partial<RawStreamInfo>): StreamType {
+	if (info.streamType) return info.streamType;
+	if (info.inputType) return info.inputType;
+	const t = typeof info.type === "string" ? info.type.toLowerCase() : "";
+	if (t === "webm/opus") return "webm/opus" as StreamType;
+	if (t === "ogg/opus") return "ogg/opus" as StreamType;
+	if (t === "opus") return "opus" as StreamType;
+	if (t === "raw") return "raw" as StreamType;
+	return "arbitrary" as StreamType;
+}
+
+export function normalizeStreamInfo(requestedTrack: Track, info: RawStreamInfo): StreamInfo {
+	const streamType = info.streamType ?? info.inputType ?? (info.type as StreamType) ?? inferStreamType(info);
+	return {
+		...info,
+		track: info.track ?? requestedTrack,
+		streamType,
+		inputType: info.inputType ?? streamType,
+		type: info.type ?? (streamType as string),
 	};
 }
 
@@ -147,6 +184,7 @@ export interface PlayerOptions {
 		maxBoostDb?: number;
 		maxCutDb?: number;
 		limiterCeiling?: number;
+		autoDisableInLowPerformance?: boolean;
 	};
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
 	maxStreamStore?: number;
@@ -268,6 +306,38 @@ export interface PlayerSession {
 	userdata?: Record<string, any>;
 }
 
+export interface PlayerRuntimeState {
+	plugins: string[];
+	extensions: string[];
+}
+
+export interface PlayOptions {
+	/** User or identifier who requested playback. */
+	requestedBy?: any;
+	/** Guild voice channel to connect to automatically before playback. */
+	voiceChannel?: VoiceChannel;
+	/** Target plugin or list of plugins to search/play from. */
+	plugin?: string | string[];
+	/** AbortSignal to cancel play operation before commit. */
+	signal?: AbortSignal;
+	[key: string]: any;
+}
+
+export interface PlayResult {
+	track: Track;
+	query: string;
+	requestedBy?: any;
+	voiceConnection?: any;
+	player: Player;
+}
+
+export interface WillPlayEvent {
+	track: Track;
+	relatedTracks: Track[];
+	/** @deprecated Use relatedTracks */
+	upcomingTracks?: Track[];
+}
+
 export interface VoiceChannel {
 	id: string;
 	guildId: string;
@@ -277,7 +347,7 @@ export interface VoiceChannel {
 
 export interface ManagerEvents {
 	debug: [message: string, ...args: any[]];
-	willPlay: [player: Player, track: Track, upcomingTracks: Track[]];
+	willPlay: [player: Player, track: Track, relatedTracks: Track[]];
 	trackStart: [player: Player, track: Track];
 	trackEnd: [player: Player, track: Track];
 	queueEnd: [player: Player];

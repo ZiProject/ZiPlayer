@@ -229,7 +229,8 @@ test("Player.play resolves true when the next session is not materialized yet", 
 	);
 
 	const result = await player.play(trackB);
-	assert.equal(result, true);
+	assert.ok(result);
+	assert.equal(result.track.id, "track-b");
 	await waitFor(() => harness.played.at(-1) === "track-b");
 	assert.deepEqual(harness.played.slice(-1), ["track-b"], harness.errors.join("; "));
 	await harness.orchestrator.dispose();

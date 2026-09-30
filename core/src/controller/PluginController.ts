@@ -1,7 +1,8 @@
 import type { Bus } from "../structures/Bus";
 import type { PluginManager } from "../plugins";
 import type { BasePlugin } from "../plugins/BasePlugin";
-import type { Track } from "../types";
+import type { Track, StreamInfo, SearchResult } from "../types";
+import { normalizeStreamInfo } from "../types";
 import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 
 /** Shared, singleton controller: owns plugin-related Bus RPC/query registration
@@ -37,6 +38,30 @@ export class PluginController {
 			async ({ track, history }, ctx) => {
 				const result = await this.manager(ctx.playerId)?.getRelatedTracks(track, { history });
 				return result ?? [];
+			},
+		);
+		bus.registerRpc<{ plugin?: string | string[]; query: string; requestedBy?: string }, SearchResult | null>(
+			PLAYER_RPC.pluginSearch,
+			async ({ plugin, query, requestedBy }, ctx) => {
+				const mgr = this.manager(ctx.playerId);
+				if (!mgr) return null;
+				return mgr.search(query, { plugins: plugin, requestedBy: requestedBy ?? "Unknown", signal: ctx.signal }, ctx.signal);
+			},
+		);
+		bus.registerRpc<{ plugin?: string; track: Track }, StreamInfo | null>(
+			PLAYER_RPC.pluginGetStream,
+			async ({ plugin, track }, ctx) => {
+				const mgr = this.manager(ctx.playerId);
+				if (!mgr) return null;
+				if (plugin) {
+					const p = mgr.get(plugin);
+					if (p && typeof p.getStream === "function") {
+						const raw = await p.getStream(track, ctx.signal);
+						return raw ? normalizeStreamInfo(track, raw) : null;
+					}
+				}
+				const info = await mgr.getStream(track, { context: { signal: ctx.signal } });
+				return info ? normalizeStreamInfo(track, info) : null;
 			},
 		);
 	}

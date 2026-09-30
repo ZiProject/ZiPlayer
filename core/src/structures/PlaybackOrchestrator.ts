@@ -165,14 +165,14 @@ export class PlaybackOrchestrator {
 			const worker = this.workers.get(ctx.playerId);
 			return worker ? worker.prepare.createRelatedTracks(track) : Promise.resolve([]);
 		});
-		bus.registerRpc<{ query: import("../types").SearchResult | Track | string | null; requestedBy?: string }, boolean>(
-			CONTROLLER_RPC.play,
-			(request, context) => {
-				const worker = this.workers.get(context.playerId);
-				if (!worker) return Promise.resolve(false);
-				return worker.play.play(request.query, request.requestedBy, context);
-			},
-		);
+		bus.registerRpc<
+			{ query: import("../types").SearchResult | Track | string | null; requestedBy?: string; plugin?: string | string[] },
+			any
+		>(CONTROLLER_RPC.play, (request, context) => {
+			const worker = this.workers.get(context.playerId);
+			if (!worker) return Promise.resolve(false);
+			return worker.play.play(request.query, request.requestedBy, context, request.plugin);
+		});
 		bus.registerRpc<{ active: boolean }, void>(CONTROLLER_RPC.playbackTransitionLock, ({ active }, ctx) =>
 			this.workers.get(ctx.playerId)?.trackEnd.setTrackEndTransition(active),
 		);
