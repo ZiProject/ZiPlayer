@@ -69,11 +69,7 @@ export class PlaybackPlayController {
 	private async afterPlayHooks(payload: ExtensionAfterPlayPayload): Promise<void> {
 		if (this.bus.hasRpc(CONTROLLER_RPC.extensionAfterPlay)) {
 			try {
-				await this.bus.requestRpc<ExtensionAfterPlayPayload, void>(
-					this.playerId,
-					CONTROLLER_RPC.extensionAfterPlay,
-					payload,
-				);
+				await this.bus.requestRpc<ExtensionAfterPlayPayload, void>(this.playerId, CONTROLLER_RPC.extensionAfterPlay, payload);
 			} catch (e) {
 				this.debug("[PlaybackPlayController] extensionAfterPlay error:", e);
 			}
@@ -192,7 +188,8 @@ export class PlaybackPlayController {
 					this.bus.requestRpcSync<{ track: Track }, boolean>(this.playerId, CONTROLLER_RPC.ttsIsTTS, {
 						track: tracksToAdd[0],
 					})
-				:	(this.adapters?.isTTS?.(tracksToAdd[0]) ?? isTTS(tracksToAdd[0]))) || queryLooksTTS);
+				:	(this.adapters?.isTTS?.(tracksToAdd[0]) ?? isTTS(tracksToAdd[0]))) ||
+					queryLooksTTS);
 
 			if (isTTSTrack) {
 				if (this.bus.hasRpc(CONTROLLER_RPC.ttsPlay)) {
@@ -211,7 +208,12 @@ export class PlaybackPlayController {
 			}
 
 			if (isPlaylist) {
-				await this.bus.requestRpc(this.playerId, PLAYER_RPC.queueAddMultiple, { tracks: tracksToAdd }, { signal: context.signal });
+				await this.bus.requestRpc(
+					this.playerId,
+					PLAYER_RPC.queueAddMultiple,
+					{ tracks: tracksToAdd },
+					{ signal: context.signal },
+				);
 			} else {
 				await this.bus.requestRpc(this.playerId, PLAYER_RPC.queueAdd, { track: tracksToAdd[0] }, { signal: context.signal });
 			}

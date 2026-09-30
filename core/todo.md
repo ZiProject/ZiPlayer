@@ -1016,8 +1016,8 @@ thay vì tick — không có gì để xoá.
 
 State dạng generation-counter **thật sự tồn tại** trong codebase (tên khác với tài liệu gốc đoán) và **chưa bị xoá**:
 
-- [x] `playGeneration`, `playOperation`, `playAbortController` trong `Player.ts` — đã audit; đây là concurrency state đang được sử dụng,
-  không phải dead code.
+- [x] `playGeneration`, `playOperation`, `playAbortController` trong `Player.ts` — đã audit; đây là concurrency state đang được sử
+      dụng, không phải dead code.
 - [ ] `queueStartGeneration` trong `PlaybackTrackEndController`.
 - [ ] `refreshSequence` trong `ResourceRefreshController`.
 - [ ] `ffmpegGeneration` trong `FilterController`/`FilterEngine`.
@@ -1133,8 +1133,8 @@ new ConnectionController(...)  → chỉ 1 chỗ/player (GlobalPlayerRuntime, Đ
 
 - [x] `Player` là facade, không chứa controller instance/audioPlayer/StreamManager/queue internals.
 - [x] Mọi request route bằng `playerId`.
-- [x] `playGeneration`, `playOperation`, `playAbortController` trên `Player.ts` đã được audit và giữ lại vì còn được `play()`/`invalidatePlay()`
-  sử dụng để hủy và loại stale play operation.
+- [x] `playGeneration`, `playOperation`, `playAbortController` trên `Player.ts` đã được audit và giữ lại vì còn được
+      `play()`/`invalidatePlay()` sử dụng để hủy và loại stale play operation.
 - [ ] Kiểm tra với `LegacyPlayer` (Player.old.ts).
 
 ## 🟢 Verification

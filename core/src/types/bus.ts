@@ -294,6 +294,7 @@ export interface PlayerRpcMap {
 	"playback.recover": { request: { track: Track; session: unknown }; response: TrackLoadResult };
 	"playback.loadFresh": { request: { track: Track; session: unknown }; response: TrackLoadResult };
 	"playback.remote": { request: { track: Track; stream: unknown }; response: boolean };
+	"playback.exitRemote": { request: undefined; response: void };
 	"playback.refreshResource": { request: { position: number }; response: PlaybackSessionSnapshot };
 	"playback.loadFreshCurrent": { request: { track: Track }; response: TrackLoadResult | null };
 	"playback.promotePreload": { request: { track: Track }; response: AudioResource | null };
@@ -403,6 +404,7 @@ export interface PlayerQueryMap {
 	"extension.list": BaseExtension[];
 	"preload.state": any;
 	playbackMode: PlaybackMode;
+	remotePaused: boolean;
 	forwardLeader: Player | null;
 	forwardLeaderId: string | null;
 	forwardFollowers: ReadonlySet<Player> | ReadonlySet<string>;

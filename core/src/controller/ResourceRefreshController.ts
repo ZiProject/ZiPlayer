@@ -3,7 +3,15 @@ import type { Bus, PlayerInput } from "../structures/Bus";
 import type { BusRpcContext } from "../types";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlaybackSessionSnapshot, StreamInfo, Track } from "../types";
-import { BUS_OUTPUT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, BUS_EVENT, traceBusSignal } from "../structures/BusContract";
+import {
+	BUS_OUTPUT,
+	BUS_REQUEST,
+	CONTROLLER_RPC,
+	PLAYER_QUERY,
+	PLAYER_RPC,
+	BUS_EVENT,
+	traceBusSignal,
+} from "../structures/BusContract";
 
 /** Per-player resource-refresh workflow. Owned by the shared `ResourceRefreshController`
  *  below, one instance per active player, talking to the shared bus through a

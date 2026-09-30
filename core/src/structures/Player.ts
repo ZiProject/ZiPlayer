@@ -128,9 +128,15 @@ export class Player extends EventEmitter {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.queue)?.length ?? 0;
 	}
 	public get isPlaying(): boolean {
+		if (this.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isPlaying ?? false;
+		if (this.playbackMode === PlaybackMode.REMOTE) return this.currentTrack !== null && !this.isPaused;
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.isPlaying);
 	}
 	public get isPaused(): boolean {
+		if (this.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isPaused ?? false;
+		if (this.playbackMode === PlaybackMode.REMOTE) {
+			return (this.bus.querySync(this.playerId, PLAYER_QUERY.remotePaused) as boolean | null) ?? false;
+		}
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.isPaused);
 	}
 	public get isLive(): boolean {
@@ -139,6 +145,7 @@ export class Player extends EventEmitter {
 	}
 	public get isIdle(): boolean {
 		if (this.playbackMode === PlaybackMode.FORWARD) return this.forwardLeader?.isIdle ?? true;
+		if (this.playbackMode === PlaybackMode.REMOTE) return this.currentTrack === null;
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.playerState) === "idle";
 	}
 	public get isBuffering(): boolean {
@@ -195,13 +202,18 @@ export class Player extends EventEmitter {
 			type: BUS_REQUEST.connectionConnect,
 			requestId: createPlayerRequestId(),
 			channel,
-			options: options ? {
-				group: options.group,
-				deaf: options.deaf ?? options.selfDeaf,
-				mute: options.mute ?? options.selfMute,
-			} : undefined,
+			options:
+				options ?
+					{
+						group: options.group,
+						deaf: options.deaf ?? options.selfDeaf,
+						mute: options.mute ?? options.selfMute,
+					}
+				:	undefined,
 		} as const;
-		return (this.bus.request(this.playerId, request as any) as Promise<{ connection: VoiceConnection }>).then((e) => e.connection);
+		return (this.bus.request(this.playerId, request as any) as Promise<{ connection: VoiceConnection }>).then(
+			(e) => e.connection,
+		);
 	}
 	public async disconnect(): Promise<void> {
 		return this.bus
@@ -240,33 +252,36 @@ export class Player extends EventEmitter {
 			.then(() => this.isPlaying || this.currentTrack !== null)
 			.catch(() => false);
 	}
-	public pause(): boolean {
+	public async pause(): Promise<boolean> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot pause while subscribed to another player");
 			return false;
 		}
 		if (!this.isPlaying || this.isPaused) return false;
 		this.invalidatePlay();
-		void this.action({ type: PLAYER_ACTION.pause });
-		return true;
+		return this.action({ type: PLAYER_ACTION.pause })
+			.then(() => this.isPaused)
+			.catch(() => false);
 	}
-	public resume(): boolean {
+	public async resume(): Promise<boolean> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot resume while subscribed to another player");
 			return false;
 		}
 		if (!this.isPaused) return false;
-		void this.action({ type: PLAYER_ACTION.resume });
-		return true;
+		return this.action({ type: PLAYER_ACTION.resume })
+			.then(() => !this.isPaused)
+			.catch(() => false);
 	}
-	public stop(): boolean {
+	public async stop(): Promise<boolean> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot stop while subscribed to another player");
 			return false;
 		}
 		this.invalidatePlay();
-		void this.action({ type: PLAYER_ACTION.stop });
-		return true;
+		return this.action({ type: PLAYER_ACTION.stop })
+			.then(() => true)
+			.catch(() => false);
 	}
 	public async seek(position: number): Promise<boolean> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
@@ -288,7 +303,7 @@ export class Player extends EventEmitter {
 			.then(() => true)
 			.catch(() => false);
 	}
-	public skip(index?: number): boolean {
+	public async skip(index?: number): Promise<boolean> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot skip while subscribed to another player");
 			return false;
@@ -300,8 +315,9 @@ export class Player extends EventEmitter {
 			}
 		}
 		this.invalidatePlay();
-		void this.action({ type: PLAYER_ACTION.skip, index });
-		return true;
+		return this.action({ type: PLAYER_ACTION.skip, index })
+			.then(() => true)
+			.catch(() => false);
 	}
 	private invalidatePlay(): void {
 		this.playGeneration++;
@@ -515,6 +531,7 @@ export class Player extends EventEmitter {
 	public exitRemoteMode(): void {
 		if (this.playbackMode !== PlaybackMode.REMOTE) return;
 		this.debug("[Player] Exiting REMOTE mode, restoring native playback");
+		this.bus.requestRpcSync(this.playerId, PLAYER_RPC.playbackExitRemote, undefined);
 	}
 	public getSerializableState(): object {
 		return {

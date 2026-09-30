@@ -142,7 +142,12 @@ test("PlaybackController.cancelFade restores resource volume to 100% when active
 	const volumeController = new VolumeController(bus);
 	volumeController.attach(playerId, { initialVolume: 100 });
 	// A long crossfade so the fade is still in flight when it gets cancelled.
-	bus.registerRpc("controller.transition.plan", () => ({ enabled: true, durationMs: 60_000, waitForBeat: false, beatAlignMaxWaitMs: 0 }));
+	bus.registerRpc("controller.transition.plan", () => ({
+		enabled: true,
+		durationMs: 60_000,
+		waitForBeat: false,
+		beatAlignMaxWaitMs: 0,
+	}));
 	const playbackController = new PlaybackController(bus);
 	playbackController.attach(playerId, { audioPlayer: mockAudioPlayer });
 

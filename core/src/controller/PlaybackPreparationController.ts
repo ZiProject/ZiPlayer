@@ -52,14 +52,12 @@ export class PlaybackPreparationController {
 			return [];
 		}
 
-		let related = await this.bus.requestRpc<{ track: Track; history?: Track[] }, Track[]>(
-			this.playerId,
-			PLAYER_RPC.pluginRelatedTracks,
-			{
+		let related = await this.bus
+			.requestRpc<{ track: Track; history?: Track[] }, Track[]>(this.playerId, PLAYER_RPC.pluginRelatedTracks, {
 				track: source,
 				history: previous,
-			},
-		).catch(() => []);
+			})
+			.catch(() => []);
 		related = related ?? [];
 		const upcoming = new Set(this.queueSnapshot().map((item) => item.id ?? item.url));
 		related = related.filter((item) => item !== source && !upcoming.has(item.id ?? item.url));
@@ -75,20 +73,6 @@ export class PlaybackPreparationController {
 		}
 
 		const queueNext = (this.bus.querySync(this.playerId, PLAYER_QUERY.queueNextTrack) as Track | null) ?? null;
-		if (!this.bus.querySync(this.playerId, PLAYER_QUERY.queueAutoPlay)) {
-			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track: queueNext });
-			if (queueNext) {
-				this.bus.event(this.playerId, {
-					type: BUS_EVENT.willPlay,
-					track: queueNext,
-					upcomingTracks: this.queueSnapshot(),
-					relatedTracks: (this.bus.querySync(this.playerId, PLAYER_QUERY.relatedTracks) as Track[] | null) ?? [],
-				});
-				await this.requestPreload(queueNext, context);
-			}
-			return queueNext;
-		}
-
 		let related = (this.bus.querySync(this.playerId, PLAYER_QUERY.relatedTracks) as Track[] | null) ?? [];
 		if (!related.length && !this.queueSnapshot().length) {
 			related = await this.createRelatedTracks(session.track);
@@ -116,7 +100,10 @@ export class PlaybackPreparationController {
 			upcomingTracks: this.queueSnapshot(),
 			relatedTracks: related,
 		});
-		await this.requestPreload(next, context);
+		const autoPlayEnabled = Boolean(this.bus.querySync(this.playerId, PLAYER_QUERY.queueAutoPlay));
+		if (queueNext || autoPlayEnabled) {
+			await this.requestPreload(next, context);
+		}
 		if (context.signal.aborted || !this.isCurrentSession(session, context)) return null;
 		return next;
 	}

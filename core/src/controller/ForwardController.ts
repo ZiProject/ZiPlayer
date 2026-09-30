@@ -1,7 +1,7 @@
 import { PlaybackMode, type Track, type ForwardHealthStatus } from "../types";
 import { AudioPlayerStatus } from "@discordjs/voice";
 import type { Bus } from "../structures/Bus";
-import { PLAYER_QUERY, PLAYER_RPC, BUS_EVENT, PLAYER_ACTION } from "../structures/BusContract";
+import { PLAYER_QUERY, PLAYER_RPC, BUS_EVENT, PLAYER_ACTION, CONTROLLER_RPC } from "../structures/BusContract";
 
 interface ForwardState {
 	leaderId?: string;
@@ -40,6 +40,9 @@ export class ForwardController {
 			this.removeFollower(ctx.playerId, playerId);
 			return true;
 		});
+		bus.registerRpc<{ mode: PlaybackMode }, void>(CONTROLLER_RPC.playbackModeSet, ({ mode }, ctx) =>
+			this.setMode(ctx.playerId, mode),
+		);
 		bus.registerQuery(PLAYER_QUERY.playbackMode, (playerId) => this.state(playerId).mode);
 		bus.registerQuery(PLAYER_QUERY.forwardLeader, (playerId) => {
 			const leaderId = this.state(playerId).leaderId;
@@ -124,6 +127,11 @@ export class ForwardController {
 	playbackMode(playerId: string): PlaybackMode {
 		return this.state(playerId).mode;
 	}
+	setMode(playerId: string, mode: PlaybackMode): void {
+		const s = this.state(playerId);
+		if (s.mode === PlaybackMode.FORWARD && mode !== PlaybackMode.NATIVE) return;
+		s.mode = mode;
+	}
 	forwardLeader(playerId: string): any {
 		const leaderId = this.state(playerId).leaderId;
 		return leaderId ? { guildId: leaderId, playerId: leaderId } : null;
@@ -138,11 +146,7 @@ export class ForwardController {
 		return this.state(playerId).followers.size > 0;
 	}
 
-	async subscribeTo(
-		playerId: string,
-		leader: any,
-		options?: { forwardMode?: boolean },
-	): Promise<boolean> {
+	async subscribeTo(playerId: string, leader: any, options?: { forwardMode?: boolean }): Promise<boolean> {
 		const state = this.state(playerId);
 		if (this.disposed || !leader) return false;
 		const leaderId = typeof leader === "string" ? leader : (leader.guildId ?? leader.id ?? leader.playerId);
@@ -183,7 +187,8 @@ export class ForwardController {
 			const leaderVolume = this.bus.querySync(leaderId, PLAYER_QUERY.volume);
 			if (typeof leaderVolume === "number") this.bus.requestRpcSync(playerId, PLAYER_RPC.volumeSet, { value: leaderVolume });
 
-			const leaderObj = typeof leader === "object" && leader !== null ? leader : ({ guildId: leaderId, playerId: leaderId } as any);
+			const leaderObj =
+				typeof leader === "object" && leader !== null ? leader : ({ guildId: leaderId, playerId: leaderId } as any);
 			this.bus.event(playerId, { type: BUS_EVENT.forwardModeStart, leader: leaderObj });
 			return true;
 		} catch (error) {
@@ -192,7 +197,8 @@ export class ForwardController {
 			state.leaderId = undefined;
 			state.mode = PlaybackMode.NATIVE;
 			try {
-				if (playerAudioPlayer) this.bus.requestRpcSync(playerId, PLAYER_RPC.connectionSetAudioPlayer, { audioPlayer: playerAudioPlayer });
+				if (playerAudioPlayer)
+					this.bus.requestRpcSync(playerId, PLAYER_RPC.connectionSetAudioPlayer, { audioPlayer: playerAudioPlayer });
 			} catch {}
 			return false;
 		}

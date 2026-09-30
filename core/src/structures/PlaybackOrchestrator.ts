@@ -1,7 +1,13 @@
 import type { Bus, PlayerAction } from "./Bus";
 import { PlaybackSession } from "./PlaybackSession";
 import { PlaybackSessionController } from "../controller/PlaybackSessionController";
-import type { PlayerMessageContext, Track, PlaybackOrchestratorOptions, PlaybackOrchestratorAttachOptions } from "../types";
+import {
+	PlaybackMode,
+	type PlayerMessageContext,
+	type Track,
+	type PlaybackOrchestratorOptions,
+	type PlaybackOrchestratorAttachOptions,
+} from "../types";
 import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, BUS_EVENT, PLAYER_ACTION } from "./BusContract";
 import { PlaybackStartController } from "../controller/PlaybackStartController";
 import { PlaybackPreparationController } from "../controller/PlaybackPreparationController";
@@ -130,10 +136,7 @@ export class PlaybackOrchestrator {
 	private readonly seekController: PlaybackSeekController;
 	private readonly detachAction: () => void;
 
-	public constructor(
-		bus: Bus,
-		options: PlaybackOrchestratorOptions,
-	) {
+	public constructor(bus: Bus, options: PlaybackOrchestratorOptions) {
 		this.bus = bus;
 		this.sessionController = options.sessionController;
 		this.seekController = new PlaybackSeekController(bus, this.sessionController);
@@ -271,6 +274,19 @@ export class PlaybackOrchestrator {
 				break;
 			case "PAUSE": {
 				const session = this.sessionController.current(playerId);
+				const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
+				if (mode === PlaybackMode.REMOTE) {
+					const ok = this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackRemotePause, {});
+					if (ok) {
+						if (session?.isActive()) session.markPaused();
+						this.publishState(playerId);
+						this.bus.event(playerId, {
+							type: BUS_EVENT.playerPause,
+							track: session?.track ?? (this.bus.querySync(playerId, PLAYER_QUERY.currentTrack) as Track | null),
+						});
+					}
+					break;
+				}
 				if (
 					session?.isActive() &&
 					this.matchesContext(session, context) &&
@@ -284,6 +300,19 @@ export class PlaybackOrchestrator {
 			}
 			case "RESUME": {
 				const session = this.sessionController.current(playerId);
+				const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
+				if (mode === PlaybackMode.REMOTE) {
+					const ok = this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackRemoteResume, {});
+					if (ok) {
+						if (session?.isActive()) session.markPlaying();
+						this.publishState(playerId);
+						this.bus.event(playerId, {
+							type: BUS_EVENT.playerResume,
+							track: session?.track ?? (this.bus.querySync(playerId, PLAYER_QUERY.currentTrack) as Track | null),
+						});
+					}
+					break;
+				}
 				if (
 					session?.isActive() &&
 					this.matchesContext(session, context) &&
@@ -297,6 +326,10 @@ export class PlaybackOrchestrator {
 			}
 			case "STOP": {
 				const session = this.sessionController.current(playerId);
+				const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
+				if (mode === PlaybackMode.REMOTE) {
+					void this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteStop, {});
+				}
 				if (session && !this.matchesContext(session, context)) break;
 				this.stopPlayback(playerId, context.signal);
 				this.bus.requestRpcSync(playerId, PLAYER_RPC.queueClear, undefined);

@@ -11,7 +11,14 @@ const waitFor = async (predicate) => {
 	assert.ok(predicate(), "condition was not met in time");
 };
 
-const makeTrack = (id) => ({ id, title: id, url: `https://example.com/${id}`, duration: 1000, requestedBy: "tester", source: "test" });
+const makeTrack = (id) => ({
+	id,
+	title: id,
+	url: `https://example.com/${id}`,
+	duration: 1000,
+	requestedBy: "tester",
+	source: "test",
+});
 
 /** Records the teardown order of one player: workflow abort, controller detaches, bus disposal. */
 const traceTeardown = (mgr, player) => {
@@ -44,7 +51,11 @@ const assertOrdered = (order, ...names) => {
 		indexes.every((index) => index >= 0),
 		`missing step in ${order.join(" > ")}`,
 	);
-	assert.deepEqual(indexes, [...indexes].sort((a, b) => a - b), `unexpected order: ${order.join(" > ")}`);
+	assert.deepEqual(
+		indexes,
+		[...indexes].sort((a, b) => a - b),
+		`unexpected order: ${order.join(" > ")}`,
+	);
 };
 
 test("PlayerManager.destroy aborts the workflow, detaches controllers, then disposes the bus", async (t) => {
@@ -55,7 +66,15 @@ test("PlayerManager.destroy aborts the workflow, detaches controllers, then disp
 
 	await mgr.destroy("g-order");
 
-	assertOrdered(order, "abortWorkflow", "detach:orchestrator", "detach:lifecycle", "detach:queue", "detach:connection", "bus.disposePlayer");
+	assertOrdered(
+		order,
+		"abortWorkflow",
+		"detach:orchestrator",
+		"detach:lifecycle",
+		"detach:queue",
+		"detach:connection",
+		"bus.disposePlayer",
+	);
 	assert.equal(player.destroyed, true);
 	assert.equal(mgr.has("g-order"), false);
 });
@@ -97,7 +116,10 @@ test("delete() and deleteWhere() release the shared controllers too", async (t) 
 	await mgr.create("g-del-2");
 
 	assert.equal(mgr.delete("g-del-1"), true);
-	assert.equal(mgr.deleteWhere((p) => p.playerId === "g-del-2"), 1);
+	assert.equal(
+		mgr.deleteWhere((p) => p.playerId === "g-del-2"),
+		1,
+	);
 	assert.equal(mgr.size, 0);
 
 	await waitFor(() => mgr.controllers.queue.states.size === 0);
@@ -211,7 +233,10 @@ test("PlaybackOrchestrator.dispose() cleans the other workers when one fails, th
 		cleaned.push("ok");
 	};
 
-	await assert.rejects(() => orchestrator.dispose(), (error) => error instanceof AggregateError && error.errors[0].message === "boom");
+	await assert.rejects(
+		() => orchestrator.dispose(),
+		(error) => error instanceof AggregateError && error.errors[0].message === "boom",
+	);
 	assert.deepEqual(cleaned, ["ok"]);
 	assert.equal(orchestrator.has("fail"), false);
 	assert.equal(orchestrator.has("ok"), false);

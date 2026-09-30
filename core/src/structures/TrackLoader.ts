@@ -248,7 +248,8 @@ export class TrackLoader {
 				return { track, stream, sessionId: session.id, retry, usedFallback: retry > 0 };
 			} catch (error) {
 				lastError = error;
-				if (this.isAbort(error) || this.isUnrecoverable(error) || !slot.recovery.enabled || attempt >= slot.recovery.maxRetries) break;
+				if (this.isAbort(error) || this.isUnrecoverable(error) || !slot.recovery.enabled || attempt >= slot.recovery.maxRetries)
+					break;
 				retry++;
 				slot.failures.set(key, retry);
 				if (slot.recovery.reduceQualityOnRetry) this.reduceQualityForRetry(slot, track, retry);

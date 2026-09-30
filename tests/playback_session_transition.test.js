@@ -112,7 +112,7 @@ test("the next session keeps a valid signal after the ended session is destroyed
 	harness.queueController.dispose();
 });
 
-test("related tracks resolve without setting willNext when autoplay is disabled", async () => {
+test("related tracks resolve and set willNext even when autoplay is disabled", async () => {
 	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
 	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
 	let resolveCount = 0;
@@ -128,7 +128,7 @@ test("related tracks resolve without setting willNext when autoplay is disabled"
 	await play(harness, trackA);
 	assert.equal(resolveCount, 1);
 	assert.deepEqual(harness.queueController.relatedTracks, [trackB]);
-	assert.equal(harness.queueController.willNext, null);
+	assert.equal(harness.queueController.willNext, trackB);
 
 	harness.bus.event(harness.playerId, {
 		type: "TRACK_END",

@@ -1,4 +1,4 @@
-import type { StreamInfo, Track, ActiveStream, StreamControllerOptions } from "../types";
+import { PlaybackMode, type StreamInfo, type Track, type ActiveStream, type StreamControllerOptions } from "../types";
 import { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
@@ -10,6 +10,8 @@ const STREAM_RPC_REPLACE = "controller.stream.replace";
 /** Per-player active-stream tracking, owned by the shared `StreamController` below. */
 export class StreamWorker {
 	private active: ActiveStream | null = null;
+	private remoteHandle: NonNullable<StreamInfo["handle"]> | null = null;
+	private remotePaused = false;
 	private readonly streamManager?: StreamManager;
 	private readonly bus?: Bus;
 	private readonly playerId?: string;
@@ -37,9 +39,66 @@ export class StreamWorker {
 	public get stateSnapshot() {
 		return this.active ? { sessionId: this.active.sessionId, track: this.active.track } : null;
 	}
-	public async handleRemote(stream: { handle?: { play?: () => void | Promise<void> } }): Promise<boolean> {
+	public get isRemotePaused(): boolean {
+		return this.remotePaused;
+	}
+	public async handleRemote(stream: { handle?: NonNullable<StreamInfo["handle"]> }): Promise<boolean> {
+		this.remoteHandle = stream?.handle ?? null;
+		this.remotePaused = false;
+		if (this.bus && this.playerId && this.bus.hasRpc(CONTROLLER_RPC.playbackModeSet)) {
+			this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackModeSet, { mode: PlaybackMode.REMOTE });
+		}
 		if (stream?.handle?.play) await stream.handle.play();
 		return true;
+	}
+	public exitRemote(): void {
+		const handle = this.remoteHandle;
+		if (!handle && !this.remotePaused) return;
+		this.remoteHandle = null;
+		this.remotePaused = false;
+		if (this.bus && this.playerId && this.bus.hasRpc(CONTROLLER_RPC.playbackModeSet)) {
+			this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackModeSet, { mode: PlaybackMode.NATIVE });
+		}
+		if (handle?.destroy) {
+			void handle.destroy().catch(() => {});
+		}
+	}
+	public remotePause(): boolean {
+		if (!this.remoteHandle) return false;
+		this.remotePaused = true;
+		void this.remoteHandle.pause().catch(() => {});
+		return true;
+	}
+	public remoteResume(): boolean {
+		if (!this.remoteHandle) return false;
+		this.remotePaused = false;
+		void this.remoteHandle.resume().catch(() => {});
+		return true;
+	}
+	public remoteStop(): boolean {
+		this.remotePaused = false;
+		if (this.remoteHandle) {
+			void this.remoteHandle.stop().catch(() => {});
+		}
+		return true;
+	}
+	public async remoteSeek(position: number): Promise<boolean> {
+		if (!this.remoteHandle) return false;
+		try {
+			await this.remoteHandle.seek(position);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+	public async remoteSetVolume(volume: number): Promise<boolean> {
+		if (!this.remoteHandle) return false;
+		try {
+			await this.remoteHandle.setVolume(volume);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 	get current() {
 		return this.active;
@@ -147,6 +206,7 @@ export class StreamWorker {
 	dispose() {
 		this.detachStreamError?.();
 		this.abortCurrent();
+		void this.exitRemote();
 		this.active = null;
 	}
 	private isAbortError(error: unknown): boolean {
@@ -166,12 +226,53 @@ export class StreamController {
 
 	constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => {
-			if (!context.signal.aborted && action.type === "STOP") this.workers.get(context.playerId)?.abortCurrent();
+			if (!context.signal.aborted && action.type === "STOP") {
+				const worker = this.workers.get(context.playerId);
+				worker?.abortCurrent();
+				void worker?.remoteStop();
+			}
 		});
-		bus.registerRpc<{ track: Track; stream: { handle?: { play?: () => void | Promise<void> } } }, boolean>(
+		bus.registerRpc<{ track?: Track; stream: StreamInfo }, boolean>(
 			CONTROLLER_RPC.playbackRemote,
-			({ stream }, ctx) => this.workers.get(ctx.playerId)?.handleRemote(stream) ?? Promise.resolve(true),
+			async ({ track, stream }, ctx) => {
+				const worker = this.workers.get(ctx.playerId);
+				if (!worker) return false;
+				const ok = await worker.handleRemote(stream);
+				if (ok && track) {
+					bus.requestRpcSync(ctx.playerId, PLAYER_RPC.queueSetCurrent, { track });
+					bus.event(ctx.playerId, { type: BUS_EVENT.trackStarted, session: null as any, track });
+				}
+				return ok;
+			},
 		);
+		bus.registerRpc<{ stream: StreamInfo }, boolean>(
+			CONTROLLER_RPC.playbackRemoteAttach,
+			({ stream }, ctx) => this.workers.get(ctx.playerId)?.handleRemote(stream) ?? Promise.resolve(false),
+		);
+		bus.registerRpc<void, boolean>(
+			CONTROLLER_RPC.playbackRemotePause,
+			(_req, ctx) => this.workers.get(ctx.playerId)?.remotePause() ?? false,
+		);
+		bus.registerRpc<void, boolean>(
+			CONTROLLER_RPC.playbackRemoteResume,
+			(_req, ctx) => this.workers.get(ctx.playerId)?.remoteResume() ?? false,
+		);
+		bus.registerRpc<void, boolean>(
+			CONTROLLER_RPC.playbackRemoteStop,
+			(_req, ctx) => this.workers.get(ctx.playerId)?.remoteStop() ?? false,
+		);
+		bus.registerRpc<{ position: number }, boolean>(
+			CONTROLLER_RPC.playbackRemoteSeek,
+			({ position }, ctx) => this.workers.get(ctx.playerId)?.remoteSeek(position) ?? Promise.resolve(false),
+		);
+		bus.registerRpc<{ volume: number }, boolean>(
+			CONTROLLER_RPC.playbackRemoteSetVolume,
+			({ volume }, ctx) => this.workers.get(ctx.playerId)?.remoteSetVolume(volume) ?? Promise.resolve(false),
+		);
+		bus.registerRpc<void, void>(PLAYER_RPC.playbackExitRemote, (_req, ctx) => {
+			this.workers.get(ctx.playerId)?.exitRemote();
+		});
+		bus.registerQuery(PLAYER_QUERY.remotePaused, (playerId) => this.workers.get(playerId)?.isRemotePaused ?? false);
 		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackDestroyCurrentStream, (_req, ctx) =>
 			this.workers.get(ctx.playerId)?.abortCurrent(),
 		);

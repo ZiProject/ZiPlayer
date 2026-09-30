@@ -536,11 +536,7 @@ export class PluginManager {
 		const settled = await Promise.allSettled(
 			plugins.map(async (plugin) => {
 				try {
-					const result = await withTimeout(
-						plugin.search(query, requestedBy),
-						timeoutMs,
-						`Search timeout for ${plugin.name}`,
-					);
+					const result = await withTimeout(plugin.search(query, requestedBy), timeoutMs, `Search timeout for ${plugin.name}`);
 
 					if (!result?.tracks?.length) {
 						return null;
@@ -713,7 +709,7 @@ export class PluginManager {
 	}
 
 	private setCachedStream(track: Track, streamInfo: StreamInfo): void {
-		if (!this.options.enableCache || this.destroyed) return;
+		if (!this.options.enableCache || this.destroyed || streamInfo.remote) return;
 
 		const key = this.getStreamCacheKey(track);
 		this.streamCache.set(key, {
@@ -789,6 +785,15 @@ export class PluginManager {
 
 					result = await withTimeout(plugin.getStream(track, controller.signal), timeoutMs, `${plugin.name} getStream timeout`);
 
+					if (result?.remote && result?.handle) {
+						this.debug(`[Stream] ${plugin.name} direct remote stream success`);
+
+						return {
+							result,
+							similarity: 1,
+						};
+					}
+
 					if (result?.stream) {
 						const valid = await this.validateStreamMatchesTrack(result, track);
 
@@ -849,7 +854,7 @@ export class PluginManager {
 		// =========================================================
 		const primaryResult = await tryPlugin(primary);
 
-		if (primaryResult.result?.stream) {
+		if (primaryResult.result?.stream || (primaryResult.result?.remote && primaryResult.result?.handle)) {
 			this.setCachedStream(track, primaryResult.result);
 
 			return primaryResult.result;
@@ -885,7 +890,7 @@ export class PluginManager {
 
 			const { result, similarity } = await tryPlugin(plugin);
 
-			if (!result?.stream) {
+			if (!result?.stream && !(result?.remote && result?.handle)) {
 				continue;
 			}
 

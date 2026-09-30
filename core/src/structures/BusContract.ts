@@ -35,12 +35,7 @@
  * when logging, so tracing a signal's path never risks becoming a de-facto
  * second protocol that something ends up comparing against.
  */
-import type {
-	PlayerEventType,
-	PlayerActionType,
-	PlayerQuery,
-	PlayerRpcMap,
-} from "../types";
+import type { PlayerEventType, PlayerActionType, PlayerQuery, PlayerRpcMap } from "../types";
 
 export type {
 	ControllerCommandContext,
@@ -179,6 +174,13 @@ export const CONTROLLER_RPC = {
 	ttsPlay: "controller.tts.play",
 	extensionBeforePlay: "extension.beforePlay",
 	extensionAfterPlay: "extension.afterPlay",
+	playbackRemoteAttach: "controller.playback.remote.attach",
+	playbackRemotePause: "controller.playback.remote.pause",
+	playbackRemoteResume: "controller.playback.remote.resume",
+	playbackRemoteStop: "controller.playback.remote.stop",
+	playbackRemoteSeek: "controller.playback.remote.seek",
+	playbackRemoteSetVolume: "controller.playback.remote.setVolume",
+	playbackModeSet: "controller.playback.mode.set",
 } as const;
 export type ControllerRpcKey = keyof typeof CONTROLLER_RPC;
 
@@ -213,6 +215,7 @@ export const PLAYER_RPC = {
 	playbackRecover: "playback.recover",
 	playbackLoadFresh: "playback.loadFresh",
 	playbackRemote: "playback.remote",
+	playbackExitRemote: "playback.exitRemote",
 	playbackRefreshResource: "playback.refreshResource",
 	playbackLoadFreshCurrent: "playback.loadFreshCurrent",
 	playbackPromotePreload: "playback.promotePreload",
@@ -380,6 +383,7 @@ export const PLAYER_QUERY = {
 	extensionList: "extension.list",
 	preloadState: "preload.state",
 	playbackMode: "playbackMode",
+	remotePaused: "remotePaused",
 	forwardLeader: "forwardLeader",
 	forwardLeaderId: "forwardLeaderId",
 	forwardFollowers: "forwardFollowers",

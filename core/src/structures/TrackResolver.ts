@@ -72,6 +72,7 @@ export class TrackResolver {
 			stream?.stream?.destroy?.();
 			throw new Error("PLAYER_DESTROYED");
 		}
+		if (stream?.remote && stream.handle) return stream;
 		if (stream?.stream || stream?.url || stream?.recreate) {
 			if (stream.stream) {
 				const existingAgain = options?.fresh ? null : streamManager.getStreamByTrack(trackId);

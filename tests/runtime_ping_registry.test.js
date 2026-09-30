@@ -24,7 +24,9 @@ test('"runtime.ping" rejects for a playerId the manager no longer tracks', async
 	const mgr = new PlayerManager({ autoCleanup: false });
 	t.after(() => mgr.destroy());
 
-	await assert.rejects(() => mgr.bus.requestRpc("g-unknown", CONTROLLER_RPC.runtimePing, { playerId: "g-unknown" }, { timeoutMs: 500 }));
+	await assert.rejects(() =>
+		mgr.bus.requestRpc("g-unknown", CONTROLLER_RPC.runtimePing, { playerId: "g-unknown" }, { timeoutMs: 500 }),
+	);
 });
 
 test("a healthy, reachable player survives multiple heartbeat cycles untouched", async (t) => {

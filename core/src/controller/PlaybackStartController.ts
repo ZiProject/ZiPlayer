@@ -3,7 +3,7 @@ import type { Bus } from "../structures/Bus";
 import { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlaybackSessionController } from "./PlaybackSessionController";
 import { CONTROLLER_RPC, PLAYER_ACTION, BUS_EVENT, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
-import type { PlayerMessageContext, StreamInfo, Track, TrackLoadResult } from "../types";
+import { PlaybackMode, type PlayerMessageContext, type StreamInfo, type Track, type TrackLoadResult } from "../types";
 import type { PlaybackStartControllerOptions } from "../types";
 
 /**
@@ -66,12 +66,17 @@ export class PlaybackStartController {
 			this.bus.event(this.playerId, { type: BUS_EVENT.trackLoaded, session: session.snapshot() });
 			if (loaded.stream.remote && loaded.stream.handle?.play) {
 				session.setResource(null);
-				await loaded.stream.handle.play();
+				await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackRemoteAttach, { stream: loaded.stream });
 				session.markPlaying(0);
 				this.consecutiveFailures = 0;
 				this.bus.event(this.playerId, { type: BUS_EVENT.trackStarted, session: session.snapshot(), track });
 				await this.prepareTrack(session, context);
 				return;
+			}
+
+			const currentMode = this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode);
+			if (currentMode === PlaybackMode.REMOTE && this.bus.hasRpc(PLAYER_RPC.playbackExitRemote)) {
+				await this.bus.requestRpc(this.playerId, PLAYER_RPC.playbackExitRemote, undefined);
 			}
 
 			const filterString = await this.bus.query(this.playerId, PLAYER_QUERY.filterString);

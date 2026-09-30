@@ -1,6 +1,7 @@
 import type { AudioResource } from "@discordjs/voice";
 import type { Bus, PlayerAction, PlayerActionExecutionContext } from "../structures/Bus";
-import type { Track } from "../types";
+import type { Track, VolumeControllerOptions } from "../types";
+import { PlaybackMode } from "../types";
 import {
 	BUS_EVENT,
 	CONTROLLER_RPC,
@@ -9,7 +10,6 @@ import {
 	type VolumeTargetRequest,
 	type VolumeSetRequest,
 } from "../structures/BusContract";
-import type { VolumeControllerOptions } from "../types";
 
 type ActiveResourceState = {
 	resource: AudioResource | null;
@@ -87,6 +87,11 @@ export class VolumeController {
 		const active = state.activeResourceResolver?.();
 		if (active?.resource) {
 			this.applyLoudness(playerId, active.resource, active.track, active.gain ?? 1);
+		}
+
+		const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
+		if (mode === PlaybackMode.REMOTE) {
+			void this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteSetVolume, { volume: state.volume });
 		}
 
 		return state.volume;

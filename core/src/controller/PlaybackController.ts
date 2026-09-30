@@ -10,6 +10,7 @@ import { Readable } from "stream";
 import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
+import { PlaybackMode } from "../types";
 import type { AntiStuckRetryHandlers } from "../types";
 import {
 	BUS_EVENT,
@@ -544,12 +545,24 @@ export class PlaybackController {
 		this.cancelFadeSlot(slot);
 	}
 	public pause(playerId: string): boolean {
+		const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
+		if (mode === PlaybackMode.REMOTE) {
+			return this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackRemotePause, {});
+		}
 		return this.slots.get(playerId)?.audioPlayer.pause(true) ?? false;
 	}
 	public resume(playerId: string): boolean {
+		const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
+		if (mode === PlaybackMode.REMOTE) {
+			return this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackRemoteResume, {});
+		}
 		return this.slots.get(playerId)?.audioPlayer.unpause() ?? false;
 	}
 	public stop(playerId: string): boolean {
+		const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
+		if (mode === PlaybackMode.REMOTE) {
+			void this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteStop, {});
+		}
 		const slot = this.slots.get(playerId);
 		if (!slot) return false;
 		this.cancelTransition(slot);

@@ -45,13 +45,10 @@ export class ExtensionController {
 				return mgr.beforePlayHooks(request);
 			},
 		);
-		bus.registerRpc<ExtensionAfterPlayPayload, void>(
-			CONTROLLER_RPC.extensionAfterPlay,
-			async (payload, ctx) => {
-				const mgr = this.manager(ctx.playerId);
-				if (mgr) await mgr.afterPlayHooks(payload);
-			},
-		);
+		bus.registerRpc<ExtensionAfterPlayPayload, void>(CONTROLLER_RPC.extensionAfterPlay, async (payload, ctx) => {
+			const mgr = this.manager(ctx.playerId);
+			if (mgr) await mgr.afterPlayHooks(payload);
+		});
 	}
 
 	attach(playerId: string, extensionManager: ExtensionManager): void {

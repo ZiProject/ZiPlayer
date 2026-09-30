@@ -41,9 +41,9 @@ test("player.skip with invalid index returns false", async (t) => {
 	t.after(() => mgr.destroy());
 
 	const player = await mgr.create("guild-skip");
-	assert.equal(player.skip(0), false);
-	assert.equal(player.skip(-1), false);
-	assert.equal(player.skip(5), false);
+	assert.equal(await player.skip(0), false);
+	assert.equal(await player.skip(-1), false);
+	assert.equal(await player.skip(5), false);
 });
 
 test("player pause/resume state verification returns boolean", async (t) => {
@@ -52,9 +52,9 @@ test("player pause/resume state verification returns boolean", async (t) => {
 
 	const player = await mgr.create("guild-pause-resume");
 	// Not playing, cannot pause
-	assert.equal(player.pause(), false);
+	assert.equal(await player.pause(), false);
 	// Not paused, cannot resume
-	assert.equal(player.resume(), false);
+	assert.equal(await player.resume(), false);
 });
 
 test("player saveSession, getSerializableState, and restoreState", async (t) => {
@@ -66,8 +66,22 @@ test("player saveSession, getSerializableState, and restoreState", async (t) => 
 	player.loop(1);
 	player.autoPlay(true);
 
-	const track1 = { id: "t1", title: "Track 1", url: "https://example.com/1", duration: 180000, requestedBy: "user", source: "test" };
-	const track2 = { id: "t2", title: "Track 2", url: "https://example.com/2", duration: 200000, requestedBy: "user", source: "test" };
+	const track1 = {
+		id: "t1",
+		title: "Track 1",
+		url: "https://example.com/1",
+		duration: 180000,
+		requestedBy: "user",
+		source: "test",
+	};
+	const track2 = {
+		id: "t2",
+		title: "Track 2",
+		url: "https://example.com/2",
+		duration: 200000,
+		requestedBy: "user",
+		source: "test",
+	};
 	player.queue.addMultiple([track1, track2]);
 
 	const session = player.saveSession();
@@ -111,12 +125,12 @@ test("FORWARD mode guards prevent mutating actions and return false", async (t) 
 
 	assert.equal(await follower.play("query"), false);
 	assert.equal(await follower.playNext(), false);
-	assert.equal(follower.pause(), false);
-	assert.equal(follower.resume(), false);
-	assert.equal(follower.stop(), false);
+	assert.equal(await follower.pause(), false);
+	assert.equal(await follower.resume(), false);
+	assert.equal(await follower.stop(), false);
 	assert.equal(await follower.seek(1000), false);
-	assert.equal(follower.skip(), false);
-	assert.equal(follower.skip(0), false);
+	assert.equal(await follower.skip(), false);
+	assert.equal(await follower.skip(0), false);
 	assert.equal(await follower.previous(), false);
 	assert.equal(follower.setVolume(80), false);
 	assert.equal(await follower.insert("query"), false);
@@ -133,9 +147,30 @@ test("QueueController emits queueAdd, queueAddList, queueRemove direct events", 
 	player.on("queueAddList", (tracks) => events.push({ type: "queueAddList", count: tracks.length }));
 	player.on("queueRemove", (track, index) => events.push({ type: "queueRemove", track, index }));
 
-	const track1 = { id: "t1", title: "Track 1", url: "https://example.com/1", duration: 180000, requestedBy: "user", source: "test" };
-	const track2 = { id: "t2", title: "Track 2", url: "https://example.com/2", duration: 200000, requestedBy: "user", source: "test" };
-	const track3 = { id: "t3", title: "Track 3", url: "https://example.com/3", duration: 220000, requestedBy: "user", source: "test" };
+	const track1 = {
+		id: "t1",
+		title: "Track 1",
+		url: "https://example.com/1",
+		duration: 180000,
+		requestedBy: "user",
+		source: "test",
+	};
+	const track2 = {
+		id: "t2",
+		title: "Track 2",
+		url: "https://example.com/2",
+		duration: 200000,
+		requestedBy: "user",
+		source: "test",
+	};
+	const track3 = {
+		id: "t3",
+		title: "Track 3",
+		url: "https://example.com/3",
+		duration: 220000,
+		requestedBy: "user",
+		source: "test",
+	};
 
 	player.queue.add(track1);
 	player.queue.addMultiple([track2, track3]);

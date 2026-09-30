@@ -335,7 +335,10 @@ export class PlayerManager extends EventEmitter {
 			return true;
 		});
 		this.bus.onOutput(BUS_OUTPUT.connectionDisconnected, (event) => {
-			if (event.type === BUS_OUTPUT.connectionDisconnected && (event.reason === "destroyed" || event.reason === "leave-timeout")) {
+			if (
+				event.type === BUS_OUTPUT.connectionDisconnected &&
+				(event.reason === "destroyed" || event.reason === "leave-timeout")
+			) {
 				const player = this.players.get(event.playerId);
 				if (player && !player.destroyed) {
 					void this.requestDestroy(player);

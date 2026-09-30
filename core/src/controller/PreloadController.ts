@@ -5,7 +5,15 @@ import { createPlayerRequestId } from "../structures/Bus";
 import type { TrackLoader } from "../structures/TrackLoader";
 import type { PreloadManager } from "../structures/PreloadManager";
 import type { PreloadControllerOptions } from "../types";
-import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, traceBusSignal } from "../structures/BusContract";
+import {
+	BUS_EVENT,
+	BUS_OUTPUT,
+	BUS_REQUEST,
+	CONTROLLER_RPC,
+	PLAYER_QUERY,
+	PLAYER_RPC,
+	traceBusSignal,
+} from "../structures/BusContract";
 
 export interface PreloadState {
 	preload?: PromotedPreload | null;
@@ -157,7 +165,9 @@ export class PreloadController {
 		event: { type: typeof BUS_REQUEST.preloadRequest; requestId: string; track: Track },
 	): Promise<void> {
 		if (this.loader.hasPreload(playerId, event.track)) {
-			this.debug?.(`[PreloadController] ${traceBusSignal(BUS_OUTPUT.preloadReady)} guild=${playerId} track=${event.track.title} (already loaded)`);
+			this.debug?.(
+				`[PreloadController] ${traceBusSignal(BUS_OUTPUT.preloadReady)} guild=${playerId} track=${event.track.title} (already loaded)`,
+			);
 			if (this.bus)
 				this.bus.emitOutput({ type: BUS_OUTPUT.preloadReady, requestId: event.requestId, playerId, track: event.track });
 			return;
