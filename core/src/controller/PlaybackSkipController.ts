@@ -83,10 +83,7 @@ export class PlaybackSkipController {
 
 				if (candidate) {
 					this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track: null });
-					if (!this.bus.querySync(this.playerId, PLAYER_QUERY.queueNextTrack))
-						this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueAddMultiple, { tracks: [candidate] });
-					next = await this.nextThroughBus(true, context);
-					if (context.signal.aborted) return false;
+					next = candidate;
 				}
 			}
 

@@ -2,7 +2,7 @@ import type { Bus } from "../structures/Bus";
 import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import type { ExtensionManager } from "../extensions";
 import type { BaseExtension } from "../extensions/BaseExtension";
-import type { ExtensionPlayRequest, ExtensionPlayResponse, ExtensionAfterPlayPayload } from "../types";
+import type { ExtensionPlayRequest, ExtensionPlayResponse, ExtensionAfterPlayPayload, ExtensionMethod, ExtensionContext } from "../types";
 
 /**
  * Shared, singleton controller: owns extension-related Bus RPC/query
@@ -49,7 +49,7 @@ export class ExtensionController {
 			const mgr = this.manager(ctx.playerId);
 			if (mgr) await mgr.afterPlayHooks(payload);
 		});
-		bus.registerRpc<{ extension: string; method: string; context: any; payload?: any }, any>(
+		bus.registerRpc<{ extension: string; method: ExtensionMethod; context: ExtensionContext; payload?: unknown }, unknown>(
 			PLAYER_RPC.extensionInvoke,
 			async ({ extension, method, context, payload }, ctx) => {
 				const mgr = this.manager(ctx.playerId);

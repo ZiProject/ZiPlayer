@@ -150,15 +150,9 @@ export class PlaybackTrackEndController {
 				if (autoPlay && next) {
 					endedSession.markEnded();
 					this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track: null });
-					if (!this.bus.querySync(this.playerId, PLAYER_QUERY.queueNextTrack)) {
-						this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueAddMultiple, { tracks: [next] });
-					}
-					const autoNext = await this.nextThroughBus(false, context);
-					if (autoNext) {
-						this.waitingForQueue = false;
-						await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackStart, { track: autoNext, context, from });
-						return;
-					}
+					this.waitingForQueue = false;
+					await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackStart, { track: next, context, from });
+					return;
 				}
 			}
 

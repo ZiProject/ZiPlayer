@@ -207,6 +207,7 @@ test("Queue empty + autoPlay=true: generates related, emits willPlay, and starts
 	assert.ok(willPlayEvents.length >= 1);
 	assert.equal(willPlayEvents.at(-1).track.id, "track-rel-auto");
 	assert.ok(harness.played.some((t) => t.id === "track-rel-auto"), "Candidate must be started when autoPlay=true");
+	assert.deepEqual(harness.queue.getTracks(), [], "Related autoplay must not add the candidate to the queue");
 
 	await harness.orchestrator.dispose();
 	harness.player.destroy();
@@ -235,6 +236,34 @@ test("Loop mode track repeats the current track as candidate", async () => {
 	assert.equal(willPlayEvents.at(-1).id, "track-a", "Candidate must be currentTrack when loop=track");
 	assert.equal(harness.played.at(-1).id, "track-a");
 
+	await harness.orchestrator.dispose();
+	harness.player.destroy();
+});
+
+test("Loop mode queue exposes and plays the oldest history entry", async () => {
+	const trackA = { id: "track-loop-a", title: "Track A", duration: 180000 };
+	const trackB = { id: "track-loop-b", title: "Track B", duration: 180000 };
+	const trackC = { id: "track-loop-c", title: "Track C", duration: 180000 };
+	const harness = createHarness({ loopMode: "queue" });
+	harness.queue.addMultiple([trackA, trackB, trackC]);
+	harness.queue.next();
+	harness.queue.next();
+	harness.queue.next();
+
+	const willPlayEvents = [];
+	harness.player.on("willPlay", (track) => willPlayEvents.push(track));
+	await harness.bus.action(harness.playerId, { type: "PLAY", track: trackC }, {
+		requestId: "req-loop-queue",
+		signal: new AbortController().signal,
+		priority: 10,
+	});
+
+	const session = harness.sessionController.current(harness.playerId);
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: session.snapshot() });
+	await waitFor(() => harness.played.some((track) => track.id === "track-loop-a"));
+
+	assert.equal(willPlayEvents.at(-1).id, "track-loop-a");
+	assert.equal(harness.played.at(-1).id, "track-loop-a");
 	await harness.orchestrator.dispose();
 	harness.player.destroy();
 });

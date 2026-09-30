@@ -2,6 +2,7 @@ import type { Player } from "../structures/Player";
 import type { PlayerManager } from "../structures/PlayerManager";
 import type {
 	ExtensionSearchRequest,
+	ExtensionMethod,
 	SearchResult,
 	StreamInfo,
 	Track,
@@ -15,6 +16,13 @@ import type {
 import { BaseExtension } from "./BaseExtension";
 
 export { BaseExtension } from "./BaseExtension";
+
+const invokableExtensionMethods = new Set<ExtensionMethod>([
+	"beforePlay",
+	"afterPlay",
+	"provideSearch",
+	"provideStream",
+]);
 
 interface ExtensionCacheEntry<T> {
 	data: T;
@@ -198,7 +206,8 @@ export class ExtensionManager {
 		return this.get(name);
 	}
 
-	async invoke(name: string, method: string, context: any, payload?: any): Promise<any> {
+	async invoke(name: string, method: ExtensionMethod, context: ExtensionContext, payload?: unknown): Promise<unknown> {
+		if (!invokableExtensionMethods.has(method)) return undefined;
 		const ext = this.get(name);
 		if (!ext) return undefined;
 		const fn = (ext as any)[method];

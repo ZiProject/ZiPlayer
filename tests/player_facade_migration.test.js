@@ -16,6 +16,18 @@ test("player.filter exposes filter engine and queryState", async (t) => {
 	assert.equal(player.filter.getFilterString(), "");
 });
 
+test("Player facade does not retain plugin or extension manager instances", async (t) => {
+	const mgr = new PlayerManager();
+	t.after(() => mgr.destroy());
+
+	const player = await mgr.create("guild-facade-instances");
+	for (const property of ["plugins", "extensions", "pluginManager", "extensionManager", "getExtensions"]) {
+		assert.equal(property in player, false, `Player must not expose ${property}`);
+	}
+	assert.deepEqual(player.pluginNames, []);
+	assert.deepEqual(player.extensionNames, []);
+});
+
 test("player.loop normalizes numbers 0, 1, 2 to off, track, queue", async (t) => {
 	const mgr = new PlayerManager();
 	t.after(() => mgr.destroy());

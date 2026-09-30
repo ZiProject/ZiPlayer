@@ -35,6 +35,8 @@ export interface SourceExtension {
 	): Promise<StreamInfo | null | undefined> | StreamInfo | null | undefined;
 }
 
+export type ExtensionMethod = "beforePlay" | "afterPlay" | "provideSearch" | "provideStream";
+
 import type { Bus } from "../structures/Bus";
 
 /**

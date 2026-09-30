@@ -609,7 +609,7 @@ export class Player extends EventEmitter {
 			.then(() => true)
 			.catch(() => false);
 	}
-	public getExtensions(): any[] {
+	private getExtensionInstances(): BaseExtension[] {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.extensions) ?? [];
 	}
 	public saveSession(_options?: any): PlayerSession {
@@ -622,7 +622,7 @@ export class Player extends EventEmitter {
 			queue: this.queue.getTracks(),
 			loopMode: this.queue.loop(),
 			autoPlay: this.queue.autoPlay(),
-			extensions: this.getExtensions().map((ext: any) => ext.name ?? ext),
+			extensions: this.extensionNames,
 			plugins: plugins.map((plugin: any) => plugin.name ?? plugin),
 		};
 	}
@@ -800,7 +800,7 @@ export class Player extends EventEmitter {
 		if (this.disposed) return;
 		this.destroyed = true;
 		try {
-			const exts = this.getExtensions();
+			const exts = this.getExtensionInstances();
 			for (const ext of exts) {
 				if (ext && (ext as any).player === this) {
 					(ext as any).player = null;

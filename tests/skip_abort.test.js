@@ -167,3 +167,37 @@ test("Skip aborted during prepare phase returns false and does not commit new tr
 	await harness.orchestrator.dispose();
 	harness.player.destroy();
 });
+
+test("Queued skip aborted externally resolves false without mutating playback or queue", async () => {
+	const harness = createHarness();
+	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
+	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
+	let releaseLoad;
+	let notifyLoadStarted;
+	const loadStarted = new Promise((resolve) => {
+		notifyLoadStarted = resolve;
+	});
+	const loadGate = new Promise((resolve) => {
+		releaseLoad = resolve;
+	});
+	harness.bus.registerRpc("controller.track.loadWithRecovery", async (track) => {
+		notifyLoadStarted();
+		await loadGate;
+		return { track, stream: { stream: null, remote: false } };
+	});
+
+	const firstAction = harness.player.action({ type: "PLAY", track: trackA });
+	await loadStarted;
+	harness.queue.add(trackB);
+	const abortController = new AbortController();
+	const queuedSkip = harness.player.skip({ signal: abortController.signal });
+	abortController.abort();
+	releaseLoad();
+	await firstAction;
+
+	assert.equal(await queuedSkip, false);
+	assert.equal(harness.sessionController.current(harness.playerId)?.track?.id, "track-a");
+	assert.deepEqual(harness.queue.getTracks().map((track) => track.id), ["track-b"]);
+	await harness.orchestrator.dispose();
+	harness.player.destroy();
+});
