@@ -1,7 +1,16 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
-const { Player, assertVoiceChannel, Bus, PLAYER_RPC, BUS_REQUEST, BUS_OUTPUT, PLAYER_QUERY, BasePlugin } = require("../core/dist");
+const {
+	Player,
+	assertVoiceChannel,
+	Bus,
+	PLAYER_RPC,
+	BUS_REQUEST,
+	BUS_OUTPUT,
+	PLAYER_QUERY,
+	BasePlugin,
+} = require("../core/dist");
 
 test("assertVoiceChannel validates GuildVoice channels and rejects other channel types", () => {
 	// Valid GuildVoice channels (type: 2 or type: 'GuildVoice')
@@ -155,10 +164,7 @@ test("player.play auto-connects to valid voiceChannel and rejects invalid channe
 	bus.registerQuery(PLAYER_QUERY.connection, () => (connectedChannel ? mockConnection : null));
 
 	// Rejects invalid channel with TypeError
-	await assert.rejects(
-		() => player.play("song", { voiceChannel: { id: "text-chan", type: 0 } }),
-		TypeError,
-	);
+	await assert.rejects(() => player.play("song", { voiceChannel: { id: "text-chan", type: 0 } }), TypeError);
 
 	// Valid GuildVoice channel auto-connects
 	const validChannel = { id: "vc-guild-123", guildId: "g-1", type: 2, guild: {} };

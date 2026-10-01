@@ -2,7 +2,13 @@ import type { Bus } from "../structures/Bus";
 import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import type { ExtensionManager } from "../extensions";
 import type { BaseExtension } from "../extensions/BaseExtension";
-import type { ExtensionPlayRequest, ExtensionPlayResponse, ExtensionAfterPlayPayload, ExtensionMethod, ExtensionContext } from "../types";
+import type {
+	ExtensionPlayRequest,
+	ExtensionPlayResponse,
+	ExtensionAfterPlayPayload,
+	ExtensionMethod,
+	ExtensionContext,
+} from "../types";
 
 /**
  * Shared, singleton controller: owns extension-related Bus RPC/query

@@ -233,9 +233,10 @@ export class TrackLoader {
 				slot.debugLog(`[TrackLoader] Using preloaded stream for: ${track.title}`);
 				return {
 					track,
-					stream: preload.streamInfo
-						? normalizeStreamInfo(track, preload.streamInfo)
-						: normalizeStreamInfo(track, { stream: preload.stream as any, type: "arbitrary" }),
+					stream:
+						preload.streamInfo ?
+							normalizeStreamInfo(track, preload.streamInfo)
+						:	normalizeStreamInfo(track, { stream: preload.stream as any, type: "arbitrary" }),
 					sessionId: session.id,
 					retry: 0,
 					usedFallback: false,

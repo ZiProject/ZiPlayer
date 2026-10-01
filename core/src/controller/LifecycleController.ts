@@ -97,9 +97,8 @@ class LifecycleWorker {
 				this.debug?.(`[LifecycleController] cancelling leave (${reason}): forward mode active`);
 				return;
 			}
-			const currentTrack = this.bus.querySync(this.playerId, PLAYER_QUERY.currentTrack);
 			const queue = this.bus.querySync(this.playerId, PLAYER_QUERY.queue) ?? [];
-			if (this.isPlaying || currentTrack || queue.length > 0) {
+			if (this.isPlaying || queue.length > 0) {
 				this.debug?.(`[LifecycleController] cancelling leave (${reason}): player is playing or has queued tracks`);
 				return;
 			}

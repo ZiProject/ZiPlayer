@@ -19,6 +19,9 @@
 		"url": "git+https://github.com/ZiProject/ZiPlayer.git"
 	},
 	"license": "MIT",
+	"engines": {
+		"node": ">=20.3.0"
+	},
 	"author": "Ziji",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",

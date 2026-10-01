@@ -144,7 +144,12 @@ function dedupeTracks(tracks: Track[]): Track[] {
 	const unique = new Map<string, Track>();
 
 	for (const track of tracks) {
-		const key = normalize(`${track.title} ${track?.author || track?.metadata?.author || ""}`);
+		const media = extractMediaId(track.url || "");
+		const normalizedUrl = track.url?.trim().replace(/\/+$/, "").toLowerCase();
+		const key =
+			media ? `media:${media.platform}:${media.id}`
+			: normalizedUrl ? `url:${normalizedUrl}`
+			: `title:${normalize(`${track.title} ${track?.author || track?.metadata?.author || ""}`)}`;
 
 		const existing = unique.get(key);
 
@@ -152,6 +157,8 @@ function dedupeTracks(tracks: Track[]): Track[] {
 			unique.set(key, track);
 			continue;
 		}
+
+		if (!key.startsWith("title:")) continue;
 
 		const oldScore = getContentQualityScore(existing);
 		const newScore = getContentQualityScore(track);
@@ -497,9 +504,10 @@ export class PluginManager {
 		}
 
 		const trimmedQuery = query.trim();
-		const selectedPluginNames = pluginsFilter ?
-			(Array.isArray(pluginsFilter) ? pluginsFilter : [pluginsFilter]).map((p) => p.toLowerCase())
-			: null;
+		const selectedPluginNames =
+			pluginsFilter !== undefined ?
+				(Array.isArray(pluginsFilter) ? pluginsFilter : [pluginsFilter]).map((p) => p.toLowerCase())
+			:	null;
 		const pluginsKey = selectedPluginNames ? [...selectedPluginNames].sort().join(",") : "all";
 
 		this.debug(`[Search] Called with query: "${trimmedQuery}", requestedBy: ${requestedBy}, plugins: ${pluginsKey}`);
@@ -550,7 +558,7 @@ export class PluginManager {
 		const timeoutMs = this.options.extractorTimeout ?? 15000;
 
 		let plugins = this.getAll().filter((p) => typeof p.search === "function");
-		if (selectedPluginNames && selectedPluginNames.length > 0) {
+		if (selectedPluginNames !== null && selectedPluginNames !== undefined) {
 			plugins = plugins.filter((p) => selectedPluginNames.includes(p.name.toLowerCase()));
 		}
 
@@ -806,7 +814,11 @@ export class PluginManager {
 				try {
 					this.debug(`[Stream] ${plugin.name} trying direct stream`);
 
-					const rawResult = await withTimeout(plugin.getStream(track, controller.signal), timeoutMs, `${plugin.name} getStream timeout`);
+					const rawResult = await withTimeout(
+						plugin.getStream(track, controller.signal),
+						timeoutMs,
+						`${plugin.name} getStream timeout`,
+					);
 					result = rawResult ? normalizeStreamInfo(track, rawResult) : null;
 
 					if (result?.remote && result?.handle) {
@@ -846,7 +858,11 @@ export class PluginManager {
 				try {
 					this.debug(`[Stream] ${plugin.name} trying fallback resolver`);
 
-					const rawResult = await withTimeout(plugin.getFallback(track, controller.signal), timeoutMs, `${plugin.name} fallback timeout`);
+					const rawResult = await withTimeout(
+						plugin.getFallback(track, controller.signal),
+						timeoutMs,
+						`${plugin.name} fallback timeout`,
+					);
 					result = rawResult ? normalizeStreamInfo(track, rawResult) : null;
 
 					if (result?.stream) {

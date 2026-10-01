@@ -1,6 +1,6 @@
 {
 	"name": "ziplayer",
-	"version": "1.0.5-dev.0",
+	"version": "1.0.5-dev.1",
 	"description": "A modular Discord voice player with plugin system",
 	"keywords": [
 		"ZiPlayer",
@@ -46,5 +46,8 @@
 		"ffmpeg-static": true,
 		"esbuild@0.28.2": true,
 		"esbuild@0.27.7": true
+	},
+	"engines": {
+		"node": ">=20.3.0"
 	}
 }

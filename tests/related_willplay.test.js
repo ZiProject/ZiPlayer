@@ -104,11 +104,15 @@ test("Queue has next: candidate is queue.next, willPlay emitted and track starts
 		willPlayEvents.push({ track, relatedTracks });
 	});
 
-	await harness.bus.action(harness.playerId, { type: "PLAY", track: trackA }, {
-		requestId: "req-1",
-		signal: new AbortController().signal,
-		priority: 10,
-	});
+	await harness.bus.action(
+		harness.playerId,
+		{ type: "PLAY", track: trackA },
+		{
+			requestId: "req-1",
+			signal: new AbortController().signal,
+			priority: 10,
+		},
+	);
 	harness.queue.add(trackB);
 
 	// End track A
@@ -144,11 +148,15 @@ test("Queue empty + autoPlay=false: generates related, emits willPlay, sets will
 		queueEndEmitted = true;
 	});
 
-	await harness.bus.action(harness.playerId, { type: "PLAY", track: trackA }, {
-		requestId: "req-1",
-		signal: new AbortController().signal,
-		priority: 10,
-	});
+	await harness.bus.action(
+		harness.playerId,
+		{ type: "PLAY", track: trackA },
+		{
+			requestId: "req-1",
+			signal: new AbortController().signal,
+			priority: 10,
+		},
+	);
 
 	// Queue is empty. Trigger trackEnd
 	const session = harness.sessionController.current(harness.playerId);
@@ -165,14 +173,21 @@ test("Queue empty + autoPlay=false: generates related, emits willPlay, sets will
 	assert.ok(willPlayEvents.length >= 1);
 	const lastEvent = willPlayEvents.at(-1);
 	assert.equal(lastEvent.track.id, "track-rel-1");
-	assert.deepEqual(lastEvent.relatedTracks.map((t) => t.id), ["track-rel-1"]);
+	assert.deepEqual(
+		lastEvent.relatedTracks.map((t) => t.id),
+		["track-rel-1"],
+	);
 
 	// Assert relatedTracks were generated on player
 	assert.equal(harness.player.relatedTracks.length, 1);
 	assert.equal(harness.player.relatedTracks[0].id, "track-rel-1");
 
 	// Assert playback stopped (did NOT start relatedTrack)
-	assert.equal(harness.played.some((t) => t.id === "track-rel-1"), false, "Must not auto-play when autoPlay=false");
+	assert.equal(
+		harness.played.some((t) => t.id === "track-rel-1"),
+		false,
+		"Must not auto-play when autoPlay=false",
+	);
 
 	await harness.orchestrator.dispose();
 	harness.player.destroy();
@@ -192,11 +207,15 @@ test("Queue empty + autoPlay=true: generates related, emits willPlay, and starts
 		willPlayEvents.push({ track, relatedTracks });
 	});
 
-	await harness.bus.action(harness.playerId, { type: "PLAY", track: trackA }, {
-		requestId: "req-1",
-		signal: new AbortController().signal,
-		priority: 10,
-	});
+	await harness.bus.action(
+		harness.playerId,
+		{ type: "PLAY", track: trackA },
+		{
+			requestId: "req-1",
+			signal: new AbortController().signal,
+			priority: 10,
+		},
+	);
 
 	// Queue is empty. Trigger trackEnd
 	const session = harness.sessionController.current(harness.playerId);
@@ -206,7 +225,10 @@ test("Queue empty + autoPlay=true: generates related, emits willPlay, and starts
 
 	assert.ok(willPlayEvents.length >= 1);
 	assert.equal(willPlayEvents.at(-1).track.id, "track-rel-auto");
-	assert.ok(harness.played.some((t) => t.id === "track-rel-auto"), "Candidate must be started when autoPlay=true");
+	assert.ok(
+		harness.played.some((t) => t.id === "track-rel-auto"),
+		"Candidate must be started when autoPlay=true",
+	);
 	assert.deepEqual(harness.queue.getTracks(), [], "Related autoplay must not add the candidate to the queue");
 
 	await harness.orchestrator.dispose();
@@ -222,11 +244,15 @@ test("Loop mode track repeats the current track as candidate", async () => {
 		willPlayEvents.push(track);
 	});
 
-	await harness.bus.action(harness.playerId, { type: "PLAY", track: trackA }, {
-		requestId: "req-1",
-		signal: new AbortController().signal,
-		priority: 10,
-	});
+	await harness.bus.action(
+		harness.playerId,
+		{ type: "PLAY", track: trackA },
+		{
+			requestId: "req-1",
+			signal: new AbortController().signal,
+			priority: 10,
+		},
+	);
 
 	const session = harness.sessionController.current(harness.playerId);
 	harness.bus.event(harness.playerId, { type: "TRACK_END", session: session.snapshot() });
@@ -252,11 +278,15 @@ test("Loop mode queue exposes and plays the oldest history entry", async () => {
 
 	const willPlayEvents = [];
 	harness.player.on("willPlay", (track) => willPlayEvents.push(track));
-	await harness.bus.action(harness.playerId, { type: "PLAY", track: trackC }, {
-		requestId: "req-loop-queue",
-		signal: new AbortController().signal,
-		priority: 10,
-	});
+	await harness.bus.action(
+		harness.playerId,
+		{ type: "PLAY", track: trackC },
+		{
+			requestId: "req-loop-queue",
+			signal: new AbortController().signal,
+			priority: 10,
+		},
+	);
 
 	const session = harness.sessionController.current(harness.playerId);
 	harness.bus.event(harness.playerId, { type: "TRACK_END", session: session.snapshot() });
@@ -277,11 +307,15 @@ test("Related source uses ended track as source for related generation", async (
 		relatedMock: [relatedTrack],
 	});
 
-	await harness.bus.action(harness.playerId, { type: "PLAY", track: trackA }, {
-		requestId: "req-1",
-		signal: new AbortController().signal,
-		priority: 10,
-	});
+	await harness.bus.action(
+		harness.playerId,
+		{ type: "PLAY", track: trackA },
+		{
+			requestId: "req-1",
+			signal: new AbortController().signal,
+			priority: 10,
+		},
+	);
 
 	const session = harness.sessionController.current(harness.playerId);
 	harness.bus.event(harness.playerId, { type: "TRACK_END", session: session.snapshot() });

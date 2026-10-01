@@ -43,6 +43,7 @@ export { BusLatencyTrace } from "./controller/BusLatencyTrace";
 export { PlayerEventBridge } from "./controller/PlayerEventBridge";
 export { PlayerEventDebug, DEBUG_PRIORITY } from "./controller/PlayerEventDebug";
 export { GlobalControllerRegistry, globalControllerRegistry } from "./controller/GlobalControllerRegistry";
+export { FilterEngine, isSafeCustomFilter } from "./controller/FilterController";
 export { StreamManager } from "./structures/StreamManager";
 
 export type {

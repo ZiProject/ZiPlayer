@@ -272,20 +272,30 @@ export class Bus {
 		if (!handler) return Promise.reject(new BusRequestError("unhandled", type, `No RPC handler registered for "${type}"`));
 		if (options.signal?.aborted) return Promise.reject(new BusRequestError("aborted", type, `RPC "${type}" was aborted`));
 		const requestId = createPlayerRequestId();
+		// When a timeout is requested the handler must also be told to stop, otherwise it keeps
+		// running after the caller has already seen a failure and may mutate state later.
+		const timeoutAbort = options.timeoutMs === undefined ? undefined : new AbortController();
+		const signal =
+			timeoutAbort ?
+				options.signal ?
+					AbortSignal.any([options.signal, timeoutAbort.signal])
+				:	timeoutAbort.signal
+			:	(options.signal ?? new AbortController().signal);
 		const context: BusRpcContext = {
 			playerId,
 			requestId,
-			signal: options.signal ?? new AbortController().signal,
+			signal,
 			timestamp: Date.now(),
 		};
 		const operation = Promise.resolve().then(() => handler(request, context));
 		if (options.timeoutMs === undefined) return operation;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const timeout = new Promise<never>((_, reject) => {
-			timer = setTimeout(
-				() => reject(new BusRequestError("timeout", type, `Timed out after ${options.timeoutMs}ms awaiting RPC "${type}"`)),
-				options.timeoutMs,
-			);
+			timer = setTimeout(() => {
+				const error = new BusRequestError("timeout", type, `Timed out after ${options.timeoutMs}ms awaiting RPC "${type}"`);
+				reject(error);
+				timeoutAbort?.abort(error);
+			}, options.timeoutMs);
 		});
 		return Promise.race([operation, timeout]).finally(() => {
 			if (timer) clearTimeout(timer);

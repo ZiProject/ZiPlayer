@@ -323,6 +323,15 @@ export interface PlayOptions {
 	[key: string]: any;
 }
 
+export interface SearchOptions {
+	/** User or identifier who requested the search. */
+	requestedBy?: any;
+	/** Restrict search to this plugin or list of plugins. */
+	plugin?: string | string[];
+	/** AbortSignal to cancel the search. */
+	signal?: AbortSignal;
+}
+
 export interface PlayResult {
 	track: Track;
 	query: string;

@@ -108,7 +108,7 @@ export interface AntiStuckRetryHandlers {
 }
 export interface SearchRequest {
 	query: string;
-	requestedBy: string;
+	requestedBy?: string;
 	plugin?: string | string[];
 }
 

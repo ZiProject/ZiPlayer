@@ -139,10 +139,6 @@ export class PlaybackStartController {
 		return this.sessionController.current(this.playerId) === session && session.ownsContext(context.sessionId);
 	}
 
-	private queueSnapshot(): Track[] {
-		return this.bus.querySync(this.playerId, PLAYER_QUERY.queue) ?? [];
-	}
-
 	private childContext(context: PlayerMessageContext, sessionId: string, sessionSignal: AbortSignal): PlayerMessageContext {
 		return {
 			playerId: context.playerId,

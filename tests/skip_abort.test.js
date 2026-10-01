@@ -89,11 +89,15 @@ test("Normal skip returns true and advances to the next track", async () => {
 	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
 	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
 
-	await harness.bus.action(harness.playerId, { type: "PLAY", track: trackA }, {
-		requestId: "req-1",
-		signal: new AbortController().signal,
-		priority: 10,
-	});
+	await harness.bus.action(
+		harness.playerId,
+		{ type: "PLAY", track: trackA },
+		{
+			requestId: "req-1",
+			signal: new AbortController().signal,
+			priority: 10,
+		},
+	);
 	harness.queue.add(trackB);
 
 	const result = await harness.player.skip();
@@ -111,11 +115,15 @@ test("Skip aborted before execution returns false and preserves active state and
 	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
 	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
 
-	await harness.bus.action(harness.playerId, { type: "PLAY", track: trackA }, {
-		requestId: "req-1",
-		signal: new AbortController().signal,
-		priority: 10,
-	});
+	await harness.bus.action(
+		harness.playerId,
+		{ type: "PLAY", track: trackA },
+		{
+			requestId: "req-1",
+			signal: new AbortController().signal,
+			priority: 10,
+		},
+	);
 	harness.queue.add(trackB);
 
 	const abortController = new AbortController();
@@ -139,11 +147,15 @@ test("Skip aborted during prepare phase returns false and does not commit new tr
 	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
 	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
 
-	await harness.bus.action(harness.playerId, { type: "PLAY", track: trackA }, {
-		requestId: "req-1",
-		signal: new AbortController().signal,
-		priority: 10,
-	});
+	await harness.bus.action(
+		harness.playerId,
+		{ type: "PLAY", track: trackA },
+		{
+			requestId: "req-1",
+			signal: new AbortController().signal,
+			priority: 10,
+		},
+	);
 	harness.queue.add(trackB);
 
 	const abortController = new AbortController();
@@ -197,7 +209,10 @@ test("Queued skip aborted externally resolves false without mutating playback or
 
 	assert.equal(await queuedSkip, false);
 	assert.equal(harness.sessionController.current(harness.playerId)?.track?.id, "track-a");
-	assert.deepEqual(harness.queue.getTracks().map((track) => track.id), ["track-b"]);
+	assert.deepEqual(
+		harness.queue.getTracks().map((track) => track.id),
+		["track-b"],
+	);
 	await harness.orchestrator.dispose();
 	harness.player.destroy();
 });

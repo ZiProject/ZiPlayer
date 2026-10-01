@@ -40,3 +40,42 @@ test("PluginManager findPlugin uses canHandle", () => {
 	assert.equal(found.name, "dummy");
 	assert.equal(pm.findPlugin("nope"), undefined);
 });
+
+test("PluginManager search deduplicates the same URL and keeps the higher-priority result", async () => {
+	const url = "https://soundcloud.com/artist/track";
+	const pm = new PluginManager({ enableCache: false });
+
+	class DirectUrlPlugin extends BasePlugin {
+		constructor(name, priority, track) {
+			super();
+			this.name = name;
+			this.priority = priority;
+			this.track = track;
+		}
+		async search(_query, requestedBy) {
+			return { tracks: [{ ...this.track, requestedBy }] };
+		}
+	}
+
+	pm.register(
+		new DirectUrlPlugin("soundcloud", 10, {
+			id: "provider-track",
+			title: "Track with provider metadata",
+			url,
+			duration: 824758,
+		}),
+	);
+	pm.register(
+		new DirectUrlPlugin("Infinity", 5, {
+			id: "infinity-track",
+			title: "Track by Artist",
+			url,
+			duration: 0,
+		}),
+	);
+
+	const result = await pm.search(url, "user");
+	assert.equal(result.tracks.length, 1);
+	assert.equal(result.tracks[0].id, "provider-track");
+	assert.equal(result.tracks[0].source, "soundcloud");
+});

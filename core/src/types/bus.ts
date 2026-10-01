@@ -276,7 +276,7 @@ export interface PlayerRpcMap {
 		response: { ok: boolean; track: Track | null } | boolean;
 	};
 	"volume.set": { request: { value: number }; response: number };
-	search: { request: { query: string; requestedBy: string }; response: SearchResult };
+	search: { request: { query: string; requestedBy?: string; plugin?: string | string[] }; response: SearchResult };
 	"search.cache.get": { request: { query: string }; response: SearchResult | null };
 	"search.cache.set": { request: { query: string; result: SearchResult }; response: void };
 	"search.cache.clear": { request: Record<string, never>; response: void };
@@ -342,7 +342,10 @@ export interface PlayerRpcMap {
 	"plugin.clear": { request: undefined; response: void };
 	"plugin.stats": { request: undefined; response: object };
 	"plugin.relatedTracks": { request: { track: Track; history?: Track[] }; response: Track[] };
-	"plugin.search": { request: { plugin?: string | string[]; query: string; requestedBy?: string }; response: SearchResult | null };
+	"plugin.search": {
+		request: { plugin?: string | string[]; query: string; requestedBy?: string };
+		response: SearchResult | null;
+	};
 	"plugin.getStream": { request: { plugin?: string; track: Track }; response: StreamInfo | null };
 	"extension.add": { request: { extension: BaseExtension }; response: void };
 	"extension.remove": { request: { extension: BaseExtension }; response: boolean };

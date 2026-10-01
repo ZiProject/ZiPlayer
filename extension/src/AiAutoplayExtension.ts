@@ -15,6 +15,8 @@ export class AiAutoplayExtension extends BaseExtension {
 	private history: Track[] = [];
 	private isAnalyzing = false;
 	private genAI: GoogleGenerativeAI | null = null;
+	/** Player đã được gắn listener trackStart (tránh đăng ký lặp lại ở mỗi lần afterPlay). */
+	private listeningPlayer: unknown = null;
 
 	constructor(apiKey?: string) {
 		super();
@@ -36,8 +38,11 @@ export class AiAutoplayExtension extends BaseExtension {
 	}
 
 	public async afterPlay(context: ExtensionContext, payload: ExtensionAfterPlayPayload): Promise<void> {
+		if (!context.player) return;
 		this.player = context.player;
-		this.player.on("trackStart", (track: Track) => {
+		if (this.listeningPlayer === context.player) return;
+		this.listeningPlayer = context.player;
+		context.player.on("trackStart", (track: Track) => {
 			if (this.history.length === 0 || this.history[this.history.length - 1].url !== track.url) {
 				this.history.push(track);
 				if (this.history.length > 10) this.history.shift();
@@ -49,7 +54,9 @@ export class AiAutoplayExtension extends BaseExtension {
 	}
 
 	private async analyzeMusicTaste(context: ExtensionContext): Promise<void> {
-		if (!this.genAI || !context.player.autoPlay()) return;
+		const player = context.player;
+		const manager = context.manager;
+		if (!this.genAI || !player || !manager || !player.autoPlay()) return;
 		this.isAnalyzing = true;
 
 		try {
@@ -88,19 +95,22 @@ export class AiAutoplayExtension extends BaseExtension {
 			if (!jsonMatch) throw new Error("AI không trả về JSON hợp lệ");
 
 			const aiData = JSON.parse(jsonMatch[0]);
+			if (typeof aiData?.suggestion !== "string" || !aiData.suggestion.trim()) {
+				throw new Error("AI không trả về gợi ý bài hát hợp lệ");
+			}
 			this.forwardToPlayer("AiAutoplay", `[AI Autoplay] Gemini phân tích: ${aiData.analysis}`);
 			this.forwardToPlayer("AiAutoplay", `[AI Autoplay] Gợi ý bài tiếp theo: ${aiData.suggestion} (${aiData.reason})`);
 
-			const searchResult = await context.manager.search(aiData.suggestion, "Gemini_Autoplay_Assistant");
+			const searchResult = await manager.search(aiData.suggestion, "Gemini_Autoplay_Assistant");
 
 			if (searchResult && searchResult.tracks.length > 0) {
 				const topTrack = searchResult.tracks[0];
-				if (context.player.autoPlay()) {
-					context.player.setWillNext(topTrack);
+				if (player.autoPlay()) {
+					player.setWillNext(topTrack);
 					this.forwardToPlayer("AiAutoplay", `[AI Autoplay] Đã ghi đè Autoplay bằng Gemini: ${topTrack.title}`);
 					//	willPlay: [track: Track, upcomingTracks: Track[]];
 
-					this.forwardToPlayer("willPlay", topTrack, context.player.relatedTracks);
+					this.forwardToPlayer("willPlay", topTrack, player.relatedTracks);
 				}
 			}
 		} catch (error) {
@@ -118,6 +128,7 @@ export class AiAutoplayExtension extends BaseExtension {
 		if (payload.query.startsWith("ai:") && this.genAI) {
 			const realQuery = payload.query.slice(3);
 			// Logic tìm kiếm thông minh hơn bằng cách dùng Gemini để tinh chỉnh query
+			if (!context.manager) return null;
 			return context.manager.search(realQuery, payload.requestedBy);
 		}
 		return null;

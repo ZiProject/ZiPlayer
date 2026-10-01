@@ -44,3 +44,28 @@ test("forward mode ignores queue-empty leave and clears pending timers", async (
 		bus.dispose();
 	});
 });
+
+test("queue-end leave is not blocked by a stale current track", async (t) => {
+	const bus = new Bus();
+	const { lifecycle } = createSharedControllers({ bus });
+	const playerId = "stale-current-track";
+	let requestCount = 0;
+
+	bus.registerQuery(PLAYER_QUERY.playbackMode, () => PlaybackMode.NATIVE);
+	bus.registerQuery(PLAYER_QUERY.currentTrack, () => ({ id: "ended-track" }));
+	bus.registerQuery(PLAYER_QUERY.queue, () => []);
+	bus.request = async () => {
+		requestCount++;
+	};
+
+	lifecycle.attach(playerId, { leaveOnEnd: true, leaveTimeout: 20 }, () => undefined);
+	bus.publish(playerId, BUS_EVENT.queueEnd, {});
+	await new Promise((resolve) => setTimeout(resolve, 50));
+
+	assert.equal(requestCount, 1, "an ended currentTrack reference must not prevent disconnecting");
+
+	t.after(() => {
+		lifecycle.detach(playerId);
+		bus.dispose();
+	});
+});

@@ -106,6 +106,10 @@ export class FilterEngine {
 	private resolveFilter(filter: string | AudioFilter): AudioFilter | undefined {
 		if (typeof filter !== "string") return filter;
 		if (PREDEFINED_FILTERS[filter]) return PREDEFINED_FILTERS[filter];
+		if (!isSafeCustomFilter(filter)) {
+			this.debug(`Rejected unsafe custom filter: ${filter.slice(0, 80)}`);
+			return undefined;
+		}
 		return {
 			name: filter,
 			description: "Custom filter",
@@ -325,7 +329,26 @@ export class FilterEngine {
 			if (hasSeek) failProcessing(error);
 			abort();
 		});
-		if (typeof sourceStream !== "string") sourceStream.pipe(proc.stdin!);
+		if (typeof sourceStream !== "string") {
+			const stdin = proc.stdin!;
+			// ffmpeg may exit early (bad filter, missing codec, killed). Writing to its closed stdin
+			// emits EPIPE, which would be an uncaught 'error' event and crash the whole process.
+			stdin.on("error", (error: Error) => this.debug(`FFmpeg stdin error: ${error.message}`));
+			const onSourceError = (error: Error) => {
+				this.debug(`FFmpeg source stream error: ${error.message}`);
+				try {
+					stdin.end();
+				} catch {}
+			};
+			sourceStream.on("error", onSourceError);
+			proc.once("close", () => {
+				sourceStream.off("error", onSourceError);
+				try {
+					sourceStream.unpipe(stdin);
+				} catch {}
+			});
+			sourceStream.pipe(stdin);
+		}
 		const result = { ...streamInfo, stream: output, inputType, wasRecreated };
 		this.lastFilteredStream = result;
 		return result;
@@ -334,6 +357,23 @@ export class FilterEngine {
 
 /** Shared, singleton controller: owns the playback filter pipeline for every player
  *  (registered on the bus), keyed by playerId. */
+/** FFmpeg filters that read local files / URLs or open sockets. Never accepted from a bare string. */
+const UNSAFE_FILTER_NAMES =
+	"a?movie|a?sendcmd|a?zmq|ladspa|lv2|sofalizer|arnndn|dnn_processing|drawtext|subtitles|ass|lavfi|frei0r|ocr|geq|hls_playlist";
+const UNSAFE_FILTER_PATTERN = new RegExp(`(?<![A-Za-z0-9_])(?:${UNSAFE_FILTER_NAMES})(?![A-Za-z0-9_])`, "i");
+const MAX_CUSTOM_FILTER_LENGTH = 1000;
+
+/**
+ * Validate a custom filter supplied as a raw string (e.g. from user input). Predefined filters and
+ * explicit AudioFilter objects are developer-controlled and are not checked here.
+ */
+export function isSafeCustomFilter(filter: string): boolean {
+	if (!filter || filter.length > MAX_CUSTOM_FILTER_LENGTH) return false;
+	// eslint-disable-next-line no-control-regex
+	if (/[\u0000-\u001f]/.test(filter)) return false;
+	return !UNSAFE_FILTER_PATTERN.test(filter);
+}
+
 export class FilterController {
 	private readonly engines = new Map<string, FilterEngine>();
 
@@ -364,7 +404,9 @@ export class FilterController {
 		bus.registerRpc<{ filter: string; value: unknown }, any>(PLAYER_RPC.filterSet, async ({ filter, value }, ctx) => {
 			const engine = this.engines.get(ctx.playerId);
 			if (!engine) return false;
-			return value ? engine.applyFilter(filter) : engine.removeFilter(filter);
+			const enabled =
+				typeof value === "string" ? !["", "false", "0", "off", "no"].includes(value.trim().toLowerCase()) : Boolean(value);
+			return enabled ? engine.applyFilter(filter) : engine.removeFilter(filter);
 		});
 	}
 

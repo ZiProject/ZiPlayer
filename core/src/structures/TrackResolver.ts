@@ -1,10 +1,4 @@
-import {
-	type StreamInfo,
-	type Track,
-	type TrackResolveContext,
-	type TrackResolverOptions,
-	normalizeStreamInfo,
-} from "../types";
+import { type StreamInfo, type Track, type TrackResolveContext, type TrackResolverOptions, normalizeStreamInfo } from "../types";
 import type { Bus } from "./Bus";
 import { PLAYER_RPC } from "./BusContract";
 

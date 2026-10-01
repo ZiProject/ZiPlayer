@@ -16,6 +16,7 @@ import type {
 	LoopMode,
 	PlayerSession,
 	PlayOptions,
+	SearchOptions,
 	PlayResult,
 } from "../types";
 import { PlaybackMode } from "../types";
@@ -192,8 +193,21 @@ export class Player extends EventEmitter {
 	public get relatedTracks(): Track[] {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.relatedTracks) ?? [];
 	}
-	public search(query: string, requestedBy: string): Promise<SearchResult> {
-		return this.bus.requestRpc(this.playerId, PLAYER_RPC.search, { query, requestedBy });
+	public search(query: string, optionsOrRequestedBy?: SearchOptions | string): Promise<SearchResult> {
+		const options =
+			typeof optionsOrRequestedBy === "string" ? { requestedBy: optionsOrRequestedBy } : (optionsOrRequestedBy ?? {});
+		const requestedBy =
+			typeof options.requestedBy === "string" ?
+				options.requestedBy
+			:	(options.requestedBy?.id ??
+				options.requestedBy?.username ??
+				(options.requestedBy ? String(options.requestedBy) : undefined));
+		return this.bus.requestRpc(
+			this.playerId,
+			PLAYER_RPC.search,
+			{ query, requestedBy: requestedBy ?? "Unknown", plugin: options.plugin },
+			{ signal: options.signal },
+		);
 	}
 	public getCachedSearchResult(query: string): Promise<SearchResult | null> {
 		return this.bus.requestRpc(this.playerId, PLAYER_RPC.searchCacheGet, { query });

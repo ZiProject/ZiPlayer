@@ -317,7 +317,6 @@ export class PreloadManager {
 		const { isDestroyed, streamManager } = slot.deps;
 		if (isDestroyed()) throw new Error("PLAYER_DESTROYED");
 		let abortHandler: (() => void) | null = null;
-		let settled = false;
 		const abortPromise = new Promise<never>((_, reject) => {
 			if (signal.aborted) {
 				reject(new Error("PRELOAD_CANCELLED"));
@@ -326,6 +325,9 @@ export class PreloadManager {
 			abortHandler = () => reject(new Error("PRELOAD_CANCELLED"));
 			signal.addEventListener("abort", abortHandler, { once: true });
 		});
+		// The early-return path below never awaits abortPromise; mark it handled so a rejection
+		// (signal already aborted) does not surface as an unhandledRejection.
+		abortPromise.catch(() => {});
 		const existingStream = streamManager.getStreamByTrack(track.id || track.title);
 		if (existingStream && !existingStream.destroyed && existingStream.readable !== false) {
 			if (abortHandler) signal.removeEventListener("abort", abortHandler);
@@ -341,7 +343,6 @@ export class PreloadManager {
 		);
 		try {
 			const result = await Promise.race([streamPromise, abortPromise]);
-			settled = true;
 			return result as StreamInfo | null;
 		} finally {
 			if (abortHandler) signal.removeEventListener("abort", abortHandler);

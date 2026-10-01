@@ -115,7 +115,9 @@ export class PlaybackTrackEndController {
 					const previousTracks = (this.bus.querySync(this.playerId, PLAYER_QUERY.previousTracks) as Track[] | null) ?? [];
 					const source = previousTracks.at(-1) ?? endedSession.track;
 					relatedTracks = await this.bus
-						.requestRpc<{ track?: Track | null }, Track[]>(this.playerId, CONTROLLER_RPC.playbackCreateRelatedTracks, { track: source })
+						.requestRpc<{ track?: Track | null }, Track[]>(this.playerId, CONTROLLER_RPC.playbackCreateRelatedTracks, {
+							track: source,
+						})
 						.catch(() => []);
 					relatedTracks = relatedTracks ?? [];
 					next = relatedTracks[0] ?? null;

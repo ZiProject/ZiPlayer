@@ -17,12 +17,7 @@ import { BaseExtension } from "./BaseExtension";
 
 export { BaseExtension } from "./BaseExtension";
 
-const invokableExtensionMethods = new Set<ExtensionMethod>([
-	"beforePlay",
-	"afterPlay",
-	"provideSearch",
-	"provideStream",
-]);
+const invokableExtensionMethods = new Set<ExtensionMethod>(["beforePlay", "afterPlay", "provideSearch", "provideStream"]);
 
 interface ExtensionCacheEntry<T> {
 	data: T;
@@ -98,7 +93,11 @@ export class ExtensionManager {
 		this.extensionContext = this.createExtensionContext(player, this.manager);
 	}
 
-	private createExtensionContext(player?: Player | null, manager?: PlayerManager | null, extra?: Partial<ExtensionContext>): ExtensionContext {
+	private createExtensionContext(
+		player?: Player | null,
+		manager?: PlayerManager | null,
+		extra?: Partial<ExtensionContext>,
+	): ExtensionContext {
 		const p = player ?? this.player;
 		const m = manager ?? this.manager;
 		const bus = extra?.bus ?? (p as any)?.bus ?? (m as any)?.bus;
@@ -225,11 +224,7 @@ export class ExtensionManager {
 		return Promise.resolve((ext as any).beforePlay.call(ext, context, request));
 	}
 
-	async afterPlay(
-		name: string,
-		context: ExtensionContext,
-		payload: ExtensionAfterPlayPayload,
-	): Promise<void> {
+	async afterPlay(name: string, context: ExtensionContext, payload: ExtensionAfterPlayPayload): Promise<void> {
 		const ext = this.get(name);
 		if (!ext || typeof (ext as any).afterPlay !== "function") return;
 		return Promise.resolve((ext as any).afterPlay.call(ext, context, payload));
