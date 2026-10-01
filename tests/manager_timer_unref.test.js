@@ -105,10 +105,7 @@ test("a PlayerManager created and never destroyed does not keep the process aliv
 		});
 	});
 
-	assert.ok(
-		stdout.includes("created"),
-		"the child process should have reached PlayerManager construction",
-	);
+	assert.ok(stdout.includes("created"), "the child process should have reached PlayerManager construction");
 
 	assert.equal(
 		exitedOnItsOwn,

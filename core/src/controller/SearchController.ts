@@ -39,7 +39,9 @@ class SearchWorker {
 		this.throwIfAborted(operationSignal);
 		this.options.debug(`[SearchController] Search called with query: ${query}, requestedBy: ${requestedBy}, plugin: ${plugin}`);
 		const cacheKey =
-			plugin !== undefined ? `${this.key(query)}:${Array.isArray(plugin) ? plugin.slice().sort().join(",") : plugin}` : this.key(query);
+			plugin !== undefined ?
+				`${this.key(query)}:${Array.isArray(plugin) ? plugin.slice().sort().join(",") : plugin}`
+			:	this.key(query);
 		const cached = this.cache.get(cacheKey);
 		if (cached) {
 			this.options.debug(`[SearchCache] Using cached search result for: ${query}`);
