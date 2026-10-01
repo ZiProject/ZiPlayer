@@ -138,6 +138,7 @@ export function normalizeTrackMiddleware(input?: TrackMiddleware | TrackMiddlewa
 export interface PlayerOptions {
 	leaveOnEnd?: boolean;
 	leaveOnEmpty?: boolean;
+	pauseOnEmpty?: boolean;
 	leaveTimeout?: number;
 	volume?: number;
 	quality?: "high" | "low";

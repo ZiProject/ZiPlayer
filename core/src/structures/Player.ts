@@ -70,6 +70,7 @@ export class Player extends EventEmitter {
 		this.options = {
 			leaveOnEnd: true,
 			leaveOnEmpty: true,
+			pauseOnEmpty: false,
 			leaveTimeout: 100000,
 			volume: 100,
 			quality: "high",

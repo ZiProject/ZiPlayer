@@ -1,15 +1,22 @@
 import { AudioPlayerStatus } from "@discordjs/voice";
 import { createPlayerRequestId, type Bus } from "../structures/Bus";
-import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
+import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import { PlaybackMode, type LifecycleControllerOptions } from "../types";
 
 /** Per-player idle/leave policy worker, owned by the shared `LifecycleController` below. */
 class LifecycleWorker {
 	private readonly leaveOnEnd: boolean;
 	private readonly leaveOnEmpty: boolean;
+	private readonly pauseOnEmpty: boolean;
 	private readonly leaveTimeout: number;
 	private readonly debug?: (...args: any[]) => void;
 	private leaveTimer: NodeJS.Timeout | null = null;
+	private voiceEmptyTimer: NodeJS.Timeout | null = null;
+	private voiceChannel: any = null;
+	private voiceStateClient: any = null;
+	private voiceStateListener: ((oldState: any, newState: any) => void) | null = null;
+	private autoPaused = false;
+	private pauseTransition: Promise<void> = Promise.resolve();
 	private disposed = false;
 	private isPlaying = false;
 	private readonly unsubscribe: Array<() => void> = [];
@@ -22,6 +29,7 @@ class LifecycleWorker {
 	) {
 		this.leaveOnEnd = options.leaveOnEnd ?? true;
 		this.leaveOnEmpty = options.leaveOnEmpty ?? true;
+		this.pauseOnEmpty = options.pauseOnEmpty ?? false;
 		this.leaveTimeout = Math.max(0, options.leaveTimeout ?? 100000);
 		this.debug = debug;
 
@@ -45,30 +53,121 @@ class LifecycleWorker {
 			}),
 			this.bus.subscribe(this.playerId, BUS_EVENT.forwardModeStart, () => {
 				this.clearLeaveTimeout();
+				this.clearVoiceEmptyTimeout();
 				this.debug?.("[LifecycleController] clearing leave timer: forward mode started");
 			}),
-			this.bus.subscribe(this.playerId, BUS_EVENT.forwardModeEnd, () => {
-				if (!this.leaveOnEmpty || this.isPlaying || this.isForward()) return;
-				const queue = this.bus.querySync(this.playerId, PLAYER_QUERY.queue) ?? [];
-				if (queue.length === 0) {
-					this.scheduleLeave("queue-empty");
-				}
+			this.bus.subscribe(this.playerId, BUS_EVENT.forwardModeEnd, () => this.updateVoiceEmptyTimeout()),
+			this.bus.onOutput(BUS_OUTPUT.connectionConnected, (event) => {
+				if (event.playerId !== this.playerId) return;
+				this.clearLeaveTimeout();
+				this.watchVoiceChannel(event.channel);
 			}),
-			this.bus.subscribe(this.playerId, BUS_EVENT.queueChanged, (event) => {
-				// An empty queue is not equivalent to an idle player: the current
-				// track may still be playing after the queue has been consumed.
-				if (this.leaveOnEmpty && event.queue.length === 0) {
-					if (this.isPlaying || this.isForward()) {
-						this.clearLeaveTimeout();
-						this.debug?.(`[LifecycleController] keeping connection: queue-empty while playing or forwarding`);
-						return;
-					}
-					this.scheduleLeave("queue-empty");
-				} else if (event.queue.length > 0) this.clearLeaveTimeout();
+			this.bus.onOutput(BUS_OUTPUT.connectionConnecting, (event) => {
+				if (event.playerId !== this.playerId) return;
+				this.clearLeaveTimeout();
+				this.stopWatchingVoiceChannel();
 			}),
-			this.bus.onOutput(BUS_OUTPUT.connectionConnected, () => this.clearLeaveTimeout()),
-			this.bus.onOutput(BUS_OUTPUT.connectionConnecting, () => this.clearLeaveTimeout()),
+			this.bus.onOutput(BUS_OUTPUT.connectionDisconnected, (event) => {
+				if (event.playerId === this.playerId) this.stopWatchingVoiceChannel();
+			}),
 		);
+	}
+
+	private watchVoiceChannel(channel: any): void {
+		this.stopWatchingVoiceChannel();
+		if (!this.leaveOnEmpty && !this.pauseOnEmpty) return;
+		const client = channel?.guild?.client;
+		if (typeof client?.on !== "function") return;
+
+		this.voiceChannel = channel;
+		this.voiceStateClient = client;
+		this.voiceStateListener = (oldState, newState) => {
+			if (oldState?.guild?.id !== channel.guildId && newState?.guild?.id !== channel.guildId) return;
+			if (oldState?.channelId !== channel.id && newState?.channelId !== channel.id) return;
+			this.updateVoiceEmptyTimeout();
+		};
+		client.on("voiceStateUpdate", this.voiceStateListener);
+		this.updateVoiceEmptyTimeout();
+	}
+
+	private stopWatchingVoiceChannel(): void {
+		this.clearVoiceEmptyTimeout();
+		if (this.voiceStateClient && this.voiceStateListener) {
+			this.voiceStateClient.off?.("voiceStateUpdate", this.voiceStateListener);
+			this.voiceStateClient.removeListener?.("voiceStateUpdate", this.voiceStateListener);
+		}
+		this.voiceChannel = null;
+		this.voiceStateClient = null;
+		this.voiceStateListener = null;
+	}
+
+	private updateVoiceEmptyTimeout(): void {
+		const hasHuman = this.hasHumanVoiceMember();
+		if (hasHuman === null) return;
+		this.reconcilePauseOnEmpty();
+		if (hasHuman) {
+			this.clearVoiceEmptyTimeout();
+			return;
+		}
+		this.clearVoiceEmptyTimeout();
+		if (!this.leaveOnEmpty || this.leaveTimeout <= 0 || this.isForward()) return;
+		this.debug?.(`[LifecycleController] scheduling voice-empty leave in ${this.leaveTimeout}ms`);
+		this.voiceEmptyTimer = setTimeout(() => {
+			this.voiceEmptyTimer = null;
+			if (this.disposed || this.isForward()) return;
+			if (this.hasHumanVoiceMember() !== false) return;
+			void this.disconnect("leave-timeout");
+		}, this.leaveTimeout);
+	}
+
+	private hasHumanVoiceMember(): boolean | null {
+		const members = this.voiceChannel?.members;
+		if (!members || typeof members.values !== "function") return null;
+		return Array.from(members.values()).some((member: any) => !member.user?.bot);
+	}
+
+	private isPlaybackPaused(): boolean {
+		if (this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode) === PlaybackMode.REMOTE) {
+			return this.bus.querySync(this.playerId, PLAYER_QUERY.remotePaused) ?? false;
+		}
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.isPaused);
+	}
+
+	private isPlaybackActive(): boolean {
+		if (this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode) === PlaybackMode.REMOTE) {
+			return Boolean(this.bus.querySync(this.playerId, PLAYER_QUERY.currentTrack)) && !this.isPlaybackPaused();
+		}
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.isPlaying);
+	}
+
+	private reconcilePauseOnEmpty(): void {
+		if (!this.pauseOnEmpty) return;
+		this.pauseTransition = this.pauseTransition
+			.then(async () => {
+				if (this.disposed || this.isForward()) return;
+				const hasHuman = this.hasHumanVoiceMember();
+				if (hasHuman === null) return;
+
+				if (!hasHuman) {
+					if (this.autoPaused || !this.isPlaybackActive() || this.isPlaybackPaused()) return;
+					await this.bus.action(this.playerId, { type: PLAYER_ACTION.pause });
+					this.autoPaused = this.isPlaybackPaused();
+					return;
+				}
+
+				if (!this.autoPaused) return;
+				this.autoPaused = false;
+				if (this.isPlaybackPaused()) {
+					await this.bus.action(this.playerId, { type: PLAYER_ACTION.resume });
+				}
+			})
+			.catch((error) => this.debug?.("[LifecycleController] pauseOnEmpty action failed:", error));
+	}
+
+	private clearVoiceEmptyTimeout(): void {
+		if (!this.voiceEmptyTimer) return;
+		clearTimeout(this.voiceEmptyTimer);
+		this.voiceEmptyTimer = null;
 	}
 
 	private isForward(): boolean {
@@ -122,6 +221,7 @@ class LifecycleWorker {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.clearLeaveTimeout();
+		this.stopWatchingVoiceChannel();
 		for (const unsubscribe of this.unsubscribe.splice(0)) unsubscribe();
 	}
 

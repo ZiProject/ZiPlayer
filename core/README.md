@@ -68,7 +68,7 @@ Here is a minimal, production-ready Discord.js bot using ZiPlayer:
 import { Client, GatewayIntentBits } from "discord.js";
 import { PlayerManager } from "ziplayer";
 // Official plugins can be imported from @ziplayer/plugin
-import { YouTubePlugin, SpotifyPlugin } from "@ziplayer/plugin";
+import { YouTubePlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin, AttachmentsPlugin } from "@ziplayer/plugin";
 
 const client = new Client({
 	intents: [
@@ -81,7 +81,13 @@ const client = new Client({
 
 // Initialize the global PlayerManager
 const manager = new PlayerManager({
-	plugins: [new YouTubePlugin(), new SpotifyPlugin()],
+	plugins: [
+		new TTSPlugin({ defaultLang: "en" }),
+		new YouTubePlugin(),
+		new SoundCloudPlugin(),
+		new SpotifyPlugin(),
+		new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }), //25mb
+	],
 	autoCleanup: true,
 	enableSearchCache: true,
 });
@@ -382,6 +388,7 @@ interface PlayerOptions {
 	quality?: "low" | "medium" | "high"; // Stream quality preset
 	leaveOnEnd?: boolean; // Leave voice when queue ends (default: true)
 	leaveOnEmpty?: boolean; // Leave voice when voice channel is empty
+	pauseOnEmpty?: boolean; // Pause when voice channel is empty and resume when a user returns (default: false)
 	leaveTimeout?: number; // Inactivity timeout in ms before leave (default: 100000; 0 to disable)
 	selfDeaf?: boolean; // Join deafened (default: true)
 	selfMute?: boolean; // Join muted (default: false)

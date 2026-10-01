@@ -14,7 +14,7 @@ export interface ConnectionControllerOptions {
 }
 export interface LifecycleControllerOptions {
 	bus: Bus;
-	options: Pick<PlayerOptions, "leaveOnEnd" | "leaveOnEmpty" | "leaveTimeout">;
+	options: Pick<PlayerOptions, "leaveOnEnd" | "leaveOnEmpty" | "pauseOnEmpty" | "leaveTimeout">;
 	debug?: (...args: any[]) => void;
 }
 /** Per-player resources handed to the shared `PlaybackController` via `attach(playerId, options)`. */
