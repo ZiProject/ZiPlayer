@@ -140,42 +140,33 @@ client.login(process.env.DISCORD_TOKEN);
 
 ---
 
-## 🧱 Architecture Overview
 
-ZiPlayer separates high-level facade controls from low-level audio and state handling using an asynchronous message bus:
+## Singleton Access
 
-```
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                             PlayerManager                                        │
-│              (Process-wide lifecycle, pooling & broadcast)                       │
-└──────────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                              Player Bus                                          │
-│       (RPC Handlers, Synchronous Queries, Actions & Event Streams)               │
-├──────────────────────────────────────────────────────────────────────────────────┤
-│  • ConnectionController       • QueueController        • FilterController        │
-│  • PlaybackPlayController     • PlaybackStartController • PlaybackSkipController │
-│  • PlaybackSeekController     • TrackLoader / Preload  • AntiStuckController     │
-│  • TransitionController       • VolumeController       • ForwardController       │
-│  • SearchController           • LifecycleController    • PlayerEventBridge       │
-└──────────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                                 Player                                           │
-│                  (Ergonomic, per-guild object API)                               │
-│   player.play()  •  player.queue  •  player.filter  •  player.seek()             │
-└──────────────────────────────────────────────────────────────────────────────────┘
+ZiPlayer exposes a process-wide manager singleton. Create `PlayerManager` once during application startup so it registers the
+singleton, then use `getManager()` and `getPlayer(guildId)` from command handlers and other modules. Do not create a manager per
+guild/command or attach it to the Discord client just to share it.
+
+```ts
+import { PlayerManager, getManager, getPlayer } from "ziplayer";
+
+// Application bootstrap: configure plugins and options once.
+new PlayerManager({ plugins, autoCleanup: true });
+
+// In a command or another module:
+const manager = getManager(); // PlayerManager | null
+if (!manager) throw new Error("ZiPlayer has not been initialized");
+
+let player = getPlayer(guildId); // Player | undefined; lookup only, does not create
+if (!player) {
+	player = await manager.create(guildId, playerOptions);
+}
 ```
 
-- **`PlayerManager`**: Manages all guild instances, process-wide controller registration, health monitoring, and broadcast
-  controls.
-- **`Bus`**: Single message highway orchestrating queries, actions, RPCs, and event publishing without tight coupling between
-  components.
-- **`Controllers`**: Independent domain owners (Queue, AudioPlayer, FFmpeg filters, Preload, Transitions) holding isolated state.
-- **`Player`**: A clean facade for your bot code that delegates internally to the Bus.
+`getManager()` returns `null` until a manager has been constructed. `getPlayer(guildId)` returns `undefined` until that guild's
+player has been created; use `manager.create()` to create it. Keep the single manager initialization in the bot's startup path,
+and use the helpers wherever code needs to retrieve the shared instances.
+
 
 ---
 

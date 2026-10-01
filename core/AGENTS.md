@@ -11,6 +11,32 @@ The main public entry points are exported from [`src/index.ts`](src/index.ts). T
 [`src/structures/Player.ts`](src/structures/Player.ts), manager behavior is in
 [`src/structures/PlayerManager.ts`](src/structures/PlayerManager.ts), and public types are in [`src/types/`](src/types/).
 
+## Singleton Access (Recommended)
+
+ZiPlayer exposes a process-wide manager singleton. Create `PlayerManager` once during application startup so it registers the
+singleton, then use `getManager()` and `getPlayer(guildId)` from command handlers and other modules. Do not create a manager per
+guild/command or attach it to the Discord client just to share it.
+
+```ts
+import { PlayerManager, getManager, getPlayer } from "ziplayer";
+
+// Application bootstrap: configure plugins and options once.
+new PlayerManager({ plugins, autoCleanup: true });
+
+// In a command or another module:
+const manager = getManager(); // PlayerManager | null
+if (!manager) throw new Error("ZiPlayer has not been initialized");
+
+let player = getPlayer(guildId); // Player | undefined; lookup only, does not create
+if (!player) {
+	player = await manager.create(guildId, playerOptions);
+}
+```
+
+`getManager()` returns `null` until a manager has been constructed. `getPlayer(guildId)` returns `undefined` until that guild's
+player has been created; use `manager.create()` to create it. Keep the single manager initialization in the bot's startup path,
+and use the helpers wherever code needs to retrieve the shared instances.
+
 ## Quick Start
 
 ZiPlayer runs on Node.js 20.3 or newer and uses Discord voice. Playback from text queries requires one or more compatible source
