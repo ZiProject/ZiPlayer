@@ -3,273 +3,261 @@ import { createPlayerRequestId, type Bus } from "../structures/Bus";
 import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import { PlaybackMode, type LifecycleControllerOptions } from "../types";
 
-/** Per-player idle/leave policy worker, owned by the shared `LifecycleController` below. */
-class LifecycleWorker {
-	private readonly leaveOnEnd: boolean;
-	private readonly leaveOnEmpty: boolean;
-	private readonly pauseOnEmpty: boolean;
-	private readonly leaveTimeout: number;
-	private readonly debug?: (...args: any[]) => void;
-	private leaveTimer: NodeJS.Timeout | null = null;
-	private voiceEmptyTimer: NodeJS.Timeout | null = null;
-	private voiceChannel: any = null;
-	private voiceStateClient: any = null;
-	private voiceStateListener: ((oldState: any, newState: any) => void) | null = null;
-	private autoPaused = false;
-	private pauseTransition: Promise<void> = Promise.resolve();
-	private disposed = false;
-	private isPlaying = false;
-	private readonly unsubscribe: Array<() => void> = [];
-
-	constructor(
-		private readonly bus: Bus,
-		private readonly playerId: string,
-		options: LifecycleControllerOptions["options"],
-		debug?: (...args: any[]) => void,
-	) {
-		this.leaveOnEnd = options.leaveOnEnd ?? true;
-		this.leaveOnEmpty = options.leaveOnEmpty ?? true;
-		this.pauseOnEmpty = options.pauseOnEmpty ?? false;
-		this.leaveTimeout = Math.max(0, options.leaveTimeout ?? 100000);
-		this.debug = debug;
-
-		this.unsubscribe.push(
-			this.bus.subscribe(this.playerId, BUS_EVENT.trackStarted, () => {
-				this.isPlaying = true;
-				this.clearLeaveTimeout();
-			}),
-			this.bus.subscribe(this.playerId, BUS_EVENT.trackLoading, () => this.clearLeaveTimeout()),
-			this.bus.subscribe(this.playerId, BUS_EVENT.trackRequested, () => this.clearLeaveTimeout()),
-			this.bus.subscribe(this.playerId, BUS_EVENT.stateChanged, (_event) => {
-				const status = _event.newState.status;
-				this.isPlaying = status === AudioPlayerStatus.Playing;
-				if (status !== AudioPlayerStatus.Idle) this.clearLeaveTimeout();
-			}),
-			this.bus.subscribe(this.playerId, BUS_EVENT.trackEnd, () => {
-				this.isPlaying = false;
-			}),
-			this.bus.subscribe(this.playerId, BUS_EVENT.queueEnd, () => {
-				if (this.leaveOnEnd) this.scheduleLeave("queue-end");
-			}),
-			this.bus.subscribe(this.playerId, BUS_EVENT.forwardModeStart, () => {
-				this.clearLeaveTimeout();
-				this.clearVoiceEmptyTimeout();
-				this.debug?.("[LifecycleController] clearing leave timer: forward mode started");
-			}),
-			this.bus.subscribe(this.playerId, BUS_EVENT.forwardModeEnd, () => this.updateVoiceEmptyTimeout()),
-			this.bus.onOutput(BUS_OUTPUT.connectionConnected, (event) => {
-				if (event.playerId !== this.playerId) return;
-				this.clearLeaveTimeout();
-				this.watchVoiceChannel(event.channel);
-			}),
-			this.bus.onOutput(BUS_OUTPUT.connectionConnecting, (event) => {
-				if (event.playerId !== this.playerId) return;
-				this.clearLeaveTimeout();
-				this.stopWatchingVoiceChannel();
-			}),
-			this.bus.onOutput(BUS_OUTPUT.connectionDisconnected, (event) => {
-				if (event.playerId === this.playerId) this.stopWatchingVoiceChannel();
-			}),
-		);
-	}
-
-	private watchVoiceChannel(channel: any): void {
-		this.stopWatchingVoiceChannel();
-		if (!this.leaveOnEmpty && !this.pauseOnEmpty) return;
-		const client = channel?.guild?.client;
-		if (typeof client?.on !== "function") return;
-
-		this.voiceChannel = channel;
-		this.voiceStateClient = client;
-		this.voiceStateListener = (oldState, newState) => {
-			if (oldState?.guild?.id !== channel.guildId && newState?.guild?.id !== channel.guildId) return;
-			if (oldState?.channelId !== channel.id && newState?.channelId !== channel.id) return;
-			this.updateVoiceEmptyTimeout();
-		};
-		client.on("voiceStateUpdate", this.voiceStateListener);
-		this.updateVoiceEmptyTimeout();
-	}
-
-	private stopWatchingVoiceChannel(): void {
-		this.clearVoiceEmptyTimeout();
-		if (this.voiceStateClient && this.voiceStateListener) {
-			this.voiceStateClient.off?.("voiceStateUpdate", this.voiceStateListener);
-			this.voiceStateClient.removeListener?.("voiceStateUpdate", this.voiceStateListener);
-		}
-		this.voiceChannel = null;
-		this.voiceStateClient = null;
-		this.voiceStateListener = null;
-	}
-
-	private updateVoiceEmptyTimeout(): void {
-		const hasHuman = this.hasHumanVoiceMember();
-		if (hasHuman === null) return;
-		this.reconcilePauseOnEmpty();
-		if (hasHuman) {
-			this.clearVoiceEmptyTimeout();
-			return;
-		}
-		this.clearVoiceEmptyTimeout();
-		if (!this.leaveOnEmpty || this.leaveTimeout <= 0 || this.isForward()) return;
-		this.debug?.(`[LifecycleController] scheduling voice-empty leave in ${this.leaveTimeout}ms`);
-		this.voiceEmptyTimer = setTimeout(() => {
-			this.voiceEmptyTimer = null;
-			if (this.disposed || this.isForward()) return;
-			if (this.hasHumanVoiceMember() !== false) return;
-			void this.disconnect("leave-timeout");
-		}, this.leaveTimeout);
-	}
-
-	private hasHumanVoiceMember(): boolean | null {
-		const members = this.voiceChannel?.members;
-		if (!members || typeof members.values !== "function") return null;
-		return Array.from(members.values()).some((member: any) => !member.user?.bot);
-	}
-
-	private isPlaybackPaused(): boolean {
-		if (this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode) === PlaybackMode.REMOTE) {
-			return this.bus.querySync(this.playerId, PLAYER_QUERY.remotePaused) ?? false;
-		}
-		return this.bus.querySync(this.playerId, PLAYER_QUERY.isPaused);
-	}
-
-	private isPlaybackActive(): boolean {
-		if (this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode) === PlaybackMode.REMOTE) {
-			return Boolean(this.bus.querySync(this.playerId, PLAYER_QUERY.currentTrack)) && !this.isPlaybackPaused();
-		}
-		return this.bus.querySync(this.playerId, PLAYER_QUERY.isPlaying);
-	}
-
-	private reconcilePauseOnEmpty(): void {
-		if (!this.pauseOnEmpty) return;
-		this.pauseTransition = this.pauseTransition
-			.then(async () => {
-				if (this.disposed || this.isForward()) return;
-				const hasHuman = this.hasHumanVoiceMember();
-				if (hasHuman === null) return;
-
-				if (!hasHuman) {
-					if (this.autoPaused || !this.isPlaybackActive() || this.isPlaybackPaused()) return;
-					await this.bus.action(this.playerId, { type: PLAYER_ACTION.pause });
-					this.autoPaused = this.isPlaybackPaused();
-					return;
-				}
-
-				if (!this.autoPaused) return;
-				this.autoPaused = false;
-				if (this.isPlaybackPaused()) {
-					await this.bus.action(this.playerId, { type: PLAYER_ACTION.resume });
-				}
-			})
-			.catch((error) => this.debug?.("[LifecycleController] pauseOnEmpty action failed:", error));
-	}
-
-	private clearVoiceEmptyTimeout(): void {
-		if (!this.voiceEmptyTimer) return;
-		clearTimeout(this.voiceEmptyTimer);
-		this.voiceEmptyTimer = null;
-	}
-
-	private isForward(): boolean {
-		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode) === PlaybackMode.FORWARD;
-	}
-
-	scheduleLeave(reason: "queue-end" | "queue-empty" | "track-end" | "manual" = "manual"): void {
-		if (this.disposed) return;
-		this.clearLeaveTimeout();
-		if (this.leaveTimeout <= 0) {
-			this.debug?.(`[LifecycleController] leaveTimeout is 0 (disabled), not scheduling leave (${reason})`);
-			return;
-		}
-		if (this.isForward()) {
-			this.debug?.(`[LifecycleController] ignoring leave (${reason}): forward mode`);
-			return;
-		}
-		if (this.isPlaying) {
-			this.debug?.(`[LifecycleController] ignoring leave (${reason}) while playback is active`);
-			return;
-		}
-		this.debug?.(`[LifecycleController] scheduling leave in ${this.leaveTimeout}ms (${reason})`);
-		this.leaveTimer = setTimeout(() => {
-			this.leaveTimer = null;
-			if (this.isForward()) {
-				this.debug?.(`[LifecycleController] cancelling leave (${reason}): forward mode active`);
-				return;
-			}
-			const queue = this.bus.querySync(this.playerId, PLAYER_QUERY.queue) ?? [];
-			if (this.isPlaying || queue.length > 0) {
-				this.debug?.(`[LifecycleController] cancelling leave (${reason}): player is playing or has queued tracks`);
-				return;
-			}
-			void this.disconnect("leave-timeout");
-		}, this.leaveTimeout);
-	}
-
-	clearLeaveTimeout(): void {
-		if (!this.leaveTimer) return;
-		clearTimeout(this.leaveTimer);
-		this.leaveTimer = null;
-	}
-
-	async leave(reason = "manual"): Promise<void> {
-		if (this.disposed) return;
-		this.clearLeaveTimeout();
-		await this.disconnect(reason);
-	}
-
-	dispose(): void {
-		if (this.disposed) return;
-		this.disposed = true;
-		this.clearLeaveTimeout();
-		this.stopWatchingVoiceChannel();
-		for (const unsubscribe of this.unsubscribe.splice(0)) unsubscribe();
-	}
-
-	private async disconnect(reason: string): Promise<void> {
-		if (this.disposed) return;
-		try {
-			await this.bus.request(
-				this.playerId,
-				{ type: BUS_REQUEST.connectionDisconnect, requestId: createPlayerRequestId(), reason },
-				{ timeoutMs: Math.max(5000, this.leaveTimeout || 5000) },
-			);
-		} catch (error) {
-			this.debug?.(`[LifecycleController] disconnect failed:`, error);
-		}
-	}
+interface LifecycleState {
+	leaveOnEnd: boolean;
+	leaveOnEmpty: boolean;
+	pauseOnEmpty: boolean;
+	leaveTimeout: number;
+	debug?: (...args: any[]) => void;
+	leaveTimer: NodeJS.Timeout | null;
+	voiceEmptyTimer: NodeJS.Timeout | null;
+	voiceChannel: any;
+	voiceStateClient: any;
+	voiceStateListener: ((oldState: any, newState: any) => void) | null;
+	autoPaused: boolean;
+	pauseTransition: Promise<void>;
+	disposed: boolean;
+	isPlaying: boolean;
+	unsubscribe: Array<() => void>;
 }
 
-/** Shared, singleton controller: owns idle/leave policy and lifecycle cleanup outside
- *  the Player facade, keyed by playerId. */
+/** Shared lifecycle controller with timers and subscriptions partitioned by playerId. */
 export class LifecycleController {
-	private readonly workers = new Map<string, LifecycleWorker>();
+	public readonly states = new Map<string, LifecycleState>();
 
 	public constructor(private readonly bus: Bus) {
 		bus.registerRpc<{ reason?: "track-end" | "queue-empty" | "manual" }, void>(
 			PLAYER_RPC.lifecycleScheduleLeave,
-			({ reason }, ctx) => this.workers.get(ctx.playerId)?.scheduleLeave(reason),
+			({ reason }, ctx) => this.scheduleLeave(ctx.playerId, reason),
 		);
-		bus.registerRpc<void, void>(PLAYER_RPC.lifecycleClearLeaveTimeout, (_req, ctx) =>
-			this.workers.get(ctx.playerId)?.clearLeaveTimeout(),
-		);
+		bus.registerRpc<void, void>(PLAYER_RPC.lifecycleClearLeaveTimeout, (_req, ctx) => this.clearLeaveTimeout(ctx.playerId));
 	}
 
 	attach(playerId: string, options: LifecycleControllerOptions["options"], debug?: (...args: any[]) => void): void {
-		if (this.workers.has(playerId)) this.detach(playerId);
-		this.workers.set(playerId, new LifecycleWorker(this.bus, playerId, options, debug));
-	}
-	detach(playerId: string): void {
-		this.workers.get(playerId)?.dispose();
-		this.workers.delete(playerId);
+		this.detach(playerId);
+		const state: LifecycleState = {
+			leaveOnEnd: options.leaveOnEnd ?? true,
+			leaveOnEmpty: options.leaveOnEmpty ?? true,
+			pauseOnEmpty: options.pauseOnEmpty ?? false,
+			leaveTimeout: Math.max(0, options.leaveTimeout ?? 100000),
+			debug,
+			leaveTimer: null,
+			voiceEmptyTimer: null,
+			voiceChannel: null,
+			voiceStateClient: null,
+			voiceStateListener: null,
+			autoPaused: false,
+			pauseTransition: Promise.resolve(),
+			disposed: false,
+			isPlaying: false,
+			unsubscribe: [],
+		};
+		this.states.set(playerId, state);
+		state.unsubscribe.push(
+			this.bus.subscribe(playerId, BUS_EVENT.trackStarted, () => {
+				state.isPlaying = true;
+				this.clearLeaveTimeout(playerId);
+			}),
+			this.bus.subscribe(playerId, BUS_EVENT.trackLoading, () => this.clearLeaveTimeout(playerId)),
+			this.bus.subscribe(playerId, BUS_EVENT.trackRequested, () => this.clearLeaveTimeout(playerId)),
+			this.bus.subscribe(playerId, BUS_EVENT.stateChanged, (event) => {
+				state.isPlaying = event.newState.status === AudioPlayerStatus.Playing;
+				if (event.newState.status !== AudioPlayerStatus.Idle) this.clearLeaveTimeout(playerId);
+			}),
+			this.bus.subscribe(playerId, BUS_EVENT.trackEnd, () => {
+				state.isPlaying = false;
+			}),
+			this.bus.subscribe(playerId, BUS_EVENT.queueEnd, () => {
+				if (state.leaveOnEnd) this.scheduleLeave(playerId, "queue-end");
+			}),
+			this.bus.subscribe(playerId, BUS_EVENT.forwardModeStart, () => {
+				this.clearLeaveTimeout(playerId);
+				this.clearVoiceEmptyTimeout(state);
+				state.debug?.("[LifecycleController] clearing leave timer: forward mode started");
+			}),
+			this.bus.subscribe(playerId, BUS_EVENT.forwardModeEnd, () => this.updateVoiceEmptyTimeout(playerId, state)),
+			this.bus.onOutput(BUS_OUTPUT.connectionConnected, (event) => {
+				if (event.playerId !== playerId || this.states.get(playerId) !== state) return;
+				this.clearLeaveTimeout(playerId);
+				this.watchVoiceChannel(playerId, state, event.channel);
+			}),
+			this.bus.onOutput(BUS_OUTPUT.connectionConnecting, (event) => {
+				if (event.playerId !== playerId || this.states.get(playerId) !== state) return;
+				this.clearLeaveTimeout(playerId);
+				this.stopWatchingVoiceChannel(state);
+			}),
+			this.bus.onOutput(BUS_OUTPUT.connectionDisconnected, (event) => {
+				if (event.playerId === playerId && this.states.get(playerId) === state) this.stopWatchingVoiceChannel(state);
+			}),
+		);
 	}
 
-	public scheduleLeave(playerId: string, reason: "track-end" | "queue-empty" | "manual" = "manual"): void {
-		this.workers.get(playerId)?.scheduleLeave(reason);
+	detach(playerId: string): void {
+		const state = this.states.get(playerId);
+		if (!state) return;
+		this.states.delete(playerId);
+		state.disposed = true;
+		this.clearLeaveTimeout(playerId, state);
+		this.stopWatchingVoiceChannel(state);
+		for (const unsubscribe of state.unsubscribe.splice(0)) unsubscribe();
 	}
-	public clearLeaveTimeout(playerId: string): void {
-		this.workers.get(playerId)?.clearLeaveTimeout();
+
+	public scheduleLeave(playerId: string, reason: "track-end" | "queue-empty" | "manual" | "queue-end" = "manual"): void {
+		const state = this.states.get(playerId);
+		if (!state || state.disposed) return;
+		this.clearLeaveTimeout(playerId, state);
+		if (state.leaveTimeout <= 0) {
+			state.debug?.(`[LifecycleController] leaveTimeout is 0 (disabled), not scheduling leave (${reason})`);
+			return;
+		}
+		if (this.isForward(playerId)) {
+			state.debug?.(`[LifecycleController] ignoring leave (${reason}): forward mode`);
+			return;
+		}
+		if (state.isPlaying) {
+			state.debug?.(`[LifecycleController] ignoring leave (${reason}) while playback is active`);
+			return;
+		}
+		state.debug?.(`[LifecycleController] scheduling leave in ${state.leaveTimeout}ms (${reason})`);
+		state.leaveTimer = setTimeout(() => {
+			state.leaveTimer = null;
+			if (this.states.get(playerId) !== state) return;
+			if (this.isForward(playerId)) {
+				state.debug?.(`[LifecycleController] cancelling leave (${reason}): forward mode active`);
+				return;
+			}
+			const queue = this.bus.querySync(playerId, PLAYER_QUERY.queue) ?? [];
+			if (state.isPlaying || queue.length > 0) {
+				state.debug?.(`[LifecycleController] cancelling leave (${reason}): player is playing or has queued tracks`);
+				return;
+			}
+			void this.disconnect(playerId, state, "leave-timeout");
+		}, state.leaveTimeout);
 	}
+
+	public clearLeaveTimeout(playerId: string, state = this.states.get(playerId)): void {
+		if (!state?.leaveTimer) return;
+		clearTimeout(state.leaveTimer);
+		state.leaveTimer = null;
+	}
+
 	public async leave(playerId: string, reason = "manual"): Promise<void> {
-		await this.workers.get(playerId)?.leave(reason);
+		const state = this.states.get(playerId);
+		if (!state || state.disposed) return;
+		this.clearLeaveTimeout(playerId, state);
+		await this.disconnect(playerId, state, reason);
+	}
+
+	private watchVoiceChannel(playerId: string, state: LifecycleState, channel: any): void {
+		this.stopWatchingVoiceChannel(state);
+		if (!state.leaveOnEmpty && !state.pauseOnEmpty) return;
+		const client = channel?.guild?.client;
+		if (typeof client?.on !== "function") return;
+
+		state.voiceChannel = channel;
+		state.voiceStateClient = client;
+		state.voiceStateListener = (oldState, newState) => {
+			if (this.states.get(playerId) !== state) return;
+			if (oldState?.guild?.id !== channel.guildId && newState?.guild?.id !== channel.guildId) return;
+			if (oldState?.channelId !== channel.id && newState?.channelId !== channel.id) return;
+			this.updateVoiceEmptyTimeout(playerId, state);
+		};
+		client.on("voiceStateUpdate", state.voiceStateListener);
+		this.updateVoiceEmptyTimeout(playerId, state);
+	}
+
+	private stopWatchingVoiceChannel(state: LifecycleState): void {
+		this.clearVoiceEmptyTimeout(state);
+		if (state.voiceStateClient && state.voiceStateListener) {
+			state.voiceStateClient.off?.("voiceStateUpdate", state.voiceStateListener);
+			state.voiceStateClient.removeListener?.("voiceStateUpdate", state.voiceStateListener);
+		}
+		state.voiceChannel = null;
+		state.voiceStateClient = null;
+		state.voiceStateListener = null;
+	}
+
+	private updateVoiceEmptyTimeout(playerId: string, state: LifecycleState): void {
+		const hasHuman = this.hasHumanVoiceMember(state);
+		if (hasHuman === null) return;
+		this.reconcilePauseOnEmpty(playerId, state);
+		if (hasHuman) {
+			this.clearVoiceEmptyTimeout(state);
+			return;
+		}
+		this.clearVoiceEmptyTimeout(state);
+		if (!state.leaveOnEmpty || state.leaveTimeout <= 0 || this.isForward(playerId)) return;
+		state.debug?.(`[LifecycleController] scheduling voice-empty leave in ${state.leaveTimeout}ms`);
+		state.voiceEmptyTimer = setTimeout(() => {
+			state.voiceEmptyTimer = null;
+			if (this.states.get(playerId) !== state || this.isForward(playerId)) return;
+			if (this.hasHumanVoiceMember(state) !== false) return;
+			void this.disconnect(playerId, state, "leave-timeout");
+		}, state.leaveTimeout);
+	}
+
+	private hasHumanVoiceMember(state: LifecycleState): boolean | null {
+		const members = state.voiceChannel?.members;
+		if (!members || typeof members.values !== "function") return null;
+		return Array.from(members.values()).some((member: any) => !member.user?.bot);
+	}
+
+	private isPlaybackPaused(playerId: string): boolean {
+		if (this.bus.querySync(playerId, PLAYER_QUERY.playbackMode) === PlaybackMode.REMOTE) {
+			return this.bus.querySync(playerId, PLAYER_QUERY.remotePaused) ?? false;
+		}
+		return this.bus.querySync(playerId, PLAYER_QUERY.isPaused);
+	}
+
+	private isPlaybackActive(playerId: string): boolean {
+		if (this.bus.querySync(playerId, PLAYER_QUERY.playbackMode) === PlaybackMode.REMOTE) {
+			return Boolean(this.bus.querySync(playerId, PLAYER_QUERY.currentTrack)) && !this.isPlaybackPaused(playerId);
+		}
+		return this.bus.querySync(playerId, PLAYER_QUERY.isPlaying);
+	}
+
+	private reconcilePauseOnEmpty(playerId: string, state: LifecycleState): void {
+		if (!state.pauseOnEmpty) return;
+		state.pauseTransition = state.pauseTransition
+			.then(async () => {
+				if (this.states.get(playerId) !== state || this.isForward(playerId)) return;
+				const hasHuman = this.hasHumanVoiceMember(state);
+				if (hasHuman === null) return;
+
+				if (!hasHuman) {
+					if (state.autoPaused || !this.isPlaybackActive(playerId) || this.isPlaybackPaused(playerId)) return;
+					await this.bus.action(playerId, { type: PLAYER_ACTION.pause });
+					state.autoPaused = this.isPlaybackPaused(playerId);
+					return;
+				}
+
+				if (!state.autoPaused) return;
+				state.autoPaused = false;
+				if (this.isPlaybackPaused(playerId)) await this.bus.action(playerId, { type: PLAYER_ACTION.resume });
+			})
+			.catch((error) => state.debug?.("[LifecycleController] pauseOnEmpty action failed:", error));
+	}
+
+	private clearVoiceEmptyTimeout(state: LifecycleState): void {
+		if (!state.voiceEmptyTimer) return;
+		clearTimeout(state.voiceEmptyTimer);
+		state.voiceEmptyTimer = null;
+	}
+
+	private isForward(playerId: string): boolean {
+		return this.bus.querySync(playerId, PLAYER_QUERY.playbackMode) === PlaybackMode.FORWARD;
+	}
+
+	private async disconnect(playerId: string, state: LifecycleState, reason: string): Promise<void> {
+		if (this.states.get(playerId) !== state || state.disposed) return;
+		try {
+			await this.bus.request(
+				playerId,
+				{ type: BUS_REQUEST.connectionDisconnect, requestId: createPlayerRequestId(), reason },
+				{ timeoutMs: Math.max(5000, state.leaveTimeout || 5000) },
+			);
+		} catch (error) {
+			state.debug?.(`[LifecycleController] disconnect failed:`, error);
+		}
 	}
 }

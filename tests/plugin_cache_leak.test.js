@@ -26,11 +26,9 @@ class FakePlugin extends BasePlugin {
 // (`plugin.add`/`plugin.remove`/`plugin.get`/`plugin.list`/`plugin.clear`/`plugin.stats` cover
 // registration and introspection, not stream fetching). A white-box test that needs to drive
 // `getStream()` directly and inspect the cache therefore has to reach the exact same instance
-// `player.addPlugin()` and the real playback pipeline use — `mgr.perPlayerResources.get(guildId)
-// .pluginManager` (see `PluginController.attach()`, which stores this same instance keyed by
-// playerId). `player.capabilities` does not exist on this API and never has; earlier revisions
-// of this test predate the current `PlayerManager`/`Player` surface.
-const pluginManagerOf = (mgr, guildId) => mgr.perPlayerResources.get(guildId).pluginManager;
+// `player.addPlugin()` and the playback pipeline use — `PluginController` owns this
+// instance keyed by playerId. `player.capabilities` is not part of the Player API.
+const pluginManagerOf = (mgr, guildId) => mgr.controllers.plugin.getManager(guildId);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test("PluginManager stream cache is released when the player is destroyed", async (t) => {
@@ -55,7 +53,43 @@ test("PluginManager stream cache is released when the player is destroyed", asyn
 	await sleep(50);
 
 	assert.equal(cachedStream.destroyed, true, "cached stream must be destroyed after player.destroy()");
-	assert.equal(mgr.perPlayerResources.has("leak-test-guild"), false, "perPlayerResources entry must be gone too");
+	assert.equal(mgr.controllers.plugin.has("leak-test-guild"), false, "PluginController must release its manager");
+});
+
+test("disposing one player's managers leaves another player's resources intact", async (t) => {
+	const mgr = new PlayerManager({ autoCleanup: false });
+	t.after(() => mgr.destroy());
+
+	const firstPlayer = await mgr.create("resource-isolation-a");
+	const secondPlayer = await mgr.create("resource-isolation-b");
+	firstPlayer.addPlugin(new FakePlugin());
+	secondPlayer.addPlugin(new FakePlugin());
+	const firstPluginManager = pluginManagerOf(mgr, "resource-isolation-a");
+	const secondPluginManager = pluginManagerOf(mgr, "resource-isolation-b");
+	const firstStream = (
+		await firstPluginManager.getStream({
+			id: "first",
+			title: "First",
+			url: "fake:first",
+			source: "fake",
+		})
+	).stream;
+	const secondStream = (
+		await secondPluginManager.getStream({
+			id: "second",
+			title: "Second",
+			url: "fake:second",
+			source: "fake",
+		})
+	).stream;
+
+	await mgr.destroy("resource-isolation-a");
+
+	assert.equal(firstStream.destroyed, true);
+	assert.equal(secondStream.destroyed, false);
+	assert.equal(mgr.controllers.plugin.getManager("resource-isolation-a"), undefined);
+	assert.equal(mgr.controllers.plugin.getManager("resource-isolation-b"), secondPluginManager);
+	assert.equal(mgr.controllers.stream.has("resource-isolation-b"), true);
 });
 
 test("diagnostic: list active handles after destroy", async (t) => {
@@ -110,7 +144,7 @@ test("plugins and stream cache are cleared when the player is destroyed", async 
 	await sleep(20);
 
 	// The manager instance itself (captured above, before destroy() removed it from
-	// perPlayerResources) is what destroy() actually clears in place — verify on that same
+	// PluginController) is what destroy() actually clears in place — verify on that same
 	// reference, not a fresh (now-empty) lookup.
 	const statsAfter = pluginManager.getStats();
 	assert.ok(statsBefore.streamCacheSize >= 1, "sanity: something was cached before destroy");

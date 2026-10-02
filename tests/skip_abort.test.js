@@ -129,7 +129,6 @@ test("Skip aborted before execution returns false and preserves active state and
 	const abortController = new AbortController();
 	abortController.abort();
 
-	const worker = harness.orchestrator.workers?.get?.(harness.playerId);
 	const result = await harness.player.skip({ signal: abortController.signal });
 	assert.equal(result, false, "Pre-aborted skip should return false");
 

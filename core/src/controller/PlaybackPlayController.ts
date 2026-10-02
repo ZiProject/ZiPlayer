@@ -16,10 +16,9 @@ import { BUS_EVENT, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, PLAYER_ACTION } fr
  * Talks to sibling playback controllers only through Bus queries/actions —
  * never by holding a direct reference to them.
  *
- * Per-player worker — created by the shared `PlaybackOrchestrator` in `attach(playerId, ...)`
- * and discarded in `detach(playerId)`. Registers no RPC of its own: `play` is registered
- * exactly once, in `PlaybackOrchestrator`'s constructor, and routed to the right worker via
- * `ctx.playerId`.
+ * Per-player controller instance held by the shared `PlaybackOrchestrator` state for
+ * `playerId`. Registers no RPC of its own: `play` is registered exactly once, in the
+ * orchestrator's constructor, and routed by `ctx.playerId`.
  */
 export class PlaybackPlayController {
 	private readonly playerId: string;
@@ -39,7 +38,7 @@ export class PlaybackPlayController {
 	}
 
 	public dispose(): void {
-		// No module-level registration to release; kept for a uniform worker lifecycle API.
+		// No module-level registration to release; kept for a uniform per-player lifecycle API.
 	}
 
 	private currentSession(): PlaybackSession | null {

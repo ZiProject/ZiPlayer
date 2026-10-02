@@ -59,7 +59,7 @@ test("PlayerManager create/get/has/delete basics and plugin propagation", async 
 	assert.equal(deletedAgain, false);
 });
 
-test("PlayerManager.search uses internal player with plugins but not players map", async (t) => {
+test("PlayerManager.search uses manager plugins without creating a Player", async (t) => {
 	const mgr = new PlayerManager({ plugins: [new DummyPlugin()] });
 	t.after(() => mgr.destroy());
 
@@ -74,7 +74,7 @@ test("PlayerManager.search uses internal player with plugins but not players map
 	assert.equal(mgr.has("__ziplayer_search__"), false);
 	assert.equal(mgr.get("__ziplayer_search__"), undefined);
 
-	// Second search reuses the same internal player
+	// The manager-level SearchController handles subsequent requests too.
 	const result2 = await mgr.search("dummy:another", "user-2");
 	assert.equal(result2.tracks.length, 1);
 	assert.equal(mgr.size, 0);

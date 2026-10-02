@@ -8,7 +8,6 @@ const {
 	createPlaybackOrchestrator,
 	PlaybackController,
 	StreamController,
-	StreamWorker,
 	TrackLoader,
 	Bus,
 	PlaybackSession,
@@ -17,7 +16,6 @@ const {
 	VolumeController,
 	TransitionController,
 	SaveController,
-	SaveWorker,
 } = require("../core/dist");
 
 const createContext = () => ({
@@ -216,20 +214,34 @@ test("PlaybackController aborts an in-flight fade during dispose", async () => {
 	assert.equal(volumeWrites, writesAtDispose);
 });
 
-test("SaveController aborts a pending resolver during dispose", async () => {
-	const controller = new SaveWorker({
+test("SaveController aborts a pending resolver when player state is detached", async () => {
+	const bus = new Bus();
+	const controller = new SaveController(bus);
+	const playerId = "save-abort-player";
+	let markResolverStarted;
+	const resolverStarted = new Promise((resolve) => {
+		markResolverStarted = resolve;
+	});
+	controller.attach(playerId, {
 		middlewareContext: {},
-		resolveStream: () => new Promise(() => {}),
+		resolveStream: () => {
+			markResolverStarted();
+			return new Promise(() => {});
+		},
 		resolveVideoStream: async () => null,
 	});
-	const pending = controller.save({ id: "save-track", title: "Save track" });
-	controller.dispose();
+	const pending = bus.requestRpc(playerId, "save", { track: { id: "save-track", title: "Save track" } });
+	await resolverStarted;
+	controller.detach(playerId);
 
 	await assert.rejects(pending, { name: "AbortError" });
 });
 
 test("StreamController.resolve follows fallback chain: stream -> url -> recreate -> throw", async () => {
-	const streamController = new StreamWorker({});
+	const bus = new Bus();
+	const streamController = new StreamController(bus);
+	const playerId = "stream-resolve-player";
+	streamController.attach(playerId);
 	const session = new PlaybackSession();
 	session.begin({ id: "t-1", title: "Track 1" });
 
@@ -237,6 +249,7 @@ test("StreamController.resolve follows fallback chain: stream -> url -> recreate
 	const directStream = new Readable({ read() {} });
 	let recreateCalled = false;
 	const resolvedDirect = await streamController.resolve(
+		playerId,
 		{
 			stream: directStream,
 			url: "https://example.com/audio.mp3",
@@ -255,6 +268,7 @@ test("StreamController.resolve follows fallback chain: stream -> url -> recreate
 	const path = require("path");
 	const testFilePath = path.resolve(__dirname, "audio_subscription_lifecycle.test.js");
 	const resolvedUrl = await streamController.resolve(
+		playerId,
 		{
 			url: testFilePath,
 			type: "arbitrary",
@@ -268,6 +282,7 @@ test("StreamController.resolve follows fallback chain: stream -> url -> recreate
 	let recreateUsed = false;
 	const recreatedStream = new Readable({ read() {} });
 	const resolvedRecreate = await streamController.resolve(
+		playerId,
 		{
 			url: "https://invalid-non-existent-host-12345.com/audio.mp3",
 			recreate: async () => {
@@ -284,7 +299,7 @@ test("StreamController.resolve follows fallback chain: stream -> url -> recreate
 	// 4. no stream, no url, no recreate -> throws
 	await assert.rejects(
 		async () => {
-			await streamController.resolve({ type: "arbitrary" }, session);
+			await streamController.resolve(playerId, { type: "arbitrary" }, session);
 		},
 		{
 			message: /StreamInfo does not contain a readable stream, url, or recreate factory/,
@@ -292,5 +307,5 @@ test("StreamController.resolve follows fallback chain: stream -> url -> recreate
 	);
 
 	session.destroy();
-	streamController.dispose();
+	streamController.detach(playerId);
 });

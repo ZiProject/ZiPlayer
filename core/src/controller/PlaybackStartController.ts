@@ -9,10 +9,9 @@ import type { PlaybackStartControllerOptions } from "../types";
 /**
  * Owns loading and starting one playback session through the Bus.
  *
- * Per-player worker — created by the shared `PlaybackOrchestrator` in `attach(playerId, ...)`
- * and discarded in `detach(playerId)`. Registers no RPC of its own: `playback.start` is
- * registered exactly once, in `PlaybackOrchestrator`'s constructor, and routed to the right
- * worker via `ctx.playerId`.
+ * Per-player controller instance held by the shared `PlaybackOrchestrator` state for
+ * `playerId`. Registers no RPC of its own: `playback.start` is registered once in the
+ * orchestrator and routed by `ctx.playerId`.
  */
 export class PlaybackStartController {
 	private readonly bus: Bus;
@@ -35,7 +34,7 @@ export class PlaybackStartController {
 	}
 
 	public dispose(): void {
-		// No module-level registration to release; kept for a uniform worker lifecycle API.
+		// No module-level registration to release; kept for a uniform per-player lifecycle API.
 	}
 
 	public async start(track: Track, parentContext: PlayerMessageContext, from: Track | null = null): Promise<void> {

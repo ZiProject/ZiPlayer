@@ -190,7 +190,7 @@ test("player.queue throws after the player is destroyed", async (t) => {
 	assert.equal(player.queueSize, 0);
 });
 
-test("PlaybackOrchestrator.dispose() resolves only after every worker finished its cleanup", async () => {
+test("PlaybackOrchestrator.dispose() resolves only after every player state finished cleanup", async () => {
 	const { Bus, PlaybackSessionController, createPlaybackOrchestrator } = require("../core/dist");
 	const bus = new Bus();
 	const sessionController = new PlaybackSessionController(bus);
@@ -199,8 +199,8 @@ test("PlaybackOrchestrator.dispose() resolves only after every worker finished i
 	for (const playerId of ["orch-a", "orch-b", "orch-c"]) {
 		sessionController.attach(playerId);
 		orchestrator.attach(playerId);
-		const worker = orchestrator.workers.get(playerId);
-		worker.trackEnd.dispose = async () => {
+		const state = orchestrator.states.get(playerId);
+		state.trackEnd.dispose = async () => {
 			await new Promise((resolve) => setTimeout(resolve, 30));
 			cleaned.push(playerId);
 		};
@@ -215,7 +215,7 @@ test("PlaybackOrchestrator.dispose() resolves only after every worker finished i
 	for (const playerId of ["orch-a", "orch-b", "orch-c"]) assert.equal(orchestrator.has(playerId), false);
 });
 
-test("PlaybackOrchestrator.dispose() cleans the other workers when one fails, then reports the failure", async () => {
+test("PlaybackOrchestrator.dispose() cleans other player states when one fails, then reports the failure", async () => {
 	const { Bus, PlaybackSessionController, createPlaybackOrchestrator } = require("../core/dist");
 	const bus = new Bus();
 	const sessionController = new PlaybackSessionController(bus);
@@ -225,10 +225,10 @@ test("PlaybackOrchestrator.dispose() cleans the other workers when one fails, th
 		sessionController.attach(playerId);
 		orchestrator.attach(playerId);
 	}
-	orchestrator.workers.get("fail").trackEnd.dispose = async () => {
+	orchestrator.states.get("fail").trackEnd.dispose = async () => {
 		throw new Error("boom");
 	};
-	orchestrator.workers.get("ok").trackEnd.dispose = async () => {
+	orchestrator.states.get("ok").trackEnd.dispose = async () => {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		cleaned.push("ok");
 	};
@@ -318,7 +318,9 @@ const assertNothingAttached = (mgr, playerId) => {
 	assert.equal(mgr.controllers.queue.states.has(playerId), false, "queue state released");
 	assert.equal(mgr.controllers.orchestrator.has(playerId), false, "orchestrator worker released");
 	assert.equal(mgr.controllers.connection.slots.has(playerId), false, "connection slot released");
-	assert.equal(mgr.perPlayerResources.has(playerId), false, "per-player resources released");
+	assert.equal(mgr.controllers.stream.has(playerId), false, "stream manager state released");
+	assert.equal(mgr.controllers.plugin.has(playerId), false, "plugin manager released");
+	assert.equal(mgr.controllers.extension.has(playerId), false, "extension manager released");
 };
 
 test("dispose() during create() rolls the creation back instead of leaking its controllers", async () => {

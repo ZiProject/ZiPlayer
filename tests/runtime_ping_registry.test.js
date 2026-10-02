@@ -61,5 +61,7 @@ test("a player that becomes untrackable (e.g. its facade is lost) is auto-detect
 
 	assert.equal(mgr.controllers.connection.slots.has("g-orphan"), false, "connection state must be cleaned up");
 	assert.equal(mgr.controllers.queue.states.has("g-orphan"), false, "queue state must be cleaned up");
-	assert.equal(mgr.perPlayerResources.has("g-orphan"), false, "perPlayerResources must be cleaned up");
+	assert.equal(mgr.controllers.stream.has("g-orphan"), false, "stream controller state must be cleaned up");
+	assert.equal(mgr.controllers.plugin.has("g-orphan"), false, "plugin manager must be cleaned up");
+	assert.equal(mgr.controllers.extension.has("g-orphan"), false, "extension manager must be cleaned up");
 });

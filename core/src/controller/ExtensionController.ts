@@ -70,7 +70,15 @@ export class ExtensionController {
 		this.managers.set(playerId, extensionManager);
 	}
 	detach(playerId: string): void {
+		const manager = this.managers.get(playerId);
 		this.managers.delete(playerId);
+		manager?.destroy();
+	}
+	public getManager(playerId: string): ExtensionManager | undefined {
+		return this.managers.get(playerId);
+	}
+	public has(playerId: string): boolean {
+		return this.managers.has(playerId);
 	}
 	private manager(playerId: string): ExtensionManager | undefined {
 		return this.managers.get(playerId);

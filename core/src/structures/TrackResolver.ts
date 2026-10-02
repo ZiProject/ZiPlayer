@@ -5,10 +5,10 @@ import { PLAYER_RPC } from "./BusContract";
 /**
  * Resolves a Track to a playable stream through the extension/plugin chain, without owning playback.
  *
- * Shared, singleton — created once in `ensureSharedControllers()`. Each player's
- * StreamManager / PluginManager / ExtensionManager live in an internal
- * `Map<playerId, TrackResolverOptions>` (opened by `attach(playerId, ...)`, released by
- * `detach(playerId)`). `"stream.resolve"` is registered exactly once, in the constructor,
+ * Shared, singleton — created once in `ensureSharedControllers()`. It keeps references to
+ * per-player managers owned by StreamController, PluginController and ExtensionController
+ * in an internal `Map<playerId, TrackResolverOptions>` (opened by `attach(playerId, ...)`,
+ * released by `detach(playerId)`). `"stream.resolve"` is registered once in the constructor
  * and routes by `ctx.playerId`.
  */
 export class TrackResolver {

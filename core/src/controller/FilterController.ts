@@ -11,9 +11,8 @@ import fs from "node:fs";
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 import type { FilterControllerOptions } from "../types";
 
-/** Per-player filter engine (ffmpeg pipeline + active filter list). Used both as the
- *  playback filter worker owned by the shared `FilterController` below, and standalone
- *  (bus-less) by SaveController for isolated export filtering. */
+/** Per-player filter engine (ffmpeg pipeline + active filter list). Used by the shared
+ *  `FilterController` and standalone (bus-less) by SaveController for isolated export filtering. */
 export class FilterEngine {
 	private activeFilters: AudioFilter[] = [];
 	private ffmpegOutput: Readable | null = null;

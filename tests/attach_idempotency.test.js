@@ -4,11 +4,10 @@ const assert = require("node:assert/strict");
 const { PlayerManager } = require("../core/dist");
 
 // `PlayerManager.attachPlayerControllers()` is called exactly once per playerId in normal
-// operation (guarded by `players.has(guildId)`/`searchPlayer` checks), but nothing previously
-// stopped a caller from invoking it twice for the same playerId without a `detach()` in between
-// (this is exactly what used to happen for the search player, see search_player_teardown.test.js).
+// operation (guarded by `players.has(guildId)` checks), but nothing previously stopped a caller
+// from invoking it twice for the same playerId without a `detach()` in between.
 // Before this fix, most controllers' `attach()` just overwrote the `Map` entry, leaking the old
-// worker's timers/subscriptions. Every `attach()` must now either (a) detach the stale entry
+// state's timers/subscriptions. Every `attach()` must now either (a) detach the stale entry
 // first, or (b) be a documented no-op when already attached. See core/todo.md "Phát hiện 3".
 const PLAYER_ID = "g-idempotency";
 
@@ -47,7 +46,7 @@ const SKIP_IF_ALREADY_ATTACHED = ["preload", "orchestrator"];
 
 const stateMapOf = (controllers, name) => {
 	const c = controllers[name];
-	return c.slots ?? c.states ?? c.workers ?? c.managers ?? c.engines;
+	return c.slots ?? c.states ?? c.managers ?? c.engines;
 };
 
 test("attach() re-run for an already-attached playerId detaches the stale entry first", async (t) => {
@@ -82,21 +81,21 @@ test("attach() re-run for an already-attached playerId does not orphan the old r
 	mgr.attachPlayerControllers(PLAYER_ID, {});
 
 	const oldConnectionSlot = mgr.controllers.connection.slots.get(PLAYER_ID);
-	const oldLifecycleWorker = mgr.controllers.lifecycle.workers.get(PLAYER_ID);
-	const oldStreamManager = mgr.perPlayerResources.get(PLAYER_ID).streamManager;
+	const oldLifecycleState = mgr.controllers.lifecycle.states.get(PLAYER_ID);
+	const oldStreamManager = mgr.controllers.stream.getStreamManager(PLAYER_ID);
 
 	mgr.attachPlayerControllers(PLAYER_ID, {});
 
 	assert.equal(oldConnectionSlot.disposed, true, "the old connection slot must be marked disposed, not just replaced");
-	assert.equal(oldLifecycleWorker.disposed, true, "the old lifecycle worker must be disposed, not just replaced");
+	assert.equal(oldLifecycleState.disposed, true, "the old lifecycle state must be disposed, not just replaced");
 	assert.equal(
 		oldStreamManager.cleanupTimer,
 		null,
 		"the old (unreachable) streamManager must be disposed, not orphaned with a live timer",
 	);
 	assert.notEqual(mgr.controllers.connection.slots.get(PLAYER_ID), oldConnectionSlot);
-	assert.notEqual(mgr.controllers.lifecycle.workers.get(PLAYER_ID), oldLifecycleWorker);
-	assert.notEqual(mgr.perPlayerResources.get(PLAYER_ID).streamManager, oldStreamManager);
+	assert.notEqual(mgr.controllers.lifecycle.states.get(PLAYER_ID), oldLifecycleState);
+	assert.notEqual(mgr.controllers.stream.getStreamManager(PLAYER_ID), oldStreamManager);
 });
 
 test("attach() re-run for an already-attached playerId does not duplicate PlayerEventBridge bus subscriptions", async (t) => {

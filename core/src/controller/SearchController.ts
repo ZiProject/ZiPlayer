@@ -5,114 +5,168 @@ import type { ExtensionManager } from "../extensions";
 import type { Bus } from "../structures/Bus";
 import { PLAYER_RPC } from "../structures/BusContract";
 
-interface SearchWorkerOptions {
+interface SearchControllerOptions {
 	pluginManager: PluginManager;
-	extensionManager: ExtensionManager;
+	extensionManager?: ExtensionManager;
 	debug: (...args: any[]) => void;
+	cacheEnabled?: boolean;
 }
 
-/** Per-player search orchestration + cache, owned by the shared `SearchController` below. */
-class SearchWorker {
-	private static readonly CACHE_TTL = 2 * 60 * 1000;
-	private readonly lifecycleAbort = new AbortController();
-	private disposed = false;
-	public readonly cache: LRUCache<string, SearchResult>;
+interface SearchState {
+	options: SearchControllerOptions;
+	lifecycleAbort: AbortController;
+	disposed: boolean;
+	cache: LRUCache<string, SearchResult>;
+}
 
-	public constructor(private readonly options: SearchWorkerOptions) {
-		this.cache = new LRUCache<string, SearchResult>({
-			max: 200,
-			ttl: SearchWorker.CACHE_TTL,
-			allowStale: false,
-			updateAgeOnGet: true,
-			dispose: (_value, key, reason) => options.debug(`[SearchCache] Disposed cache entry: ${key}, reason: ${reason}`),
-		});
+/** Shared search orchestration; player-specific options and cache are keyed by playerId. */
+export class SearchController {
+	private static readonly CACHE_TTL = 2 * 60 * 1000;
+	private readonly states = new Map<string, SearchState>();
+
+	public constructor(private readonly bus: Bus) {
+		bus.registerRpc<SearchRequest, SearchResult>(PLAYER_RPC.search, (request, context) =>
+			this.search(context.playerId, request.query, request.requestedBy ?? "Unknown", context.signal, request.plugin),
+		);
+		bus.registerRpc<{ query: string }, SearchResult | null>(PLAYER_RPC.searchCacheGet, ({ query }, ctx) =>
+			this.getCached(ctx.playerId, query),
+		);
+		bus.registerRpc<{ query: string; result: SearchResult }, void>(PLAYER_RPC.searchCacheSet, ({ query, result }, ctx) =>
+			this.cacheResult(ctx.playerId, query, result),
+		);
+		bus.registerRpc<void, void>(PLAYER_RPC.searchCacheClear, (_req, ctx) => this.clear(ctx.playerId));
+		bus.registerRpc<void, void>(PLAYER_RPC.searchCachePurge, (_req, ctx) => this.purgeStale(ctx.playerId));
+		bus.registerRpc<{ query: string }, SearchDebugResult>(PLAYER_RPC.searchDebug, ({ query }, ctx) =>
+			this.debug(ctx.playerId, query),
+		);
 	}
 
-	public async search(
+	attach(playerId: string, options: SearchControllerOptions): void {
+		this.detach(playerId);
+		const state: SearchState = {
+			options,
+			lifecycleAbort: new AbortController(),
+			disposed: false,
+			cache: new LRUCache<string, SearchResult>({
+				max: 200,
+				ttl: SearchController.CACHE_TTL,
+				allowStale: false,
+				updateAgeOnGet: true,
+				dispose: (_value, key, reason) => options.debug(`[SearchCache] Disposed cache entry: ${key}, reason: ${reason}`),
+			}),
+		};
+		this.states.set(playerId, state);
+	}
+
+	detach(playerId: string): void {
+		const state = this.states.get(playerId);
+		if (!state) return;
+		this.states.delete(playerId);
+		state.disposed = true;
+		state.lifecycleAbort.abort();
+		state.cache.clear();
+	}
+
+	public cache(playerId: string): LRUCache<string, SearchResult> | undefined {
+		return this.states.get(playerId)?.cache;
+	}
+
+	private async search(
+		playerId: string,
 		query: string,
 		requestedBy: string,
 		signal?: AbortSignal,
 		plugin?: string | string[],
 	): Promise<SearchResult> {
-		if (this.disposed) throw new Error("SearchController is disposed");
-		const operationSignal = signal ? AbortSignal.any([signal, this.lifecycleAbort.signal]) : this.lifecycleAbort.signal;
+		const state = this.states.get(playerId);
+		if (!state || state.disposed) throw new Error("SearchController is disposed");
+		const { options } = state;
+		const operationSignal = signal ? AbortSignal.any([signal, state.lifecycleAbort.signal]) : state.lifecycleAbort.signal;
 		this.throwIfAborted(operationSignal);
-		this.options.debug(`[SearchController] Search called with query: ${query}, requestedBy: ${requestedBy}, plugin: ${plugin}`);
+		options.debug(`[SearchController] Search called with query: ${query}, requestedBy: ${requestedBy}, plugin: ${plugin}`);
 		const cacheKey =
 			plugin !== undefined ?
 				`${this.key(query)}:${Array.isArray(plugin) ? plugin.slice().sort().join(",") : plugin}`
 			:	this.key(query);
-		const cached = this.cache.get(cacheKey);
+		const cached = options.cacheEnabled === false ? undefined : state.cache.get(cacheKey);
 		if (cached) {
-			this.options.debug(`[SearchCache] Using cached search result for: ${query}`);
+			options.debug(`[SearchCache] Using cached search result for: ${query}`);
 			return cached;
 		}
 
 		this.throwIfAborted(operationSignal);
 		if (plugin === undefined) {
-			const extensionResult = await this.options.extensionManager.provideSearch(query, requestedBy, operationSignal);
+			const extensionResult = await options.extensionManager?.provideSearch(query, requestedBy, operationSignal);
 			this.throwIfAborted(operationSignal);
 			if (extensionResult?.tracks?.length) {
-				this.options.debug(`[SearchController] Extension handled search for query: ${query}`);
-				this.cacheResult(cacheKey, extensionResult);
+				options.debug(`[SearchController] Extension handled search for query: ${query}`);
+				this.storeResult(state, cacheKey, extensionResult);
 				return extensionResult;
 			}
 		}
 
 		this.throwIfAborted(operationSignal);
-		const pluginResult = await this.options.pluginManager.search(
+		const pluginResult = await options.pluginManager.search(
 			query,
 			{ requestedBy, plugins: plugin, signal: operationSignal },
 			operationSignal,
 		);
 		this.throwIfAborted(operationSignal);
 		if (pluginResult?.tracks?.length) {
-			this.options.debug(
+			options.debug(
 				`[SearchController] Plugin search returned ${pluginResult.tracks.length} tracks (score: ${pluginResult.score?.score}%)`,
 			);
-			if (pluginResult.score) this.options.debug(`[SearchController] Search evaluation - ${pluginResult.score.reason}`);
-			this.cacheResult(cacheKey, pluginResult);
+			if (pluginResult.score) options.debug(`[SearchController] Search evaluation - ${pluginResult.score.reason}`);
+			this.storeResult(state, cacheKey, pluginResult);
 			return pluginResult;
 		}
 
-		this.options.debug(`[SearchController] No search results for query: ${query}`);
+		options.debug(`[SearchController] No search results for query: ${query}`);
 		throw new Error(`No results found for: ${query}`);
 	}
 
-	public clear(): void {
-		const size = this.cache.size;
-		this.cache.clear();
-		this.options.debug(`[SearchCache] Cleared all ${size} search cache entries`);
+	private clear(playerId: string): void {
+		const state = this.states.get(playerId);
+		if (!state) return;
+		const size = state.cache.size;
+		state.cache.clear();
+		state.options.debug(`[SearchCache] Cleared all ${size} search cache entries`);
 	}
 
-	public purgeStale(): void {
-		this.cache.purgeStale();
-		this.options.debug(`[SearchCache] Purged stale search cache entries`);
+	private purgeStale(playerId: string): void {
+		const state = this.states.get(playerId);
+		if (!state) return;
+		state.cache.purgeStale();
+		state.options.debug(`[SearchCache] Purged stale search cache entries`);
 	}
 
-	public debug(query: string): SearchDebugResult {
-		const isCached = this.cache.has(this.key(query));
-		const allPlugins = this.options.pluginManager.getAll();
+	private debug(playerId: string, query: string): SearchDebugResult {
+		const state = this.states.get(playerId);
+		if (!state || state.disposed) {
+			return { isCached: false, cacheAge: undefined, pluginCount: 0, ttsFiltered: false };
+		}
+		const isCached = state.options.cacheEnabled !== false && state.cache.has(this.key(query));
+		const allPlugins = state.options.pluginManager.getAll();
 		const plugins = allPlugins.filter(
 			(plugin) => !(plugin.name.toLowerCase() === "tts" && !query.toLowerCase().startsWith("tts:")),
 		);
 		return { isCached, cacheAge: undefined, pluginCount: plugins.length, ttsFiltered: allPlugins.length > plugins.length };
 	}
 
-	public getCached(query: string): SearchResult | null {
-		return this.cache.get(this.key(query)) ?? null;
+	private getCached(playerId: string, query: string): SearchResult | null {
+		const state = this.states.get(playerId);
+		return !state || state.options.cacheEnabled === false ? null : (state.cache.get(this.key(query)) ?? null);
 	}
 
-	public cacheResult(query: string, result: SearchResult): void {
-		this.cache.set(this.key(query), result);
-		this.options.debug(`[SearchCache] Cached search result for: ${query} (${result.tracks.length} tracks)`);
+	private cacheResult(playerId: string, query: string, result: SearchResult): void {
+		const state = this.states.get(playerId);
+		if (state) this.storeResult(state, query, result);
 	}
 
-	public dispose(): void {
-		if (this.disposed) return;
-		this.disposed = true;
-		this.lifecycleAbort.abort();
-		this.cache.clear();
+	private storeResult(state: SearchState, query: string, result: SearchResult): void {
+		if (state.disposed || state.options.cacheEnabled === false) return;
+		state.cache.set(this.key(query), result);
+		state.options.debug(`[SearchCache] Cached search result for: ${query} (${result.tracks.length} tracks)`);
 	}
 
 	private throwIfAborted(signal?: AbortSignal): void {
@@ -121,50 +175,5 @@ class SearchWorker {
 
 	private key(query: string): string {
 		return query.toLowerCase().trim();
-	}
-}
-
-/** Shared, singleton controller: owns search orchestration and its cache per player so
- *  Player remains a facade. */
-export class SearchController {
-	private readonly workers = new Map<string, SearchWorker>();
-
-	public constructor(bus: Bus) {
-		bus.registerRpc<SearchRequest, SearchResult>(PLAYER_RPC.search, (request, context) => {
-			const worker = this.workers.get(context.playerId);
-			if (!worker) throw new Error("SearchController is disposed");
-			return worker.search(request.query, request.requestedBy ?? "Unknown", context.signal, request.plugin);
-		});
-		bus.registerRpc<{ query: string }, SearchResult | null>(
-			PLAYER_RPC.searchCacheGet,
-			({ query }, ctx) => this.workers.get(ctx.playerId)?.getCached(query) ?? null,
-		);
-		bus.registerRpc<{ query: string; result: SearchResult }, void>(PLAYER_RPC.searchCacheSet, ({ query, result }, ctx) =>
-			this.workers.get(ctx.playerId)?.cacheResult(query, result),
-		);
-		bus.registerRpc<void, void>(PLAYER_RPC.searchCacheClear, (_req, ctx) => this.workers.get(ctx.playerId)?.clear());
-		bus.registerRpc<void, void>(PLAYER_RPC.searchCachePurge, (_req, ctx) => this.workers.get(ctx.playerId)?.purgeStale());
-		bus.registerRpc<{ query: string }, SearchDebugResult>(
-			PLAYER_RPC.searchDebug,
-			({ query }, ctx) =>
-				this.workers.get(ctx.playerId)?.debug(query) ?? {
-					isCached: false,
-					cacheAge: undefined,
-					pluginCount: 0,
-					ttsFiltered: false,
-				},
-		);
-	}
-
-	attach(playerId: string, options: SearchWorkerOptions): void {
-		if (this.workers.has(playerId)) this.detach(playerId);
-		this.workers.set(playerId, new SearchWorker(options));
-	}
-	detach(playerId: string): void {
-		this.workers.get(playerId)?.dispose();
-		this.workers.delete(playerId);
-	}
-	public cache(playerId: string): LRUCache<string, SearchResult> | undefined {
-		return this.workers.get(playerId)?.cache;
 	}
 }

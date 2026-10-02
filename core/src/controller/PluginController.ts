@@ -71,7 +71,15 @@ export class PluginController {
 		this.managers.set(playerId, pluginManager);
 	}
 	detach(playerId: string): void {
+		const manager = this.managers.get(playerId);
 		this.managers.delete(playerId);
+		manager?.destroy();
+	}
+	public getManager(playerId: string): PluginManager | undefined {
+		return this.managers.get(playerId);
+	}
+	public has(playerId: string): boolean {
+		return this.managers.has(playerId);
 	}
 	private manager(playerId: string): PluginManager | undefined {
 		return this.managers.get(playerId);

@@ -96,8 +96,8 @@ export function createSharedControllers(params: {
 }
 
 const GLOBAL_MANAGER_KEY: symbol = Symbol.for("ziplayer.PlayerManager.instance");
-/** Guild id for the internal search-only player (never stored in {@link PlayerManager.players}). */
-const SEARCH_PLAYER_GUILD_ID = "__ziplayer_search__";
+/** Bus routing id for manager-level search; never attached as a Player. */
+const MANAGER_SEARCH_ID = "__ziplayer_search__";
 
 export const getGlobalManager = (): PlayerManager | null => {
 	try {
@@ -244,10 +244,6 @@ export class PlayerManager extends EventEmitter {
 	public readonly bus: Bus;
 	private readonly controllers: SharedControllerSet;
 	private readonly monitoring: PlayerMonitoring;
-	private readonly perPlayerResources = new Map<
-		string,
-		{ streamManager: StreamManager; pluginManager: PluginManager; extensionManager: ExtensionManager }
-	>();
 	private disposed = false;
 	private pendingPlayers: Map<string, Promise<Player>> = new Map();
 	/** Teardowns still running; {@link dispose} waits for them before the Bus goes away. */
@@ -291,8 +287,7 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	private plugins: SourcePlugin[];
-	/** Reused player for {@link search}; not registered in {@link players}. */
-	private searchPlayer: Player | null = null;
+	private managerSearchPluginManager: PluginManager;
 	/**
 	 * Owns the "runtime.ping" heartbeat per attached playerId (own instance per manager, not the
 	 * process-wide {@link GlobalControllerRegistry.global}, so `dispose()` only ever clears this
@@ -322,15 +317,13 @@ export class PlayerManager extends EventEmitter {
 		this.bus = this.controllers.bus;
 
 		// Answers `GlobalControllerRegistry`'s heartbeat (see `controllerRegistry` above): a
-		// playerId is "alive" only while this manager still tracks it (or it's the live search
-		// player). Throwing (instead of resolving false) makes an unreachable/unknown playerId
+		// playerId is "alive" only while this manager still tracks it. Throwing (instead of
+		// resolving false) makes an unreachable/unknown playerId
 		// behave like a real timeout to `GlobalControllerRegistry.ping()`, which only treats a
 		// *rejected* request as unreachable.
 		this.bus.registerRpc<{ playerId?: string }, true>(CONTROLLER_RPC.runtimePing, (_request, ctx) => {
 			const id = ctx.playerId;
-			const alive =
-				this.players.get(id)?.destroyed === false ||
-				(id === SEARCH_PLAYER_GUILD_ID && this.searchPlayer !== null && !this.searchPlayer.destroyed);
+			const alive = this.players.get(id)?.destroyed === false;
 			if (!alive) throw new Error(`runtime.ping: player "${id}" is not tracked by this PlayerManager`);
 			return true;
 		});
@@ -375,6 +368,16 @@ export class PlayerManager extends EventEmitter {
 		this.autoCleanup = options.autoCleanup ?? true;
 		this.cleanupTimeout = options.cleanupInterval ?? 60000;
 		this.enableSearchCache = options.enableSearchCache ?? true;
+		this.managerSearchPluginManager = new PluginManager(null, this, {
+			extractorTimeout: this.extractorTimeout,
+			debug: (message, ...args) => this.debug(message, ...args),
+		});
+		for (const plugin of this.plugins) this.managerSearchPluginManager.register(plugin);
+		this.controllers.search?.attach(MANAGER_SEARCH_ID, {
+			pluginManager: this.managerSearchPluginManager,
+			debug: (message, ...args) => this.debug(message, ...args),
+			cacheEnabled: false,
+		});
 		this.trackMiddlewareFromOptions = normalizeTrackMiddleware(options.trackMiddleware);
 		this.debugLevel = options.debugLevel ?? "info";
 		// Setup auto cleanup
@@ -468,39 +471,8 @@ export class PlayerManager extends EventEmitter {
 		this.debug(`Auto-cleanup started with interval: ${this.cleanupTimeout}ms`);
 	}
 
-	/**
-	 * Lazy internal player used only for {@link search}.
-	 * Not added to {@link players} and does not forward manager events.
-	 */
 	private assertNotDisposed(): void {
 		if (this.disposed) throw new Error("PlayerManager is disposed");
-	}
-
-	private getSearchPlayer(): Player {
-		if (this.searchPlayer && !this.searchPlayer.destroyed) {
-			return this.searchPlayer;
-		}
-		this.assertNotDisposed();
-
-		this.attachPlayerControllers(SEARCH_PLAYER_GUILD_ID, { extractorTimeout: this.extractorTimeout });
-		let player: Player | null = null;
-		try {
-			player = new Player(SEARCH_PLAYER_GUILD_ID, this.bus, { extractorTimeout: this.extractorTimeout }, this);
-			this.perPlayerResources.get(SEARCH_PLAYER_GUILD_ID)?.extensionManager.attachPlayer(player);
-			this.controllers.eventBridge?.attachPlayer(SEARCH_PLAYER_GUILD_ID, player);
-			for (const plugin of this.plugins) {
-				player.addPlugin(plugin);
-			}
-		} catch (error) {
-			void this.runTeardown(SEARCH_PLAYER_GUILD_ID, player).catch((err) =>
-				this.debug(`Error rolling back search player creation:`, err),
-			);
-			throw error;
-		}
-
-		this.searchPlayer = player;
-		this.debug(`Created internal search player (not stored in players map)`);
-		return player;
 	}
 
 	private startStatsCollection(): void {
@@ -535,29 +507,6 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	private attachPlayerControllers(playerId: string, options?: PlayerOptions): void {
-		// Every controller's own attach() is now idempotent (detaches its own stale slot first),
-		// but streamManager/pluginManager/extensionManager below are owned here, not by a
-		// controller — nothing else would ever dispose the previous ones if this ran twice for
-		// the same playerId without a teardown in between (e.g. a caller that skips destroy()).
-		const stalePerPlayerResources = this.perPlayerResources.get(playerId);
-		if (stalePerPlayerResources) {
-			this.perPlayerResources.delete(playerId);
-			try {
-				stalePerPlayerResources.streamManager.dispose();
-			} catch (error) {
-				this.debug(`Error disposing stale streamManager for ${playerId}:`, error);
-			}
-			try {
-				stalePerPlayerResources.pluginManager.destroy();
-			} catch (error) {
-				this.debug(`Error disposing stale pluginManager for ${playerId}:`, error);
-			}
-			try {
-				stalePerPlayerResources.extensionManager.destroy();
-			} catch (error) {
-				this.debug(`Error disposing stale extensionManager for ${playerId}:`, error);
-			}
-		}
 		const channel = (tag: string, level: PlayerDebugLevel = "debug") => this.debugTracer.channel(tag, level);
 		const middleware: TrackMiddleware[] = [
 			...this.getTrackMiddlewareChain(),
@@ -585,17 +534,22 @@ export class PlayerManager extends EventEmitter {
 			autoDestroy: true,
 		});
 		streamManager.on("debug", channel("StreamManager"));
+		// Controllers own each manager as soon as it is created so partial attachment/
+		// creation failure and repeated attach calls still release all prior resources.
+		this.controllers.stream?.attach(playerId, streamManager);
 		const pluginManager = new PluginManager(null, this, {
 			extractorTimeout: options?.extractorTimeout,
 			debug: channel("Plugins"),
 		});
 		pluginManager.setStreamManager(streamManager);
+		this.controllers.plugin?.attach(playerId, pluginManager);
 		const extensionManager = new ExtensionManager(null as any, this, channel("Extensions"));
+		this.controllers.extension?.attach(playerId, extensionManager);
 		const isLowPerf = Boolean(options?.lowPerformance || options?.quality === "low");
 		this.controllers.preloadManager.attach(playerId, {
 			streamManager,
 			debug: channel("Preload"),
-			isDestroyed: () => this.disposed || !this.perPlayerResources.has(playerId),
+			isDestroyed: () => this.disposed || !this.controllers.stream?.has(playerId),
 			isEnabled: () =>
 				isLowPerf && (options?.preload?.autoDisableInLowPerformance ?? true) ? false : (options?.preload?.enabled ?? true),
 		});
@@ -612,13 +566,11 @@ export class PlayerManager extends EventEmitter {
 			streamManager,
 			pluginManager,
 			extensionManager,
-			isDestroyed: () => this.disposed || !this.perPlayerResources.has(playerId),
+			isDestroyed: () => this.disposed || !this.controllers.trackResolver.has(playerId),
 		});
 
 		this.controllers.lifecycle?.attach(playerId, options ?? {}, channel("LifecycleController"));
 		this.controllers.forward?.attach(playerId);
-		this.controllers.plugin?.attach(playerId, pluginManager);
-		this.controllers.extension?.attach(playerId, extensionManager);
 		this.controllers.tts?.attach(playerId, {
 			pluginManager,
 			extensionManager,
@@ -649,7 +601,6 @@ export class PlayerManager extends EventEmitter {
 			loudness: options?.loudnessNormalization,
 		});
 		this.controllers.antiStuck?.attach(playerId, { ...options?.antiStuck, debug: channel("AntiStuckController") });
-		this.controllers.stream?.attach(playerId, streamManager);
 		this.controllers.save?.attach(playerId, {
 			middleware: [async (track) => this.controllers.trackLoader.applyMiddleware(playerId, track)],
 			middlewareContext: { playerId, manager: this } as any,
@@ -675,20 +626,9 @@ export class PlayerManager extends EventEmitter {
 		});
 		this.controllers.eventBridge?.attach(playerId, this.debugTracer);
 
-		this.perPlayerResources.set(playerId, { streamManager, pluginManager, extensionManager });
-
-		// Ping-based cleanup: dispose callback mirrors requestDestroy's search-player special case
-		// so a player that stops answering "runtime.ping" (see the handler registered in the
-		// constructor) gets torn down through the exact same runTeardown path as an explicit
-		// destroy() — regardless of whether it's tracked in `this.players` or is the search player.
+		// A player that stops answering "runtime.ping" is torn down through the same path as an
+		// explicit destroy().
 		this.controllerRegistry.register(playerId, this.bus, this.controllers, () => {
-			if (playerId === SEARCH_PLAYER_GUILD_ID) {
-				const player = this.searchPlayer;
-				this.searchPlayer = null;
-				return this.runTeardown(playerId, player).catch((error) =>
-					this.debug(`Error disposing unreachable search player:`, error),
-				);
-			}
 			const player = this.players.get(playerId) ?? null;
 			this.players.delete(playerId);
 			return this.runTeardown(playerId, player).catch((error) =>
@@ -708,8 +648,8 @@ export class PlayerManager extends EventEmitter {
 		const guildId = this.resolveGuildId(guildOrId);
 		this.assertNotDisposed();
 
-		if (guildId === SEARCH_PLAYER_GUILD_ID) {
-			throw new Error(`Guild id "${SEARCH_PLAYER_GUILD_ID}" is reserved for internal search.`);
+		if (guildId === MANAGER_SEARCH_ID) {
+			throw new Error(`Guild id "${MANAGER_SEARCH_ID}" is reserved for manager search.`);
 		}
 
 		if (this.players.has(guildId)) {
@@ -738,7 +678,7 @@ export class PlayerManager extends EventEmitter {
 
 				const player = new Player(playerId, this.bus, options, this);
 				created = player;
-				this.perPlayerResources.get(playerId)?.extensionManager.attachPlayer(player);
+				this.controllers.extension?.getManager(playerId)?.attachPlayer(player);
 				this.controllers.eventBridge?.attachPlayer(playerId, player);
 
 				// Add all registered plugins
@@ -1174,27 +1114,17 @@ export class PlayerManager extends EventEmitter {
 	 * Called by {@link Player.destroy}: takes over the teardown so it always runs in the manager's
 	 * order. Returns false when this manager does not track `player` (nothing was started).
 	 *
-	 * The internal search player (see {@link getSearchPlayer}) is deliberately never stored in
-	 * {@link players} — but it still gets shared-controller state via `attachPlayerControllers()`
-	 * and must go through the exact same `runTeardown` path, or that state (23 controller/manager
-	 * slots) leaks forever whenever someone calls `.destroy()` on it directly. Handle it explicitly
-	 * instead of only checking `players`.
 	 *
 	 * @internal
 	 */
 	public requestDestroy(player: Player): boolean {
-		if (player === this.searchPlayer) {
-			this.searchPlayer = null;
-			void this.runTeardown(player.playerId, player).catch((error) => this.debug(`Error destroying search player:`, error));
-			return true;
-		}
 		if (this.players.get(player.playerId) !== player) return false;
 		void this.destroy(player.playerId).catch((error) => this.debug(`Error destroying player ${player.playerId}:`, error));
 		return true;
 	}
 
 	/**
-	 * The one teardown path for a player (destroy, delete, cleanup, dispose, search player):
+	 * The one teardown path for a player (destroy, delete, cleanup, dispose):
 	 *
 	 *   1. release forward links   (needs the forward/connection controllers still attached)
 	 *   2. Player.abortWorkflow()  (pending play()/actions)
@@ -1222,14 +1152,6 @@ export class PlayerManager extends EventEmitter {
 				}
 			}
 
-			const res = this.perPlayerResources.get(playerId);
-			if (res) {
-				this.perPlayerResources.delete(playerId);
-				res.streamManager.dispose();
-				res.pluginManager.destroy();
-				res.extensionManager.destroy();
-			}
-
 			await this.detachControllers(playerId);
 		} finally {
 			// Bus disposal is last, and must happen even if a detach failed.
@@ -1249,7 +1171,7 @@ export class PlayerManager extends EventEmitter {
 
 	/**
 	 * Detaches every shared controller from `playerId`. Order matters now that the bus is disposed
-	 * afterwards: the workers that react to bus events (orchestrator: TRACK_END/queueChanged,
+	 * afterwards: per-player bus subscriptions (orchestrator: TRACK_END/queueChanged,
 	 * lifecycle: queueChanged/...) go first so nothing reacts to the state being released below;
 	 * connection goes last (forward/TTS release their audio player through it).
 	 *
@@ -1365,10 +1287,6 @@ export class PlayerManager extends EventEmitter {
 		const playerEntries = [...this.players.entries()];
 		this.players.clear();
 
-		const searchPlayer = this.searchPlayer;
-		this.searchPlayer = null;
-		if (searchPlayer && !searchPlayer.destroyed) playerEntries.push([SEARCH_PLAYER_GUILD_ID, searchPlayer]);
-
 		for (const [playerId, player] of playerEntries) {
 			this.runTeardown(playerId, player).catch((err) => this.debug(`Error destroying player ${playerId}:`, err));
 		}
@@ -1376,6 +1294,8 @@ export class PlayerManager extends EventEmitter {
 		// running when the shared controllers and the Bus are disposed below.
 		await Promise.allSettled([...this.pendingTeardowns]);
 
+		this.controllers.search?.detach(MANAGER_SEARCH_ID);
+		this.managerSearchPluginManager.destroy();
 		this.searchCache.clear();
 		this.cache.clear();
 
@@ -1412,17 +1332,15 @@ export class PlayerManager extends EventEmitter {
 	}
 
 	/**
-	 * Search via an internal Player instance (all registered plugins) without
-	 * storing it in {@link players}.
-	 *
-	 * Uses the same search pipeline as {@link Player.search}:
-	 * extension hooks, plugin deduplication, scoring, and fallback handling.
+	 * Search through the shared SearchController without creating a Player or attaching
+	 * playback/voice controller state.
 	 *
 	 * @param {string} query
 	 * @param {string} requestedBy
 	 * @returns {Promise<SearchResult>}
 	 */
 	async search(query: string, requestedBy: string): Promise<SearchResult> {
+		this.assertNotDisposed();
 		this.debug(`Search called with query: ${query}, requestedBy: ${requestedBy}`);
 
 		const cached = this.getCachedSearch(query);
@@ -1431,7 +1349,7 @@ export class PlayerManager extends EventEmitter {
 		}
 
 		try {
-			const result = await this.getSearchPlayer().search(query, requestedBy);
+			const result = await this.bus.requestRpc(MANAGER_SEARCH_ID, PLAYER_RPC.search, { query, requestedBy });
 
 			this.debug(`Search returned ${result.tracks.length} tracks (score: ${result.score?.score ?? "unknown"}%)`);
 
@@ -1464,12 +1382,9 @@ export class PlayerManager extends EventEmitter {
 	 */
 	registerPlugin(plugin: SourcePlugin): void {
 		this.plugins.push(plugin);
+		this.managerSearchPluginManager.register(plugin);
 
 		this.debug(`Registered plugin: ${plugin.name}`);
-
-		if (this.searchPlayer && !this.searchPlayer.destroyed) {
-			this.searchPlayer.addPlugin(plugin);
-		}
 
 		for (const player of this.players.values()) {
 			player.addPlugin(plugin);
@@ -1487,10 +1402,7 @@ export class PlayerManager extends EventEmitter {
 		if (index === -1) return false;
 
 		this.plugins.splice(index, 1);
-
-		if (this.searchPlayer && !this.searchPlayer.destroyed) {
-			this.searchPlayer.removePlugin(name);
-		}
+		this.managerSearchPluginManager.unregister(name);
 
 		this.debug(`Unregistered plugin: ${name}`);
 

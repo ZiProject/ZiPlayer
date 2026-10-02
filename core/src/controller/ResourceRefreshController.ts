@@ -13,127 +13,15 @@ import {
 	traceBusSignal,
 } from "../structures/BusContract";
 
-/** Per-player resource-refresh workflow. Owned by the shared `ResourceRefreshController`
- *  below, one instance per active player, talking to the shared bus through a
- *  player-scoped `Bus` facade. */
-class ResourceRefreshWorker {
-	private readonly lifecycleAbort = new AbortController();
-	private refreshSequence = 0;
-	private refreshAbortController: AbortController | null = null;
-	private disposed = false;
-
-	constructor(
-		private readonly bus: Bus,
-		private readonly playerId: string,
-		private readonly debug?: (message: string) => void,
-	) {}
-
-	dispose(): void {
-		if (this.disposed) return;
-		this.disposed = true;
-		this.lifecycleAbort.abort();
-		this.refreshSequence++;
-		this.refreshAbortController?.abort();
-		this.refreshAbortController = null;
-	}
-
-	async refreshResource(position: number, rpcContext: BusRpcContext): Promise<PlaybackSessionSnapshot> {
-		const session = this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSessionInternal);
-		if (this.disposed || !session?.track || !session.isActive()) throw new Error("No active playback session");
-		const sessionId = session.id;
-		const refreshSequence = ++this.refreshSequence;
-		if (this.refreshAbortController) {
-			this.refreshAbortController.abort();
-			if (!this.disposed) this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackEndResourceRefresh, {});
-		}
-		const refreshAbortController = new AbortController();
-		this.refreshAbortController = refreshAbortController;
-		this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackBeginResourceRefresh, {});
-		const signal = AbortSignal.any([rpcContext.signal, refreshAbortController.signal, this.lifecycleAbort.signal]);
-		const isCurrentRefresh = () =>
-			!this.disposed &&
-			refreshSequence === this.refreshSequence &&
-			!signal.aborted &&
-			this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSessionInternal)?.owns(sessionId) === true;
-		try {
-			const info = await this.bus.requestRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>(
-				this.playerId,
-				PLAYER_RPC.streamResolve,
-				{ track: session.track, fresh: true },
-				{ signal },
-			);
-			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			if (!info?.stream && !info?.url && !info?.recreate) throw new Error("No stream available for resource refresh");
-			if (info.remote) throw new Error("Cannot refresh a remote playback resource");
-			await this.bus.action(this.playerId, { type: "FILTER_SET_SOURCE_TYPE", streamType: info.type ?? "arbitrary" }, { signal });
-			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			await this.bus.action(
-				this.playerId,
-				{ type: "FILTER_APPLY_AND_SEEK", streamInfo: info, position: Math.max(0, position) },
-				{ signal },
-			);
-			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			const processed = await this.bus.query(this.playerId, PLAYER_QUERY.filteredStream);
-			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			if (!processed) throw new Error("Playback resource controllers are unavailable");
-			const active = await this.bus.requestRpc<
-				{ streamInfo: StreamInfo; session: PlaybackSession },
-				import("../types").ActiveStream
-			>(this.playerId, CONTROLLER_RPC.streamReplace, { streamInfo: processed, session });
-			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			const resource = this.bus.requestRpcSync<
-				{ stream: import("stream").Readable; track: Track; inputType?: StreamType },
-				AudioResource
-			>(this.playerId, PLAYER_RPC.resourceCreate, { stream: active.stream, track: session.track, inputType: active.inputType });
-			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			session.setResource(resource);
-			session.setPlaybackOffset(Math.max(0, position));
-			this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackPlay, { resource, session });
-			session.markPlaying(Math.max(0, position));
-			this.bus.event(this.playerId, { type: BUS_EVENT.playbackStateChanged, session: session.snapshot() });
-			return session.snapshot();
-		} finally {
-			if (!this.disposed && isCurrentRefresh()) {
-				this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackEndResourceRefresh, {});
-				this.refreshAbortController = null;
-			}
-		}
-	}
-
-	async handleRefresh(event: Extract<PlayerInput, { type: typeof BUS_REQUEST.resourceRefresh }>): Promise<void> {
-		const { bus } = this;
-		this.debug?.(`[ResourceRefreshController] ${traceBusSignal(BUS_REQUEST.resourceRefresh)} guild=${this.playerId}`);
-		try {
-			const session = await bus.requestRpc(
-				this.playerId,
-				PLAYER_RPC.playbackRefreshResource,
-				{ position: event.position ?? 0 },
-				{ signal: this.lifecycleAbort.signal },
-			);
-			if (this.disposed) return;
-			this.debug?.(`[ResourceRefreshController] ${traceBusSignal(BUS_OUTPUT.resourceRefreshed)} guild=${this.playerId}`);
-			bus.emitOutput({ type: BUS_OUTPUT.resourceRefreshed, requestId: event.requestId, playerId: this.playerId, session });
-		} catch (error) {
-			if (this.disposed || this.lifecycleAbort.signal.aborted) return;
-			this.debug?.(
-				`[ResourceRefreshController] ${traceBusSignal(BUS_OUTPUT.resourceError)} guild=${this.playerId}: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-			bus.emitOutput({
-				type: BUS_OUTPUT.resourceError,
-				requestId: event.requestId,
-				playerId: this.playerId,
-				error: error instanceof Error ? error : new Error(String(error)),
-			});
-		}
-	}
+interface ResourceRefreshState {
+	lifecycleAbort: AbortController;
+	refreshSequence: number;
+	refreshAbortController: AbortController | null;
 }
 
-/** Shared, singleton controller: owns the resource-refresh workflow and bridges Player
- *  refresh requests for every player, keyed by playerId. */
+/** Shared resource-refresh controller with transient state isolated by playerId. */
 export class ResourceRefreshController {
-	private readonly workers = new Map<string, ResourceRefreshWorker>();
+	private readonly states = new Map<string, ResourceRefreshState>();
 
 	constructor(
 		private readonly bus: Bus,
@@ -142,22 +30,128 @@ export class ResourceRefreshController {
 		bus.registerRpc<{ position: number }, PlaybackSessionSnapshot>(
 			PLAYER_RPC.playbackRefreshResource,
 			({ position }, context) => {
-				const worker = this.workers.get(context.playerId);
-				if (!worker) throw new Error("No active playback session");
-				return worker.refreshResource(position, context);
+				if (!this.states.has(context.playerId)) throw new Error("No active playback session");
+				return this.refreshResource(context.playerId, position, context);
 			},
 		);
 		bus.onInput(BUS_REQUEST.resourceRefresh, (event) => {
-			void this.workers.get(event.playerId)?.handleRefresh(event);
+			void this.handleRefresh(event.playerId, event);
 		});
 	}
 
 	attach(playerId: string): void {
-		if (this.workers.has(playerId)) this.detach(playerId);
-		this.workers.set(playerId, new ResourceRefreshWorker(this.bus, playerId, this.debug));
+		this.detach(playerId);
+		this.states.set(playerId, {
+			lifecycleAbort: new AbortController(),
+			refreshSequence: 0,
+			refreshAbortController: null,
+		});
 	}
+
 	detach(playerId: string): void {
-		this.workers.get(playerId)?.dispose();
-		this.workers.delete(playerId);
+		const state = this.states.get(playerId);
+		if (!state) return;
+		this.states.delete(playerId);
+		state.lifecycleAbort.abort();
+		state.refreshSequence++;
+		state.refreshAbortController?.abort();
+		state.refreshAbortController = null;
+	}
+
+	private async refreshResource(playerId: string, position: number, rpcContext: BusRpcContext): Promise<PlaybackSessionSnapshot> {
+		const state = this.states.get(playerId);
+		const session = this.bus.querySync(playerId, PLAYER_QUERY.playbackSessionInternal);
+		if (!state || !session?.track || !session.isActive()) throw new Error("No active playback session");
+		const sessionId = session.id;
+		const refreshSequence = ++state.refreshSequence;
+		if (state.refreshAbortController) {
+			state.refreshAbortController.abort();
+			this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackEndResourceRefresh, {});
+		}
+		const refreshAbortController = new AbortController();
+		state.refreshAbortController = refreshAbortController;
+		this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackBeginResourceRefresh, {});
+		const signal = AbortSignal.any([rpcContext.signal, refreshAbortController.signal, state.lifecycleAbort.signal]);
+		const isCurrentRefresh = () =>
+			this.states.get(playerId) === state &&
+			refreshSequence === state.refreshSequence &&
+			!signal.aborted &&
+			this.bus.querySync(playerId, PLAYER_QUERY.playbackSessionInternal)?.owns(sessionId) === true;
+		try {
+			const info = await this.bus.requestRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>(
+				playerId,
+				PLAYER_RPC.streamResolve,
+				{ track: session.track, fresh: true },
+				{ signal },
+			);
+			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
+			if (!info?.stream && !info?.url && !info?.recreate) throw new Error("No stream available for resource refresh");
+			if (info.remote) throw new Error("Cannot refresh a remote playback resource");
+			await this.bus.action(playerId, { type: "FILTER_SET_SOURCE_TYPE", streamType: info.type ?? "arbitrary" }, { signal });
+			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
+			await this.bus.action(
+				playerId,
+				{ type: "FILTER_APPLY_AND_SEEK", streamInfo: info, position: Math.max(0, position) },
+				{ signal },
+			);
+			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
+			const processed = await this.bus.query(playerId, PLAYER_QUERY.filteredStream);
+			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
+			if (!processed) throw new Error("Playback resource controllers are unavailable");
+			const active = await this.bus.requestRpc<
+				{ streamInfo: StreamInfo; session: PlaybackSession },
+				import("../types").ActiveStream
+			>(playerId, CONTROLLER_RPC.streamReplace, { streamInfo: processed, session });
+			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
+			const resource = this.bus.requestRpcSync<
+				{ stream: import("stream").Readable; track: Track; inputType?: StreamType },
+				AudioResource
+			>(playerId, PLAYER_RPC.resourceCreate, { stream: active.stream, track: session.track, inputType: active.inputType });
+			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
+			session.setResource(resource);
+			session.setPlaybackOffset(Math.max(0, position));
+			this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackPlay, { resource, session });
+			session.markPlaying(Math.max(0, position));
+			this.bus.event(playerId, { type: BUS_EVENT.playbackStateChanged, session: session.snapshot() });
+			return session.snapshot();
+		} finally {
+			if (isCurrentRefresh()) {
+				this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackEndResourceRefresh, {});
+				state.refreshAbortController = null;
+			}
+		}
+	}
+
+	private async handleRefresh(
+		playerId: string,
+		event: Extract<PlayerInput, { type: typeof BUS_REQUEST.resourceRefresh }>,
+	): Promise<void> {
+		const state = this.states.get(playerId);
+		if (!state) return;
+		this.debug?.(`[ResourceRefreshController] ${traceBusSignal(BUS_REQUEST.resourceRefresh)} guild=${playerId}`);
+		try {
+			const session = await this.bus.requestRpc(
+				playerId,
+				PLAYER_RPC.playbackRefreshResource,
+				{ position: event.position ?? 0 },
+				{ signal: state.lifecycleAbort.signal },
+			);
+			if (this.states.get(playerId) !== state) return;
+			this.debug?.(`[ResourceRefreshController] ${traceBusSignal(BUS_OUTPUT.resourceRefreshed)} guild=${playerId}`);
+			this.bus.emitOutput({ type: BUS_OUTPUT.resourceRefreshed, requestId: event.requestId, playerId, session });
+		} catch (error) {
+			if (this.states.get(playerId) !== state || state.lifecycleAbort.signal.aborted) return;
+			this.debug?.(
+				`[ResourceRefreshController] ${traceBusSignal(BUS_OUTPUT.resourceError)} guild=${playerId}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+			this.bus.emitOutput({
+				type: BUS_OUTPUT.resourceError,
+				requestId: event.requestId,
+				playerId,
+				error: error instanceof Error ? error : new Error(String(error)),
+			});
+		}
 	}
 }
