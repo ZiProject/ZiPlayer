@@ -1,7 +1,5 @@
 import type { StreamInfo, Track, TrackMiddleware, TrackMiddlewareContext } from ".";
 import type { PlaybackSession } from "../structures/PlaybackSession";
-import type { PreloadManager } from "../structures/PreloadManager";
-import type { PlayerBus } from "../structures/PlayerBus";
 
 export interface TrackLoaderContext extends TrackMiddlewareContext {}
 export type TrackStreamResolver = (
@@ -19,14 +17,6 @@ export interface TrackAttemptQualityController {
 	get(): "high" | "low" | undefined;
 	set(quality: "high" | "low"): void;
 }
-export interface TrackLoadAttemptContext {
-	track: Track;
-	session: PlaybackSession;
-	retry: number;
-	qualityReduced: boolean;
-	usedPreload: boolean;
-	reason?: unknown;
-}
 export interface TrackRecoveryPolicy {
 	enabled?: boolean;
 	maxRetries?: number;
@@ -35,13 +25,12 @@ export interface TrackRecoveryPolicy {
 	reduceQualityOnRetry?: boolean;
 	controlledSkipThreshold?: number;
 }
+/** Per-player configuration handed to the shared `TrackLoader` via `attach(playerId, options)`. */
 export interface TrackLoaderOptions {
 	middleware?: TrackMiddleware[];
 	context: TrackLoaderContext;
 	resolvers?: TrackStreamResolver[];
-	preloadManager?: PreloadManager;
 	recovery?: TrackRecoveryPolicy;
 	qualityController?: TrackAttemptQualityController;
 	debug?: (message?: any, ...optionalParams: any[]) => void;
-	bus?: PlayerBus;
 }

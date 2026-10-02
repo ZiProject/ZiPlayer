@@ -1,4 +1,4 @@
-import type { PlayerEvent } from "../structures/PlayerBus";
+import type { PlayerEvent } from "../structures/Bus";
 import type { PlayerEventTraceInfo } from "../types";
 
 const sequenceByEvent = new WeakMap<object, number>();
@@ -89,5 +89,13 @@ function fingerprintEvent(event: PlayerEvent): string {
 		case "forwardModeStart":
 		case "forwardModeEnd":
 			return `${event.type}:${value.leader?.guildId}:${value.reason ?? ""}`;
+		case "queueAdd":
+			return `queueAdd:${value.track?.id}`;
+		case "queueAddList":
+			return `queueAddList:${(value.tracks ?? []).map((t: any) => t?.id).join(",")}`;
+		case "queueRemove":
+			return `queueRemove:${value.track?.id}:${value.index}`;
+		default:
+			return (event as any).type ?? "unknown";
 	}
 }

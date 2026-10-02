@@ -1,256 +1,308 @@
-# ZiPlayer Core Agent Guide
+# ZiPlayer Core: AI Usage Guide
 
-This file applies to work inside `core/`. Keep changes focused on the core package and do not edit generated output in
-`core/dist/` or dependencies in `node_modules/`.
+This guide helps AI assistants use the `ziplayer` package correctly and make focused changes in `core/`.
 
-## Package scope
+## Start With the Public API
 
-`core` is the TypeScript runtime for ZiPlayer. It owns player lifecycle, playback state, queue operations, stream resolution,
-plugins, extensions, and the internal player bus.
+For bot or application code, use the exported `PlayerManager` and `Player` API. Do not build normal user workflows directly on the
+Bus or controllers. Read the advanced sections only when a task requires changing `core/src/**` internals.
 
-Related packages live beside it:
+The main public entry points are exported from [`src/index.ts`](src/index.ts). The API implementation is in
+[`src/structures/Player.ts`](src/structures/Player.ts), manager behavior is in
+[`src/structures/PlayerManager.ts`](src/structures/PlayerManager.ts), and public types are in [`src/types/`](src/types/).
 
-- `plugins/`: source and stream providers
-- `extension/`: optional player extensions
-- `adapters/`: adapter interfaces and implementations
-- `infinity/`: Infinity source integration
-- `ytbexecplug/`: YouTube executable plugin
-- `tests/`: repository-level Node tests
+## Singleton Access (Recommended)
 
-## Source map
+ZiPlayer exposes a process-wide manager singleton. Create `PlayerManager` once during application startup so it registers the
+singleton, then use `getManager()` and `getPlayer(guildId)` from command handlers and other modules. Do not create a manager per
+guild/command or attach it to the Discord client just to share it.
 
-Start from the public API in `src/index.ts`, then follow the owning abstraction:
+```ts
+import { PlayerManager, getManager, getPlayer } from "ziplayer";
 
-| Area               | Location                                    | Responsibility                                           |
-| ------------------ | ------------------------------------------- | -------------------------------------------------------- |
-| Public player API  | `src/structures/Player.ts`                  | Per-guild controls and public getters                    |
-| Player lifecycle   | `src/structures/PlayerManager.ts`           | Create, find, destroy, and broadcast players             |
-| Internal bus       | `src/structures/PlayerBus.ts`               | RPC, synchronous queries, actions, and events            |
-| Runtime wiring     | `src/structures/PlayerRuntimeController.ts` | Registers controllers, plugins, extensions, and handlers |
-| Playback state     | `src/structures/PlaybackSession.ts`         | Active stream/session state and transitions              |
-| Queue behavior     | `src/controller/QueueController.ts`         | Queue, history, loop, autoplay, and queue queries        |
-| Search             | `src/controller/SearchController.ts`        | Search RPC, caching, and provider coordination           |
-| Plugin behavior    | `src/plugins/`                              | Provider ordering, fallback, cache, and stream lookup    |
-| Extension behavior | `src/extensions/`                           | Extension hooks and custom providers                     |
-| Shared contracts   | `src/types/`                                | Public and internal TypeScript types                     |
+// Application bootstrap: configure plugins and options once.
+new PlayerManager({ plugins, autoCleanup: true });
 
-## Control flow
+// In a command or another module:
+const manager = getManager(); // PlayerManager | null
+if (!manager) throw new Error("ZiPlayer has not been initialized");
 
-Use the closest owning controller instead of adding behavior to `Player` when possible.
+let player = getPlayer(guildId); // Player | undefined; lookup only, does not create
+if (!player) {
+	player = await manager.create(guildId, playerOptions);
+}
+```
 
-- Synchronous state reads use `player.bus.querySync(...)` and are exposed as getters on `Player`.
-- Async operations use `player.bus.requestRpc(...)`; the RPC handler is registered by a controller during runtime initialization.
-- Mutating playback actions go through `Player.action(...)` and `PlayerAction` so they remain ordered.
-- Search flows through `Player.search()` -> `SearchController` -> extensions/plugins, with cache and fallback layers.
-- Playback transitions must preserve the active `PlaybackSession` and its stream ownership. Check neighboring transition tests
-  before changing this path.
-- Bus events are published asynchronously; do not assume event listeners have completed when an RPC resolves unless the handler
-  explicitly awaits them.
+`getManager()` returns `null` until a manager has been constructed. `getPlayer(guildId)` returns `undefined` until that guild's
+player has been created; use `manager.create()` to create it. Keep the single manager initialization in the bot's startup path,
+and use the helpers wherever code needs to retrieve the shared instances.
 
-## Initialization and usage
+## Quick Start
 
-Create one `PlayerManager` for the application and provide source plugins and optional extensions at startup. A manager can own
-players for multiple guilds.
+ZiPlayer runs on Node.js 20.3 or newer and uses Discord voice. Playback from text queries requires one or more compatible source
+plugins. Install the plugin package separately and pass plugin instances to the manager.
 
 ```ts
 import { PlayerManager } from "ziplayer";
-import { YouTubePlugin, SoundCloudPlugin } from "@ziplayer/plugin";
+import { YouTubePlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin, AttachmentsPlugin } from "@ziplayer/plugin";
+import type { VoiceChannel } from "ziplayer";
 
 const manager = new PlayerManager({
-	plugins: [new YouTubePlugin(), new SoundCloudPlugin()],
-	extensions: [],
+	plugins: [
+		new TTSPlugin({ defaultLang: "en" }),
+		new YouTubePlugin(),
+		new SoundCloudPlugin(),
+		new SpotifyPlugin(),
+		new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }), //25mb
+	],
 	autoCleanup: true,
-	cleanupInterval: 60_000,
-	extractorTimeout: 10_000,
-	enableSearchCache: true,
 });
 
-const player = await manager.create(guildId, {
-	leaveOnEnd: true,
-	leaveOnEmpty: true,
-	leaveTimeout: 100_000,
-	volume: 100,
-	quality: "high",
-	selfDeaf: true,
-	selfMute: false,
-});
+async function playInGuild(guildId: string, voiceChannel: VoiceChannel, query: string, userId: string) {
+	const player = await manager.create(guildId, {
+		leaveOnEnd: true,
+		leaveOnEmpty: true,
+		volume: 80,
+		userdata: {
+			/*User store data*/
+		},
+	});
 
-await player.connect(voiceChannel);
-await player.play(query, userId);
+	if (!player.connection) await player.connect(voiceChannel);
 
-player.pause();
-player.resume();
-await player.seek(30_000);
-player.skip();
-player.stop();
+	const result = await player.play(query, { requestedBy: userId });
+	if (!result) {
+		console.error("The query could not be played");
+	}
+	return player;
+}
 
-player.destroy();
-manager.destroy();
-```
-
-`PlayerManager.default(options?)` is available for a default/global player. Prefer an explicit manager in application code so
-plugins, extensions, cleanup, and event ownership remain clear.
-
-## PlayerManager API
-
-The manager is an `EventEmitter` with typed events. The most common public surface is:
-
-| Prototype                                                                   | Purpose                                                     |
-| --------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `new PlayerManager(options?)`                                               | Create the application-level manager                        |
-| `create(guildOrId, options?): Promise<Player>`                              | Create or retrieve a player for a guild                     |
-| `get(guildOrId): Player \| undefined`                                       | Get an existing player                                      |
-| `getPlayer(guildOrId): Player \| undefined`                                 | Alias for `get`                                             |
-| `getAll(): Player[]`                                                        | List managed players                                        |
-| `has(guildOrId): boolean`                                                   | Check whether a player exists                               |
-| `delete(guildOrId): boolean`                                                | Destroy and remove one player                               |
-| `deleteWhere(filter): number`                                               | Destroy players matching a filter                           |
-| `getStats(): PlayerStats`                                                   | Read manager/player statistics                              |
-| `broadcast(action, ...args): void`                                          | Send a synchronous player API call to all players           |
-| `broadcastAsync(action, ...args): Promise<PromiseSettledResult<unknown>[]>` | Send and await calls across players                         |
-| `search(query, requestedBy): Promise<SearchResult>`                         | Search through the internal search player                   |
-| `registerPlugin(plugin): void`                                              | Add a plugin to existing and future players                 |
-| `unregisterPlugin(name): boolean`                                           | Remove a registered plugin from manager search state        |
-| `getPlugins(): SourcePlugin[]`                                              | List registered plugins                                     |
-| `registerExtension(extension): void`                                        | Add an extension to existing players                        |
-| `clearSearchCache(): void`                                                  | Clear manager-level search cache                            |
-| `getConfig(): object`                                                       | Read effective manager configuration                        |
-| `destroy(): void`                                                           | Stop timers, destroy all players, and clear listeners/cache |
-
-Manager options include `plugins`, `extensions`, `extractorTimeout`, `autoCleanup`, `cleanupInterval`, `enableSearchCache`,
-`enableStatsCollection`, `trackMiddleware`, and `debugLevel`.
-
-## Player API
-
-`Player` is an `EventEmitter` for one guild. Common getters and operations are:
-
-| Group              | Public prototype                                                                                                                                                                           |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Identity/state     | `guildId`, `manager`, `options`, `connection`, `destroyed`, `playbackMode`, `userdata`                                                                                                     |
-| State getters      | `currentTrack`, `queueSize`, `isPlaying`, `isPaused`, `isLive`, `isIdle`, `isBuffering`, `volume`, `previousTrack`, `upcomingTracks`, `previousTracks`, `relatedTracks`, `currentResource` |
-| Voice/playback     | `connect(channel)`, `disconnect()`, `play(query, requestedBy?)`, `pause()`, `resume()`, `stop()`, `seek(position)`, `skip()`, `playNext()`, `previous()`                                   |
-| Queue/volume       | `loop(mode?)`, `autoPlay(enabled?)`, `setVolume(value)`, `shuffle()`, `clearQueue()`, `insert(query, index?, requestedBy?)`, `remove(index)`                                               |
-| Search/cache       | `search(query, requestedBy)`, `getCachedSearchResult(query)`, `cacheSearchResult(query, result)`, `clearSearchCache()`, `clearExpiredSearchCache()`, `debugSearchQuery(query)`             |
-| Plugins/extensions | `addPlugin(plugin)`, `removePlugin(name)`, `attachExtension(extension)`, `detachExtension(extension)`, `getExtensions()`                                                                   |
-| Forward mode       | `subscribeTo(leader, options?)`, `unsubscribeForward(reason?)`, `getForwardHealthStatus()`                                                                                                 |
-| Playback helpers   | `getTime()`, `getProgressBar(options?)`, `save(track, options?)`, `saveVideo(track, options?)`, `getStreamManagerStats()`                                                                  |
-| Lifecycle          | `scheduleLeave()`, `clearLeaveTimeout()`, `getSerializableState()`, `restoreState(state)`, `destroy()`, `dispose()`                                                                        |
-
-Use `player.action(...)`, `player.query(...)`, and `player.subscribe(...)` when a feature needs the typed bus rather than a
-convenience method. Methods such as `startTrack`, `loadFreshStream`, `promotePreloadToCurrent`, and `createResource` are runtime
-integration points; do not call them from application code unless the owning controller requires it.
-
-## Events
-
-Listen on the manager for events that include the originating player:
-
-```ts
 manager.on("trackStart", (player, track) => {
-	console.log(`${player.guildId}: ${track.title}`);
-});
-
-manager.on("playerError", (player, error, track) => {
-	console.error(player.guildId, track?.title, error);
-});
-
-manager.on("queueEnd", (player) => {
-	console.log(`Queue ended in ${player.guildId}`);
-});
-
-manager.on("playerDestroy", (player) => {
-	console.log(`Destroyed ${player.guildId}`);
+	console.log(`[${player.id}] Now playing: ${track.title}`);
 });
 ```
 
-Manager event names include `debug`, `willPlay`, `trackStart`, `trackEnd`, `queueEnd`, `playerError`, `connectionError`,
-`volumeChange`, `queueAdd`, `queueAddList`, `queueRemove`, `playerPause`, `playerResume`, `playerStop`, `playerDestroy`,
-`ttsStart`, `ttsEnd`, `filterApplied`, `filterRemoved`, `filtersCleared`, `lyricsCreate`, `lyricsChange`, `voiceCreate`, `stats`,
-`streamError`, `forwardModeStart`, `forwardModeEnd`, `seek`, and `trackStuck`.
+`VoiceChannel` above represents the guild voice channel object provided by Discord.js; it is not a ZiPlayer class to instantiate.
+`manager.create()` is asynchronous and returns the existing player if one is already registered for that guild. `connect()` and
+`play()` are asynchronous. Handle rejections at the bot's command boundary.
 
-Player events use the same names but omit the leading `player` argument. For example:
+## Everyday Player API
+
+### Playback
 
 ```ts
-player.on("trackStart", (track) => console.log(track.title));
-player.on("playerError", (error, track) => console.error(track?.title, error));
-player.on("volumeChange", (oldVolume, newVolume) => console.log(oldVolume, newVolume));
-player.once("playerDestroy", () => console.log("player destroyed"));
+await player.play("song title", { requestedBy: userId });
+await player.play("https://example.com/audio");
+await player.play(track); // A Track already resolved by your application
+await player.play(searchResult); // A SearchResult
+await player.play(null); // Resume playback from the existing queue when supported
+
+await player.pause();
+await player.resume();
+await player.skip();
+await player.skip(2); // Play the queued item at index 2
+await player.previous();
+await player.seek(45_000); // Position is milliseconds
+await player.stop();
+player.setVolume(80); // Valid range: 0 to 200
 ```
 
-For internal typed bus events, use the unsubscribe function returned by `player.subscribe(...)`:
+Most playback controls resolve to a boolean indicating whether the operation succeeded. `play()` resolves to a `PlayResult` or
+`false`. Check the result instead of assuming a search or playback request succeeded.
+
+### Queue
+
+`player.queue` provides synchronous inspection and queue operations. `queue.add()` accepts a resolved `Track`, not a search
+string. Use `player.insert()` when a query needs to be searched before insertion.
 
 ```ts
-const unsubscribe = player.subscribe("playbackStateChanged", (event) => {
-	console.log(event.session);
-});
+console.log(player.queue.size, player.queue.isEmpty);
+console.log(player.queue.currentTrack, player.queue.nextTrack);
 
-unsubscribe();
+player.queue.add(track);
+player.queue.addMultiple(tracks);
+await player.insert("another song", 0, userId); // Search and insert at the front
+
+player.queue.remove(0);
+player.queue.move(2, 0);
+player.queue.shuffle();
+player.queue.clear();
+player.queue.loop("queue"); // "off", "track", or "queue"
+player.queue.autoPlay(true);
 ```
 
-Typed bus event names include `initialized`, `ready`, `destroyed`, `TRACK_LOADING`, `TRACK_LOADED`, `TRACK_STARTED`,
-`TRACK_ERROR`, `TRACK_END`, `STREAM_ABORTED`, `playbackStateChanged`, `playbackSessionCreated`, `trackRequested`, `stateChanged`,
-`STUCK_DETECTED`, `RECOVERY_STARTED`, `RECOVERY_FAILED`, `preloadStateChanged`, `preloadPromoted`, `preloadCancelled`,
-`queueChanged`, and `volumeRequested`.
+`player.insert(query, index, requestedBy)` is asynchronous and returns a boolean. Queue methods operate on the player's shared
+queue state; do not replace or shadow that state in application code.
 
-## Development commands
+### State and Events
 
-Run commands from the repository root unless noted otherwise:
+Common state is available directly from the facade:
+
+```ts
+player.currentTrack;
+player.connection;
+player.isPlaying;
+player.isPaused;
+player.isIdle;
+player.volume;
+player.queue;
+```
+
+These are synchronous reads. Register manager-wide events with the typed `manager.on()` API:
+
+| Event                         | Listener arguments        |
+| ----------------------------- | ------------------------- |
+| `trackStart`                  | `(player, track)`         |
+| `trackEnd`                    | `(player, track)`         |
+| `queueEnd`                    | `(player)`                |
+| `playerError`                 | `(player, error, track?)` |
+| `connectionError`             | `(player, error)`         |
+| `queueAdd`                    | `(player, track)`         |
+| `queueAddList`                | `(player, tracks)`        |
+| `playerPause`, `playerResume` | `(player, track)`         |
+| `playerDestroy`               | `(player)`                |
+
+The first event argument is the affected `Player`, which is useful when one manager serves multiple guilds. See `ManagerEvents` in
+[`src/types/core.ts`](src/types/core.ts) for the complete event list and exact argument types.
+
+### Lifecycle and Configuration
+
+- Create one `PlayerManager` for the process and use `manager.create(guildId, playerOptions)` to get a guild player.
+- Connect with `await player.connect(voiceChannel)` before playback unless you pass a `voiceChannel` in `play()` options.
+- Call `player.destroy()` when the bot explicitly removes a player. Manager cleanup may also destroy idle players according to its
+  options.
+- Configure source plugins on `PlayerManagerOptions.plugins`; per-player options such as volume, voice behavior, filters, preload,
+  and crossfade belong in `PlayerOptions`.
+- The canonical option definitions are `PlayerManagerOptions` and `PlayerOptions` in [`src/types/core.ts`](src/types/core.ts).
+  Prefer those definitions over guessing option names or defaults.
+
+## Common Mistakes to Avoid
+
+- Do not treat `play()`, `connect()`, `insert()`, or playback controls as synchronous; await them and handle `false` or rejection.
+- Do not pass a raw search string to `player.queue.add()`. Use `player.play()` or `player.insert()` for queries.
+- Do not assume a string query works without a compatible search/stream plugin.
+- Do not store your own playback state when the corresponding `Player` getter or queue API already exposes it.
+- A player in `PlaybackMode.FORWARD` is a follower and cannot control playback. Unsubscribe it before attempting playback
+  mutations.
+- Avoid low-level exports (`Bus`, controller classes, action/query identifiers) in ordinary bot integration code; they are
+  advanced extension points, not the standard Player API.
+
+## Advanced Features: Internal Architecture
+
+Read this section when modifying the core implementation or adding a feature that crosses controller boundaries. For application
+integrations, the public API above is the intended contract.
+
+### Architecture and Ownership
+
+ZiPlayer separates the process-wide manager, shared controllers, Bus, and per-guild `Player` facade:
+
+1. **`PlayerManager`** owns one global `Bus`, creates shared controllers, maps player IDs to facades, and coordinates teardown.
+2. **`Bus`** connects controllers to each other and to `Player` through requests, outputs, actions, RPCs, queries, and events.
+3. **Shared controllers** are process-wide singletons. Per-player mutable state belongs in controller slots keyed by `playerId`;
+   controllers attach state on player creation and release it on destruction.
+4. **`Player`** is a lightweight facade. Playback, queue, audio, connection, and filter state are owned by controllers, not
+   duplicated in `Player.ts`.
+
+The Bus contract is defined in [`src/structures/BusContract.ts`](src/structures/BusContract.ts) and typed in
+[`src/types/bus.ts`](src/types/bus.ts).
+
+### Hard Invariants
+
+1. **Never edit generated output.** Edit TypeScript under `core/src/**`; `core/dist/` is generated by the build.
+2. **Keep `Player.ts` a facade.** Do not add guild-specific mutable playback, queue, audio, or filter state there.
+3. **Preserve synchronous query contracts.** `querySync()` and `requestRpcSync()` must return immediate, non-Promise values. An
+   asynchronous handler must use the asynchronous query/RPC path.
+4. **Serialize playback mutations.** `PLAY`, `PAUSE`, `RESUME`, `SEEK`, `STOP`, `SKIP`, and `SET_VOLUME` must pass through
+   `PlayerActionExecutor` (`this.action()` or `bus.action()`).
+5. **Enforce forward-mode guards.** Followers (`playbackMode === PlaybackMode.FORWARD`) must not mutate playback. Existing facade
+   methods return `false` or return early and log a debug message.
+6. **Recover from failed starts.** A failed track start must not leave playback idle indefinitely. Respect
+   `controlledSkipThreshold`; below it skip with `ignoreLoop = true`, and at the threshold emit `queueEnd` and schedule leave as
+   currently designed.
+
+### Bus Primitives
+
+| Primitive                    | Purpose                                                                             |
+| ---------------------------- | ----------------------------------------------------------------------------------- |
+| `BUS_REQUEST` / `BUS_OUTPUT` | Long-running workflows such as connection changes, preloading, and resource refresh |
+| `PLAYER_ACTION`              | Serialized, priority-queued mutations with an `AbortSignal`                         |
+| `PLAYER_RPC`                 | Player-facing request/response operations, synchronous or asynchronous              |
+| `CONTROLLER_RPC`             | Private controller-to-controller request/response                                   |
+| `PLAYER_QUERY`               | Player state inspection, synchronous or asynchronous                                |
+| `BUS_EVENT`                  | Typed internal events shared across controllers                                     |
+
+Use an existing contract before adding another. When adding a contract, update `BusContract.ts`, the corresponding types in
+[`src/types/bus.ts`](src/types/bus.ts), its registration/handler, and focused tests.
+
+### Controller Ownership
+
+| Controller                                 | Owns or coordinates                                                                |
+| ------------------------------------------ | ---------------------------------------------------------------------------------- |
+| `ConnectionController`                     | Discord voice connections, joining, reconnecting, and connection status            |
+| `QueueController`                          | Queue, history, current track, loop mode, autoplay, and queue events               |
+| `FilterController`                         | Filter engines, FFmpeg processes, and filter rollback                              |
+| `PlaybackController`                       | Audio players, audio resources, buffering/idle/playing state, fades and crossfades |
+| `PlaybackPlayController`                   | `play()` workflow, search, play hooks, and TTS query handling                      |
+| `PlaybackStartController`                  | Playback session startup, failure count, controlled skip, and `trackStarted`       |
+| `PlaybackSkipController`                   | Skip, transition lock, fadeout, and autoplay fallback                              |
+| `PlaybackSeekController`                   | Seek validation, timeouts, stream recreation, and pipe seeking                     |
+| `PlaybackPreparationController`            | Related-track selection, `willNext`, `willPlay`, and preload preparation           |
+| `TrackLoader` / `TrackResolverController`  | Stream resolution and recovery through plugins, extensions, and stream managers    |
+| `PreloadManager`                           | Upcoming-track preloads, promotion, and broken-stream cleanup                      |
+| `AntiStuckController`                      | Stalled buffering detection, recovery, and skip fallback                           |
+| `TransitionController`                     | Transition timing, genre-aware duration, and beat alignment                        |
+| `VolumeController`                         | Volume range/scaling and loudness normalization                                    |
+| `ForwardController`                        | Leader/follower stream mirroring and follower health                               |
+| `LifecycleController`                      | Inactivity timers and leave scheduling                                             |
+| `SearchController`                         | Extension/plugin search and LRU cache                                              |
+| `PluginController` / `ExtensionController` | Plugin registration and extension lifecycle hooks                                  |
+| `SaveController`                           | Track audio saving with filter and seek options                                    |
+| `PlayerEventBridge`                        | Mapping internal Bus events to public player/manager events                        |
+| `PlayerEventTrace`                         | Structured event telemetry and latency tracing                                     |
+
+### Playback and Recovery Flow
+
+1. `player.play()` rejects mutations in forward mode, creates a play generation and abort signal, then dispatches the play RPC.
+2. The play controller invokes extension hooks, searches through the search controller when given a string, and resolves a track.
+3. The start controller replaces the active session, emits loading, resolves a stream, starts the audio resource, emits
+   `trackStarted`, then asks preparation to compute the next track and preload.
+4. If startup fails, emit `trackError` and increment the consecutive-failure count. Below the configured threshold, skip with loop
+   ignored. At the threshold, reset the count, emit `queueEnd`, and schedule leave.
+
+Autoplay preparation uses the last played track as the related-track source when available, otherwise the active session track.
+Exclude the source track and tracks already queued. When autoplay is disabled, an empty queue means `willNext` is `null`; do not
+substitute a related track. When autoplay is enabled and the queue is empty, select from related tracks and emit `willPlay`.
+
+### Forward Mode
+
+- Subscription validates the follower's voice connection/player, stops independent follower playback, subscribes its voice
+  connection to the leader audio player, then sets `PlaybackMode.FORWARD` and emits `forwardModeStart`.
+- The leader's track and playback events are mirrored to followers.
+- Followers cannot call mutating playback methods (`play`, `playNext`, `pause`, `resume`, `stop`, `seek`, `skip`, `previous`,
+  `insert`, `clearQueue`, `setVolume`). Preserve this guard in facade and controller paths where needed.
+
+### Teardown Order
+
+Managed teardown must be idempotent and follow this order:
+
+1. `player.destroy()` delegates to `PlayerManager` when managed.
+2. The manager calls `player.abortWorkflow()` to prevent new work, abort pending play, and dispose the action executor.
+3. The manager detaches shared controller slots, including connection, playback, filters, queue, and forwarding state.
+4. `player.completeDestroy()` releases extension references, publishes the destroyed event, emits `playerDestroy`, and disposes
+   Bus subscriptions.
+
+Do not bypass manager teardown or dispose Bus subscriptions before controller detach.
+
+## Core Development Checks
+
+Follow the owning controller when changing behavior. Keep changes local, update relevant types/contracts when the public or Bus
+API changes, and add focused tests for the affected behavior.
 
 ```powershell
-# Build the core package
 npm run build --prefix core
-
-# Run the complete repository test suite after building core
+node --test tests/player_facade_migration.test.js
 npm test
-
-# Run focused playback tests
-node --test tests/playback_session_transition.test.js
-
-# Run focused plugin tests
-node --test tests/plugin_manager.test.js
 ```
 
-The core package also supports `npm run build` and `npm run dev` when the working directory is `core/`. Tests import build
-artifacts, so rebuild `core` after changing TypeScript source.
-
-## Implementation rules
-
-- Keep TypeScript strictness intact; do not weaken `core/tsconfig.json` to silence an error.
-- Preserve the public API and existing return types unless the task explicitly requires a breaking change.
-- Prefer an existing controller, manager, bus registration, cache, or utility over a new parallel abstraction.
-- Keep state ownership explicit. Queue state belongs to queue controllers; active stream/session state belongs to
-  `PlaybackSession` and its controllers.
-- Use `requestRpcSync` only for handlers that are synchronous. Use `requestRpc` for async work and preserve abort/timeout
-  behavior.
-- Treat plugin and extension calls as untrusted boundaries: handle failures according to the existing fallback and error
-  conventions.
-- Avoid network, Discord, FFmpeg, and plugin side effects in unit tests; use small fakes or stubs.
-- Do not edit `dist/`, source maps, package-lock metadata, or copied package files unless the task specifically concerns generated
-  artifacts.
-
-## Testing expectations
-
-For a narrow change, run the nearest focused test first, then the core build. For changes involving shared bus contracts, playback
-transitions, plugin ordering, or public API types, run the full repository suite after the focused check.
-
-When adding behavior, cover at least the relevant success path and one failure, cancellation, or cleanup path. For lifecycle
-changes, verify that sessions, streams, timers, listeners, and bus registrations are disposed exactly once.
-
-## Common pitfalls
-
-- `Player` mostly forwards calls. If it only exposes a method or getter, locate the registered bus handler before changing
-  behavior.
-- `querySync` selects synchronous state; putting async work behind it creates invalid return values and race conditions.
-- `requestRpc` timeout does not automatically cancel work already running in a plugin or extension. Preserve the existing
-  `AbortSignal` flow.
-- Search and stream caching exist at multiple layers. Check cache ownership and invalidation before adding another cache.
-- A passing TypeScript build does not prove playback correctness. Run the relevant transition or manager tests.
-- Root tests depend on generated `core/dist` files. A missing dist submodule or stale build is a setup issue, not necessarily a
-  source regression.
-
-## Change checklist
-
-1. Identify the public entry point and the controller that owns the behavior.
-2. Read the nearest test and the relevant type contract before editing.
-3. Make the smallest source change that preserves bus and lifecycle semantics.
-4. Run the focused test or build immediately, then broaden validation as needed.
-5. Report any unrelated baseline test or generated-artifact failure separately.
+The Node.js built-in test runner is used. Run the focused test for the changed slice first; run the full suite for broader
+changes. Build output in `core/dist/` is generated and must not be edited by hand.

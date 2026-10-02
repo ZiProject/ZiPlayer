@@ -2,6 +2,7 @@ import type { Player } from "../structures/Player";
 import type { PlayerManager } from "../structures/PlayerManager";
 import type {
 	ExtensionSearchRequest,
+	ExtensionMethod,
 	SearchResult,
 	StreamInfo,
 	Track,
@@ -15,6 +16,8 @@ import type {
 import { BaseExtension } from "./BaseExtension";
 
 export { BaseExtension } from "./BaseExtension";
+
+const invokableExtensionMethods = new Set<ExtensionMethod>(["beforePlay", "afterPlay", "provideSearch", "provideStream"]);
 
 interface ExtensionCacheEntry<T> {
 	data: T;
@@ -34,6 +37,7 @@ interface ExtensionMetadata {
 
 export class ExtensionManager {
 	private extensions: Map<string, BaseExtension>;
+	private disabledExtensions: Map<string, BaseExtension>;
 	private extensionMetadata: Map<string, ExtensionMetadata>;
 	private player: Player;
 	private manager: PlayerManager;
@@ -62,18 +66,13 @@ export class ExtensionManager {
 		this.player = player;
 		this.manager = manager;
 		this.extensions = new Map();
+		this.disabledExtensions = new Map();
 		this.extensionMetadata = new Map();
 		this.searchCache = new Map();
 		this.streamCache = new Map();
 		this.pendingSearches = new Map();
 		this.pendingStreams = new Map();
-		this.extensionContext = Object.freeze({
-			player,
-			manager,
-			playNext: () => (player as any).playNext?.(),
-			skip: () => (player as any).skip?.(),
-			emit: (event: string, ...args: any[]) => player.emit(event as any, ...args),
-		});
+		this.extensionContext = this.createExtensionContext(player, manager);
 		// Auto-cleanup caches periodically
 		this.cacheCleanupInterval = setInterval(() => this.cleanupCaches(), 5 * 60 * 1000);
 		if (this.cacheCleanupInterval.unref) {
@@ -89,11 +88,41 @@ export class ExtensionManager {
 		}
 	}
 
+	attachPlayer(player: Player): void {
+		this.player = player;
+		this.extensionContext = this.createExtensionContext(player, this.manager);
+	}
+
+	private createExtensionContext(
+		player?: Player | null,
+		manager?: PlayerManager | null,
+		extra?: Partial<ExtensionContext>,
+	): ExtensionContext {
+		const p = player ?? this.player;
+		const m = manager ?? this.manager;
+		const bus = extra?.bus ?? (p as any)?.bus ?? (m as any)?.bus;
+		const playerId = extra?.playerId ?? p?.playerId ?? "unknown";
+		return Object.freeze({
+			playerId,
+			bus,
+			signal: extra?.signal ?? new AbortController().signal,
+			track: extra?.track,
+			query: extra?.query,
+			requestedBy: extra?.requestedBy,
+			player: p ?? null,
+			manager: m ?? null,
+			playNext: () => (p as any)?.playNext?.(),
+			skip: () => (p as any)?.skip?.(),
+			emit: (event: string, ...args: any[]) => p?.emit(event as any, ...args),
+		});
+	}
+
 	register(extension: BaseExtension): void {
 		if (this.extensions.has(extension.name)) {
 			this.debug(`Extension ${extension.name} already registered, skipping`);
 			return;
 		}
+		this.disabledExtensions.delete(extension.name);
 
 		if (!extension.player) {
 			extension.player = this.player;
@@ -125,10 +154,25 @@ export class ExtensionManager {
 		if (result) {
 			this.extensionMetadata.delete(name);
 			this.invokeExtensionLifecycle(extension, "onDestroy");
-			if (extension.player === this.player) extension.player = null;
+			if (!this.player || extension.player === this.player) extension.player = null;
 			this.debug(`Unregistered extension: ${name}`);
 		}
 		return result;
+	}
+
+	enable(name: string): boolean {
+		const extension = this.disabledExtensions.get(name);
+		if (!extension) return this.extensions.has(name);
+		this.register(extension);
+		return this.extensions.has(name);
+	}
+
+	disable(name: string): boolean {
+		const extension = this.extensions.get(name);
+		if (!extension) return this.disabledExtensions.has(name);
+		const disabled = this.unregister(extension);
+		if (disabled) this.disabledExtensions.set(name, extension);
+		return disabled;
 	}
 
 	destroy(): void {
@@ -143,6 +187,7 @@ export class ExtensionManager {
 			this.unregister(extension);
 		}
 		this.extensions.clear();
+		this.disabledExtensions.clear();
 		this.extensionMetadata.clear();
 		this.clearAllCaches();
 		this.pendingSearches.clear();
@@ -154,6 +199,35 @@ export class ExtensionManager {
 
 	get(name: string): BaseExtension | undefined {
 		return this.extensions.get(name);
+	}
+
+	resolve(name: string): BaseExtension | undefined {
+		return this.get(name);
+	}
+
+	async invoke(name: string, method: ExtensionMethod, context: ExtensionContext, payload?: unknown): Promise<unknown> {
+		if (!invokableExtensionMethods.has(method)) return undefined;
+		const ext = this.get(name);
+		if (!ext) return undefined;
+		const fn = (ext as any)[method];
+		if (typeof fn !== "function") return undefined;
+		return Promise.resolve(fn.call(ext, context, payload));
+	}
+
+	async beforePlay(
+		name: string,
+		context: ExtensionContext,
+		request: ExtensionPlayRequest,
+	): Promise<ExtensionPlayResponse | void> {
+		const ext = this.get(name);
+		if (!ext || typeof (ext as any).beforePlay !== "function") return;
+		return Promise.resolve((ext as any).beforePlay.call(ext, context, request));
+	}
+
+	async afterPlay(name: string, context: ExtensionContext, payload: ExtensionAfterPlayPayload): Promise<void> {
+		const ext = this.get(name);
+		if (!ext || typeof (ext as any).afterPlay !== "function") return;
+		return Promise.resolve((ext as any).afterPlay.call(ext, context, payload));
 	}
 
 	getAll(): BaseExtension[] {
@@ -190,6 +264,7 @@ export class ExtensionManager {
 
 	clear(): void {
 		this.extensions.clear();
+		this.disabledExtensions.clear();
 		this.extensionMetadata.clear();
 		this.clearAllCaches();
 	}

@@ -47,15 +47,16 @@ export interface SearchScore {
 }
 
 /**
- * Contains streaming information for audio playback.
- * `inputType` describes the actual bytes exposed by `stream`, which is
- * especially important for raw PCM produced by filter/seek operations.
+ * Raw streaming information returned by plugins or custom resolvers.
  */
-export interface StreamInfo {
+export interface RawStreamInfo {
 	stream?: Readable;
 	url?: string;
-	type: "webm/opus" | "ogg/opus" | "arbitrary" | "url" | string;
-	/** Actual @discordjs/voice input type for the returned stream. */
+	track?: Track;
+	streamType?: StreamType;
+	/** @deprecated Use streamType */
+	type?: "webm/opus" | "ogg/opus" | "arbitrary" | "url" | string;
+	/** @deprecated Use streamType */
 	inputType?: StreamType;
 	metadata?: Record<string, any>;
 	position?: number;
@@ -72,9 +73,53 @@ export interface StreamInfo {
 	};
 }
 
+/**
+ * Normalized streaming information for audio playback.
+ * Guaranteed to have `track` and `streamType`.
+ */
+export interface StreamInfo extends RawStreamInfo {
+	stream?: Readable;
+	track: Track;
+	streamType: StreamType;
+	/** @deprecated Use streamType */
+	inputType?: StreamType;
+	/** @deprecated Use streamType */
+	type?: "webm/opus" | "ogg/opus" | "arbitrary" | "url" | string;
+}
+
+export function inferStreamType(info: Partial<RawStreamInfo>): StreamType {
+	if (info.streamType) return info.streamType;
+	if (info.inputType) return info.inputType;
+	const t = typeof info.type === "string" ? info.type.toLowerCase() : "";
+	if (t === "webm/opus") return "webm/opus" as StreamType;
+	if (t === "ogg/opus") return "ogg/opus" as StreamType;
+	if (t === "opus") return "opus" as StreamType;
+	if (t === "raw") return "raw" as StreamType;
+	return "arbitrary" as StreamType;
+}
+
+export function normalizeStreamInfo(requestedTrack: Track, info: RawStreamInfo): StreamInfo {
+	const streamType = info.streamType ?? info.inputType ?? (info.type as StreamType) ?? inferStreamType(info);
+	return {
+		...info,
+		track: info.track ?? requestedTrack,
+		streamType,
+		inputType: info.inputType ?? streamType,
+		type: info.type ?? (streamType as string),
+	};
+}
+
 export interface TrackMiddlewareContext {
-	player: Player;
-	manager: PlayerManager;
+	playerId: string;
+	manager?: PlayerManager;
+	player?: Player;
+}
+
+export interface TrackResolverContext {
+	playerId: string;
+	history?: Track[];
+	signal?: AbortSignal;
+	[key: string]: any;
 }
 
 export type TrackMiddleware = (track: Track, context: TrackMiddlewareContext) => void | Track | Promise<void | Track>;
@@ -93,6 +138,7 @@ export function normalizeTrackMiddleware(input?: TrackMiddleware | TrackMiddlewa
 export interface PlayerOptions {
 	leaveOnEnd?: boolean;
 	leaveOnEmpty?: boolean;
+	pauseOnEmpty?: boolean;
 	leaveTimeout?: number;
 	volume?: number;
 	quality?: "high" | "low";
@@ -139,6 +185,7 @@ export interface PlayerOptions {
 		maxBoostDb?: number;
 		maxCutDb?: number;
 		limiterCeiling?: number;
+		autoDisableInLowPerformance?: boolean;
 	};
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
 	maxStreamStore?: number;
@@ -178,19 +225,6 @@ export interface SaveOptions {
 
 export type SaveVideoOptions = Pick<SaveOptions, "filename" | "quality" | "timeout" | "metadata" | "signal">;
 
-export interface PlayerSession {
-	guildId: string;
-	queue: Track[];
-	currentTrack: Track | null;
-	volume: number;
-	loopMode: LoopMode;
-	autoPlay: boolean;
-	position: number | null;
-	extensions: string[];
-	plugins: string[];
-	userdata?: Record<string, any>;
-}
-
 export interface PreloadState {
 	resource: AudioResource | null;
 	track: Track | null;
@@ -214,8 +248,27 @@ export interface ForwardHealthStatus {
 	};
 }
 
-export interface PlayerStats {
+export interface PlayerManagerStats {
+	players: number;
 	totalPlayers: number;
+	playback: {
+		playing: number;
+		paused: number;
+		idle: number;
+	};
+	streams: {
+		active: number;
+		loading: number;
+	};
+	queues: {
+		totalTracks: number;
+	};
+	preload: {
+		active: number;
+	};
+	transitions: {
+		active: number;
+	};
 	leader: number;
 	follower: number;
 	activePlayers: number;
@@ -224,6 +277,8 @@ export interface PlayerStats {
 	totalTracksInQueue: number;
 	forwardHealthStatus: ForwardHealthStatus[];
 }
+
+export type PlayerStats = PlayerManagerStats;
 
 export interface StreamSlot {
 	resource?: AudioResource | null;
@@ -239,6 +294,60 @@ export interface StreamSlot {
 
 export type LoopMode = "off" | "track" | "queue";
 
+export interface PlayerSession {
+	guildId: string;
+	queue: Track[];
+	currentTrack: Track | null;
+	volume: number;
+	loopMode: LoopMode;
+	autoPlay: boolean;
+	position: number | null;
+	extensions: string[];
+	plugins: string[];
+	userdata?: Record<string, any>;
+}
+
+export interface PlayerRuntimeState {
+	plugins: string[];
+	extensions: string[];
+}
+
+export interface PlayOptions {
+	/** User or identifier who requested playback. */
+	requestedBy?: any;
+	/** Guild voice channel to connect to automatically before playback. */
+	voiceChannel?: VoiceChannel;
+	/** Target plugin or list of plugins to search/play from. */
+	plugin?: string | string[];
+	/** AbortSignal to cancel play operation before commit. */
+	signal?: AbortSignal;
+	[key: string]: any;
+}
+
+export interface SearchOptions {
+	/** User or identifier who requested the search. */
+	requestedBy?: any;
+	/** Restrict search to this plugin or list of plugins. */
+	plugin?: string | string[];
+	/** AbortSignal to cancel the search. */
+	signal?: AbortSignal;
+}
+
+export interface PlayResult {
+	track: Track;
+	query: string;
+	requestedBy?: any;
+	voiceConnection?: any;
+	player: Player;
+}
+
+export interface WillPlayEvent {
+	track: Track;
+	relatedTracks: Track[];
+	/** @deprecated Use relatedTracks */
+	upcomingTracks?: Track[];
+}
+
 export interface VoiceChannel {
 	id: string;
 	guildId: string;
@@ -248,7 +357,7 @@ export interface VoiceChannel {
 
 export interface ManagerEvents {
 	debug: [message: string, ...args: any[]];
-	willPlay: [player: Player, track: Track, upcomingTracks: Track[]];
+	willPlay: [player: Player, track: Track, relatedTracks: Track[]];
 	trackStart: [player: Player, track: Track];
 	trackEnd: [player: Player, track: Track];
 	queueEnd: [player: Player];
@@ -276,33 +385,4 @@ export interface ManagerEvents {
 	forwardModeEnd: [player: Player, leader: Player, reason: string | undefined];
 	seek: [player: Player, payload: { track: Track; position: number }];
 	trackStuck: [player: Player, track: Track | null];
-}
-
-export interface PlayerEvents {
-	debug: [message: string, ...args: any[]];
-	willPlay: [track: Track, upcomingTracks: Track[]];
-	trackStart: [track: Track];
-	trackEnd: [track: Track];
-	queueEnd: [];
-	playerError: [error: Error, track?: Track];
-	connectionError: [error: Error];
-	volumeChange: [oldVolume: number, newVolume: number];
-	queueAdd: [track: Track];
-	queueAddList: [tracks: Track[]];
-	queueRemove: [track: Track, index: number];
-	playerPause: [track: Track];
-	playerResume: [track: Track];
-	playerStop: [];
-	playerDestroy: [];
-	seek: [payload: { track: Track; position: number }];
-	ttsStart: [payload: { text?: string; track?: Track }];
-	ttsEnd: [];
-	filterApplied: [filter: AudioFilter];
-	filterRemoved: [filter: AudioFilter];
-	filtersCleared: [];
-	trackStuck: [track: Track | null];
-	streamError: [error: Error, track: Track | null];
-	stats: [stats: PlayerStats];
-	forwardModeStart: [leader: Player];
-	forwardModeEnd: [leader: Player, reason: string | undefined];
 }

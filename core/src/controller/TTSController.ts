@@ -4,160 +4,181 @@ import type { Readable } from "stream";
 import type { StreamInfo, Track } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
-import type { PlayerBus } from "../structures/PlayerBus";
-import { CONTROLLER_RPC, type TtsIsTTSRequest, type TtsPlayRequest } from "./ControllerBusContract";
+import type { Bus } from "../structures/Bus";
+import { CONTROLLER_RPC, PLAYER_QUERY, type TtsIsTTSRequest, type TtsPlayRequest } from "../structures/BusContract";
 import type { TTSControllerOptions } from "../types";
 
-/** Owns TTS stream resolution and the independent interrupt playback lifecycle. */
+interface TTSState {
+	ttsPlayer: AudioPlayer;
+	pluginManager: PluginManager;
+	extensionManager?: ExtensionManager;
+	debug: (...args: any[]) => void;
+	audioPlayer?: AudioPlayer;
+	maxTimeTts: number;
+	volume: number;
+	interrupt: boolean;
+	lifecycleAbort: AbortController;
+	disposed: boolean;
+	activeResource: AudioResource | null;
+	running: Promise<void> | null;
+	onError: (error: Error) => void;
+}
+
+/** Shared TTS controller with audio and playback state isolated per playerId. */
 export class TTSController {
-	public readonly ttsPlayer: AudioPlayer;
-	private readonly pluginManager: PluginManager;
-	private readonly extensionManager?: ExtensionManager;
-	private readonly debug: (...args: any[]) => void;
-	private connection: VoiceConnection | null;
-	private readonly audioPlayer?: AudioPlayer;
-	private readonly bus?: PlayerBus;
-	private readonly maxTimeTts: number;
-	private readonly volume: number;
-	private readonly interrupt: boolean;
-	private readonly lifecycleAbort = new AbortController();
-	private disposed = false;
-	private activeResource: AudioResource | null = null;
-	private running: Promise<void> | null = null;
-	private readonly onError: (error: Error) => void;
-	private readonly detachBusHandlers: Array<() => void> = [];
+	public readonly states = new Map<string, TTSState>();
 
-	constructor(options: TTSControllerOptions) {
-		this.pluginManager = options.pluginManager;
-		this.extensionManager = options.extensionManager;
-		this.connection = options.connection ?? null;
-		this.audioPlayer = options.audioPlayer;
-		this.bus = options.bus;
-		this.debug = options.debug ?? (() => undefined);
-		this.maxTimeTts =
-			Number.isFinite(options.maxTimeTts) && (options.maxTimeTts as number) > 0 ? (options.maxTimeTts as number) : 60_000;
-		this.volume = Number.isFinite(options.volume) ? Math.max(0, Math.min(100, options.volume as number)) : 100;
-		this.interrupt = options.interrupt ?? true;
-		this.ttsPlayer = new AudioPlayer();
-		this.onError = (error) => {
-			this.debug("[TTSController] audio player error:", error instanceof Error ? error : new Error(String(error)));
-			this.ttsPlayer.stop(true);
+	constructor(private readonly bus: Bus) {
+		bus.registerQuery(PLAYER_QUERY.ttsHasPlayer, (playerId) => Boolean(this.states.get(playerId)?.ttsPlayer));
+		bus.registerQuery(PLAYER_QUERY.ttsInterrupt, (playerId) => this.states.get(playerId)?.interrupt ?? true);
+		bus.registerRpc<TtsIsTTSRequest, boolean>(CONTROLLER_RPC.ttsIsTTS, ({ track }, ctx) => this.isTTS(track));
+		bus.registerRpc<TtsPlayRequest, void>(CONTROLLER_RPC.ttsPlay, ({ track }, ctx) => {
+			const state = this.states.get(ctx.playerId);
+			if (!state) return Promise.reject(new Error("TTSController is disposed"));
+			return this.play(ctx.playerId, state, track);
+		});
+	}
+
+	attach(playerId: string, options: Omit<TTSControllerOptions, "bus"> & { bus?: never }): void {
+		this.detach(playerId);
+		const state = {
+			pluginManager: options.pluginManager,
+			extensionManager: options.extensionManager,
+			audioPlayer: options.audioPlayer,
+			debug: options.debug ?? (() => undefined),
+			maxTimeTts:
+				Number.isFinite(options.maxTimeTts) && (options.maxTimeTts as number) > 0 ? (options.maxTimeTts as number) : 60_000,
+			volume: Number.isFinite(options.volume) ? Math.max(0, Math.min(100, options.volume as number)) : 100,
+			interrupt: options.interrupt ?? true,
+			lifecycleAbort: new AbortController(),
+			disposed: false,
+			activeResource: null,
+			running: null,
+			ttsPlayer: new AudioPlayer(),
+			onError: (_error: Error) => {},
+		} satisfies TTSState;
+		state.onError = (error) => {
+			state.debug("[TTSController] audio player error:", error instanceof Error ? error : new Error(String(error)));
+			state.ttsPlayer.stop(true);
 		};
-		this.ttsPlayer.on("error", this.onError);
-		if (options.bus) {
-			this.detachBusHandlers.push(
-				options.bus.registerQuery("tts.hasPlayer", () => Boolean(this.ttsPlayer)),
-				options.bus.registerQuery("ttsInterrupt", () => this.interrupt),
-				options.bus.registerRpc<TtsIsTTSRequest, boolean>(CONTROLLER_RPC.ttsIsTTS, ({ track }) => this.isTTS(track)),
-				options.bus.registerRpc<TtsPlayRequest, void>(CONTROLLER_RPC.ttsPlay, ({ track }) => this.play(track)),
-				options.bus.onOutput("[Connection]->[Player]:connected", (event) => this.setConnection(event.connection)),
-				options.bus.onOutput("[Connection]->[Player]:disconnected", () => this.setConnection(null)),
-			);
-		}
+		state.ttsPlayer.on("error", state.onError);
+		this.states.set(playerId, state);
 	}
 
-	public setConnection(connection: VoiceConnection | null): void {
-		this.connection = connection;
+	detach(playerId: string): void {
+		const state = this.states.get(playerId);
+		if (!state) return;
+		this.states.delete(playerId);
+		this.dispose(state);
 	}
 
-	isTTS(track: Track): boolean {
+	public player(playerId: string): AudioPlayer | undefined {
+		return this.states.get(playerId)?.ttsPlayer;
+	}
+
+	private isTTS(track: Track): boolean {
 		return track.source?.toLowerCase() === "tts" || track.id?.toLowerCase().startsWith("tts-") || !!track.metadata?.tts;
 	}
 
-	async resolve(track: Track): Promise<StreamInfo> {
+	private async resolve(state: TTSState, track: Track): Promise<StreamInfo> {
 		if (!this.isTTS(track)) throw new Error("Track is not a TTS track");
 		try {
-			const extensionStream = this.extensionManager ? await this.extensionManager.provideStream(track) : null;
+			const extensionStream = state.extensionManager ? await state.extensionManager.provideStream(track) : null;
 			if (extensionStream?.stream || extensionStream?.remote) return extensionStream;
-			const stream = await this.pluginManager.getStream(track);
+			const stream = await state.pluginManager.getStream(track);
 			if (!stream) throw new Error(`No TTS stream available for track: ${track.title}`);
 			return stream;
 		} catch (error) {
 			const err = error instanceof Error ? error : new Error(String(error));
-			this.debug("[TTSController] resolve failed:", err);
+			state.debug("[TTSController] resolve failed:", err);
 			throw err;
 		}
 	}
 
-	/** Legacy-compatible TTS interrupt playback. */
-	public play(track: Track): Promise<void> {
-		if (this.disposed) return Promise.reject(new Error("TTSController is disposed"));
+	private play(playerId: string, state: TTSState, track: Track): Promise<void> {
+		if (state.disposed) return Promise.reject(new Error("TTSController is disposed"));
 		if (!this.isTTS(track)) return Promise.reject(new Error("Track is not a TTS track"));
-		if (this.running) return this.running;
-		this.running = this.playInternal(track).finally(() => {
-			this.running = null;
+		if (state.running) return state.running;
+		const running = this.playInternal(playerId, state, track).finally(() => {
+			state.running = null;
 		});
-		return this.running;
+		state.running = running;
+		return running;
 	}
 
-	private async playInternal(track: Track): Promise<void> {
-		const connection = this.connection;
-		if (this.disposed || this.lifecycleAbort.signal.aborted) throw this.abortError();
+	private getConnection(playerId: string): VoiceConnection | null {
+		return (this.bus.querySync(playerId, PLAYER_QUERY.connection) as VoiceConnection | null) ?? null;
+	}
+
+	private async playInternal(playerId: string, state: TTSState, track: Track): Promise<void> {
+		const connection = this.getConnection(playerId);
+		if (state.disposed || state.lifecycleAbort.signal.aborted) throw this.abortError();
 		if (!connection) throw new Error("Cannot play TTS without a voice connection");
-		const wasPlaying = this.audioPlayer?.state.status === AudioPlayerStatus.Playing;
+		const wasPlaying = state.audioPlayer?.state.status === AudioPlayerStatus.Playing;
 		let started = false;
 		try {
-			const streamInfo = await this.resolve(track);
-			if (this.disposed || this.lifecycleAbort.signal.aborted) throw this.abortError();
+			const streamInfo = await this.resolve(state, track);
+			if (state.disposed || state.lifecycleAbort.signal.aborted) throw this.abortError();
 			const stream = streamInfo.stream as Readable;
 			const resource = createAudioResource(stream as any, { metadata: track, inlineVolume: true });
-			this.activeResource = resource;
-			resource.volume?.setVolume(this.volume / 100);
-			if (wasPlaying) this.audioPlayer?.pause(true);
-			connection.subscribe(this.ttsPlayer);
+			state.activeResource = resource;
+			resource.volume?.setVolume(state.volume / 100);
+			if (wasPlaying) state.audioPlayer?.pause(true);
+			connection.subscribe(state.ttsPlayer);
 			void this.bus
-				?.requestRpc("player.emitTtsStart", { track })
-				.catch((error) => this.debug("[TTSController] failed to publish ttsStart:", error));
+				.requestRpc(playerId, CONTROLLER_RPC.playerEmitTtsStart, { track })
+				.catch((error: unknown) => state.debug("[TTSController] failed to publish ttsStart:", error));
 			started = true;
-			this.ttsPlayer.play(resource);
-			await this.waitForPlayingOrIdle();
-			if (!this.disposed && this.ttsPlayer.state.status === AudioPlayerStatus.Playing) await this.waitForIdle(track);
+			state.ttsPlayer.play(resource);
+			await this.waitForPlayingOrIdle(state);
+			if (!state.disposed && state.ttsPlayer.state.status === AudioPlayerStatus.Playing) await this.waitForIdle(state, track);
 		} finally {
-			this.activeResource = null;
-			this.ttsPlayer.stop(true);
-			if (!this.disposed && this.audioPlayer && this.connection) {
-				connection.subscribe(this.audioPlayer);
-				if (wasPlaying && this.audioPlayer.state.status === AudioPlayerStatus.Paused) this.audioPlayer.unpause();
+			state.activeResource = null;
+			state.ttsPlayer.stop(true);
+			const currentConnection = this.getConnection(playerId);
+			if (!state.disposed && state.audioPlayer && currentConnection) {
+				currentConnection.subscribe(state.audioPlayer);
+				if (wasPlaying && state.audioPlayer.state.status === AudioPlayerStatus.Paused) state.audioPlayer.unpause();
 			}
-			if (started && !this.disposed)
+			if (started && !state.disposed)
 				void this.bus
-					?.requestRpc("player.emitTtsEnd", undefined)
-					.catch((error) => this.debug("[TTSController] failed to publish ttsEnd:", error));
+					.requestRpc(playerId, CONTROLLER_RPC.playerEmitTtsEnd, undefined)
+					.catch((error: unknown) => state.debug("[TTSController] failed to publish ttsEnd:", error));
 		}
 	}
 
-	private waitForPlayingOrIdle(): Promise<void> {
-		if (this.disposed || this.lifecycleAbort.signal.aborted) return Promise.reject(this.abortError());
-		const status = this.ttsPlayer.state.status;
+	private waitForPlayingOrIdle(state: TTSState): Promise<void> {
+		if (state.disposed || state.lifecycleAbort.signal.aborted) return Promise.reject(this.abortError());
+		const status = state.ttsPlayer.state.status;
 		if (status === AudioPlayerStatus.Playing || status === AudioPlayerStatus.Idle) return Promise.resolve();
 		return new Promise((resolve, reject) => {
 			const onState = (_oldState: AudioPlayerState, newState: AudioPlayerState) => {
 				if (newState.status === AudioPlayerStatus.Playing || newState.status === AudioPlayerStatus.Idle) {
-					this.ttsPlayer.removeListener("stateChange", onState);
-					this.lifecycleAbort.signal.removeEventListener("abort", onAbort);
+					state.ttsPlayer.removeListener("stateChange", onState);
+					state.lifecycleAbort.signal.removeEventListener("abort", onAbort);
 					resolve();
 				}
 			};
 			const onAbort = () => {
-				this.ttsPlayer.removeListener("stateChange", onState);
+				state.ttsPlayer.removeListener("stateChange", onState);
 				reject(this.abortError());
 			};
-			this.ttsPlayer.on("stateChange", onState);
-			this.lifecycleAbort.signal.addEventListener("abort", onAbort, { once: true });
+			state.ttsPlayer.on("stateChange", onState);
+			state.lifecycleAbort.signal.addEventListener("abort", onAbort, { once: true });
 		});
 	}
 
-	private waitForIdle(track: Track): Promise<void> {
-		if (this.disposed || this.lifecycleAbort.signal.aborted) return Promise.reject(this.abortError());
-		if (this.ttsPlayer.state.status === AudioPlayerStatus.Idle) return Promise.resolve();
+	private waitForIdle(state: TTSState, track: Track): Promise<void> {
+		if (state.disposed || state.lifecycleAbort.signal.aborted) return Promise.reject(this.abortError());
+		if (state.ttsPlayer.state.status === AudioPlayerStatus.Idle) return Promise.resolve();
 		const declaredSeconds = Number.isFinite(track.duration) && track.duration > 0 ? track.duration : undefined;
 		const declaredMs = declaredSeconds !== undefined ? declaredSeconds * 1_000 : undefined;
-		const idleTimeout = declaredMs ? Math.min(this.maxTimeTts, Math.max(1_000, declaredMs + 1_500)) : this.maxTimeTts;
+		const idleTimeout = declaredMs ? Math.min(state.maxTimeTts, Math.max(1_000, declaredMs + 1_500)) : state.maxTimeTts;
 		return new Promise((resolve, reject) => {
 			let timer: ReturnType<typeof setTimeout> | null = null;
 			const cleanup = () => {
-				this.ttsPlayer.removeListener("stateChange", onState);
-				this.lifecycleAbort.signal.removeEventListener("abort", onAbort);
+				state.ttsPlayer.removeListener("stateChange", onState);
+				state.lifecycleAbort.signal.removeEventListener("abort", onAbort);
 				if (timer) clearTimeout(timer);
 			};
 			const onState = (_oldState: AudioPlayerState, newState: AudioPlayerState) => {
@@ -170,14 +191,14 @@ export class TTSController {
 				cleanup();
 				reject(this.abortError());
 			};
-			this.ttsPlayer.on("stateChange", onState);
-			this.lifecycleAbort.signal.addEventListener("abort", onAbort, { once: true });
+			state.ttsPlayer.on("stateChange", onState);
+			state.lifecycleAbort.signal.addEventListener("abort", onAbort, { once: true });
 			timer = setTimeout(() => {
 				cleanup();
-				this.debug(`[TTSController] idle timeout after ${idleTimeout}ms for: ${track.title}`);
-				const stream = this.activeResource?.playStream;
+				state.debug(`[TTSController] idle timeout after ${idleTimeout}ms for: ${track.title}`);
+				const stream = state.activeResource?.playStream;
 				if (stream && typeof stream.destroy === "function" && !stream.destroyed) stream.destroy();
-				this.ttsPlayer.stop(true);
+				state.ttsPlayer.stop(true);
 				resolve();
 			}, idleTimeout);
 		});
@@ -189,18 +210,12 @@ export class TTSController {
 		return error;
 	}
 
-	public get player(): AudioPlayer {
-		return this.ttsPlayer;
-	}
-
-	dispose(): void {
-		if (this.disposed) return;
-		this.disposed = true;
-		this.lifecycleAbort.abort();
-		for (const detach of this.detachBusHandlers.splice(0)) detach();
-		this.ttsPlayer.removeListener("error", this.onError);
-		this.ttsPlayer.stop(true);
-		this.activeResource = null;
-		this.connection = null;
+	private dispose(state: TTSState): void {
+		if (state.disposed) return;
+		state.disposed = true;
+		state.lifecycleAbort.abort();
+		state.ttsPlayer.removeListener("error", state.onError);
+		state.ttsPlayer.stop(true);
+		state.activeResource = null;
 	}
 }

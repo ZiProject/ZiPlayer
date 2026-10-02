@@ -35,11 +35,6 @@ export abstract class BaseExtension extends EventEmitter implements SourceExtens
 	 * forwards a `debug` event on the player for backward-compatible listeners.
 	 */
 	protected debugLog(level: PlayerDebugLevel, message?: any, ...args: any[]): void {
-		const tracer = this.player?.runtimeGraph?.debugTracer;
-		if (tracer) {
-			if (!tracer.isEnabled(level)) return;
-			tracer.log(level, `Extension:${this.name}`, message, ...args);
-		}
 		this.forwardToPlayer("debug", `[${this.name}] ${message ?? ""}`.trimEnd(), ...args);
 	}
 

@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { PlayerManager } = require("../../core/dist");
+const { ExtensionManager, PlayerManager } = require("../../core/dist");
 const { lyricsExt } = require("../../extension/dist");
 
 function makeTrack(id = "t1", title = "Track 1", author) {
@@ -15,6 +15,26 @@ function makeTrack(id = "t1", title = "Track 1", author) {
 		metadata: author ? { author } : {},
 	};
 }
+
+test("ExtensionManager.invoke only allows declared extension hooks", async () => {
+	const extensionManager = new ExtensionManager({ playerId: "guild-extension-invoke", bus: {} }, { debugEnabled: false });
+	let secretMethodCalled = false;
+	const extension = {
+		name: "invoke-policy",
+		player: null,
+		active: () => true,
+		beforePlay: (_context, payload) => payload,
+		internalMethod: () => {
+			secretMethodCalled = true;
+		},
+	};
+	extensionManager.register(extension);
+
+	assert.deepEqual(await extensionManager.invoke(extension.name, "beforePlay", {}, { query: "song" }), { query: "song" });
+	assert.equal(await extensionManager.invoke(extension.name, "internalMethod", {}, {}), undefined);
+	assert.equal(secretMethodCalled, false);
+	extensionManager.destroy();
+});
 
 test("lyricsExt attaches lyrics on trackStart and emits event", async (t) => {
 	const ext = new lyricsExt(null, { autoFetchOnTrackStart: true });

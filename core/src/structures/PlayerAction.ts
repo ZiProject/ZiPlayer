@@ -3,8 +3,8 @@ import {
 	PlayerActionPriority,
 	type PlayerAction as PlayerActionMessage,
 	type PlayerActionExecutionContext,
-	type PlayerBus,
-} from "./PlayerBus";
+	type Bus,
+} from "./Bus";
 
 interface PendingAction {
 	action: PlayerActionMessage;
@@ -36,7 +36,10 @@ export class PlayerAction {
 	private disposed = false;
 	private idleWaiters: Array<() => void> = [];
 
-	public constructor(private readonly bus: PlayerBus) {}
+	public constructor(
+		private readonly bus: Bus,
+		private readonly playerId: string,
+	) {}
 
 	public enqueue(action: PlayerActionMessage): Promise<void> {
 		if (this.disposed) return Promise.resolve();
@@ -85,16 +88,17 @@ export class PlayerAction {
 
 	private runCritical(action: PlayerActionMessage): Promise<void> {
 		const controller = new AbortController();
-		const context: PlayerActionExecutionContext = {
-			signal: controller.signal,
+		const signal = action.signal ? AbortSignal.any([controller.signal, action.signal]) : controller.signal;
+		const context: Partial<PlayerActionExecutionContext> = {
+			signal,
 			priority: action.priority ?? PlayerActionPriority.CRITICAL,
 			requestId: action.requestId ?? createPlayerRequestId(),
 		};
 		this.criticalRunning += 1;
 		this.criticalControllers.add(controller);
 		const execution = this.criticalTail.then(() => {
-			if (this.disposed || controller.signal.aborted) return;
-			return this.bus.action(action, context);
+			if (this.disposed || signal.aborted) return;
+			return this.bus.action(this.playerId, action, context);
 		});
 		this.criticalTail = execution.then(
 			() => undefined,
@@ -116,12 +120,13 @@ export class PlayerAction {
 
 		const pending = this.pending.shift()!;
 		const controller = new AbortController();
-		const context: PlayerActionExecutionContext = {
-			signal: controller.signal,
+		const signal = pending.action.signal ? AbortSignal.any([controller.signal, pending.action.signal]) : controller.signal;
+		const context: Partial<PlayerActionExecutionContext> = {
+			signal,
 			priority: pending.priority,
 			requestId: pending.action.requestId ?? createPlayerRequestId(),
 		};
-		const promise = this.bus.action(pending.action, context);
+		const promise = this.bus.action(this.playerId, pending.action, context);
 		this.running = { controller, priority: pending.priority, promise };
 
 		promise.then(pending.resolve, pending.reject).finally(() => {
