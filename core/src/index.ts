@@ -27,6 +27,23 @@ export { PlayerAction } from "./structures/PlayerAction";
 export { PlaybackOrchestrator, createPlaybackOrchestrator } from "./structures/PlaybackOrchestrator";
 export { createSharedControllers } from "./structures/PlayerManager";
 export { PlaybackSession } from "./structures/PlaybackSession";
+export {
+	DiscordVoiceOutputBackend,
+	audioFrameFormatFromDiscordStreamType,
+	convertFloat32PcmToS16Le,
+	resolveOutputStreamType,
+} from "./output/DiscordVoiceOutputBackend";
+export type {
+	AudioFrameFormat,
+	AudioOutputInput,
+	AudioOutputCapabilities,
+	AudioOutputContext,
+	AudioOutputEvent,
+	AudioOutputHandle,
+	AudioOutputState,
+	AudioOutputBackend,
+} from "./output/AudioOutputBackend";
+export { AudioOutputUnsupportedOperationError } from "./output/AudioOutputBackend";
 export { TrackLoader } from "./structures/TrackLoader";
 export { PlaybackController } from "./controller/PlaybackController";
 export { ConnectionController } from "./controller/ConnectionController";
@@ -49,7 +66,6 @@ export {
 	createAudioProcessingEngine,
 	defaultAudioProcessingEngine,
 	AudioJsAudioProcessingEngine,
-	resolveOutputStreamType,
 } from "./audio/AudioProcessingEngine";
 export type {
 	AudioProcessingEngine,

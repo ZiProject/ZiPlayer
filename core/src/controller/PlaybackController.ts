@@ -1,22 +1,13 @@
-import {
-	AudioPlayer,
-	AudioPlayerState,
-	AudioPlayerStatus,
-	AudioResource,
-	createAudioResource,
-	StreamType,
-} from "@discordjs/voice";
+import { AudioPlayer, AudioPlayerState, AudioPlayerStatus, AudioResource, StreamType } from "@discordjs/voice";
 import { Readable } from "stream";
+import type { AudioFrameFormat } from "../output/AudioOutputBackend";
+import { DiscordVoiceOutputBackend } from "../output/DiscordVoiceOutputBackend";
 import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
 import { PlaybackMode } from "../types";
 import type { AntiStuckRetryHandlers } from "../types";
-import {
-	createAudioProcessingEngine,
-	resolveOutputStreamType,
-	type AudioProcessingOptions,
-} from "../audio/AudioProcessingEngine";
+import { createAudioProcessingEngine, type AudioProcessingOptions } from "../audio/AudioProcessingEngine";
 import {
 	BUS_EVENT,
 	CONTROLLER_RPC,
@@ -30,6 +21,7 @@ import {
 interface PlaybackSlot {
 	readonly playerId: string;
 	readonly audioPlayer: AudioPlayer;
+	readonly outputBackend: DiscordVoiceOutputBackend;
 	readonly stuckTimeoutMs: number;
 	readonly recoveryHandlers: AntiStuckRetryHandlers;
 	readonly lifecycleAbort: AbortController;
@@ -93,7 +85,7 @@ export class PlaybackController {
 			PLAYER_RPC.resourceCreate,
 			({ stream, track, inputType }, ctx) => {
 				if (!this.slots.has(ctx.playerId)) throw new Error("No PlaybackController registered for this player");
-				return this.createResource(ctx.playerId, stream, track, inputType);
+				return this.createResource(ctx.playerId, stream, track, inputType, ctx.signal);
 			},
 		);
 		bus.registerQuery(PLAYER_QUERY.audioPlayer, (playerId) => at(playerId)?.audioPlayer as any);
@@ -117,9 +109,11 @@ export class PlaybackController {
 		if (this.slots.has(playerId)) this.detach(playerId);
 		if (options.audioProcessing?.enabled) this.processingOptions.set(playerId, options.audioProcessing);
 		else this.processingOptions.delete(playerId);
+		const outputBackend = new DiscordVoiceOutputBackend(options.audioPlayer);
 		const slot: PlaybackSlot = {
 			playerId,
 			audioPlayer: options.audioPlayer,
+			outputBackend,
 			stuckTimeoutMs: Math.max(0, options.stuckTimeoutMs ?? 10000),
 			lifecycleAbort: new AbortController(),
 			detachBusHandlers: [],
@@ -201,7 +195,7 @@ export class PlaybackController {
 		for (const detach of slot.detachBusHandlers.splice(0)) detach();
 		slot.audioPlayer.removeListener("stateChange", slot.onStateChange);
 		slot.audioPlayer.removeListener("error", slot.onError);
-		slot.audioPlayer.stop(true);
+		slot.outputBackend.dispose();
 		slot.activeResource = null;
 	}
 
@@ -319,7 +313,7 @@ export class PlaybackController {
 	private applyTargetVolume(slot: PlaybackSlot, resource: AudioResource | null, track?: Track | null, gain = 1): void {
 		if (!resource?.volume) return;
 		const target = this.requestVolumeTarget(slot.playerId, track);
-		resource.volume.setVolume(target * Math.max(0, Number.isFinite(gain) ? gain : 1));
+		slot.outputBackend.setVolume(resource, target * Math.max(0, Number.isFinite(gain) ? gain : 1));
 	}
 
 	private retirePendingSession(playerId: string): void {
@@ -395,59 +389,85 @@ export class PlaybackController {
 	// ---------------------------------------------------------------------
 
 	/** Pure factory (no per-player state involved). */
-	public createResource(playerId: string, stream: Readable, track: Track, inputType?: StreamType): AudioResource {
+	public createResource(
+		playerId: string,
+		stream: Readable,
+		track: Track,
+		inputType?: StreamType,
+		signal?: AbortSignal,
+	): AudioResource {
 		const resolvedInputType = inputType ?? (stream as Readable & { inputType?: StreamType }).inputType;
 		const processingOptions = this.processingOptions.get(playerId) ?? {};
+		const slot = this.slots.get(playerId);
+		const outputBackend = slot?.outputBackend;
+		if (!outputBackend) throw new Error("No Discord output backend is attached for this player");
+		const outputSignal =
+			slot ?
+				signal ? AbortSignal.any([slot.lifecycleAbort.signal, signal])
+				:	slot.lifecycleAbort.signal
+			:	signal;
 		if (processingOptions.enabled) {
-			try {
-				const engine = createAudioProcessingEngine(processingOptions);
-				const slot = this.slots.get(playerId);
-				const signal = slot?.lifecycleAbort?.signal ?? new AbortController().signal;
-				const processedStream = Readable.from(
-					(async function* () {
-						let pipeline: Awaited<ReturnType<typeof engine.createPipeline>> | null = null;
-						let started = false;
-						try {
-							pipeline = await engine.createPipeline(processingOptions, { playerId, track, signal });
-							for await (const chunk of pipeline.process(stream as any, signal)) {
-								started = true;
-								if (signal.aborted) return;
-								yield chunk;
-							}
-						} catch (error) {
-							if (signal.aborted) return;
-							if (!started) {
-								for await (const chunk of stream as any) {
-									if (signal.aborted) return;
-									yield chunk;
-								}
-								return;
-							}
-							throw new Error(
-								`Audio processing failed during stream consumption for ${track?.title ?? "track"}: ${
-									error instanceof Error ? error.message : String(error)
-								}`,
-							);
-						} finally {
-							await pipeline?.dispose();
-						}
-					})(),
-				);
-				return createAudioResource(processedStream, {
-					metadata: track,
-					inlineVolume: true,
-					inputType: resolveOutputStreamType(processingOptions, resolvedInputType ?? StreamType.Arbitrary),
-				});
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				console.warn("[PlaybackController] Audio processing setup failed; falling back to legacy stream path:", message);
+			if (processingOptions.outputFormat === "encoded") {
+				if (!stream.destroyed) stream.destroy();
+				throw new TypeError("Audio processing currently supports PCM output only; encoded output is unavailable");
 			}
+			let engine: ReturnType<typeof createAudioProcessingEngine>;
+			try {
+				engine = createAudioProcessingEngine(processingOptions);
+			} catch (error) {
+				if (!stream.destroyed) stream.destroy();
+				throw error;
+			}
+			const channels = processingOptions.channels ?? 2;
+			const sampleFormat = processingOptions.outputFormat === "pcmFloat32" ? "f32" : "s16";
+			const outputFormat: AudioFrameFormat = {
+				kind: "pcm",
+				sampleFormat,
+				endianness: "little",
+				sampleRateHz: processingOptions.resampleRate ?? processingOptions.sampleRate ?? 48_000,
+				channels,
+				channelLayout: "interleaved",
+				chunkAlignmentBytes: channels * (sampleFormat === "f32" ? 4 : 2),
+			};
+			let processedStream: Readable;
+			const abortProcessing = () => {
+				if (!stream.destroyed) stream.destroy();
+				if (!processedStream.destroyed) processedStream.destroy();
+			};
+			processedStream = Readable.from(
+				(async function* () {
+					let pipeline: Awaited<ReturnType<typeof engine.createPipeline>> | null = null;
+					let completed = false;
+					try {
+						pipeline = await engine.createPipeline(processingOptions, { playerId, track, signal: outputSignal });
+						for await (const chunk of pipeline.process(stream, outputSignal)) {
+							if (outputSignal?.aborted) return;
+							yield chunk;
+						}
+						completed = true;
+					} catch (error) {
+						if (outputSignal?.aborted) return;
+						if (!stream.destroyed) stream.destroy();
+						throw new Error(
+							`Audio processing failed for ${track.title}: ${error instanceof Error ? error.message : String(error)}`,
+							{ cause: error },
+						);
+					} finally {
+						outputSignal?.removeEventListener("abort", abortProcessing);
+						await pipeline?.dispose();
+						if (!completed && !stream.destroyed) stream.destroy();
+					}
+				})(),
+				{ objectMode: false },
+			);
+			if (outputSignal) {
+				if (outputSignal.aborted) abortProcessing();
+				else outputSignal.addEventListener("abort", abortProcessing, { once: true });
+			}
+			processedStream.once("close", () => outputSignal?.removeEventListener("abort", abortProcessing));
+			return outputBackend.createResource(processedStream, track, resolvedInputType, outputFormat, outputSignal);
 		}
-		return createAudioResource(stream, {
-			metadata: track,
-			inlineVolume: true,
-			...(resolvedInputType ? { inputType: resolvedInputType } : {}),
-		});
+		return outputBackend.createResource(stream, track, resolvedInputType, undefined, outputSignal);
 	}
 
 	public play(playerId: string, resource: AudioResource, session?: PlaybackSession, from?: Track | null, to?: Track): void {
@@ -466,7 +486,7 @@ export class PlaybackController {
 		if (session) session.setResource(resource);
 		slot.activeSession = session ?? null;
 		slot.activeResource = resource;
-		slot.audioPlayer.play(resource);
+		slot.outputBackend.play(resource);
 		this.retirePendingSession(playerId);
 	}
 
@@ -484,23 +504,23 @@ export class PlaybackController {
 		if (!resource?.volume) return;
 		const duration = Math.max(0, durationMs);
 		if (duration === 0) {
-			if (!abortSignal.aborted && !slot.disposed) resource.volume.setVolume(to);
+			if (!abortSignal.aborted && !slot.disposed) slot.outputBackend.setVolume(resource, to);
 			return;
 		}
 		const start = Date.now();
 		while (!abortSignal.aborted && !slot.disposed) {
 			const progress = Math.min(1, (Date.now() - start) / duration);
-			resource.volume.setVolume(from + (to - from) * progress);
+			slot.outputBackend.setVolume(resource, from + (to - from) * progress);
 			if (progress >= 1) return;
 			await new Promise<void>((resolve) => setTimeout(resolve, 25));
 		}
 	}
 	public async applyCrossfadeIn(playerId: string, resource: AudioResource, track: Track): Promise<void> {
 		const slot = this.slots.get(playerId);
-		if (!slot || !resource?.volume || slot.disposed) return;
+		if (!slot || slot.outputBackend.getVolume(resource) === null || slot.disposed) return;
 		this.applyTargetVolume(slot, resource, track, 1);
-		const target = resource.volume.volume;
-		resource.volume.setVolume(0);
+		const target = slot.outputBackend.getVolume(resource) ?? 0;
+		slot.outputBackend.setVolume(resource, 0);
 		await this.fadeResourceVolume(
 			playerId,
 			resource,
@@ -514,9 +534,10 @@ export class PlaybackController {
 		const slot = this.slots.get(playerId);
 		if (!slot || slot.disposed) return;
 		const resource = slot.activeResource;
-		if (!resource?.volume) return;
+		if (!resource) return;
 		const track = slot.activeSession?.track ?? (resource.metadata as Track | undefined);
-		const current = Number(resource.volume.volume ?? 0);
+		const current = slot.outputBackend.getVolume(resource);
+		if (current === null) return;
 		await this.fadeResourceVolume(
 			playerId,
 			resource,
@@ -555,7 +576,7 @@ export class PlaybackController {
 			}
 			slot.fadeGain = 0;
 			this.applyTargetVolume(slot, newResource, track, 0);
-			slot.audioPlayer.play(newResource);
+			slot.outputBackend.play(newResource);
 			this.retirePendingSession(slot.playerId);
 			if (session) session.setResource(newResource);
 			slot.activeSession = session ?? null;
@@ -604,14 +625,16 @@ export class PlaybackController {
 		if (mode === PlaybackMode.REMOTE) {
 			return this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackRemotePause, {});
 		}
-		return this.slots.get(playerId)?.audioPlayer.pause(true) ?? false;
+		const slot = this.slots.get(playerId);
+		return slot?.outputBackend.pause(slot.activeResource) ?? false;
 	}
 	public resume(playerId: string): boolean {
 		const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
 		if (mode === PlaybackMode.REMOTE) {
 			return this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackRemoteResume, {});
 		}
-		return this.slots.get(playerId)?.audioPlayer.unpause() ?? false;
+		const slot = this.slots.get(playerId);
+		return slot?.outputBackend.resume(slot.activeResource) ?? false;
 	}
 	public stop(playerId: string): boolean {
 		const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
@@ -621,9 +644,10 @@ export class PlaybackController {
 		const slot = this.slots.get(playerId);
 		if (!slot) return false;
 		this.cancelTransition(slot);
+		const resource = slot.activeResource;
 		slot.activeSession = null;
 		slot.activeResource = null;
-		return slot.audioPlayer.stop(true);
+		return slot.outputBackend.stop(resource);
 	}
 	public async seek(playerId: string, position: number, session?: PlaybackSession): Promise<boolean> {
 		if (!this.slots.has(playerId)) return false;

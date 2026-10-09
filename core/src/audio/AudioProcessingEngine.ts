@@ -1,7 +1,7 @@
 import audio from "audio";
-import { StreamType } from "@discordjs/voice";
 import { Readable } from "stream";
 import type { Track } from "../types";
+import type { AudioFrameFormat } from "../output/AudioOutputBackend";
 
 export type AudioProcessingFormat = "encoded" | "pcm16le" | "pcmFloat32";
 
@@ -28,6 +28,7 @@ export interface AudioProcessingContext {
 }
 
 export interface AudioProcessingPipeline {
+	readonly outputFormat: AudioFrameFormat;
 	process(input: AsyncIterable<Uint8Array> | Iterable<Uint8Array> | Readable, signal?: AbortSignal): AsyncIterable<Uint8Array>;
 	dispose(): Promise<void>;
 }
@@ -71,6 +72,9 @@ function validateOptions(options: AudioProcessingOptions): AudioProcessingOption
 
 	if (resolved.outputFormat !== "encoded" && resolved.outputFormat !== "pcm16le" && resolved.outputFormat !== "pcmFloat32") {
 		throw new TypeError(`Invalid audio processing output format: ${String(resolved.outputFormat)}`);
+	}
+	if (resolved.outputFormat === "encoded") {
+		throw new TypeError("The current audio processing engine can only emit PCM output, not encoded audio");
 	}
 
 	if (resolved.inputFormat !== "encoded" && resolved.inputFormat !== "pcm16le" && resolved.inputFormat !== "pcmFloat32") {
@@ -183,10 +187,20 @@ class AudioJsAudioProcessingPipeline implements AudioProcessingPipeline {
 	private activeInstance: any | null = null;
 	private readonly options: AudioProcessingOptions;
 	private readonly context: AudioProcessingContext;
+	public readonly outputFormat: AudioFrameFormat;
 
 	public constructor(options: AudioProcessingOptions, context: AudioProcessingContext = {}) {
 		this.options = validateOptions(options);
 		this.context = context;
+		this.outputFormat = {
+			kind: "pcm",
+			sampleFormat: this.options.outputFormat === "pcmFloat32" ? "f32" : "s16",
+			endianness: "little",
+			sampleRateHz: this.options.resampleRate ?? this.options.sampleRate ?? 48_000,
+			channels: this.options.channels ?? 2,
+			channelLayout: "interleaved",
+			chunkAlignmentBytes: (this.options.channels ?? 2) * (this.options.outputFormat === "pcmFloat32" ? 4 : 2),
+		};
 	}
 
 	public process(
@@ -221,8 +235,12 @@ class AudioJsAudioProcessingPipeline implements AudioProcessingPipeline {
 						if (typeof pipelineOptions.normalize === "number") instance.normalize(pipelineOptions.normalize, "rms");
 						else instance.normalize(pipelineOptions.normalize === true ? "streaming" : pipelineOptions.normalize);
 					}
-					if (pipelineOptions.resampleRate != null && typeof instance.resample === "function")
-						instance.resample(pipelineOptions.resampleRate, { type: "sinc" });
+					const outputSampleRate = pipelineOptions.resampleRate ?? pipelineOptions.sampleRate ?? 48_000;
+					if (typeof instance.resample !== "function") throw new Error("Audio processing runtime does not support resampling");
+					instance.resample(outputSampleRate, { type: "sinc" });
+					const outputChannels = pipelineOptions.channels ?? 2;
+					if (typeof instance.remix !== "function") throw new Error("Audio processing runtime does not support channel remixing");
+					instance.remix(outputChannels);
 				}
 				for await (const block of instance as any) {
 					if (normalizedSignal.aborted) break;
@@ -263,17 +281,6 @@ export class AudioJsAudioProcessingEngine implements AudioProcessingEngine {
 	): Promise<AudioProcessingPipeline> {
 		return new AudioJsAudioProcessingPipeline({ ...this.defaults, ...options }, context);
 	}
-}
-
-export function resolveOutputStreamType(
-	options: AudioProcessingOptions,
-	fallback: StreamType = StreamType.Arbitrary,
-): StreamType {
-	if (options.enabled === false) return fallback;
-	const outputFormat = options.outputFormat ?? "pcm16le";
-	if (outputFormat === "pcm16le" || outputFormat === "pcmFloat32") return StreamType.Raw;
-	if (outputFormat === "encoded") return fallback;
-	throw new TypeError(`Invalid audio processing output format: ${String(outputFormat)}`);
 }
 
 export function createAudioProcessingEngine(defaults: AudioProcessingOptions = {}): AudioProcessingEngine {

@@ -82,7 +82,35 @@ test("audio processing engine emits valid PCM16 bytes for processed output", asy
 	await pipeline.dispose();
 });
 
-test("PlaybackController falls back to the legacy stream when DSP setup fails before the first chunk", () => {
+test("audio processing declares and enforces its PCM sample rate, channel count, and chunk alignment", async () => {
+	const engine = createAudioProcessingEngine({ enabled: true, outputFormat: "pcm16le" });
+	const audioMod = await import("audio");
+	const wav = await audioMod.default
+		.from((t) => Math.sin(2 * Math.PI * 440 * t), { duration: 0.02, sampleRate: 8000, channels: 1 })
+		.encode("wav");
+	const pipeline = await engine.createPipeline({ enabled: true, outputFormat: "pcm16le" });
+	assert.deepEqual(pipeline.outputFormat, {
+		kind: "pcm",
+		sampleFormat: "s16",
+		endianness: "little",
+		sampleRateHz: 48000,
+		channels: 2,
+		channelLayout: "interleaved",
+		chunkAlignmentBytes: 4,
+	});
+	const chunks = [];
+	let byteLength = 0;
+	for await (const chunk of pipeline.process([wav], AbortSignal.timeout(3000))) {
+		assert.equal(chunk.byteLength % pipeline.outputFormat.chunkAlignmentBytes, 0);
+		byteLength += chunk.byteLength;
+		chunks.push(chunk);
+	}
+	assert.ok(chunks.length > 0);
+	assert.equal(byteLength, 3840);
+	await pipeline.dispose();
+});
+
+test("PlaybackController fails DSP setup instead of replaying a possibly consumed source stream", () => {
 	const { Bus, PlaybackController } = require("../core/dist");
 	const bus = new Bus();
 	const controller = new PlaybackController(bus);
@@ -100,10 +128,48 @@ test("PlaybackController falls back to the legacy stream when DSP setup fails be
 	});
 	const stream = Readable.from([Buffer.from([0x00, 0x01, 0x02, 0x03])]);
 	const track = { id: "fallback-track", title: "Fallback", duration: 1000 };
-	const resource = controller.createResource("p5", stream, track, StreamType.Opus);
-	assert.ok(resource);
-	assert.equal(resource.metadata.title, "Fallback");
+	assert.throws(
+		() => controller.createResource("p5", stream, track, StreamType.Opus),
+		/Audio processing inputFormat=pcm16le.*not supported/,
+	);
+	assert.equal(stream.readableDidRead, false);
+	assert.equal(stream.destroyed, true);
 	controller.detach("p5");
+});
+
+test("PlaybackController reports runtime DSP failure instead of mixing in encoded source bytes", async () => {
+	const { Bus, PlaybackController } = require("../core/dist");
+	const bus = new Bus();
+	const controller = new PlaybackController(bus);
+	const audioPlayer = Object.assign(new EventEmitter(), {
+		state: { status: "idle" },
+		play() {},
+		pause() {
+			return true;
+		},
+		unpause() {
+			return true;
+		},
+		stop() {
+			return true;
+		},
+	});
+	controller.attach("p6", { audioPlayer, audioProcessing: { enabled: true } });
+	const source = Readable.from([Buffer.from("not-a-valid-audio-container")]);
+	const resource = controller.createResource(
+		"p6",
+		source,
+		{ id: "broken-track", title: "Broken source", duration: 1000 },
+		StreamType.Opus,
+	);
+	await assert.rejects(async () => {
+		for await (const _chunk of resource.playStream) {
+			assert.fail("Encoded source bytes must not be emitted as raw PCM fallback");
+		}
+	}, /Audio processing failed for Broken source/);
+	assert.equal(source.readableDidRead, true);
+	assert.equal(source.destroyed, true);
+	controller.detach("p6");
 });
 
 test("processed raw PCM uses the Discord raw stream contract", () => {

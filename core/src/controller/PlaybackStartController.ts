@@ -90,14 +90,23 @@ export class PlaybackStartController {
 				import("../types").ActiveStream
 			>(this.playerId, CONTROLLER_RPC.streamReplace, { streamInfo: activeStream, session });
 			if (context.signal.aborted || !this.isCurrentSession(session, context)) return;
-			const resource = this.bus.requestRpcSync<
+			const resource = await this.bus.requestRpc<
 				{ stream: import("stream").Readable; track: Track; inputType?: import("@discordjs/voice").StreamType },
 				AudioResource
-			>(this.playerId, CONTROLLER_RPC.resourceCreate, {
-				stream: active.stream,
-				track,
-				inputType: active.inputType ?? activeStream.inputType,
-			});
+			>(
+				this.playerId,
+				CONTROLLER_RPC.resourceCreate,
+				{
+					stream: active.stream,
+					track,
+					inputType: active.inputType ?? activeStream.inputType,
+				},
+				{ signal: context.signal },
+			);
+			if (context.signal.aborted || !this.isCurrentSession(session, context)) {
+				resource.playStream.destroy();
+				return;
+			}
 			session.setResource(resource);
 			this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackPlay, { resource, session, from, to: track });
 			session.markPlaying(0);
