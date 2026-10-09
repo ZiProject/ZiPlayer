@@ -140,7 +140,6 @@ client.login(process.env.DISCORD_TOKEN);
 
 ---
 
-
 ## Singleton Access
 
 ZiPlayer exposes a process-wide manager singleton. Create `PlayerManager` once during application startup so it registers the
@@ -166,7 +165,6 @@ if (!player) {
 `getManager()` returns `null` until a manager has been constructed. `getPlayer(guildId)` returns `undefined` until that guild's
 player has been created; use `manager.create()` to create it. Keep the single manager initialization in the bot's startup path,
 and use the helpers wherever code needs to retrieve the shared instances.
-
 
 ---
 
