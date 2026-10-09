@@ -405,11 +405,31 @@ export class PlaybackController {
 				const signal = slot?.lifecycleAbort?.signal ?? new AbortController().signal;
 				const processedStream = Readable.from(
 					(async function* () {
-						const pipeline = await engine.createPipeline(processingOptions, { playerId, track, signal });
+						let pipeline: Awaited<ReturnType<typeof engine.createPipeline>> | null = null;
+						let started = false;
 						try {
-							yield* pipeline.process(stream as any, signal);
+							pipeline = await engine.createPipeline(processingOptions, { playerId, track, signal });
+							for await (const chunk of pipeline.process(stream as any, signal)) {
+								started = true;
+								if (signal.aborted) return;
+								yield chunk;
+							}
+						} catch (error) {
+							if (signal.aborted) return;
+							if (!started) {
+								for await (const chunk of stream as any) {
+									if (signal.aborted) return;
+									yield chunk;
+								}
+								return;
+							}
+							throw new Error(
+								`Audio processing failed during stream consumption for ${track?.title ?? "track"}: ${
+									error instanceof Error ? error.message : String(error)
+								}`,
+							);
 						} finally {
-							await pipeline.dispose();
+							await pipeline?.dispose();
 						}
 					})(),
 				);
@@ -419,7 +439,8 @@ export class PlaybackController {
 					inputType: resolveOutputStreamType(processingOptions, resolvedInputType ?? StreamType.Arbitrary),
 				});
 			} catch (error) {
-				console.warn("[PlaybackController] Audio processing failed; falling back to legacy stream path:", error);
+				const message = error instanceof Error ? error.message : String(error);
+				console.warn("[PlaybackController] Audio processing setup failed; falling back to legacy stream path:", message);
 			}
 		}
 		return createAudioResource(stream, {

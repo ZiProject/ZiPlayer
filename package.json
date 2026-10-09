@@ -6,6 +6,7 @@
 		"pretest": "npm run build:core",
 		"test": "node --test tests/*.test.js",
 		"test:integration": "node --test tests/plugins/*.test.js tests/extensions/*.test.js",
+		"bench:audio": "node tests/audio_engine_benchmark.js",
 		"format": "npx prettier --ignore-path .gitignore --write .",
 		"format:check": "npx prettier --ignore-path .gitignore -l .",
 		"web:dev": "npm run dev --prefix page",

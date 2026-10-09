@@ -76,6 +76,11 @@ function validateOptions(options: AudioProcessingOptions): AudioProcessingOption
 	if (resolved.inputFormat !== "encoded" && resolved.inputFormat !== "pcm16le" && resolved.inputFormat !== "pcmFloat32") {
 		throw new TypeError(`Invalid audio processing input format: ${String(resolved.inputFormat)}`);
 	}
+	if (resolved.inputFormat !== "encoded") {
+		throw new TypeError(
+			`Audio processing inputFormat=${String(resolved.inputFormat)} is not supported by the current runtime; use encoded input and let the library decode it before DSP processing.`,
+		);
+	}
 
 	if (!isFiniteNumber(resolved.sampleRate) || resolved.sampleRate <= 0) {
 		throw new TypeError("Audio processing sampleRate must be a positive finite number");
