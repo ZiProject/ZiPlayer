@@ -134,7 +134,9 @@ export class TTSPlugin extends BasePlugin {
 			createStream: opts?.createStream,
 			edgeTTSOptions: opts?.edgeTTSOptions,
 		};
-		this.init();
+		// Nạp trước danh sách giọng; nếu lỗi (mất mạng, bị chặn) thì bỏ qua để tránh
+		// unhandledRejection — danh sách sẽ được nạp lười khi thực sự cần (xem synthesize).
+		this.init().catch(() => {});
 	}
 
 	async init() {

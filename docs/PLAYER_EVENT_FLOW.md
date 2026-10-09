@@ -2,8 +2,8 @@
 
 ## Purpose
 
-`PlayerBus` is the canonical internal event channel. Controllers publish lifecycle/state events to the bus and do not depend on
-`Player` or `PlayerManager`.
+`Bus` is the canonical internal event channel. Controllers publish lifecycle/state events to the bus and do not depend on `Player`
+or `PlayerManager`.
 
 The public event boundary is:
 
@@ -11,7 +11,7 @@ The public event boundary is:
 controller
    │
    ▼
-PlayerBus.event()
+Bus.event()
    │
    ▼
 PlayerEventBridge
@@ -23,7 +23,7 @@ This restores the manager-level event propagation that existed around `Player.ol
 
 ## Event mapping
 
-| PlayerBus event          | Player event             | Manager event            | Player payload           |
+| Bus event                | Player event             | Manager event            | Player payload           |
 | ------------------------ | ------------------------ | ------------------------ | ------------------------ |
 | `TRACK_LOADING`          | `trackLoading`           | `trackLoading`           | `session`                |
 | `TRACK_LOADED`           | `trackLoaded`            | `trackLoaded`            | `session`                |
@@ -71,8 +71,8 @@ events still need canonical Bus producers for full `Player.old.ts` parity.
 
 ## Rules
 
-1. Controllers publish to `PlayerBus`; they must not call `manager.emit()` directly.
+1. Controllers publish to `Bus`; they must not call `manager.emit()` directly.
 2. `PlayerEventBridge` is the only adapter from internal Bus events to public Player/Manager events.
 3. Manager listeners receive the source `Player` as argument zero.
 4. Destroying a Player disposes the bridge before clearing the bus.
-5. New public events should first be added to `PlayerBus`, then documented here, then mapped by `PlayerEventBridge`.
+5. New public events should first be added to `Bus`, then documented here, then mapped by `PlayerEventBridge`.

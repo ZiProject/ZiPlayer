@@ -27,7 +27,6 @@ import type {
 } from "./types/lavalink";
 
 import WebSocket from "ws";
-import { channel } from "diagnostics_channel";
 
 export class WebSocketHandler {
 	private debug: (message: string, ...optional: any[]) => void;
@@ -1302,7 +1301,7 @@ export class lavalinkExt extends BaseExtension {
 	}
 
 	onRegister(context: ExtensionContext): void {
-		this.attachToPlayer(context.player);
+		if (context.player) this.attachToPlayer(context.player);
 		this.startUpdateLoop();
 	}
 
@@ -1313,7 +1312,7 @@ export class lavalinkExt extends BaseExtension {
 			await this.destroyLavalinkPlayer(player).catch(() => {});
 		}
 
-		this.detachFromPlayer(context.player);
+		if (context.player) this.detachFromPlayer(context.player);
 		this.nodeManager.closeAllConnections();
 	}
 
@@ -1573,6 +1572,7 @@ export class lavalinkExt extends BaseExtension {
 
 	async beforePlay(context: ExtensionContext, payload: ExtensionPlayRequest): Promise<ExtensionPlayResponse> {
 		const player = context.player;
+		if (!player) return { handled: false };
 		this.attachToPlayer(player);
 		await this.initializeNodes();
 
@@ -1617,6 +1617,7 @@ export class lavalinkExt extends BaseExtension {
 	async provideStream(context: ExtensionContext, payload: ExtensionStreamRequest): Promise<StreamInfo | null> {
 		const player = context.player;
 		const track = payload.track;
+		if (!player) return null;
 
 		this.attachToPlayer(player);
 		await this.initializeNodes();
@@ -1720,7 +1721,7 @@ export class lavalinkExt extends BaseExtension {
 		const dummy = new PassThrough();
 		dummy.end(); // immediately drain so no memory leak
 
-		return { stream: dummy, type: "arbitrary", remote: true, handle };
+		return { stream: dummy, track, streamType: "arbitrary" as StreamInfo["streamType"], type: "arbitrary", remote: true, handle };
 	}
 
 	private async ensureNodeForPlayer(player: Player): Promise<any> {

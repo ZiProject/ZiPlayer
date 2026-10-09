@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { PlayerManager } = require("../../core/dist");
+const { ExtensionManager, PlayerManager } = require("../../core/dist");
 const { lyricsExt } = require("../../extension/dist");
 
 function makeTrack(id = "t1", title = "Track 1", author) {
@@ -15,6 +15,26 @@ function makeTrack(id = "t1", title = "Track 1", author) {
 		metadata: author ? { author } : {},
 	};
 }
+
+test("ExtensionManager.invoke only allows declared extension hooks", async () => {
+	const extensionManager = new ExtensionManager({ playerId: "guild-extension-invoke", bus: {} }, { debugEnabled: false });
+	let secretMethodCalled = false;
+	const extension = {
+		name: "invoke-policy",
+		player: null,
+		active: () => true,
+		beforePlay: (_context, payload) => payload,
+		internalMethod: () => {
+			secretMethodCalled = true;
+		},
+	};
+	extensionManager.register(extension);
+
+	assert.deepEqual(await extensionManager.invoke(extension.name, "beforePlay", {}, { query: "song" }), { query: "song" });
+	assert.equal(await extensionManager.invoke(extension.name, "internalMethod", {}, {}), undefined);
+	assert.equal(secretMethodCalled, false);
+	extensionManager.destroy();
+});
 
 test("lyricsExt attaches lyrics on trackStart and emits event", async (t) => {
 	const ext = new lyricsExt(null, { autoFetchOnTrackStart: true });
@@ -59,6 +79,42 @@ test("lyricsExt attaches lyrics on trackStart and emits event", async (t) => {
 	assert.equal(typeof payload.track.metadata.lyrics.text, "string");
 	assert.ok(changed, "lyricsChange should be emitted");
 	assert.equal(changed.plr, player);
+});
+
+test("lyricsExt releases listeners and its active schedule when detached", async (t) => {
+	const ext = new lyricsExt();
+	ext.fetch = async (track) => ({
+		provider: "lrclib",
+		source: "LRCLIB",
+		url: "https://lrclib.net/",
+		text: "lyrics",
+		synced: Array.from({ length: 100 }, (_, index) => `[00:${String(index).padStart(2, "0")}.00]line ${index}`).join("\n"),
+		trackName: track.title,
+		matchedBy: "test",
+		lang: null,
+	});
+
+	const mgr = new PlayerManager({ extensions: [ext] });
+	t.after(() => mgr.destroy());
+	const player = await mgr.create("guild-lyrics-cleanup", { extensions: ["lyricsExt"] });
+	const baselineListenerCounts = ["trackStart", "playerPause", "playerResume", "trackEnd", "playerDestroy"].map((event) =>
+		player.listenerCount(event),
+	);
+
+	player.emit("trackStart", makeTrack("cleanup", "Cleanup test"));
+	await new Promise((resolve) => setTimeout(resolve, 20));
+
+	const schedule = ext.schedules.get(player.guildId);
+	assert.ok(schedule, "synced lyrics should create a schedule");
+	assert.ok(schedule.timer, "only the next lyric line should have an active timer");
+
+	assert.equal(player.detachExtension(ext), true);
+	assert.deepEqual(
+		["trackStart", "playerPause", "playerResume", "trackEnd", "playerDestroy"].map((event) => player.listenerCount(event)),
+		baselineListenerCounts.map((count) => count - 1),
+		"detaching should remove lyrics event listeners",
+	);
+	assert.equal(ext.schedules.size, 0, "detaching should release the schedule and its lyric lines");
 });
 
 test("lyricsExt falls back to lyrics.ovh when lrclib not found", async () => {

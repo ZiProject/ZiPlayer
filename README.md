@@ -388,6 +388,7 @@ const player = await manager.create(guildId, {
 	quality: "high",
 	leaveOnEnd: true,
 	leaveOnEmpty: true,
+	pauseOnEmpty: false,
 	leaveTimeout: 100000,
 	selfDeaf: true,
 	selfMute: false,

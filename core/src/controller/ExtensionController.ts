@@ -1,26 +1,86 @@
-import type { PlayerBus } from "../structures/PlayerBus";
+import type { Bus } from "../structures/Bus";
+import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import type { ExtensionManager } from "../extensions";
 import type { BaseExtension } from "../extensions/BaseExtension";
-import type { ExtensionControllerOptions } from "../types";
+import type {
+	ExtensionPlayRequest,
+	ExtensionPlayResponse,
+	ExtensionAfterPlayPayload,
+	ExtensionMethod,
+	ExtensionContext,
+} from "../types";
 
-/** Owns extension-related PlayerBus RPC/query registration. */
+/**
+ * Shared, singleton controller: owns extension-related Bus RPC/query
+ * registration for every player. Registered once; routed per player via
+ * `attach`/`detach`.
+ */
 export class ExtensionController {
-	private readonly detachRpcs: Array<() => void> = [];
+	private readonly managers = new Map<string, ExtensionManager>();
 
-	constructor(options: ExtensionControllerOptions) {
-		const { extensionManager, bus } = options;
-		this.detachRpcs.push(
-			bus.registerQuery("extensions", () => extensionManager.getAll()),
-			bus.registerRpc<{ extension: BaseExtension }, void>("extension.add", ({ extension }) =>
-				extensionManager.register(extension),
-			),
-			bus.registerRpc<{ extension: BaseExtension }, boolean>("extension.remove", ({ extension }) =>
-				extensionManager.unregister(extension),
-			),
+	constructor(bus: Bus) {
+		bus.registerQuery(PLAYER_QUERY.extensions, (playerId) => this.manager(playerId)?.getAll() ?? []);
+		bus.registerQuery(PLAYER_QUERY.extensionList, (playerId) => this.manager(playerId)?.getAll() ?? []);
+		bus.registerRpc<Record<string, never> | undefined, BaseExtension[]>(
+			PLAYER_RPC.extensionList,
+			(_req, ctx) => this.manager(ctx.playerId)?.getAll() ?? [],
+		);
+		bus.registerRpc<{ name: string }, BaseExtension | undefined>(PLAYER_RPC.extensionGet, ({ name }, ctx) =>
+			this.manager(ctx.playerId)?.get(name),
+		);
+		bus.registerRpc<{ name: string }, boolean>(
+			PLAYER_RPC.extensionEnable,
+			({ name }, ctx) => this.manager(ctx.playerId)?.enable(name) ?? false,
+		);
+		bus.registerRpc<{ name: string }, boolean>(
+			PLAYER_RPC.extensionDisable,
+			({ name }, ctx) => this.manager(ctx.playerId)?.disable(name) ?? false,
+		);
+		bus.registerRpc<{ extension: BaseExtension }, void>(PLAYER_RPC.extensionAdd, ({ extension }, ctx) =>
+			this.manager(ctx.playerId)?.register(extension),
+		);
+		bus.registerRpc<{ extension: BaseExtension }, boolean>(
+			PLAYER_RPC.extensionRemove,
+			({ extension }, ctx) => this.manager(ctx.playerId)?.unregister(extension) ?? false,
+		);
+		bus.registerRpc<ExtensionPlayRequest, { request: ExtensionPlayRequest; response: ExtensionPlayResponse }>(
+			CONTROLLER_RPC.extensionBeforePlay,
+			async (request, ctx) => {
+				const mgr = this.manager(ctx.playerId);
+				if (!mgr) return { request, response: {} };
+				return mgr.beforePlayHooks(request);
+			},
+		);
+		bus.registerRpc<ExtensionAfterPlayPayload, void>(CONTROLLER_RPC.extensionAfterPlay, async (payload, ctx) => {
+			const mgr = this.manager(ctx.playerId);
+			if (mgr) await mgr.afterPlayHooks(payload);
+		});
+		bus.registerRpc<{ extension: string; method: ExtensionMethod; context: ExtensionContext; payload?: unknown }, unknown>(
+			PLAYER_RPC.extensionInvoke,
+			async ({ extension, method, context, payload }, ctx) => {
+				const mgr = this.manager(ctx.playerId);
+				if (!mgr) return undefined;
+				return mgr.invoke(extension, method, context, payload);
+			},
 		);
 	}
 
-	dispose(): void {
-		for (const detach of this.detachRpcs.splice(0)) detach();
+	attach(playerId: string, extensionManager: ExtensionManager): void {
+		if (this.managers.has(playerId)) this.detach(playerId);
+		this.managers.set(playerId, extensionManager);
+	}
+	detach(playerId: string): void {
+		const manager = this.managers.get(playerId);
+		this.managers.delete(playerId);
+		manager?.destroy();
+	}
+	public getManager(playerId: string): ExtensionManager | undefined {
+		return this.managers.get(playerId);
+	}
+	public has(playerId: string): boolean {
+		return this.managers.has(playerId);
+	}
+	private manager(playerId: string): ExtensionManager | undefined {
+		return this.managers.get(playerId);
 	}
 }

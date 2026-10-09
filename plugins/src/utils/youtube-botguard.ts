@@ -47,6 +47,7 @@ async function createMinter(): Promise<WebPoMinter> {
 	});
 
 	const pageResponse = await fetch("https://www.youtube.com", {
+		signal: AbortSignal.timeout(15_000),
 		headers: {
 			accept: "*/*",
 			"accept-language": "en-US,en;q=0.7",
@@ -89,7 +90,7 @@ async function createMinter(): Promise<WebPoMinter> {
 	const interpreterUrl = challengeResponse.bgChallenge.interpreterUrl?.privateDoNotAccessOrElseTrustedResourceUrlWrappedValue;
 	if (!interpreterUrl) throw new Error("Could not get BotGuard interpreter URL");
 
-	const bgScriptResponse = await fetch(`https:${interpreterUrl}`);
+	const bgScriptResponse = await fetch(`https:${interpreterUrl}`, { signal: AbortSignal.timeout(15_000) });
 	if (!bgScriptResponse.ok) {
 		throw new Error(`Failed to load BotGuard interpreter: HTTP ${bgScriptResponse.status}`);
 	}
@@ -109,6 +110,7 @@ async function createMinter(): Promise<WebPoMinter> {
 	const botguardResponse = await botGuardClient.snapshot({ webPoSignalOutput });
 
 	const integrityTokenResponse = await fetch(buildURL("GenerateIT", true), {
+		signal: AbortSignal.timeout(15_000),
 		method: "POST",
 		headers: getHeaders(),
 		body: JSON.stringify([REQUEST_KEY, botguardResponse]),

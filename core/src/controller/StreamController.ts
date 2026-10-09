@@ -1,60 +1,218 @@
-import type { StreamInfo, Track, ActiveStream, StreamControllerOptions, PlayerAction } from "../types";
+import { PlaybackMode, type StreamInfo, type Track, type ActiveStream, type StreamControllerOptions } from "../types";
 import { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
-import type { PlayerBus } from "../structures/PlayerBus";
-import { CONTROLLER_RPC } from "./ControllerBusContract";
+import type { Bus } from "../structures/Bus";
+import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, BUS_EVENT } from "../structures/BusContract";
 
 const STREAM_RPC_REPLACE = "controller.stream.replace";
 
-export class StreamController {
-	private active: ActiveStream | null = null;
-	private readonly streamManager?: StreamManager;
-	private readonly bus?: PlayerBus;
-	private readonly detachAction?: () => void;
-	private readonly detachRpcs: Array<() => void> = [];
-	private readonly detachStreamError?: () => void;
-	constructor(options: StreamControllerOptions = {}) {
-		this.streamManager = options.streamManager;
-		this.bus = options.bus;
-		if (this.bus) {
-			this.detachAction = this.bus.onAction((action: PlayerAction, context) => {
-				if (!context.signal.aborted && action.type === "STOP") this.abortCurrent();
-			});
-			this.detachRpcs.push(
-				this.bus.registerRpc<{ track: Track; stream: { handle?: { play?: () => void | Promise<void> } } }, boolean>(
-					CONTROLLER_RPC.playbackRemote,
-					async ({ stream }) => {
-						if (stream?.handle?.play) await stream.handle.play();
-						return true;
-					},
-				),
-				this.bus.registerRpc<void, void>(CONTROLLER_RPC.playbackDestroyCurrentStream, () => {
-					this.abortCurrent();
-				}),
-				this.bus.registerRpc<{ streamInfo: StreamInfo; session: PlaybackSession }, ActiveStream>(
-					STREAM_RPC_REPLACE,
-					({ streamInfo, session }) => this.replace(streamInfo, session),
-				),
-				this.bus.registerQuery("stream.stats", () => this.streamManager?.getStats() ?? null),
-			);
-		}
-		if (this.streamManager && this.bus) {
-			const onStreamError = ({ error }: { error: Error }) =>
-				this.bus?.event({ type: "streamError", error, track: this.bus.querySync("currentTrack") as Track | null });
-			this.streamManager.on("streamError", onStreamError);
-			this.detachStreamError = () => this.streamManager?.off("streamError", onStreamError);
-		}
-	}
-	get current() {
-		return this.active;
-	}
-	async resolve(info: StreamInfo, session: PlaybackSession): Promise<Readable> {
-		if (!session.isActive()) throw this.abortError();
+interface StreamState {
+	active: ActiveStream | null;
+	remoteHandle: NonNullable<StreamInfo["handle"]> | null;
+	remotePaused: boolean;
+	streamManager?: StreamManager;
+	detachStreamError?: () => void;
+}
 
-		if (info.stream && !info.stream.destroyed && (info.stream as any).readable !== false) {
-			return info.stream;
+/** Shared stream controller with active and remote stream state isolated by playerId. */
+export class StreamController {
+	public readonly states = new Map<string, StreamState>();
+
+	constructor(private readonly bus: Bus) {
+		bus.onAction((action, context) => {
+			if (context.signal.aborted || action.type !== "STOP") return;
+			const state = this.states.get(context.playerId);
+			if (!state) return;
+			this.abortCurrent(context.playerId, state);
+			void this.remoteStop(state);
+		});
+		bus.registerRpc<{ track?: Track; stream: StreamInfo }, boolean>(
+			CONTROLLER_RPC.playbackRemote,
+			async ({ track, stream }, ctx) => {
+				const state = this.states.get(ctx.playerId);
+				if (!state) return false;
+				const ok = await this.handleRemote(ctx.playerId, state, stream);
+				if (ok && track) {
+					bus.requestRpcSync(ctx.playerId, PLAYER_RPC.queueSetCurrent, { track });
+					bus.event(ctx.playerId, { type: BUS_EVENT.trackStarted, session: null as any, track });
+				}
+				return ok;
+			},
+		);
+		bus.registerRpc<{ stream: StreamInfo }, boolean>(CONTROLLER_RPC.playbackRemoteAttach, ({ stream }, ctx) => {
+			const state = this.states.get(ctx.playerId);
+			return state ? this.handleRemote(ctx.playerId, state, stream) : false;
+		});
+		bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackRemotePause, (_req, ctx) =>
+			this.remotePause(this.states.get(ctx.playerId)),
+		);
+		bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackRemoteResume, (_req, ctx) =>
+			this.remoteResume(this.states.get(ctx.playerId)),
+		);
+		bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackRemoteStop, (_req, ctx) =>
+			this.remoteStop(this.states.get(ctx.playerId)),
+		);
+		bus.registerRpc<{ position: number }, boolean>(CONTROLLER_RPC.playbackRemoteSeek, ({ position }, ctx) =>
+			this.remoteSeek(this.states.get(ctx.playerId), position),
+		);
+		bus.registerRpc<{ volume: number }, boolean>(CONTROLLER_RPC.playbackRemoteSetVolume, ({ volume }, ctx) =>
+			this.remoteSetVolume(this.states.get(ctx.playerId), volume),
+		);
+		bus.registerRpc<void, void>(PLAYER_RPC.playbackExitRemote, (_req, ctx) => {
+			const state = this.states.get(ctx.playerId);
+			if (state) this.exitRemote(ctx.playerId, state);
+		});
+		bus.registerQuery(PLAYER_QUERY.remotePaused, (playerId) => this.states.get(playerId)?.remotePaused ?? false);
+		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackDestroyCurrentStream, (_req, ctx) => {
+			const state = this.states.get(ctx.playerId);
+			if (state) this.abortCurrent(ctx.playerId, state);
+		});
+		bus.registerRpc<{ streamInfo: StreamInfo; session: PlaybackSession }, ActiveStream>(
+			STREAM_RPC_REPLACE,
+			({ streamInfo, session }, ctx) => {
+				const state = this.states.get(ctx.playerId);
+				if (!state) throw new Error("StreamController is disposed");
+				return this.replace(ctx.playerId, state, streamInfo, session);
+			},
+		);
+		bus.registerQuery(PLAYER_QUERY.streamStats, (playerId) => this.states.get(playerId)?.streamManager?.getStats() ?? null);
+		bus.registerQuery(PLAYER_QUERY.streamState, (playerId) => this.stateSnapshot(this.states.get(playerId)));
+		bus.registerQuery(PLAYER_QUERY.streamCurrent, (playerId) => this.states.get(playerId)?.active ?? null);
+		bus.registerRpc(PLAYER_RPC.streamState, (_req, ctx) => this.stateSnapshot(this.states.get(ctx.playerId)));
+		bus.registerRpc(PLAYER_RPC.streamCurrent, (_req, ctx) => this.states.get(ctx.playerId)?.active ?? null);
+	}
+
+	attach(playerId: string, streamManager?: StreamManager): void {
+		this.detach(playerId);
+		const state: StreamState = { active: null, remoteHandle: null, remotePaused: false, streamManager };
+		if (streamManager) {
+			const onStreamError = ({ error }: { error: Error }) =>
+				this.bus.event(playerId, {
+					type: BUS_EVENT.streamError,
+					error,
+					track: this.bus.querySync(playerId, PLAYER_QUERY.currentTrack) as Track | null,
+				});
+			streamManager.on("streamError", onStreamError);
+			state.detachStreamError = () => streamManager.off("streamError", onStreamError);
 		}
+		this.states.set(playerId, state);
+	}
+
+	detach(playerId: string): void {
+		const state = this.states.get(playerId);
+		if (!state) return;
+		this.states.delete(playerId);
+		state.detachStreamError?.();
+		this.abortCurrent(playerId, state);
+		this.exitRemote(playerId, state);
+		state.active = null;
+		state.streamManager?.dispose();
+		state.streamManager = undefined;
+	}
+
+	/** Resolves stream information using this player's active playback session. */
+	public resolve(playerId: string, info: StreamInfo, session: PlaybackSession): Promise<Readable> {
+		if (!this.states.has(playerId)) throw new Error("StreamController is disposed");
+		return this.resolveInfo(info, session);
+	}
+
+	aggregateSnapshot(): { active: number; loading: number } {
+		let active = 0;
+		let loading = 0;
+		for (const state of this.states.values()) {
+			if (state.active) active++;
+			const stats = state.streamManager?.getStats() as {
+				active?: number;
+				loading?: number;
+			} | null;
+			if (stats && typeof stats.active === "number") active += stats.active;
+			if (stats && typeof stats.loading === "number") loading += stats.loading;
+		}
+		return { active, loading };
+	}
+
+	public getStreamManager(playerId: string): StreamManager | undefined {
+		return this.states.get(playerId)?.streamManager;
+	}
+
+	public has(playerId: string): boolean {
+		return this.states.has(playerId);
+	}
+
+	private stateSnapshot(state?: StreamState): { sessionId: number; track: Track } | null {
+		return state?.active ? { sessionId: state.active.sessionId, track: state.active.track } : null;
+	}
+
+	private async handleRemote(
+		playerId: string,
+		state: StreamState,
+		stream: { handle?: NonNullable<StreamInfo["handle"]> },
+	): Promise<boolean> {
+		state.remoteHandle = stream?.handle ?? null;
+		state.remotePaused = false;
+		if (this.bus.hasRpc(CONTROLLER_RPC.playbackModeSet)) {
+			this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackModeSet, { mode: PlaybackMode.REMOTE });
+		}
+		if (stream?.handle?.play) await stream.handle.play();
+		return true;
+	}
+
+	private exitRemote(playerId: string, state: StreamState): void {
+		const handle = state.remoteHandle;
+		if (!handle && !state.remotePaused) return;
+		state.remoteHandle = null;
+		state.remotePaused = false;
+		if (this.bus.hasRpc(CONTROLLER_RPC.playbackModeSet)) {
+			this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackModeSet, { mode: PlaybackMode.NATIVE });
+		}
+		if (handle?.destroy) void handle.destroy().catch(() => {});
+	}
+
+	private remotePause(state?: StreamState): boolean {
+		if (!state?.remoteHandle) return false;
+		state.remotePaused = true;
+		void state.remoteHandle.pause().catch(() => {});
+		return true;
+	}
+
+	private remoteResume(state?: StreamState): boolean {
+		if (!state?.remoteHandle) return false;
+		state.remotePaused = false;
+		void state.remoteHandle.resume().catch(() => {});
+		return true;
+	}
+
+	private remoteStop(state?: StreamState): boolean {
+		if (!state) return false;
+		state.remotePaused = false;
+		if (state.remoteHandle) void state.remoteHandle.stop().catch(() => {});
+		return true;
+	}
+
+	private async remoteSeek(state: StreamState | undefined, position: number): Promise<boolean> {
+		if (!state?.remoteHandle) return false;
+		try {
+			await state.remoteHandle.seek(position);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	private async remoteSetVolume(state: StreamState | undefined, volume: number): Promise<boolean> {
+		if (!state?.remoteHandle) return false;
+		try {
+			await state.remoteHandle.setVolume(volume);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	private async resolveInfo(info: StreamInfo, session: PlaybackSession): Promise<Readable> {
+		if (!session.isActive()) throw this.abortError();
+		if (info.stream && !info.stream.destroyed && (info.stream as any).readable !== false) return info.stream;
 
 		if (info.url) {
 			try {
@@ -95,17 +253,17 @@ export class StreamController {
 			}
 			return stream;
 		}
-
 		throw new Error("StreamInfo does not contain a readable stream, url, or recreate factory");
 	}
-	async replace(info: StreamInfo, session: PlaybackSession): Promise<ActiveStream> {
-		const stream = await this.resolve(info, session);
+
+	private async replace(playerId: string, state: StreamState, info: StreamInfo, session: PlaybackSession): Promise<ActiveStream> {
+		const stream = await this.resolveInfo(info, session);
 		if (!session.isActive()) {
 			stream.destroy();
 			throw this.abortError();
 		}
-		this.abortCurrent();
-		const streamId = this.streamManager?.registerStream(stream, session.track!, {
+		this.abortCurrent(playerId, state);
+		const streamId = state.streamManager?.registerStream(stream, session.track!, {
 			source: session.track?.source,
 			isPreload: false,
 			isRemote: info.remote ?? false,
@@ -119,47 +277,43 @@ export class StreamController {
 			streamId: streamId ?? null,
 			inputType: info.inputType,
 		};
-		this.active = active;
+		state.active = active;
 		const cleanup = () => {
-			if (this.active?.sessionId !== session.id || this.active.stream !== stream) return;
-			this.active = null;
-			if (streamId) this.streamManager?.unregisterStream(streamId, false);
+			if (state.active?.sessionId !== session.id || state.active.stream !== stream) return;
+			state.active = null;
+			if (streamId) state.streamManager?.unregisterStream(streamId, false);
 		};
 		stream.once("close", cleanup);
 		stream.once("end", cleanup);
 		stream.once("error", cleanup);
-		session.signal.addEventListener("abort", () => this.abort(active), { once: true });
+		session.signal.addEventListener("abort", () => this.abort(playerId, state, active), { once: true });
 		return active;
 	}
-	abortCurrent() {
-		if (this.active) this.abort(this.active);
+
+	private abortCurrent(playerId: string, state: StreamState): void {
+		if (state.active) this.abort(playerId, state, state.active);
 	}
-	abort(stream: ActiveStream) {
-		if (this.active?.stream !== stream.stream) return;
-		this.active = null;
-		this.bus?.event({ type: "STREAM_ABORTED", session: stream.session.snapshot() });
-		if (stream.streamId) {
-			this.streamManager?.unregisterStream(stream.streamId, true);
+
+	private abort(playerId: string, state: StreamState, active: ActiveStream): void {
+		if (state.active?.stream !== active.stream) return;
+		state.active = null;
+		this.bus.event(playerId, { type: BUS_EVENT.streamAborted, session: active.session.snapshot() });
+		if (active.streamId) {
+			state.streamManager?.unregisterStream(active.streamId, true);
 			return;
 		}
-		if (!stream.stream.destroyed) {
+		if (!active.stream.destroyed) {
 			try {
-				stream.stream.destroy();
+				active.stream.destroy();
 			} catch {}
 		}
 	}
-	dispose() {
-		this.detachStreamError?.();
-		this.detachAction?.();
-		for (const detach of this.detachRpcs) detach();
-		this.detachRpcs.length = 0;
-		this.abortCurrent();
-		this.active = null;
-	}
+
 	private isAbortError(error: unknown): boolean {
 		return error instanceof Error && (error.name === "AbortError" || error.message.toLowerCase().includes("abort"));
 	}
-	private abortError() {
+
+	private abortError(): Error {
 		const error = new Error("Playback stream operation was aborted");
 		error.name = "AbortError";
 		return error;

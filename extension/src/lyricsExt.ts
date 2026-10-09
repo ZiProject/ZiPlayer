@@ -53,6 +53,29 @@ export interface LyricsResult {
 	lang?: string | null;
 }
 
+type LyricsLine = { timeMs: number; text: string };
+
+interface LyricsSchedule {
+	timer: NodeJS.Timeout | null;
+	startAt: number;
+	pausedAt?: number;
+	pausedDuration: number;
+	lines: LyricsLine[];
+	nextIndex: number;
+	result: LyricsResult;
+}
+
+interface LyricsPlayerBinding {
+	manager?: PlayerManager;
+	listeners: {
+		trackStart: (track: Track) => void;
+		playerPause: () => void;
+		playerResume: () => void;
+		trackEnd: () => void;
+		playerDestroy: () => void;
+	};
+}
+
 /**
  * Lyrics extension for ZiPlayer that provides automatic lyrics fetching and synchronization.
  *
@@ -90,19 +113,10 @@ export class lyricsExt extends BaseExtension {
 	name = "lyricsExt";
 	version = "1.0.0";
 	player: Player | null = null;
-	private manager?: PlayerManager;
+	private readonly bindings = new Map<Player, LyricsPlayerBinding>();
 
 	private options: LyricsOptions;
-	private schedules: Map<
-		string,
-		{
-			timers: NodeJS.Timeout[];
-			startAt: number;
-			lines: { timeMs: number; text: string }[];
-			pausedAt?: number;
-			pausedDuration?: number;
-		}
-	> = new Map();
+	private schedules = new Map<string, LyricsSchedule>();
 
 	/**
 	 * Creates a new lyrics extension instance.
@@ -155,81 +169,90 @@ export class lyricsExt extends BaseExtension {
 	 * });
 	 */
 	active(alas: any): boolean {
-		if (alas?.player && !this.player) this.player = alas.player;
-		const player = this.player;
+		const player = (alas?.player as Player | undefined) ?? this.player;
 		const manager = alas?.manager as PlayerManager | undefined;
-		if (manager) this.manager = manager;
 		if (!player) return false;
+		this.player = player;
 
-		if (this.options.autoFetchOnTrackStart) {
-			// Guard: only attach once
-			const anyPlayer = player as any;
-			if (!anyPlayer.__lyricsExtAttached) {
-				anyPlayer.__lyricsExtAttached = true;
-				this.debug(`Wiring trackStart for guild=${player.guildId}`);
-				player.on("trackStart", async (track: Track) => {
-					const startedAt = Date.now();
-					this.debug(`trackStart: ${track?.title ?? "<unknown>"} @${startedAt}`);
-					try {
-						const res = await this.fetch(track).catch(() => undefined);
-						if (!res) return;
-						// Attach to track metadata
-						track.metadata = track.metadata || {};
-						(track.metadata as any).lyrics = {
-							text: res.text ?? undefined,
-							synced: res.synced ?? undefined,
-							provider: res.provider,
-							url: res.url,
-							source: res.source,
-						};
-
-						const lineCount = res.synced ? this.parseLRC(res.synced).length : 0;
-						this.debug(
-							`fetched provider=${res.provider} synced=${!!res.synced} textLen=${res.text?.length ?? 0} lines=${lineCount}`,
-						);
-
-						// Emit via manager when available; fallback to player
-						if (this.manager && typeof (this.manager as any).emit === "function") {
-							this.manager.emit("lyricsCreate", player, track, res);
-							this.manager.emit("lyricsChange", player, track, res);
-						} else {
-							(player as any)?.emit?.("lyricsCreate", track, res);
-							(player as any)?.emit?.("lyricsChange", track, res);
-						}
-
-						// Start per-line schedule if LRC available
-						if (res.synced) {
-							this.debug(`starting line schedule with LRC, ${lineCount} lines`);
-							this.startLineSchedule(player, track, res, res.synced, startedAt);
-						}
-					} catch (e: any) {
-						this.debug(`lyrics error: ${e?.message || e}`);
-					}
-				});
-
-				// Handle player pause/resume for lyrics sync
-				player.on("playerPause", () => {
+		if (this.options.autoFetchOnTrackStart && !this.bindings.has(player)) {
+			this.debug(`Wiring trackStart for guild=${player.guildId}`);
+			let binding: LyricsPlayerBinding;
+			const listeners: LyricsPlayerBinding["listeners"] = {
+				trackStart: (track) => void this.handleTrackStart(player, binding, track),
+				playerPause: () => {
 					this.debug("playerPause: pausing lyrics sync");
 					this.pauseLineSchedule(player);
-				});
-				player.on("playerResume", () => {
+				},
+				playerResume: () => {
 					this.debug("playerResume: resuming lyrics sync");
 					this.resumeLineSchedule(player);
-				});
-
-				// Clear any running schedule when track ends or player is destroyed
-				player.on("trackEnd", () => {
+				},
+				trackEnd: () => {
 					this.debug("trackEnd: clearing line schedule");
 					this.clearLineSchedule(player);
-				});
-				player.on("playerDestroy", () => {
-					this.debug("playerDestroy: clearing line schedule");
-					this.clearLineSchedule(player);
-				});
-			}
+				},
+				playerDestroy: () => this.cleanupPlayer(player),
+			};
+			binding = { manager, listeners };
+			this.bindings.set(player, binding);
+			player.on("trackStart", listeners.trackStart);
+			player.on("playerPause", listeners.playerPause);
+			player.on("playerResume", listeners.playerResume);
+			player.on("trackEnd", listeners.trackEnd);
+			player.on("playerDestroy", listeners.playerDestroy);
 		}
 
 		return true;
+	}
+
+	onDestroy(context: { player?: Player | null; playerId: string }): void {
+		const player = context.player ?? [...this.bindings.keys()].find((candidate) => candidate.playerId === context.playerId);
+		if (player) this.cleanupPlayer(player);
+	}
+
+	private async handleTrackStart(player: Player, binding: LyricsPlayerBinding, track: Track): Promise<void> {
+		const startedAt = Date.now();
+		this.debug(`trackStart: ${track?.title ?? "<unknown>"} @${startedAt}`);
+		try {
+			const res = await this.fetch(track).catch(() => undefined);
+			if (!res || this.bindings.get(player) !== binding || player.destroyed) return;
+
+			track.metadata = track.metadata || {};
+			(track.metadata as any).lyrics = {
+				text: res.text ?? undefined,
+				synced: res.synced ?? undefined,
+				provider: res.provider,
+				url: res.url,
+				source: res.source,
+			};
+
+			this.debug(`fetched provider=${res.provider} synced=${!!res.synced} textLen=${res.text?.length ?? 0}`);
+			if (binding.manager && typeof (binding.manager as any).emit === "function") {
+				binding.manager.emit("lyricsCreate", player, track, res);
+				binding.manager.emit("lyricsChange", player, track, res);
+			} else {
+				(player as any)?.emit?.("lyricsCreate", track, res);
+				(player as any)?.emit?.("lyricsChange", track, res);
+			}
+
+			if (res.synced) this.startLineSchedule(player, track, res, res.synced, startedAt);
+		} catch (e: any) {
+			this.debug(`lyrics error: ${e?.message || e}`);
+		}
+	}
+
+	private cleanupPlayer(player: Player): void {
+		const binding = this.bindings.get(player);
+		if (binding) {
+			player.off("trackStart", binding.listeners.trackStart);
+			player.off("playerPause", binding.listeners.playerPause);
+			player.off("playerResume", binding.listeners.playerResume);
+			player.off("trackEnd", binding.listeners.trackEnd);
+			player.off("playerDestroy", binding.listeners.playerDestroy);
+			this.bindings.delete(player);
+		}
+		this.clearLineSchedule(player);
+		if (this.player === player) this.player = [...this.bindings.keys()].at(-1) ?? null;
 	}
 
 	/**
@@ -339,7 +362,7 @@ export class lyricsExt extends BaseExtension {
 	}
 
 	// --- Scheduling per-line updates ---
-	private startLineSchedule(player: Player, track: Track, result: LyricsResult, lrc: string, startedAt: number) {
+	private startLineSchedule(player: Player, _track: Track, result: LyricsResult, lrc: string, startedAt: number) {
 		if (!lrc) return;
 		const guildId = player.guildId;
 		this.clearLineSchedule(player);
@@ -348,17 +371,19 @@ export class lyricsExt extends BaseExtension {
 			this.debug("parseLRC: no timed lines");
 			return;
 		}
-		const startAt = startedAt;
-		const timers: NodeJS.Timeout[] = [];
-		this.schedules.set(guildId, { timers, startAt, lines });
-		this.debug(`schedule: ${lines.length} lines; startAt=${startAt}`);
-
-		const emitAtIndex = (idx: number) => {
-			this.emitLineAtIndex(player, lines, idx, result);
+		const schedule: LyricsSchedule = {
+			timer: null,
+			startAt: startedAt,
+			pausedDuration: 0,
+			lines,
+			nextIndex: 0,
+			result,
 		};
+		this.schedules.set(guildId, schedule);
+		this.debug(`schedule: ${lines.length} lines; startAt=${startedAt}`);
 
 		// Emit immediate line if already passed due to fetch delay
-		const elapsed = Date.now() - startAt;
+		const elapsed = Date.now() - startedAt;
 		let currentIdx = -1;
 		for (let i = 0; i < lines.length; i++) {
 			if (lines[i].timeMs <= elapsed) currentIdx = i;
@@ -366,75 +391,65 @@ export class lyricsExt extends BaseExtension {
 		}
 		if (currentIdx >= 0) {
 			this.debug(`immediate emit at idx=${currentIdx} (elapsed=${elapsed}ms)`);
-			emitAtIndex(currentIdx);
+			this.emitLineAtIndex(player, lines, currentIdx, result);
+			schedule.nextIndex = currentIdx + 1;
 		}
-
-		for (let i = Math.max(0, currentIdx + 1); i < lines.length; i++) {
-			const delay = Math.max(0, lines[i].timeMs - (Date.now() - startAt));
-			const t = setTimeout(() => emitAtIndex(i), delay);
-			timers.push(t);
-		}
-		this.debug(`scheduled timers=${timers.length}`);
+		this.scheduleNextLine(player, schedule);
 	}
 
 	private pauseLineSchedule(player: Player) {
 		const sched = this.schedules.get(player.guildId);
 		if (!sched) return;
 
-		// Clear all existing timers
-		for (const t of sched.timers) {
-			try {
-				clearTimeout(t);
-			} catch {}
-		}
-
-		// Record pause time and accumulated paused duration
-		const now = Date.now();
-		sched.pausedAt = now;
-		sched.pausedDuration = (sched.pausedDuration || 0) + (now - sched.startAt);
-
-		this.debug(`paused lyrics sync, pausedDuration=${sched.pausedDuration}ms`);
+		if (sched.timer) clearTimeout(sched.timer);
+		sched.timer = null;
+		sched.pausedAt = Date.now();
+		this.debug(`paused lyrics sync at=${sched.pausedAt}`);
 	}
 
 	private resumeLineSchedule(player: Player) {
 		const sched = this.schedules.get(player.guildId);
-		if (!sched || !sched.pausedAt) return;
+		if (!sched || sched.pausedAt === undefined) return;
 
-		// Calculate new start time accounting for paused duration
-		const pausedDuration = sched.pausedDuration || 0;
-		const newStartAt = Date.now() - pausedDuration;
-		sched.startAt = newStartAt;
+		sched.pausedDuration += Date.now() - sched.pausedAt;
 		sched.pausedAt = undefined;
-
-		// Clear existing timers array
-		sched.timers = [];
-
-		// Reschedule remaining lines
-		const elapsed = Date.now() - newStartAt;
+		const elapsed = Date.now() - sched.startAt - sched.pausedDuration;
 		let currentIdx = -1;
 		for (let i = 0; i < sched.lines.length; i++) {
 			if (sched.lines[i].timeMs <= elapsed) currentIdx = i;
 			else break;
 		}
 
-		// Emit current line if needed
-		if (currentIdx >= 0) {
+		if (currentIdx >= sched.nextIndex) {
 			this.debug(`resume emit at idx=${currentIdx} (elapsed=${elapsed}ms)`);
-			this.emitLineAtIndex(player, sched.lines, currentIdx);
+			this.emitLineAtIndex(player, sched.lines, currentIdx, sched.result);
+			sched.nextIndex = currentIdx + 1;
 		}
-
-		// Schedule remaining lines
-		for (let i = Math.max(0, currentIdx + 1); i < sched.lines.length; i++) {
-			const delay = Math.max(0, sched.lines[i].timeMs - (Date.now() - newStartAt));
-			const t = setTimeout(() => this.emitLineAtIndex(player, sched.lines, i), delay);
-			sched.timers.push(t);
-		}
-
-		this.debug(`resumed lyrics sync, scheduled timers=${sched.timers.length}`);
+		this.scheduleNextLine(player, sched);
 	}
 
-	private emitLineAtIndex(player: Player, sched: any, idx: number, result?: LyricsResult) {
-		const lines = sched.lines || sched;
+	private scheduleNextLine(player: Player, sched: LyricsSchedule): void {
+		if (this.schedules.get(player.guildId) !== sched || player.destroyed || sched.pausedAt !== undefined) return;
+		const line = sched.lines[sched.nextIndex];
+		if (!line) {
+			this.schedules.delete(player.guildId);
+			return;
+		}
+
+		const elapsed = Date.now() - sched.startAt - sched.pausedDuration;
+		sched.timer = setTimeout(
+			() => {
+				sched.timer = null;
+				if (this.schedules.get(player.guildId) !== sched) return;
+				const index = sched.nextIndex++;
+				this.emitLineAtIndex(player, sched.lines, index, sched.result);
+				this.scheduleNextLine(player, sched);
+			},
+			Math.max(0, line.timeMs - elapsed),
+		);
+	}
+
+	private emitLineAtIndex(player: Player, lines: LyricsLine[], idx: number, result?: LyricsResult): void {
 		const prev = idx > 0 ? lines[idx - 1] : undefined;
 		const curr = lines[idx];
 		const next = idx + 1 < lines.length ? lines[idx + 1] : undefined;
@@ -458,8 +473,9 @@ export class lyricsExt extends BaseExtension {
 		};
 
 		this.debug(`emit line idx=${idx} t=${curr?.timeMs} "${this.trunc(curr?.text || "", 80)}"`);
-		if (this.manager && typeof (this.manager as any).emit === "function") {
-			this.manager.emit("lyricsChange", player, track, payload);
+		const manager = this.bindings.get(player)?.manager;
+		if (manager && typeof (manager as any).emit === "function") {
+			manager.emit("lyricsChange", player, track, payload);
 		} else {
 			(player as any)?.emit?.("lyricsChange", track, payload);
 		}
@@ -468,12 +484,8 @@ export class lyricsExt extends BaseExtension {
 	private clearLineSchedule(player: Player) {
 		const sched = this.schedules.get(player.guildId);
 		if (!sched) return;
-		for (const t of sched.timers) {
-			try {
-				clearTimeout(t);
-			} catch {}
-		}
-		this.debug(`cleared timers=${sched.timers.length}`);
+		if (sched.timer) clearTimeout(sched.timer);
+		this.debug(`cleared timer=${sched.timer ? 1 : 0}`);
 		this.schedules.delete(player.guildId);
 	}
 

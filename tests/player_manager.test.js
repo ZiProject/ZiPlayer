@@ -59,7 +59,7 @@ test("PlayerManager create/get/has/delete basics and plugin propagation", async 
 	assert.equal(deletedAgain, false);
 });
 
-test("PlayerManager.search uses internal player with plugins but not players map", async (t) => {
+test("PlayerManager.search uses manager plugins without creating a Player", async (t) => {
 	const mgr = new PlayerManager({ plugins: [new DummyPlugin()] });
 	t.after(() => mgr.destroy());
 
@@ -74,10 +74,37 @@ test("PlayerManager.search uses internal player with plugins but not players map
 	assert.equal(mgr.has("__ziplayer_search__"), false);
 	assert.equal(mgr.get("__ziplayer_search__"), undefined);
 
-	// Second search reuses the same internal player
+	// The manager-level SearchController handles subsequent requests too.
 	const result2 = await mgr.search("dummy:another", "user-2");
 	assert.equal(result2.tracks.length, 1);
 	assert.equal(mgr.size, 0);
+});
+
+test("Player.search options restrict search to the selected plugin", async (t) => {
+	const searched = [];
+	class SearchPlugin extends BasePlugin {
+		constructor(name) {
+			super();
+			this.name = name;
+			this.version = "1.0.0";
+		}
+		async search(query, requestedBy) {
+			searched.push(this.name);
+			return { tracks: [{ id: this.name, title: query, url: `https://${this.name}/track`, duration: 1, requestedBy }] };
+		}
+	}
+
+	const mgr = new PlayerManager({ plugins: [new SearchPlugin("chosen"), new SearchPlugin("other")] });
+	t.after(() => mgr.destroy());
+	const player = await mgr.create("search-options", {});
+
+	const result = await player.search("test query", { requestedBy: "user-1", plugin: "CHOSEN" });
+	assert.deepEqual(searched, ["chosen"]);
+	assert.equal(result.tracks[0].source, "chosen");
+	assert.equal(result.tracks[0].requestedBy, "user-1");
+
+	await assert.rejects(() => player.search("missing plugin query", { plugin: "missing" }), /No results found/);
+	assert.deepEqual(searched, ["chosen"], "a missing plugin must not fall back to all registered plugins");
 });
 
 test("PlayerManager extension activation by name and ctor", async (t) => {

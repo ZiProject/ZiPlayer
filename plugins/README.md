@@ -201,7 +201,7 @@ Tips
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 20.3+ (requires `AbortSignal.any`)
 - `discord.js` 14 and `@discordjs/voice` 0.19+
 - For TTS: `@zibot/zitts` and `axios`
 

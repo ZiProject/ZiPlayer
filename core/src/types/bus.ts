@@ -1,5 +1,6 @@
 import type { AudioPlayerState, VoiceConnection } from "@discordjs/voice";
 import type { PlaybackSession } from "../structures/PlaybackSession";
+import type { BUS_OUTPUT, BUS_REQUEST } from "../structures/BusContract";
 import type {
 	Track,
 	StreamInfo,
@@ -9,17 +10,19 @@ import type {
 	SearchDebugResult,
 	ForwardHealthStatus,
 	LoopMode,
+	PlaybackMode,
 	TrackLoadResult,
 	SaveOptions,
 	SaveVideoOptions,
 } from ".";
 
-export type { PlayerBus } from "../structures/PlayerBus";
+export type { Bus } from "../structures/Bus";
 import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { Readable } from "stream";
 import type { Player } from "../structures/Player";
+import type { PlayerQueue } from "../controller/QueueController";
 
 export type PlayerRequestId = string;
 export type PlayerSessionId = string;
@@ -32,6 +35,7 @@ export enum PlayerActionPriority {
 }
 
 export interface PlayerMessageContext {
+	readonly playerId: string;
 	readonly requestId: PlayerRequestId;
 	readonly sessionId?: PlayerSessionId;
 	readonly source?: string;
@@ -42,70 +46,87 @@ export interface PlayerMessageContext {
 
 export type PlayerActionExecutionContext = PlayerMessageContext;
 
-export type PlayerAction =
-	| { type: "PLAY"; track?: Track; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "PAUSE"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "RESUME"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "SEEK"; position: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "STOP"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "SKIP"; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "SET_VOLUME"; volume: number; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "QUEUE_NEXT"; ignoreLoop?: boolean; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "QUEUE_SET_CURRENT"; track: Track | null; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
-	| { type: "FILTER_SET_SOURCE_TYPE"; streamType: string; priority?: PlayerActionPriority; requestId?: PlayerRequestId }
+export type PlayerAction = (
+	| { type: "PLAY"; track?: Track }
+	| { type: "PAUSE" }
+	| { type: "RESUME" }
+	| { type: "SEEK"; position: number }
+	| { type: "STOP" }
+	| { type: "SKIP"; index?: number; ignoreLoop?: boolean }
+	| { type: "SET_VOLUME"; volume: number }
+	| { type: "QUEUE_NEXT"; ignoreLoop?: boolean }
+	| { type: "QUEUE_SET_CURRENT"; track: Track | null }
+	| { type: "FILTER_SET_SOURCE_TYPE"; streamType: string }
 	| {
 			type: "FILTER_APPLY_AND_SEEK";
 			streamInfo: StreamInfo;
 			position?: number;
-			priority?: PlayerActionPriority;
-			requestId?: PlayerRequestId;
-	  };
+	  }
+) & {
+	priority?: PlayerActionPriority;
+	requestId?: PlayerRequestId;
+	signal?: AbortSignal;
+};
 export type PlayerActionType = PlayerAction["type"];
 
 export type PlayerConnectionInput =
-	| { type: "[Player]->[Connection]:connect"; requestId: PlayerRequestId; channel: VoiceChannel }
-	| { type: "[Player]->[Connection]:disconnect"; requestId: PlayerRequestId; reason?: string }
-	| { type: "[Player]->[Connection]:reconnect"; requestId: PlayerRequestId; channel: VoiceChannel };
-export type PlayerPreloadInput = { type: "[Player]->[Preload]:request"; requestId: PlayerRequestId; track: Track };
+	| {
+			type: typeof BUS_REQUEST.connectionConnect;
+			requestId: PlayerRequestId;
+			channel: VoiceChannel;
+			options?: { deaf?: boolean; mute?: boolean; group?: string };
+	  }
+	| { type: typeof BUS_REQUEST.connectionDisconnect; requestId: PlayerRequestId; reason?: string }
+	| { type: typeof BUS_REQUEST.connectionReconnect; requestId: PlayerRequestId; channel: VoiceChannel };
+export type PlayerPreloadInput = { type: typeof BUS_REQUEST.preloadRequest; requestId: PlayerRequestId; track: Track };
 export type PlayerRecoveryInput = {
-	type: "[Player]->[Recovery]:recover";
+	type: typeof BUS_REQUEST.recoveryRecover;
 	requestId: PlayerRequestId;
 	session: PlaybackSessionSnapshot;
 	reason: string;
 };
-export type PlayerResourceInput = { type: "[Player]->[Resource]:refresh"; requestId: PlayerRequestId; position?: number };
-export type PlayerInput = PlayerConnectionInput | PlayerPreloadInput | PlayerRecoveryInput | PlayerResourceInput;
+export type PlayerResourceInput = { type: typeof BUS_REQUEST.resourceRefresh; requestId: PlayerRequestId; position?: number };
+export type PlayerInput = (PlayerConnectionInput | PlayerPreloadInput | PlayerRecoveryInput | PlayerResourceInput) & {
+	readonly playerId: string;
+};
 
 export type PlayerConnectionOutput =
-	| { type: "[Connection]->[Player]:connecting"; requestId: PlayerRequestId; sessionId: PlayerSessionId; channel: VoiceChannel }
 	| {
-			type: "[Connection]->[Player]:connected";
+			type: typeof BUS_OUTPUT.connectionConnecting;
+			requestId: PlayerRequestId;
+			sessionId: PlayerSessionId;
+			channel: VoiceChannel;
+	  }
+	| {
+			type: typeof BUS_OUTPUT.connectionConnected;
 			requestId: PlayerRequestId;
 			sessionId: PlayerSessionId;
 			channel: VoiceChannel;
 			connection: VoiceConnection;
 	  }
-	| { type: "[Connection]->[Player]:disconnected"; requestId?: PlayerRequestId; sessionId: PlayerSessionId; reason?: string }
+	| { type: typeof BUS_OUTPUT.connectionDisconnected; requestId?: PlayerRequestId; sessionId: PlayerSessionId; reason?: string }
 	| {
-			type: "[Connection]->[Player]:error";
+			type: typeof BUS_OUTPUT.connectionError;
 			requestId: PlayerRequestId;
 			sessionId?: PlayerSessionId;
 			operation: "connect" | "disconnect" | "reconnect";
 			error: Error;
 	  };
 export type PlayerPreloadOutput =
-	| { type: "[Preload]->[Player]:loading"; requestId: PlayerRequestId; track: Track }
-	| { type: "[Preload]->[Player]:ready"; requestId: PlayerRequestId; track: Track }
-	| { type: "[Preload]->[Player]:failed"; requestId: PlayerRequestId; track: Track; error: Error };
+	| { type: typeof BUS_OUTPUT.preloadLoading; requestId: PlayerRequestId; track: Track }
+	| { type: typeof BUS_OUTPUT.preloadReady; requestId: PlayerRequestId; track: Track }
+	| { type: typeof BUS_OUTPUT.preloadFailed; requestId: PlayerRequestId; track: Track; error: Error };
 export type PlayerRecoveryOutput =
-	| { type: "[Recovery]->[Player]:retrying"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; attempt: number }
-	| { type: "[Recovery]->[Player]:recovered"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot }
-	| { type: "[Recovery]->[Player]:failed"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; error: Error };
+	| { type: typeof BUS_OUTPUT.recoveryRetrying; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; attempt: number }
+	| { type: typeof BUS_OUTPUT.recoveryRecovered; requestId: PlayerRequestId; session: PlaybackSessionSnapshot }
+	| { type: typeof BUS_OUTPUT.recoveryFailed; requestId: PlayerRequestId; session: PlaybackSessionSnapshot; error: Error };
 export type PlayerResourceOutput =
-	| { type: "[Resource]->[Player]:refreshed"; requestId: PlayerRequestId; session: PlaybackSessionSnapshot }
-	| { type: "[Resource]->[Player]:error"; requestId: PlayerRequestId; error: Error };
-export type PlayerOutput = PlayerConnectionOutput | PlayerPreloadOutput | PlayerRecoveryOutput | PlayerResourceOutput;
-export type PlayerBusEvents = PlayerInput | PlayerOutput;
+	| { type: typeof BUS_OUTPUT.resourceRefreshed; requestId: PlayerRequestId; session: PlaybackSessionSnapshot }
+	| { type: typeof BUS_OUTPUT.resourceError; requestId: PlayerRequestId; error: Error };
+export type PlayerOutput = (PlayerConnectionOutput | PlayerPreloadOutput | PlayerRecoveryOutput | PlayerResourceOutput) & {
+	readonly playerId: string;
+};
+export type BusEvents = PlayerInput | PlayerOutput;
 
 export type PlayerLifecycleEvents = { type: "initialized" } | { type: "ready" } | { type: "destroyed" };
 export type PlayerPlaybackEvents =
@@ -120,7 +141,10 @@ export type PlayerPlaybackEvents =
 	| { type: "trackRequested"; track: Track; session: PlaybackSessionSnapshot }
 	| { type: "stateChanged"; oldState: AudioPlayerState; newState: AudioPlayerState };
 export type PlayerPublicEvents =
-	| { type: "willPlay"; track: Track; upcomingTracks: Track[] }
+	| { type: "willPlay"; track: Track | null; upcomingTracks?: Track[]; relatedTracks?: Track[] }
+	| { type: "queueAdd"; track: Track }
+	| { type: "queueAddList"; tracks: Track[] }
+	| { type: "queueRemove"; track: Track; index: number }
 	| { type: "queueEnd" }
 	| { type: "playerPause"; track: Track | null }
 	| { type: "playerResume"; track: Track | null }
@@ -162,27 +186,29 @@ export type PlayerEventArgsMap = {
 	) ?
 		[]
 	: K extends (
-
-			| "TRACK_LOADING"
-			| "TRACK_LOADED"
-			| "TRACK_STARTED"
-			| "TRACK_END"
-			| "STREAM_ABORTED"
-			| "playbackStateChanged"
-			| "playbackSessionCreated"
-			| "RECOVERY_STARTED"
-			| "RECOVERY_FAILED"
+		| "TRACK_LOADING"
+		| "TRACK_LOADED"
+		| "TRACK_STARTED"
+		| "TRACK_END"
+		| "STREAM_ABORTED"
+		| "playbackStateChanged"
+		| "playbackSessionCreated"
+		| "RECOVERY_STARTED"
+		| "RECOVERY_FAILED"
 	) ?
 		[PlaybackSessionSnapshot]
 	: K extends "TRACK_ERROR" ? [PlaybackSessionSnapshot, Error]
 	: K extends "STUCK_DETECTED" ? [PlaybackSessionSnapshot, string]
 	: K extends "trackRequested" ? [Track, PlaybackSessionSnapshot]
+	: K extends "queueAdd" ? [Track]
+	: K extends "queueAddList" ? [Track[]]
+	: K extends "queueRemove" ? [Track, number]
 	: K extends "queueChanged" ? [Track[]]
 	: K extends "volumeRequested" ? [number, number, number]
 	: K extends "stateChanged" ? [AudioPlayerState, AudioPlayerState]
 	: K extends "preloadStateChanged" ? [PlayerPreloadState]
 	: K extends "preloadPromoted" ? [Track]
-	: K extends "willPlay" ? [Track, Track[]]
+	: K extends "willPlay" ? [Track | null, Track[]?, Track[]?]
 	: K extends "playerPause" | "playerResume" ? [Track | null]
 	: K extends "seek" ? [Track, number]
 	: K extends "filterApplied" | "filterRemoved" ? [import("./filter").AudioFilter]
@@ -192,29 +218,38 @@ export type PlayerEventArgsMap = {
 	: never;
 };
 
-export interface PlayerRequestReplyMap {
-	"[Player]->[Connection]:connect": {
-		success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connected" }>;
-		progress: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connecting" }>;
-	};
-	"[Player]->[Connection]:disconnect": {
-		success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:disconnected" }>;
-	};
-	"[Player]->[Connection]:reconnect": {
-		success: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connected" }>;
-		progress: Extract<PlayerConnectionOutput, { type: "[Connection]->[Player]:connecting" }>;
-	};
-	"[Player]->[Preload]:request": {
-		success: Extract<PlayerPreloadOutput, { type: "[Preload]->[Player]:ready" }>;
-		progress: Extract<PlayerPreloadOutput, { type: "[Preload]->[Player]:loading" }>;
-	};
-	"[Player]->[Recovery]:recover": {
-		success: Extract<PlayerRecoveryOutput, { type: "[Recovery]->[Player]:recovered" }>;
-		progress: Extract<PlayerRecoveryOutput, { type: "[Recovery]->[Player]:retrying" }>;
-	};
-	"[Player]->[Resource]:refresh": { success: Extract<PlayerResourceOutput, { type: "[Resource]->[Player]:refreshed" }> };
-}
-export type PlayerRequestInputType = keyof PlayerRequestReplyMap;
+export type PlayerRequestReplyMap = {
+	[Key in (typeof BUS_REQUEST)[keyof typeof BUS_REQUEST]]: Key extends typeof BUS_REQUEST.connectionConnect ?
+		{
+			success: Extract<PlayerConnectionOutput, { type: typeof BUS_OUTPUT.connectionConnected }>;
+			progress: Extract<PlayerConnectionOutput, { type: typeof BUS_OUTPUT.connectionConnecting }>;
+		}
+	: Key extends typeof BUS_REQUEST.connectionDisconnect ?
+		{
+			success: Extract<PlayerConnectionOutput, { type: typeof BUS_OUTPUT.connectionDisconnected }>;
+		}
+	: Key extends typeof BUS_REQUEST.connectionReconnect ?
+		{
+			success: Extract<PlayerConnectionOutput, { type: typeof BUS_OUTPUT.connectionConnected }>;
+			progress: Extract<PlayerConnectionOutput, { type: typeof BUS_OUTPUT.connectionConnecting }>;
+		}
+	: Key extends typeof BUS_REQUEST.preloadRequest ?
+		{
+			success: Extract<PlayerPreloadOutput, { type: typeof BUS_OUTPUT.preloadReady }>;
+			progress: Extract<PlayerPreloadOutput, { type: typeof BUS_OUTPUT.preloadLoading }>;
+		}
+	: Key extends typeof BUS_REQUEST.recoveryRecover ?
+		{
+			success: Extract<PlayerRecoveryOutput, { type: typeof BUS_OUTPUT.recoveryRecovered }>;
+			progress: Extract<PlayerRecoveryOutput, { type: typeof BUS_OUTPUT.recoveryRetrying }>;
+		}
+	: Key extends typeof BUS_REQUEST.resourceRefresh ?
+		{
+			success: Extract<PlayerResourceOutput, { type: typeof BUS_OUTPUT.resourceRefreshed }>;
+		}
+	:	never;
+};
+export type PlayerRequestInputType = (typeof BUS_REQUEST)[keyof typeof BUS_REQUEST];
 export type PlayerRequestReply<K extends PlayerRequestInputType> = PlayerRequestReplyMap[K];
 export type PlayerRequestProgress<K extends PlayerRequestInputType> =
 	PlayerRequestReply<K> extends { progress: infer P } ? P : never;
@@ -223,47 +258,49 @@ export interface PlayerRequestOptions<K extends PlayerRequestInputType = PlayerR
 	signal?: AbortSignal;
 	onProgress?: (event: PlayerRequestProgress<K>) => void;
 }
-export type PlayerBusRequestErrorReason = "timeout" | "aborted" | "disposed" | "unhandled";
+export type BusRequestErrorReason = "timeout" | "aborted" | "disposed" | "unhandled";
 
-export interface PlayerRpcOptions {
-	timeoutMs?: number;
-	signal?: AbortSignal;
-	source?: string;
-	priority?: PlayerActionPriority;
-}
-export interface PlayerBusRpcContext {
+export interface BusRpcContext {
+	readonly playerId: string;
 	readonly requestId: PlayerRequestId;
 	readonly signal: AbortSignal;
 	readonly timestamp: number;
 }
-export interface PlayerBusRpcOptions {
+export interface BusRpcOptions {
 	timeoutMs?: number;
 	signal?: AbortSignal;
 }
 export interface PlayerRpcMap {
-	play: { request: { query: string | Track | SearchResult | null; requestedBy?: string }; response: boolean };
+	play: {
+		request: { query: string | Track | SearchResult | null; requestedBy?: string; plugin?: string | string[] };
+		response: { ok: boolean; track: Track | null } | boolean;
+	};
 	"volume.set": { request: { value: number }; response: number };
-	search: { request: { query: string; requestedBy: string }; response: SearchResult };
+	search: { request: { query: string; requestedBy?: string; plugin?: string | string[] }; response: SearchResult };
 	"search.cache.get": { request: { query: string }; response: SearchResult | null };
 	"search.cache.set": { request: { query: string; result: SearchResult }; response: void };
 	"search.cache.clear": { request: Record<string, never>; response: void };
 	"search.cache.purge": { request: Record<string, never>; response: void };
 	"search.debug": { request: { query: string }; response: SearchDebugResult };
+	"queue.add": { request: { track: Track }; response: number };
 	"queue.previous": { request: undefined; response: Track | null };
 	"queue.shuffle": { request: undefined; response: void };
 	"queue.clear": { request: undefined; response: void };
 	"queue.addMultiple": { request: { tracks: Track[] }; response: number };
 	"queue.insert": { request: { query: string | Track | Track[]; index?: number; requestedBy?: string }; response: boolean };
 	"queue.remove": { request: { index: number }; response: Track | null };
-	"queue.loop": { request: { mode: LoopMode }; response: LoopMode };
+	"queue.loop": { request: { mode: LoopMode | number }; response: LoopMode };
 	"queue.autoPlay": { request: { enabled: boolean }; response: boolean };
+	"queue.willNext": { request: { track: Track | null }; response: Track | null };
 	"queue.setCurrent": { request: { track: Track | null }; response: void };
 	"queue.serialize": { request: undefined; response: object };
 	"queue.restore": { request: { state: object }; response: void };
+	"queue.restoreNext": { request: { previousCurrent: Track | null; nextTrack: Track | null }; response: void };
 	"playback.destroyCurrentStream": { request: undefined; response: void };
 	"playback.recover": { request: { track: Track; session: unknown }; response: TrackLoadResult };
 	"playback.loadFresh": { request: { track: Track; session: unknown }; response: TrackLoadResult };
 	"playback.remote": { request: { track: Track; stream: unknown }; response: boolean };
+	"playback.exitRemote": { request: undefined; response: void };
 	"playback.refreshResource": { request: { position: number }; response: PlaybackSessionSnapshot };
 	"playback.loadFreshCurrent": { request: { track: Track }; response: TrackLoadResult | null };
 	"playback.promotePreload": { request: { track: Track }; response: AudioResource | null };
@@ -273,6 +310,9 @@ export interface PlayerRpcMap {
 	"forward.health": { request: undefined; response: ForwardHealthStatus };
 	"forward.subscribe": { request: { leader: unknown; options?: { forwardMode?: boolean } }; response: boolean };
 	"forward.unsubscribe": { request: { reason?: string }; response: boolean };
+	"forward.addFollower": { request: { playerId: string; leaderId: string }; response: boolean };
+	"forward.removeFollower": { request: { playerId: string; leaderId: string }; response: boolean };
+	"connection.setAudioPlayer": { request: { audioPlayer: import("@discordjs/voice").AudioPlayer | null }; response: void };
 	"transition.fade": { request: { resource: AudioResource; from: number; to: number; durationMs: number }; response: void };
 	"transition.fadeIn": { request: { resource: AudioResource; track: Track }; response: void };
 	"transition.fadeOutCurrent": { request: undefined; response: void };
@@ -283,7 +323,10 @@ export interface PlayerRpcMap {
 	"resource.create": { request: { stream: Readable; track: Track; inputType?: string }; response: AudioResource };
 	"track.middleware": { request: { track: Track }; response: Track };
 	"stream.resolve": { request: { track: Track; fresh?: boolean }; response: StreamInfo | null };
+	"stream.state": { request: Record<string, never> | undefined; response: any };
+	"stream.current": { request: Record<string, never> | undefined; response: any };
 	"preload.has": { request: { track: Track }; response: boolean };
+	"preload.state": { request: Record<string, never> | undefined; response: any };
 	"preload.next": { request: undefined; response: void };
 	"preload.cancel": { request: undefined; response: void };
 	"preload.cancelSafe": { request: undefined; response: void };
@@ -294,21 +337,35 @@ export interface PlayerRpcMap {
 	};
 	"plugin.add": { request: { plugin: BasePlugin }; response: void };
 	"plugin.remove": { request: { name: string }; response: boolean };
+	"plugin.get": { request: { name: string }; response: BasePlugin | undefined };
+	"plugin.list": { request: Record<string, never> | undefined; response: BasePlugin[] };
+	"plugin.clear": { request: undefined; response: void };
+	"plugin.stats": { request: undefined; response: object };
 	"plugin.relatedTracks": { request: { track: Track; history?: Track[] }; response: Track[] };
+	"plugin.search": {
+		request: { plugin?: string | string[]; query: string; requestedBy?: string };
+		response: SearchResult | null;
+	};
+	"plugin.getStream": { request: { plugin?: string; track: Track }; response: StreamInfo | null };
 	"extension.add": { request: { extension: BaseExtension }; response: void };
 	"extension.remove": { request: { extension: BaseExtension }; response: boolean };
+	"extension.get": { request: { name: string }; response: BaseExtension | undefined };
+	"extension.list": { request: Record<string, never> | undefined; response: BaseExtension[] };
+	"extension.enable": { request: { name: string }; response: boolean };
+	"extension.disable": { request: { name: string }; response: boolean };
+	"extension.invoke": { request: { extension: string; method: string; context: any; payload?: any }; response: any };
+	"filter.list": { request: Record<string, never> | undefined; response: any };
+	"filter.set": { request: { filter: string; value: unknown }; response: any };
 	save: { request: { track: Track; options?: SaveOptions | string }; response: Readable };
 	"save.video": { request: { track: Track; options?: SaveVideoOptions | string }; response: Readable };
 	"lifecycle.scheduleLeave": { request: { reason?: "track-end" | "queue-empty" | "manual" }; response: void };
 	"lifecycle.clearLeaveTimeout": { request: undefined; response: void };
 }
-export type PlayerRpcHandler<TRequest, TResponse> = (
-	request: TRequest,
-	context: PlayerMessageContext,
-) => TResponse | Promise<TResponse>;
 
 export interface PlayerQueryMap {
 	audioPlayer: import("@discordjs/voice").AudioPlayer | null;
+	connection: import("@discordjs/voice").VoiceConnection | null;
+	"connection.state": import("@discordjs/voice").VoiceConnectionStatus | undefined;
 	"tts.hasPlayer": boolean;
 	"stream.stats": {
 		active: number;
@@ -319,11 +376,15 @@ export interface PlayerQueryMap {
 		total: number;
 		bySource: Record<string, number>;
 	} | null;
+	"stream.state": any;
+	"stream.current": any;
 	ttsInterrupt: boolean;
 	currentTrack: Track | null;
 	queueCurrent: Track | null;
 	playerState: PlaybackSessionSnapshot["status"];
 	queue: Track[];
+	/** Live per-player queue state (backs `Player.queue`); `null` when the player has no queue attached. */
+	queueState: PlayerQueue | null;
 	previousTracks: Track[];
 	previousTrack: Track | null;
 	willNext: Track | null;
@@ -344,19 +405,21 @@ export interface PlayerQueryMap {
 	isBuffering: boolean;
 	filterString: string;
 	filteredStream: StreamInfo | null;
+	filterState: import("../controller/FilterController").FilterEngine | null;
+	"filter.list": any;
+	filters: any[];
 	transitionSettings: Record<string, unknown>;
 	retryPolicy: Record<string, unknown>;
 	availablePlugins: BasePlugin[];
+	"plugin.list": BasePlugin[];
 	extensions: BaseExtension[];
+	"extension.list": BaseExtension[];
+	"preload.state": any;
+	playbackMode: PlaybackMode;
+	remotePaused: boolean;
+	forwardLeader: Player | null;
+	forwardLeaderId: string | null;
+	forwardFollowers: ReadonlySet<Player> | ReadonlySet<string>;
 }
 export type PlayerQuery = keyof PlayerQueryMap;
-export type PlayerQueryHandler<K extends PlayerQuery> = () => PlayerQueryMap[K] | Promise<PlayerQueryMap[K]>;
-
-export const SEARCH_RPC_TYPES = {
-	search: "search",
-	cacheGet: "search.cache.get",
-	cacheSet: "search.cache.set",
-	cacheClear: "search.cache.clear",
-	cachePurge: "search.cache.purge",
-	debug: "search.debug",
-} as const;
+export type PlayerQueryHandler<K extends PlayerQuery> = (playerId: string) => PlayerQueryMap[K] | Promise<PlayerQueryMap[K]>;
