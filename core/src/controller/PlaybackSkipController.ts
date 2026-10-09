@@ -56,8 +56,7 @@ export class PlaybackSkipController {
 			if (context.signal.aborted) return false;
 			if (oldSession?.isActive()) {
 				const transition = this.bus.querySync(this.playerId, PLAYER_QUERY.transitionSettings) as
-					| { enabled?: boolean }
-					| undefined;
+					{ enabled?: boolean } | undefined;
 				if (transition?.enabled) {
 					await this.bus.requestRpc(this.playerId, PLAYER_RPC.transitionFadeOutCurrent, undefined).catch(() => undefined);
 				}

@@ -63,9 +63,7 @@ async function playInGuild(guildId: string, voiceChannel: VoiceChannel, query: s
 		leaveOnEnd: true,
 		leaveOnEmpty: true,
 		volume: 80,
-		userdata: {
-			/*User store data*/
-		},
+		userdata: {/*User store data*/},
 	});
 
 	if (!player.connection) await player.connect(voiceChannel);

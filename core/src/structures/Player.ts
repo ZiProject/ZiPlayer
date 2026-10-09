@@ -603,10 +603,11 @@ export class Player extends EventEmitter {
 			return false;
 		}
 		return this.bus
-			.requestRpc<
-				{ query: string | Track | Track[]; index: number; requestedBy?: string },
-				boolean
-			>(this.playerId, PLAYER_RPC.queueInsert, { query, index, requestedBy })
+			.requestRpc<{ query: string | Track | Track[]; index: number; requestedBy?: string }, boolean>(
+				this.playerId,
+				PLAYER_RPC.queueInsert,
+				{ query, index, requestedBy },
+			)
 			.catch(() => false);
 	}
 	public remove(index: number): Track | null {
