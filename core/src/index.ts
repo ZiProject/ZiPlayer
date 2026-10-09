@@ -49,6 +49,7 @@ export {
 	createAudioProcessingEngine,
 	defaultAudioProcessingEngine,
 	AudioJsAudioProcessingEngine,
+	resolveOutputStreamType,
 } from "./audio/AudioProcessingEngine";
 export type {
 	AudioProcessingEngine,

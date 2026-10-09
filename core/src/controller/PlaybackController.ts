@@ -4,7 +4,7 @@ import {
 	AudioPlayerStatus,
 	AudioResource,
 	createAudioResource,
-	type StreamType,
+	StreamType,
 } from "@discordjs/voice";
 import { Readable } from "stream";
 import type { Bus } from "../structures/Bus";
@@ -12,7 +12,11 @@ import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
 import { PlaybackMode } from "../types";
 import type { AntiStuckRetryHandlers } from "../types";
-import { createAudioProcessingEngine, type AudioProcessingOptions } from "../audio/AudioProcessingEngine";
+import {
+	createAudioProcessingEngine,
+	resolveOutputStreamType,
+	type AudioProcessingOptions,
+} from "../audio/AudioProcessingEngine";
 import {
 	BUS_EVENT,
 	CONTROLLER_RPC,
@@ -412,7 +416,7 @@ export class PlaybackController {
 				return createAudioResource(processedStream, {
 					metadata: track,
 					inlineVolume: true,
-					...(resolvedInputType ? { inputType: resolvedInputType } : {}),
+					inputType: resolveOutputStreamType(processingOptions, resolvedInputType ?? StreamType.Arbitrary),
 				});
 			} catch (error) {
 				console.warn("[PlaybackController] Audio processing failed; falling back to legacy stream path:", error);

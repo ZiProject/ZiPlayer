@@ -1,7 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { createAudioProcessingEngine } = require("../core/dist");
+const { createAudioProcessingEngine, resolveOutputStreamType } = require("../core/dist");
+const { StreamType } = require("@discordjs/voice");
 
 test("audio processing engine can apply gain and emit valid PCM output", async () => {
 	const engine = createAudioProcessingEngine({ enabled: true, gainDb: 6, highpassHz: 80, resampleRate: 8000 });
@@ -39,4 +40,11 @@ test("audio processing engine rejects invalid DSP configuration", async () => {
 	await assert.rejects(async () => {
 		await engine.createPipeline({ enabled: true, gainDb: Number.NaN }, { playerId: "p2" });
 	}, /gainDb|invalid|valid/i);
+});
+
+test("processed raw PCM uses the Discord raw stream contract", () => {
+	assert.equal(resolveOutputStreamType({ enabled: true, outputFormat: "pcm16le" }, StreamType.Opus), StreamType.Raw);
+	assert.equal(resolveOutputStreamType({ enabled: true, outputFormat: "pcmFloat32" }, StreamType.WebmOpus), StreamType.Raw);
+	assert.equal(resolveOutputStreamType({ enabled: true, outputFormat: "encoded" }, StreamType.Opus), StreamType.Opus);
+	assert.equal(resolveOutputStreamType({ enabled: false, outputFormat: "pcm16le" }, StreamType.OggOpus), StreamType.OggOpus);
 });

@@ -1,4 +1,5 @@
 import audio from "audio";
+import { StreamType } from "@discordjs/voice";
 import { Readable } from "stream";
 import type { Track } from "../types";
 
@@ -68,7 +69,7 @@ function validateOptions(options: AudioProcessingOptions): AudioProcessingOption
 		...options,
 	};
 
-	if (resolved.outputFormat !== "pcm16le" && resolved.outputFormat !== "pcmFloat32") {
+	if (resolved.outputFormat !== "encoded" && resolved.outputFormat !== "pcm16le" && resolved.outputFormat !== "pcmFloat32") {
 		throw new TypeError(`Invalid audio processing output format: ${String(resolved.outputFormat)}`);
 	}
 
@@ -112,6 +113,9 @@ function validateOptions(options: AudioProcessingOptions): AudioProcessingOption
 	) {
 		throw new TypeError("Audio processing normalize must be boolean, number, or preset string");
 	}
+	if (typeof resolved.normalize === "string" && !["streaming", "podcast", "broadcast"].includes(resolved.normalize)) {
+		throw new TypeError("Audio processing normalize preset must be one of: streaming, podcast, broadcast");
+	}
 	return resolved;
 }
 
@@ -121,14 +125,24 @@ function toFloat32Channels(block: Float32Array | Float32Array[] | number[] | num
 		if (typeof block[0] === "number") {
 			return [Float32Array.from(block as number[])];
 		}
-		return (block as Float32Array[]).map((channel) => Float32Array.from(channel));
+		const channels = Array.from(block as ArrayLike<Float32Array | number[]>).map((channel: Float32Array | number[]) =>
+			Float32Array.from(channel as ArrayLike<number>),
+		);
+		const sampleCount = Math.max(0, ...channels.map((channel: Float32Array) => channel.length));
+		return channels.map((channel: Float32Array) => {
+			if (channel.length === sampleCount) return channel;
+			const aligned = new Float32Array(sampleCount);
+			aligned.set(channel);
+			return aligned;
+		});
 	}
 	return [Float32Array.from(block as ArrayLike<number>)];
 }
 
 function encodePcm16le(channels: Float32Array[]): Uint8Array {
-	if (channels.length === 0 || channels[0].length === 0) return new Uint8Array(0);
-	const sampleCount = channels[0].length;
+	if (channels.length === 0) return new Uint8Array(0);
+	const sampleCount = Math.max(0, ...channels.map((channel) => channel.length));
+	if (sampleCount === 0) return new Uint8Array(0);
 	const channelCount = channels.length;
 	const buffer = Buffer.allocUnsafe(sampleCount * channelCount * 2);
 	let offset = 0;
@@ -144,8 +158,9 @@ function encodePcm16le(channels: Float32Array[]): Uint8Array {
 }
 
 function encodePcmFloat32(channels: Float32Array[]): Uint8Array {
-	if (channels.length === 0 || channels[0].length === 0) return new Uint8Array(0);
-	const sampleCount = channels[0].length;
+	if (channels.length === 0) return new Uint8Array(0);
+	const sampleCount = Math.max(0, ...channels.map((channel) => channel.length));
+	if (sampleCount === 0) return new Uint8Array(0);
 	const channelCount = channels.length;
 	const output = new Float32Array(sampleCount * channelCount);
 	let offset = 0;
@@ -243,6 +258,17 @@ export class AudioJsAudioProcessingEngine implements AudioProcessingEngine {
 	): Promise<AudioProcessingPipeline> {
 		return new AudioJsAudioProcessingPipeline({ ...this.defaults, ...options }, context);
 	}
+}
+
+export function resolveOutputStreamType(
+	options: AudioProcessingOptions,
+	fallback: StreamType = StreamType.Arbitrary,
+): StreamType {
+	if (options.enabled === false) return fallback;
+	const outputFormat = options.outputFormat ?? "pcm16le";
+	if (outputFormat === "pcm16le" || outputFormat === "pcmFloat32") return StreamType.Raw;
+	if (outputFormat === "encoded") return fallback;
+	throw new TypeError(`Invalid audio processing output format: ${String(outputFormat)}`);
 }
 
 export function createAudioProcessingEngine(defaults: AudioProcessingOptions = {}): AudioProcessingEngine {
