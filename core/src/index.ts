@@ -45,6 +45,18 @@ export { PlayerEventDebug, DEBUG_PRIORITY } from "./controller/PlayerEventDebug"
 export { GlobalControllerRegistry, globalControllerRegistry } from "./controller/GlobalControllerRegistry";
 export { FilterEngine, isSafeCustomFilter } from "./controller/FilterController";
 export { StreamManager } from "./structures/StreamManager";
+export {
+	createAudioProcessingEngine,
+	defaultAudioProcessingEngine,
+	AudioJsAudioProcessingEngine,
+} from "./audio/AudioProcessingEngine";
+export type {
+	AudioProcessingEngine,
+	AudioProcessingPipeline,
+	AudioProcessingOptions,
+	AudioProcessingContext,
+	AudioProcessingFormat,
+} from "./audio/AudioProcessingEngine";
 
 export type {
 	PlayerAction as PlayerActionMessage,

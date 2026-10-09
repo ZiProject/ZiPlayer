@@ -188,6 +188,20 @@ export interface PlayerOptions {
 		autoDisableInLowPerformance?: boolean;
 	};
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
+	audioProcessing?: {
+		enabled?: boolean;
+		inputFormat?: "encoded" | "pcm16le" | "pcmFloat32";
+		outputFormat?: "pcm16le" | "pcmFloat32";
+		sampleRate?: number;
+		channels?: number;
+		gainDb?: number;
+		gainLinear?: number;
+		highpassHz?: number;
+		lowpassHz?: number;
+		normalize?: boolean | "streaming" | "podcast" | "broadcast" | number;
+		resampleRate?: number;
+		maxBufferBytes?: number;
+	};
 	maxStreamStore?: number;
 }
 

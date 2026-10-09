@@ -12,6 +12,7 @@ import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
 import { PlaybackMode } from "../types";
 import type { AntiStuckRetryHandlers } from "../types";
+import { createAudioProcessingEngine, type AudioProcessingOptions } from "../audio/AudioProcessingEngine";
 import {
 	BUS_EVENT,
 	CONTROLLER_RPC,
@@ -55,6 +56,7 @@ const NO_TRANSITION: TransitionPlanResponse = { enabled: false, durationMs: 0, w
 export class PlaybackController {
 	private readonly bus: Bus;
 	private readonly slots = new Map<string, PlaybackSlot>();
+	private readonly processingOptions = new Map<string, AudioProcessingOptions>();
 
 	public constructor(bus: Bus) {
 		this.bus = bus;
@@ -87,7 +89,7 @@ export class PlaybackController {
 			PLAYER_RPC.resourceCreate,
 			({ stream, track, inputType }, ctx) => {
 				if (!this.slots.has(ctx.playerId)) throw new Error("No PlaybackController registered for this player");
-				return this.createResource(stream, track, inputType);
+				return this.createResource(ctx.playerId, stream, track, inputType);
 			},
 		);
 		bus.registerQuery(PLAYER_QUERY.audioPlayer, (playerId) => at(playerId)?.audioPlayer as any);
@@ -109,6 +111,8 @@ export class PlaybackController {
 	/** Opens a slot for `playerId` around its `AudioPlayer`. Re-attaching replaces (and releases) the old slot. */
 	public attach(playerId: string, options: PlaybackControllerOptions): void {
 		if (this.slots.has(playerId)) this.detach(playerId);
+		if (options.audioProcessing?.enabled) this.processingOptions.set(playerId, options.audioProcessing);
+		else this.processingOptions.delete(playerId);
 		const slot: PlaybackSlot = {
 			playerId,
 			audioPlayer: options.audioPlayer,
@@ -181,6 +185,7 @@ export class PlaybackController {
 	public detach(playerId: string): void {
 		const slot = this.slots.get(playerId);
 		if (!slot) return;
+		this.processingOptions.delete(playerId);
 		this.slots.delete(playerId);
 		slot.resourceRefreshInProgress = false;
 		slot.disposed = true;
@@ -386,8 +391,33 @@ export class PlaybackController {
 	// ---------------------------------------------------------------------
 
 	/** Pure factory (no per-player state involved). */
-	public createResource(stream: Readable, track: Track, inputType?: StreamType): AudioResource {
+	public createResource(playerId: string, stream: Readable, track: Track, inputType?: StreamType): AudioResource {
 		const resolvedInputType = inputType ?? (stream as Readable & { inputType?: StreamType }).inputType;
+		const processingOptions = this.processingOptions.get(playerId) ?? {};
+		if (processingOptions.enabled) {
+			try {
+				const engine = createAudioProcessingEngine(processingOptions);
+				const slot = this.slots.get(playerId);
+				const signal = slot?.lifecycleAbort?.signal ?? new AbortController().signal;
+				const processedStream = Readable.from(
+					(async function* () {
+						const pipeline = await engine.createPipeline(processingOptions, { playerId, track, signal });
+						try {
+							yield* pipeline.process(stream as any, signal);
+						} finally {
+							await pipeline.dispose();
+						}
+					})(),
+				);
+				return createAudioResource(processedStream, {
+					metadata: track,
+					inlineVolume: true,
+					...(resolvedInputType ? { inputType: resolvedInputType } : {}),
+				});
+			} catch (error) {
+				console.warn("[PlaybackController] Audio processing failed; falling back to legacy stream path:", error);
+			}
+		}
 		return createAudioResource(stream, {
 			metadata: track,
 			inlineVolume: true,
