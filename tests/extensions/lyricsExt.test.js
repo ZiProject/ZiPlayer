@@ -81,6 +81,42 @@ test("lyricsExt attaches lyrics on trackStart and emits event", async (t) => {
 	assert.equal(changed.plr, player);
 });
 
+test("lyricsExt releases listeners and its active schedule when detached", async (t) => {
+	const ext = new lyricsExt();
+	ext.fetch = async (track) => ({
+		provider: "lrclib",
+		source: "LRCLIB",
+		url: "https://lrclib.net/",
+		text: "lyrics",
+		synced: Array.from({ length: 100 }, (_, index) => `[00:${String(index).padStart(2, "0")}.00]line ${index}`).join("\n"),
+		trackName: track.title,
+		matchedBy: "test",
+		lang: null,
+	});
+
+	const mgr = new PlayerManager({ extensions: [ext] });
+	t.after(() => mgr.destroy());
+	const player = await mgr.create("guild-lyrics-cleanup", { extensions: ["lyricsExt"] });
+	const baselineListenerCounts = ["trackStart", "playerPause", "playerResume", "trackEnd", "playerDestroy"].map((event) =>
+		player.listenerCount(event),
+	);
+
+	player.emit("trackStart", makeTrack("cleanup", "Cleanup test"));
+	await new Promise((resolve) => setTimeout(resolve, 20));
+
+	const schedule = ext.schedules.get(player.guildId);
+	assert.ok(schedule, "synced lyrics should create a schedule");
+	assert.ok(schedule.timer, "only the next lyric line should have an active timer");
+
+	assert.equal(player.detachExtension(ext), true);
+	assert.deepEqual(
+		["trackStart", "playerPause", "playerResume", "trackEnd", "playerDestroy"].map((event) => player.listenerCount(event)),
+		baselineListenerCounts.map((count) => count - 1),
+		"detaching should remove lyrics event listeners",
+	);
+	assert.equal(ext.schedules.size, 0, "detaching should release the schedule and its lyric lines");
+});
+
 test("lyricsExt falls back to lyrics.ovh when lrclib not found", async () => {
 	const ext = new lyricsExt();
 	// Force fallback path
