@@ -135,14 +135,28 @@ export class PlaybackStartController {
 				this.consecutiveFailures = 0;
 				this.bus.event(this.playerId, { type: BUS_EVENT.queueEnd });
 				if (this.bus.hasRpc(PLAYER_RPC.lifecycleScheduleLeave)) {
-					void this.bus.requestRpc(this.playerId, PLAYER_RPC.lifecycleScheduleLeave, {});
+					void this.bus.requestRpc(this.playerId, PLAYER_RPC.lifecycleScheduleLeave, {}).catch((reportError) => {
+						this.bus.event(this.playerId, {
+							type: BUS_EVENT.streamError,
+							error: reportError instanceof Error ? reportError : new Error(String(reportError)),
+							track,
+						});
+					});
 				}
 			} else if (!parentContext.signal.aborted) {
-				void this.bus.action(
-					this.playerId,
-					{ type: PLAYER_ACTION.skip, ignoreLoop: true, requestId: parentContext.requestId },
-					parentContext,
-				);
+				void this.bus
+					.action(
+						this.playerId,
+						{ type: PLAYER_ACTION.skip, ignoreLoop: true, requestId: parentContext.requestId },
+						parentContext,
+					)
+					.catch((reportError) => {
+						this.bus.event(this.playerId, {
+							type: BUS_EVENT.streamError,
+							error: reportError instanceof Error ? reportError : new Error(String(reportError)),
+							track,
+						});
+					});
 			}
 			throw error;
 		}

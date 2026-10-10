@@ -76,9 +76,17 @@ export class PlaybackTrackEndController {
 		if (this.lifecycleSignal.aborted || !this.waitingForQueue || this.trackEndTransition || this.queueStartPromise) return;
 		if (!this.queueSnapshot().length) return;
 		const generation = ++this.queueStartGeneration;
-		this.queueStartPromise = this.startQueuedTrackAfterEnd().finally(() => {
-			if (generation === this.queueStartGeneration) this.queueStartPromise = null;
-		});
+		this.queueStartPromise = this.startQueuedTrackAfterEnd()
+			.catch((error) => {
+				this.bus.event(this.playerId, {
+					type: BUS_EVENT.streamError,
+					error: error instanceof Error ? error : new Error(String(error)),
+					track: this.currentSession()?.track ?? null,
+				});
+			})
+			.finally(() => {
+				if (generation === this.queueStartGeneration) this.queueStartPromise = null;
+			});
 	}
 
 	public async onTrackEnd(snapshot: PlaybackSessionSnapshot): Promise<void> {

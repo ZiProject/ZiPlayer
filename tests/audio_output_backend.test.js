@@ -26,12 +26,13 @@ class FakeAudioOutputHandle {
 		this.backend = backend;
 		this.input = input;
 		this.format = input.format;
-		this.ready = backend.ready;
+		this.ready = backend.handleReady ?? backend.ready;
 		this.state = "ready";
 		this.bufferedBytes = 0;
 		this.volumeValues = [];
 		this.listeners = new Set();
 		this.disposed = false;
+		this.disposeCalls = 0;
 		this.signal = context.signal;
 		this.onAbort = () => {
 			this.state = "stopped";
@@ -49,9 +50,11 @@ class FakeAudioOutputHandle {
 		if (signal?.aborted || this.signal?.aborted) throw abortError();
 		await this.waitUntilReady(signal);
 		if (signal?.aborted || this.signal?.aborted) throw abortError();
+		if (this.backend.startFailure) throw this.backend.startFailure;
 		this.state = "playing";
 		this.emit({ type: "state", state: this.state });
 		await this.backend.activate(this);
+		if (this.backend.startFailureAfterActivation) throw this.backend.startFailureAfterActivation;
 		this.backend.notifyStarted();
 		this.consumePromise = (async () => {
 			try {
@@ -110,8 +113,12 @@ class FakeAudioOutputHandle {
 		return true;
 	}
 
-	stop(signal) {
+	async stop(signal) {
+		this.backend.stopCalls++;
+		this.backend.stopStarted.resolve();
+		if (this.backend.stopGate) await this.backend.stopGate.promise;
 		if (signal?.aborted) throw abortError();
+		if (this.backend.stopFailure) throw this.backend.stopFailure;
 		const changed = this.state === "playing" || this.state === "paused";
 		this.state = "stopped";
 		if (this.input.ownership === "transfer" && !this.input.stream.destroyed) this.input.stream.destroy();
@@ -134,6 +141,7 @@ class FakeAudioOutputHandle {
 
 	setVolume(value, signal) {
 		if (signal?.aborted) throw abortError();
+		if (this.backend.volumeFailure) throw this.backend.volumeFailure;
 		if (this.backend.capabilities.volume !== "backend") throw new AudioOutputUnsupportedOperationError("volume control");
 		this.volume = value;
 		this.volumeValues.push(value);
@@ -152,12 +160,14 @@ class FakeAudioOutputHandle {
 	async dispose() {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.disposeCalls++;
 		if (this.state !== "ended") this.state = "stopped";
 		this.signal?.removeEventListener("abort", this.onAbort);
 		if (this.input.ownership === "transfer" && !this.input.stream.destroyed) this.input.stream.destroy();
 		this.listeners.clear();
 		if (this.backend.activeHandle === this) this.backend.activeHandle = null;
 		this.backend.handles.delete(this);
+		if (this.backend.disposeFailure) throw this.backend.disposeFailure;
 	}
 
 	emit(event) {
@@ -188,9 +198,22 @@ class FakeAudioOutputBackend {
 		this.startedWaiters = [];
 		this.sessionWaiters = [];
 		this.sessionCount = 0;
+		this.stopCalls = 0;
+		this.stopStarted = deferred();
+		this.initializeStarted = deferred();
+		this.stopGate = null;
+		this.stopFailure = null;
+		this.startFailure = null;
+		this.startFailureAfterActivation = null;
+		this.volumeFailure = null;
+		this.initializeFailure = null;
+		this.disposeFailure = null;
+		this.handleReady = null;
 	}
 
 	initialize(signal) {
+		if (this.initializeFailure) return Promise.reject(this.initializeFailure);
+		this.initializeStarted.resolve();
 		if (signal?.aborted) return Promise.reject(abortError());
 		if (!signal) return this.ready;
 		return new Promise((resolve, reject) => {
@@ -318,15 +341,28 @@ const pcmFormat = {
 };
 
 function playbackContext(playerId, signal = new AbortController().signal) {
-	return { playerId, requestId: `request-${++playbackContext.nextId}`, source: "test", signal, timestamp: Date.now(), priority: 0 };
+	return {
+		playerId,
+		requestId: `request-${++playbackContext.nextId}`,
+		source: "test",
+		signal,
+		timestamp: Date.now(),
+		priority: 0,
+	};
 }
 playbackContext.nextId = 0;
 
-function createPlaybackHarness({ backend = new FakeAudioOutputBackend(), playerId = "fake-output", transition = false, ready = true } = {}) {
+function createPlaybackHarness({
+	backend = new FakeAudioOutputBackend(),
+	playerId = "fake-output",
+	transition = false,
+	ready = true,
+} = {}) {
 	const {
 		BUS_EVENT,
 		Bus,
 		CONTROLLER_RPC,
+		PlaybackMode,
 		PLAYER_QUERY,
 		PLAYER_RPC,
 		PlaybackController,
@@ -339,8 +375,12 @@ function createPlaybackHarness({ backend = new FakeAudioOutputBackend(), playerI
 	sessions.attach(playerId);
 	const playback = new PlaybackController(bus);
 	const playerErrors = [];
+	const streamErrors = [];
 	const recoveryReports = [];
 	const sources = [];
+	let mode = PlaybackMode.NATIVE;
+	let remoteStopCalls = 0;
+	let remoteStopFailure = null;
 	const orchestrator = new PlaybackOrchestrator(bus, { sessionController: sessions });
 	orchestrator.attach(playerId);
 	playback.attach(playerId, { audioOutputBackendFactory: () => backend });
@@ -369,7 +409,14 @@ function createPlaybackHarness({ backend = new FakeAudioOutputBackend(), playerI
 		return true;
 	});
 	bus.registerRpc(PLAYER_RPC.queueWillNext, () => {});
+	bus.registerRpc(CONTROLLER_RPC.playbackRemoteStop, () => {
+		remoteStopCalls++;
+		if (remoteStopFailure) throw remoteStopFailure;
+		return true;
+	});
+	bus.registerRpc(PLAYER_RPC.queueClear, () => {});
 	bus.registerQuery(PLAYER_QUERY.filterString, () => "");
+	bus.registerQuery(PLAYER_QUERY.playbackMode, () => mode);
 	bus.registerQuery(PLAYER_QUERY.transitionSettings, () => ({
 		enabled: transition,
 		durationMs: 30,
@@ -385,6 +432,7 @@ function createPlaybackHarness({ backend = new FakeAudioOutputBackend(), playerI
 		}));
 	}
 	bus.subscribe(playerId, BUS_EVENT.trackError, (event) => playerErrors.push(event));
+	bus.subscribe(playerId, BUS_EVENT.streamError, (event) => streamErrors.push(event));
 	return {
 		backend,
 		bus,
@@ -394,7 +442,15 @@ function createPlaybackHarness({ backend = new FakeAudioOutputBackend(), playerI
 		sessions,
 		sources,
 		playerErrors,
+		streamErrors,
 		recoveryReports,
+		remoteStopCalls: () => remoteStopCalls,
+		setMode(value) {
+			mode = value;
+		},
+		setRemoteStopFailure(error) {
+			remoteStopFailure = error;
+		},
 		start(track, signal) {
 			const from = sessions.current(playerId)?.track ?? null;
 			return orchestrator.states.get(playerId).start.start(track, playbackContext(playerId, signal), from);
@@ -411,6 +467,10 @@ function createPlaybackHarness({ backend = new FakeAudioOutputBackend(), playerI
 
 function testTrack(id) {
 	return { id, title: id, url: `https://example.test/${id}`, duration: 1000, requestedBy: "test", source: "test" };
+}
+
+function createOutputResource(harness, track) {
+	return harness.playback.createResource(harness.playerId, new PassThrough(), track, StreamType.Opus);
 }
 
 test("fake backend readiness gates start and supports the full output lifecycle", async () => {
@@ -437,7 +497,7 @@ test("fake backend readiness gates start and supports the full output lifecycle"
 	assert.equal(handle.state, "playing");
 	handle.setVolume(0.4);
 	assert.equal(handle.volume, 0.4);
-	assert.equal(handle.stop(), true);
+	assert.equal(await handle.stop(), true);
 	assert.equal(handle.state, "stopped");
 	await handle.dispose();
 	assert.equal(handle.input.stream.destroyed, true);
@@ -647,6 +707,320 @@ test("injected backend disposal is idempotent and releases handle listeners", as
 	await harness.backend.dispose();
 	assert.equal(harness.backend.handles.size, 0);
 	assert.equal(handle.listeners.size, 0);
+	assert.equal(handle.disposeCalls, 1);
+});
+
+test("stop failure still disposes transferred input and reports cleanup failure separately", async () => {
+	const harness = createPlaybackHarness({ playerId: "stop-failure" });
+	await harness.start(testTrack("stop-failure-track"));
+	const handle = harness.backend.activeHandle;
+	const stopError = new Error("stop rejected");
+	const cleanupError = new Error("dispose reported cleanup fault");
+	harness.backend.stopFailure = stopError;
+	harness.backend.disposeFailure = cleanupError;
+
+	await assert.rejects(harness.playback.stop(harness.playerId), (error) => error === stopError);
+	assert.equal(handle.disposed, true);
+	assert.equal(handle.input.stream.destroyed, true);
+	assert.equal(harness.backend.handles.size, 0);
+	assert.equal(harness.playback.getActiveResource(harness.playerId), null);
+	assert.ok(harness.streamErrors.some((event) => event.error === cleanupError));
+	await harness.dispose();
+});
+
+test("abort during a pending stop triggers cleanup without waiting for the backend stop promise", async () => {
+	const harness = createPlaybackHarness({ playerId: "stop-abort" });
+	await harness.start(testTrack("stop-abort-track"));
+	const handle = harness.backend.activeHandle;
+	const abort = new AbortController();
+	harness.backend.stopGate = deferred();
+	harness.backend.stopStarted = deferred();
+
+	const pendingStop = harness.playback.stop(harness.playerId, abort.signal);
+	await harness.backend.stopStarted.promise;
+	abort.abort();
+	await assert.rejects(pendingStop, { name: "AbortError" });
+	assert.equal(handle.disposed, true);
+	assert.equal(handle.input.stream.destroyed, true);
+	assert.equal(harness.backend.handles.size, 0);
+	harness.backend.stopGate.resolve();
+	await harness.dispose();
+	assert.equal(handle.disposeCalls, 1);
+});
+
+test("stop cancels and disposes a handle still waiting to start", async () => {
+	const backend = new FakeAudioOutputBackend();
+	const harness = createPlaybackHarness({ backend, playerId: "stop-pending-start", ready: false });
+	const resource = createOutputResource(harness, testTrack("stop-pending-start-track"));
+	const handle = backend.handles.values().next().value;
+	const startup = harness.playback.play(harness.playerId, resource);
+	await backend.initializeStarted.promise;
+	await harness.playback.stop(harness.playerId);
+	await assert.rejects(startup, { name: "AbortError" });
+	assert.equal(handle.disposed, true);
+	assert.equal(handle.input.stream.destroyed, true);
+	assert.equal(backend.handles.size, 0);
+	backend.readyGate.resolve();
+	await harness.dispose();
+});
+
+test("a stop completing after replacement cannot clear or dispose the replacement", async () => {
+	const harness = createPlaybackHarness({ playerId: "stale-stop" });
+	await harness.start(testTrack("stale-stop-old"));
+	const oldHandle = harness.backend.activeHandle;
+	harness.backend.stopGate = deferred();
+	harness.backend.stopStarted = deferred();
+	const stopPromise = harness.playback.stop(harness.playerId);
+	await harness.backend.stopStarted.promise;
+
+	const nextTrack = testTrack("stale-stop-new");
+	const nextResource = createOutputResource(harness, nextTrack);
+	await harness.playback.play(harness.playerId, nextResource, undefined, null, undefined);
+	const replacement = harness.backend.activeHandle;
+	assert.notEqual(replacement, oldHandle);
+	harness.backend.stopGate.resolve();
+	await stopPromise;
+	assert.equal(harness.playback.getActiveResource(harness.playerId), nextResource);
+	assert.equal(harness.backend.activeHandle, replacement);
+	assert.equal(replacement.disposed, false);
+	assert.equal(oldHandle.disposed, true);
+	await harness.dispose();
+});
+
+test("remote stop awaits success and never stops the local output backend", async () => {
+	const harness = createPlaybackHarness({ playerId: "remote-stop-success" });
+	await harness.start(testTrack("remote-stop-track"));
+	const activeHandle = harness.backend.activeHandle;
+	harness.setMode(require("../core/dist").PlaybackMode.REMOTE);
+
+	assert.equal(await harness.playback.stop(harness.playerId), true);
+	assert.equal(harness.remoteStopCalls(), 1);
+	assert.equal(harness.backend.stopCalls, 0);
+	assert.equal(harness.backend.activeHandle, activeHandle);
+	assert.equal(activeHandle.disposed, false);
+	await harness.dispose();
+});
+
+test("remote stop rejection propagates and does not stop the local backend", async () => {
+	const harness = createPlaybackHarness({ playerId: "remote-stop-rejected" });
+	await harness.start(testTrack("remote-stop-rejected-track"));
+	const activeHandle = harness.backend.activeHandle;
+	const remoteFailure = new Error("remote stop failed");
+	harness.setMode(require("../core/dist").PlaybackMode.REMOTE);
+	harness.setRemoteStopFailure(remoteFailure);
+
+	await assert.rejects(harness.playback.stop(harness.playerId), (error) => error === remoteFailure);
+	assert.equal(harness.remoteStopCalls(), 1);
+	assert.equal(harness.backend.stopCalls, 0);
+	assert.equal(harness.backend.activeHandle, activeHandle);
+	assert.equal(activeHandle.disposed, false);
+	await harness.dispose();
+});
+
+test("remote STOP action awaits remote completion without entering local stop logic", async () => {
+	const harness = createPlaybackHarness({ playerId: "remote-stop-action" });
+	const track = testTrack("remote-stop-action-track");
+	await harness.start(track);
+	const session = harness.sessions.current(harness.playerId);
+	harness.setMode(require("../core/dist").PlaybackMode.REMOTE);
+	const context = { ...playbackContext(harness.playerId), sessionId: session.sessionId };
+
+	await harness.bus.action(harness.playerId, { type: "STOP" }, context);
+	assert.equal(harness.remoteStopCalls(), 1);
+	assert.equal(harness.backend.stopCalls, 0);
+	assert.equal(session.status, "stopped");
+	assert.equal(harness.backend.activeHandle.disposed, false);
+	await harness.dispose();
+});
+
+test("rejected remote STOP action leaves local playback untouched and propagates failure", async () => {
+	const harness = createPlaybackHarness({ playerId: "remote-stop-action-rejected" });
+	const track = testTrack("remote-stop-action-rejected-track");
+	await harness.start(track);
+	const session = harness.sessions.current(harness.playerId);
+	const activeHandle = harness.backend.activeHandle;
+	const failure = new Error("remote action stop rejected");
+	harness.setMode(require("../core/dist").PlaybackMode.REMOTE);
+	harness.setRemoteStopFailure(failure);
+	const context = { ...playbackContext(harness.playerId), sessionId: session.sessionId };
+
+	await assert.rejects(harness.bus.action(harness.playerId, { type: "STOP" }, context), (error) => error === failure);
+	assert.equal(harness.remoteStopCalls(), 1);
+	assert.equal(harness.backend.stopCalls, 0);
+	assert.equal(session.isActive(), true);
+	assert.equal(harness.backend.activeHandle, activeHandle);
+	await harness.dispose();
+});
+
+test("volume, initialization, readiness, and start failures dispose only the unactivated handle", async () => {
+	for (const [caseName, configure, expectedFailure] of [
+		[
+			"volume",
+			(backend) => {
+				backend.volumeFailure = new Error("volume failure");
+			},
+			"volume failure",
+		],
+		[
+			"initialization",
+			(backend) => {
+				backend.initializeFailure = new Error("initialize failure");
+			},
+			"initialize failure",
+		],
+		[
+			"readiness",
+			(backend) => {
+				backend.handleReady = Promise.reject(new Error("readiness failure"));
+			},
+			"readiness failure",
+		],
+		[
+			"start",
+			(backend) => {
+				backend.startFailure = new Error("start failure");
+			},
+			"start failure",
+		],
+	]) {
+		const backend = new FakeAudioOutputBackend();
+		backend.readyGate.resolve();
+		const harness = createPlaybackHarness({ backend, playerId: `startup-${caseName}` });
+		configure(backend);
+		const track = testTrack(`startup-${caseName}-track`);
+		const resource = createOutputResource(harness, track);
+		const handle = backend.handles.values().next().value;
+		await assert.rejects(harness.playback.play(harness.playerId, resource), new RegExp(expectedFailure));
+		assert.equal(handle.disposed, true, `${caseName} failure leaked handle`);
+		assert.equal(handle.input.stream.destroyed, true, `${caseName} failure leaked transferred stream`);
+		assert.equal(backend.handles.size, 0, `${caseName} failure left a registered handle`);
+		assert.equal(harness.playback.getActiveResource(harness.playerId), null);
+		await harness.dispose();
+	}
+});
+
+test("stop-before-start replacement failure cleans both handles without restoring a disposed session", async () => {
+	const backend = new FakeAudioOutputBackend();
+	backend.capabilities.replacement = "stop-before-start";
+	const harness = createPlaybackHarness({ backend, playerId: "replacement-start-failure" });
+	await harness.start(testTrack("replacement-old"));
+	const oldHandle = backend.activeHandle;
+	backend.startFailure = new Error("replacement start failed");
+	const replacementTrack = testTrack("replacement-failed");
+	const resource = createOutputResource(harness, replacementTrack);
+	const replacementHandle = [...backend.handles].find((handle) => handle !== oldHandle);
+
+	await assert.rejects(harness.playback.play(harness.playerId, resource), /replacement start failed/);
+	assert.equal(oldHandle.disposed, true);
+	assert.equal(replacementHandle.disposed, true);
+	assert.equal(oldHandle.input.stream.destroyed, true);
+	assert.equal(replacementHandle.input.stream.destroyed, true);
+	assert.equal(harness.backend.handles.size, 0);
+	assert.equal(harness.playback.getActiveResource(harness.playerId), null);
+	await harness.dispose();
+});
+
+test("crossfade volume failure preserves the active handle and releases the candidate", async () => {
+	const harness = createPlaybackHarness({ playerId: "crossfade-volume-failure", transition: true });
+	const oldTrack = testTrack("crossfade-volume-old");
+	await harness.start(oldTrack);
+	const oldHandle = harness.backend.activeHandle;
+	harness.backend.volumeFailure = new Error("crossfade volume failed");
+	const nextTrack = testTrack("crossfade-volume-new");
+	const nextResource = createOutputResource(harness, nextTrack);
+	const candidate = [...harness.backend.handles].find((handle) => handle !== oldHandle);
+
+	await assert.rejects(
+		harness.playback.play(harness.playerId, nextResource, undefined, oldTrack, nextTrack),
+		/crossfade volume failed/,
+	);
+	assert.equal(candidate.disposed, true);
+	assert.equal(harness.backend.activeHandle, oldHandle);
+	assert.equal(harness.playback.getActiveResource(harness.playerId), oldHandle.resource);
+	assert.equal(harness.backend.handles.size, 1);
+	assert.equal(harness.playback.getFadeGain(harness.playerId), null);
+	await harness.dispose();
+});
+
+test("atomic replacement that fails after backend activation clears invalidated old output", async () => {
+	const harness = createPlaybackHarness({ playerId: "atomic-replacement-failure", transition: true });
+	const oldTrack = testTrack("atomic-old");
+	await harness.start(oldTrack);
+	const oldHandle = harness.backend.activeHandle;
+	harness.backend.startFailureAfterActivation = new Error("atomic replacement failed after activation");
+	const nextTrack = testTrack("atomic-new");
+	const nextResource = createOutputResource(harness, nextTrack);
+	const replacement = [...harness.backend.handles].find((handle) => handle !== oldHandle);
+
+	await assert.rejects(
+		harness.playback.play(harness.playerId, nextResource, undefined, oldTrack, nextTrack),
+		/atomic replacement failed after activation/,
+	);
+	assert.equal(oldHandle.disposed, true);
+	assert.equal(replacement.disposed, true);
+	assert.equal(harness.backend.activeHandle, null);
+	assert.equal(harness.backend.handles.size, 0);
+	assert.equal(harness.playback.getActiveResource(harness.playerId), null);
+	await harness.dispose();
+});
+
+test("concurrent stop and detach dispose an active handle exactly once", async () => {
+	const harness = createPlaybackHarness({ playerId: "stop-detach" });
+	await harness.start(testTrack("stop-detach-track"));
+	const handle = harness.backend.activeHandle;
+	harness.backend.stopGate = deferred();
+	harness.backend.stopStarted = deferred();
+	const stop = harness.playback.stop(harness.playerId);
+	await harness.backend.stopStarted.promise;
+	const duplicateStop = harness.playback.stop(harness.playerId);
+	harness.playback.detach(harness.playerId);
+	await Promise.all([assert.rejects(stop, { name: "AbortError" }), assert.rejects(duplicateStop, { name: "AbortError" })]);
+	harness.backend.stopGate.resolve();
+	assert.equal(handle.disposeCalls, 1);
+	assert.equal(handle.input.stream.destroyed, true);
+	assert.equal(harness.backend.handles.size, 0);
+	await harness.orchestrator.detach(harness.playerId);
+	await harness.orchestrator.dispose();
+	harness.sessions.detach(harness.playerId);
+});
+
+test("preload promotion reports asynchronous output startup failures", async () => {
+	const harness = createPlaybackHarness({ playerId: "preload-start-failure" });
+	const track = testTrack("preloaded-track");
+	harness.sessions.replace(harness.playerId, track);
+	const source = Readable.from([Buffer.from("encoded preload")]);
+	const { PreloadController } = require("../core/dist");
+	const preloader = new PreloadController(harness.bus, {
+		loader: {
+			hasPreload: () => false,
+			cancelPreload: () => {},
+			cancelPreloadSafely: async () => {},
+			preloadNext: async () => {},
+		},
+		manager: {
+			takePreloaded: () => ({
+				track,
+				stream: source,
+				streamInfo: { track, stream: source, type: "arbitrary", inputType: StreamType.Opus },
+				streamId: null,
+			}),
+			slotState: () => ({}),
+			clearPreloadSlot: () => {},
+		},
+	});
+	const reported = deferred();
+	harness.bus.subscribe(harness.playerId, require("../core/dist").BUS_EVENT.trackError, (event) => {
+		if (event.track === track || event.session?.track === track) reported.resolve(event);
+	});
+	harness.backend.startFailure = new Error("preload output start failed");
+
+	const resource = preloader.promotePreload(harness.playerId, track);
+	assert.ok(resource);
+	const event = await reported.promise;
+	assert.match(event.error.message, /preload output start failed/);
+	assert.equal(harness.backend.handles.size, 0);
+	assert.equal(source.destroyed, true);
+	await harness.dispose();
 });
 
 test("Discord backend converts float32 PCM at the adapter boundary and controls inline volume", async () => {

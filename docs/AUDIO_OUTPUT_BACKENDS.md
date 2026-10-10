@@ -2,9 +2,9 @@
 
 ZiPlayer remains Discord-first. `PlayerManager` creates a Discord `AudioPlayer` when no custom output factory is supplied, and
 `ConnectionController` subscribes that player to a Discord voice connection. `PlaybackController` is still the compatibility
-boundary for legacy Discord resources and synchronous APIs, but generic playback operations use normalized backend handle
-state and lifecycle methods. The extraction does not move queueing, track resolution, recovery, fades, preload, or session
-policy into the adapter.
+boundary for legacy Discord resources and synchronous APIs, but generic playback operations use normalized backend handle state
+and lifecycle methods. The extraction does not move queueing, track resolution, recovery, fades, preload, or session policy into
+the adapter.
 
 ## Current dependency map
 
@@ -61,8 +61,8 @@ resource creation. `audioProcessing` only selects DSP options; it does not selec
 Backend selection is per player and has no global mutable default. `PlayerOptions.audioOutputBackendFactory` is optional; when
 omitted, ZiPlayer constructs `DiscordVoiceOutputBackend` around the manager-created `AudioPlayer`. A factory is invoked once per
 attached player and its backend instance is owned by that player's `PlaybackController` slot. Detaching/replacing the slot aborts
-its lifecycle signal, disposes its handles, detaches event listeners, and disposes the backend. A caller should therefore return
-a fresh backend instance for each factory invocation unless it explicitly manages safe sharing itself.
+its lifecycle signal, disposes its handles, detaches event listeners, and disposes the backend. A caller should therefore return a
+fresh backend instance for each factory invocation unless it explicitly manages safe sharing itself.
 
 ```ts
 const player = await manager.create(guildId, {
@@ -79,10 +79,18 @@ breaking existing `AudioResource` consumers is follow-up work; do not treat the 
 The backend owns each session handle it creates; the slot owns the backend and registered handle-event detachers. A transferred
 input stream is destroyed on stop, cancellation, replacement, failure cleanup, or disposal. A borrowed stream must not be
 destroyed by the backend. Session readiness and backend initialization must settle before start; failure is reported through the
-existing track-error/recovery path. A consumed stream is never replayed after DSP or sink failure. Operations unsupported by
-the selected backend reject explicitly, including seek or volume operations when the capability says unsupported. The fake
-backend tests cover lifecycle, startup cancellation, replacement, output failure, volume/crossfade capability, and disposal
-without opening a Discord voice connection.
+existing track-error/recovery path. A consumed stream is never replayed after DSP or sink failure. Operations unsupported by the
+selected backend reject explicitly, including seek or volume operations when the capability says unsupported. The fake backend
+tests cover lifecycle, startup cancellation, replacement, output failure, volume/crossfade capability, and disposal without
+opening a Discord voice connection.
+
+Stop is cleanup-safe even when the backend rejects or the caller aborts while stop is pending: the controller disposes the
+captured handle independently, reports disposal failure as a separate stream error, and then propagates the original stop failure.
+Slot state is cleared only if that same handle is still active, so a late stop cannot erase a replacement. Concurrent stop and
+disposal requests share per-handle cleanup. In remote playback mode, stop awaits the remote stop RPC and does not also stop the
+local output backend. Backend start is transactional: readiness and initial volume must succeed before activation is committed,
+and failed/unactivated handles are disposed; adapters should ensure a rejected `start()` does not leave an active output session
+behind.
 
 ## Processed audio format and failure behavior
 
