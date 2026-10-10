@@ -55,6 +55,7 @@ export class PlaybackOrchestrator {
 	private readonly sessionController: PlaybackSessionController;
 	private readonly seekController: PlaybackSeekController;
 	private readonly detachAction: () => void;
+	private readonly remoteStopOperations = new Map<string, Promise<void>>();
 
 	public constructor(bus: Bus, options: PlaybackOrchestratorOptions) {
 		this.bus = bus;
@@ -175,13 +176,7 @@ export class PlaybackOrchestrator {
 			if (!session || session.status === "ended" || session.status === "stopped") return;
 			const current = this.sessionController.current(playerId);
 			if (!current || current.id !== session.id) return;
-			void state.trackEnd.onTrackEnd(session).catch((error) => {
-				this.bus.event(playerId, {
-					type: BUS_EVENT.streamError,
-					error: error instanceof Error ? error : new Error(String(error)),
-					track: session.track,
-				});
-			});
+			void state.trackEnd.onTrackEnd(session).catch((error) => this.reportStreamError(playerId, session.track, error));
 		});
 		state.detachQueueEnd = this.bus.subscribe(playerId, BUS_EVENT.queueEnd, () => state.trackEnd.onQueueEnd());
 		state.detachQueueChanged = this.bus.subscribe(playerId, BUS_EVENT.queueChanged, () => state.trackEnd.onQueueChanged());
@@ -331,11 +326,7 @@ export class PlaybackOrchestrator {
 				const session = this.sessionController.current(playerId);
 				const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
 				if (mode === PlaybackMode.REMOTE) {
-					await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteStop, {});
-					this.bus.requestRpcSync(playerId, PLAYER_RPC.queueClear, undefined);
-					if (session?.isActive()) session.markStopped();
-					this.publishState(playerId);
-					this.bus.event(playerId, { type: BUS_EVENT.playerStop });
+					await this.stopRemotePlayback(playerId, session, context.signal);
 					break;
 				}
 				if (session && !this.matchesContext(session, context)) break;
@@ -346,6 +337,40 @@ export class PlaybackOrchestrator {
 				this.bus.event(playerId, { type: BUS_EVENT.playerStop });
 				break;
 			}
+		}
+	}
+
+	private async stopRemotePlayback(playerId: string, session: PlaybackSession | null, signal: AbortSignal): Promise<void> {
+		const pending = this.remoteStopOperations.get(playerId);
+		if (pending) return pending;
+		const sessionId = session?.id ?? null;
+		const operation = (async () => {
+			const stopped = await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteStop, {}, { signal });
+			if (!stopped) return;
+			const current = this.sessionController.current(playerId);
+			if ((current?.id ?? null) !== sessionId) return;
+			this.bus.requestRpcSync(playerId, PLAYER_RPC.queueClear, undefined);
+			if (session?.isActive()) session.markStopped();
+			this.publishState(playerId);
+			this.bus.event(playerId, { type: BUS_EVENT.playerStop });
+		})();
+		this.remoteStopOperations.set(playerId, operation);
+		try {
+			await operation;
+		} finally {
+			if (this.remoteStopOperations.get(playerId) === operation) this.remoteStopOperations.delete(playerId);
+		}
+	}
+
+	private reportStreamError(playerId: string, track: Track | null, error: unknown): void {
+		try {
+			this.bus.event(playerId, {
+				type: BUS_EVENT.streamError,
+				error: error instanceof Error ? error : new Error(String(error)),
+				track,
+			});
+		} catch (reportError) {
+			console.error("Failed to report playback stream error", reportError);
 		}
 	}
 

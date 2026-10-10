@@ -381,6 +381,10 @@ function createPlaybackHarness({
 	let mode = PlaybackMode.NATIVE;
 	let remoteStopCalls = 0;
 	let remoteStopFailure = null;
+	let remoteStopResult = true;
+	let remoteStopGate = null;
+	const remoteStopStarted = deferred();
+	let queueClearCalls = 0;
 	const orchestrator = new PlaybackOrchestrator(bus, { sessionController: sessions });
 	orchestrator.attach(playerId);
 	playback.attach(playerId, { audioOutputBackendFactory: () => backend });
@@ -411,10 +415,14 @@ function createPlaybackHarness({
 	bus.registerRpc(PLAYER_RPC.queueWillNext, () => {});
 	bus.registerRpc(CONTROLLER_RPC.playbackRemoteStop, () => {
 		remoteStopCalls++;
+		remoteStopStarted.resolve();
+		if (remoteStopGate) return remoteStopGate.promise;
 		if (remoteStopFailure) throw remoteStopFailure;
-		return true;
+		return remoteStopResult;
 	});
-	bus.registerRpc(PLAYER_RPC.queueClear, () => {});
+	bus.registerRpc(PLAYER_RPC.queueClear, () => {
+		queueClearCalls++;
+	});
 	bus.registerQuery(PLAYER_QUERY.filterString, () => "");
 	bus.registerQuery(PLAYER_QUERY.playbackMode, () => mode);
 	bus.registerQuery(PLAYER_QUERY.transitionSettings, () => ({
@@ -445,8 +453,16 @@ function createPlaybackHarness({
 		streamErrors,
 		recoveryReports,
 		remoteStopCalls: () => remoteStopCalls,
+		remoteStopStarted: remoteStopStarted.promise,
+		queueClearCalls: () => queueClearCalls,
 		setMode(value) {
 			mode = value;
+		},
+		setRemoteStopResult(value) {
+			remoteStopResult = value;
+		},
+		setRemoteStopGate(gate) {
+			remoteStopGate = gate;
 		},
 		setRemoteStopFailure(error) {
 			remoteStopFailure = error;
@@ -814,6 +830,49 @@ test("remote stop rejection propagates and does not stop the local backend", asy
 	assert.equal(harness.backend.stopCalls, 0);
 	assert.equal(harness.backend.activeHandle, activeHandle);
 	assert.equal(activeHandle.disposed, false);
+	await harness.dispose();
+});
+
+test("remote STOP false result preserves session, queue, and stop events", async () => {
+	const harness = createPlaybackHarness({ playerId: "remote-stop-false" });
+	await harness.start(testTrack("remote-stop-false-track"));
+	const session = harness.sessions.current(harness.playerId);
+	const stopEvents = [];
+	harness.bus.subscribe(harness.playerId, "playerStop", (event) => stopEvents.push(event));
+	harness.setMode(require("../core/dist").PlaybackMode.REMOTE);
+	harness.setRemoteStopResult(false);
+	const context = { ...playbackContext(harness.playerId), sessionId: session.sessionId };
+
+	await harness.bus.action(harness.playerId, { type: "STOP" }, context);
+	assert.equal(harness.remoteStopCalls(), 1);
+	assert.equal(harness.queueClearCalls(), 0);
+	assert.equal(session.isActive(), true);
+	assert.equal(stopEvents.length, 0);
+	assert.equal(harness.backend.stopCalls, 0);
+	await harness.dispose();
+});
+
+test("overlapping remote STOP requests share one RPC and commit once", async () => {
+	const harness = createPlaybackHarness({ playerId: "remote-stop-repeated" });
+	await harness.start(testTrack("remote-stop-repeated-track"));
+	const session = harness.sessions.current(harness.playerId);
+	let stopEvents = 0;
+	harness.bus.subscribe(harness.playerId, "playerStop", () => stopEvents++);
+	harness.setMode(require("../core/dist").PlaybackMode.REMOTE);
+	const gate = deferred();
+	harness.setRemoteStopGate(gate);
+	const context = { ...playbackContext(harness.playerId), sessionId: session.sessionId };
+
+	const first = harness.bus.action(harness.playerId, { type: "STOP" }, context);
+	const second = harness.bus.action(harness.playerId, { type: "STOP" }, context);
+	await harness.remoteStopStarted;
+	assert.equal(harness.remoteStopCalls(), 1);
+	gate.resolve(true);
+	await Promise.all([first, second]);
+	assert.equal(harness.queueClearCalls(), 1);
+	assert.equal(stopEvents, 1);
+	assert.equal(session.status, "stopped");
+	assert.equal(harness.backend.stopCalls, 0);
 	await harness.dispose();
 });
 

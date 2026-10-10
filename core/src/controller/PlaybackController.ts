@@ -71,6 +71,7 @@ export class PlaybackController {
 	private readonly bus: Bus;
 	private readonly slots = new Map<string, PlaybackSlot>();
 	private readonly processingOptions = new Map<string, AudioProcessingOptions>();
+	private readonly remoteStopPromises = new Map<string, Promise<boolean>>();
 
 	public constructor(bus: Bus) {
 		this.bus = bus;
@@ -1172,7 +1173,20 @@ export class PlaybackController {
 	public async stop(playerId: string, signal?: AbortSignal): Promise<boolean> {
 		const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
 		if (mode === PlaybackMode.REMOTE) {
-			return await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteStop, {});
+			const pending = this.remoteStopPromises.get(playerId);
+			if (pending) return pending;
+			const operation = this.bus.requestRpc<Record<string, never>, boolean>(
+				playerId,
+				CONTROLLER_RPC.playbackRemoteStop,
+				{},
+				{ signal },
+			);
+			this.remoteStopPromises.set(playerId, operation);
+			try {
+				return await operation;
+			} finally {
+				if (this.remoteStopPromises.get(playerId) === operation) this.remoteStopPromises.delete(playerId);
+			}
 		}
 		const slot = this.slots.get(playerId);
 		if (!slot) return false;

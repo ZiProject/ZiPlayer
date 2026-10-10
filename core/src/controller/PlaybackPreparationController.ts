@@ -52,12 +52,14 @@ export class PlaybackPreparationController {
 			return [];
 		}
 
-		let related = await this.bus
-			.requestRpc<{ track: Track; history?: Track[] }, Track[]>(this.playerId, PLAYER_RPC.pluginRelatedTracks, {
+		let related = await this.bus.requestRpc<{ track: Track; history?: Track[] }, Track[]>(
+			this.playerId,
+			PLAYER_RPC.pluginRelatedTracks,
+			{
 				track: source,
 				history: previous,
-			})
-			.catch(() => []);
+			},
+		);
 		related = related ?? [];
 		const upcoming = new Set(this.queueSnapshot().map((item) => item.id ?? item.url));
 		related = related.filter((item) => item !== source && !upcoming.has(item.id ?? item.url));
@@ -75,7 +77,12 @@ export class PlaybackPreparationController {
 		const queueNext = (this.bus.querySync(this.playerId, PLAYER_QUERY.queueNextTrack) as Track | null) ?? null;
 		let related = (this.bus.querySync(this.playerId, PLAYER_QUERY.relatedTracks) as Track[] | null) ?? [];
 		if (!related.length && !this.queueSnapshot().length) {
-			related = await this.createRelatedTracks(session.track);
+			try {
+				related = await this.createRelatedTracks(session.track);
+			} catch (error) {
+				this.reportStreamError(session.track, error);
+				related = [];
+			}
 		}
 		if (!related.length) {
 			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track: queueNext });
@@ -127,6 +134,7 @@ export class PlaybackPreparationController {
 			this.setQueueRelated(related);
 		} catch (error) {
 			this.debug?.("[PlaybackPreparationController] Error preparing related tracks:", error);
+			if (!context.signal.aborted) this.reportStreamError(session.track, error);
 		}
 	}
 
@@ -138,6 +146,20 @@ export class PlaybackPreparationController {
 				{ type: BUS_REQUEST.preloadRequest, requestId: context.requestId, track },
 				{ signal: context.signal, timeoutMs: 30000 },
 			);
-		} catch {}
+		} catch (error) {
+			if (!context.signal.aborted) this.reportStreamError(track, error);
+		}
+	}
+
+	private reportStreamError(track: Track | null, error: unknown): void {
+		try {
+			this.bus.event(this.playerId, {
+				type: BUS_EVENT.streamError,
+				error: error instanceof Error ? error : new Error(String(error)),
+				track,
+			});
+		} catch (reportError) {
+			console.error("Failed to report playback stream error", reportError);
+		}
 	}
 }

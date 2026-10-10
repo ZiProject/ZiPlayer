@@ -88,9 +88,15 @@ Stop is cleanup-safe even when the backend rejects or the caller aborts while st
 captured handle independently, reports disposal failure as a separate stream error, and then propagates the original stop failure.
 Slot state is cleared only if that same handle is still active, so a late stop cannot erase a replacement. Concurrent stop and
 disposal requests share per-handle cleanup. In remote playback mode, stop awaits the remote stop RPC and does not also stop the
-local output backend. Backend start is transactional: readiness and initial volume must succeed before activation is committed,
-and failed/unactivated handles are disposed; adapters should ensure a rejected `start()` does not leave an active output session
-behind.
+local output backend. A remote `false` result means the remote endpoint did not stop; the local session and queue remain unchanged
+and no successful `playerStop` event is emitted. Concurrent remote STOP actions share the in-flight RPC and commit the resulting
+state transition at most once.
+
+Backend start is transactional: readiness and initial volume must succeed before activation is committed, and failed/unactivated
+handles are disposed; adapters should ensure a rejected `start()` does not leave an active output session behind. Related-track
+generation failure is reported as `streamError`, then the normal queue-end/autoplay fallback proceeds without treating the lookup
+as a successful result. Queue and track-start RPC failures remain observable and restore the queue-wait/transition guards so a
+later queue change can retry.
 
 ## Processed audio format and failure behavior
 
