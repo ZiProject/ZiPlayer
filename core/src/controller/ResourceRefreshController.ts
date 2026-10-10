@@ -115,7 +115,7 @@ export class ResourceRefreshController {
 			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 			session.setResource(resource);
 			session.setPlaybackOffset(Math.max(0, position));
-			this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackPlay, { resource, session });
+			await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackPlay, { resource, session }, { signal });
 			session.markPlaying(Math.max(0, position));
 			this.bus.event(playerId, { type: BUS_EVENT.playbackStateChanged, session: session.snapshot() });
 			return session.snapshot();

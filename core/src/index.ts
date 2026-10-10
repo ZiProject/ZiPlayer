@@ -37,6 +37,8 @@ export type {
 	AudioFrameFormat,
 	AudioOutputInput,
 	AudioOutputCapabilities,
+	AudioOutputBackendFactory,
+	AudioOutputBackendFactoryContext,
 	AudioOutputContext,
 	AudioOutputEvent,
 	AudioOutputHandle,

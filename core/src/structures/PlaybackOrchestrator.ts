@@ -19,7 +19,7 @@ import { PlaybackPlayController } from "../controller/PlaybackPlayController";
 interface OrchestratorCallbacks {
 	matchesContext: (session: PlaybackSession, context: PlayerMessageContext) => boolean;
 	transitionEnabled: (playerId: string) => boolean;
-	stopPlayback: (playerId: string, signal: AbortSignal, cancelPreload?: boolean) => void;
+	stopPlayback: (playerId: string, signal: AbortSignal, cancelPreload?: boolean) => void | Promise<void>;
 	nextThroughBus: (playerId: string, ignoreLoop: boolean, context: PlayerMessageContext) => Promise<Track | null>;
 	publishState: (playerId: string) => void;
 	queueSnapshot: (playerId: string) => Track[];
@@ -287,7 +287,7 @@ export class PlaybackOrchestrator {
 				if (
 					session?.isActive() &&
 					this.matchesContext(session, context) &&
-					this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackPause, {})
+					(await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackPause, {}, { signal: context.signal }))
 				) {
 					session.markPaused();
 					this.publishState(playerId);
@@ -313,7 +313,7 @@ export class PlaybackOrchestrator {
 				if (
 					session?.isActive() &&
 					this.matchesContext(session, context) &&
-					this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackResume, {})
+					(await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackResume, {}, { signal: context.signal }))
 				) {
 					session.markPlaying();
 					this.publishState(playerId);
@@ -328,7 +328,7 @@ export class PlaybackOrchestrator {
 					void this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteStop, {});
 				}
 				if (session && !this.matchesContext(session, context)) break;
-				this.stopPlayback(playerId, context.signal);
+				await this.stopPlayback(playerId, context.signal);
 				this.bus.requestRpcSync(playerId, PLAYER_RPC.queueClear, undefined);
 				if (session?.isActive()) session.markStopped();
 				this.publishState(playerId);
@@ -342,8 +342,8 @@ export class PlaybackOrchestrator {
 		return session.ownsContext(context.sessionId);
 	}
 
-	private stopPlayback(playerId: string, _s: AbortSignal, cancelPreload = true): void {
-		this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackStop, {});
+	private async stopPlayback(playerId: string, signal: AbortSignal, cancelPreload = true): Promise<void> {
+		await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackStop, {}, { signal });
 		if (!cancelPreload) return;
 		if (this.bus.hasRpc(PLAYER_RPC.preloadCancel)) {
 			this.bus.requestRpcSync(playerId, PLAYER_RPC.preloadCancel, {});

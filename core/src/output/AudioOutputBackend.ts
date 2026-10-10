@@ -44,6 +44,14 @@ export interface AudioOutputContext {
 	metadata?: unknown;
 }
 
+export interface AudioOutputBackendFactoryContext {
+	playerId: string;
+}
+
+export type AudioOutputBackendFactory<TResource = unknown> = (
+	context: AudioOutputBackendFactoryContext,
+) => AudioOutputBackend<TResource>;
+
 export interface AudioOutputHandle<TResource = unknown> {
 	readonly resource: TResource;
 	readonly format: AudioFrameFormat;

@@ -92,7 +92,7 @@ export class PlaybackSkipController {
 				oldSession.markEnded();
 			}
 			if (!next) {
-				this.stopPlayback(context.signal);
+				await this.stopPlayback(context.signal);
 				this.publishState();
 				this.setWaitingForQueue(true);
 				this.bus.event(this.playerId, { type: BUS_EVENT.queueEnd });

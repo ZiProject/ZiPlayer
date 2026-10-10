@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter, getEventListeners } = require("node:events");
-const { Readable } = require("node:stream");
+const { PassThrough, Readable } = require("node:stream");
 const { AudioOutputUnsupportedOperationError, DiscordVoiceOutputBackend, convertFloat32PcmToS16Le } = require("../core/dist");
 const { StreamType, TransformerType } = require("@discordjs/voice");
 
@@ -29,11 +29,13 @@ class FakeAudioOutputHandle {
 		this.ready = backend.ready;
 		this.state = "ready";
 		this.bufferedBytes = 0;
+		this.volumeValues = [];
 		this.listeners = new Set();
 		this.disposed = false;
 		this.signal = context.signal;
 		this.onAbort = () => {
-			if (this.state === "playing") this.state = "stopped";
+			this.state = "stopped";
+			this.emit({ type: "state", state: this.state });
 			void this.dispose();
 		};
 		this.signal?.addEventListener("abort", this.onAbort, { once: true });
@@ -49,14 +51,19 @@ class FakeAudioOutputHandle {
 		if (signal?.aborted || this.signal?.aborted) throw abortError();
 		this.state = "playing";
 		this.emit({ type: "state", state: this.state });
+		await this.backend.activate(this);
+		this.backend.notifyStarted();
 		this.consumePromise = (async () => {
 			try {
 				for await (const chunk of this.input.stream) {
 					this.bufferedBytes = this.input.stream.readableLength ?? chunk.byteLength;
 					assert.ok(this.bufferedBytes <= this.backend.capabilities.maxBufferedBytes);
-					await new Promise((resolve) => setTimeout(resolve, 1));
 				}
-				if (this.state === "playing") this.state = "ended";
+				if (this.state === "playing") {
+					this.state = "ended";
+					this.emit({ type: "state", state: this.state });
+					await this.dispose();
+				}
 			} catch (error) {
 				if (!this.disposed && this.state !== "stopped") this.fail(error);
 			}
@@ -129,6 +136,7 @@ class FakeAudioOutputHandle {
 		if (signal?.aborted) throw abortError();
 		if (this.backend.capabilities.volume !== "backend") throw new AudioOutputUnsupportedOperationError("volume control");
 		this.volume = value;
+		this.volumeValues.push(value);
 	}
 
 	onEvent(listener) {
@@ -144,9 +152,11 @@ class FakeAudioOutputHandle {
 	async dispose() {
 		if (this.disposed) return;
 		this.disposed = true;
+		if (this.state !== "ended") this.state = "stopped";
 		this.signal?.removeEventListener("abort", this.onAbort);
 		if (this.input.ownership === "transfer" && !this.input.stream.destroyed) this.input.stream.destroy();
 		this.listeners.clear();
+		if (this.backend.activeHandle === this) this.backend.activeHandle = null;
 		this.backend.handles.delete(this);
 	}
 
@@ -173,6 +183,11 @@ class FakeAudioOutputBackend {
 		this.handles = new Set();
 		this.nextId = 0;
 		this.disposed = false;
+		this.activeHandle = null;
+		this.startedCount = 0;
+		this.startedWaiters = [];
+		this.sessionWaiters = [];
+		this.sessionCount = 0;
 	}
 
 	initialize(signal) {
@@ -200,8 +215,42 @@ class FakeAudioOutputBackend {
 	createSession(input, context) {
 		if (this.disposed) throw new Error("fake backend is disposed");
 		const handle = new FakeAudioOutputHandle(this, input, context);
+		handle.resource.metadata = context?.metadata;
 		this.handles.add(handle);
+		for (const waiter of [...this.sessionWaiters]) {
+			if (this.sessionCount + 1 >= waiter.count) {
+				this.sessionWaiters.splice(this.sessionWaiters.indexOf(waiter), 1);
+				waiter.resolve();
+			}
+		}
+		this.sessionCount++;
 		return handle;
+	}
+
+	async activate(handle) {
+		const previous = this.activeHandle;
+		this.activeHandle = handle;
+		if (previous && previous !== handle) await previous.dispose();
+	}
+
+	notifyStarted() {
+		this.startedCount++;
+		for (const waiter of [...this.startedWaiters]) {
+			if (this.startedCount >= waiter.count) {
+				this.startedWaiters.splice(this.startedWaiters.indexOf(waiter), 1);
+				waiter.resolve();
+			}
+		}
+	}
+
+	waitForStarted(count) {
+		if (this.startedCount >= count) return Promise.resolve();
+		return new Promise((resolve) => this.startedWaiters.push({ count, resolve }));
+	}
+
+	waitForSessionCount(count) {
+		if (this.sessionCount >= count) return Promise.resolve();
+		return new Promise((resolve) => this.sessionWaiters.push({ count, resolve }));
 	}
 
 	async dispose() {
@@ -267,6 +316,102 @@ const pcmFormat = {
 	channelLayout: "interleaved",
 	chunkAlignmentBytes: 4,
 };
+
+function playbackContext(playerId, signal = new AbortController().signal) {
+	return { playerId, requestId: `request-${++playbackContext.nextId}`, source: "test", signal, timestamp: Date.now(), priority: 0 };
+}
+playbackContext.nextId = 0;
+
+function createPlaybackHarness({ backend = new FakeAudioOutputBackend(), playerId = "fake-output", transition = false, ready = true } = {}) {
+	const {
+		BUS_EVENT,
+		Bus,
+		CONTROLLER_RPC,
+		PLAYER_QUERY,
+		PLAYER_RPC,
+		PlaybackController,
+		PlaybackSessionController,
+		PlaybackOrchestrator,
+	} = require("../core/dist");
+	if (ready) backend.readyGate.resolve();
+	const bus = new Bus();
+	const sessions = new PlaybackSessionController(bus);
+	sessions.attach(playerId);
+	const playback = new PlaybackController(bus);
+	const playerErrors = [];
+	const recoveryReports = [];
+	const sources = [];
+	const orchestrator = new PlaybackOrchestrator(bus, { sessionController: sessions });
+	orchestrator.attach(playerId);
+	playback.attach(playerId, { audioOutputBackendFactory: () => backend });
+	bus.registerRpc(CONTROLLER_RPC.trackResetRecovery, () => {});
+	bus.registerRpc(CONTROLLER_RPC.trackLoadWithRecovery, ({ track }) => {
+		const stream = new PassThrough();
+		sources.push(stream);
+		return {
+			track,
+			stream: { track, stream, streamType: StreamType.Opus, inputType: StreamType.Opus },
+			sessionId: sources.length,
+			retry: 0,
+			usedFallback: false,
+		};
+	});
+	bus.registerRpc(CONTROLLER_RPC.streamReplace, ({ streamInfo, session }) => ({
+		sessionId: session.id,
+		session,
+		track: session.track,
+		stream: streamInfo.stream,
+		streamId: null,
+		inputType: streamInfo.inputType,
+	}));
+	bus.registerRpc(CONTROLLER_RPC.antiStuckReport, (request) => {
+		recoveryReports.push(request);
+		return true;
+	});
+	bus.registerRpc(PLAYER_RPC.queueWillNext, () => {});
+	bus.registerQuery(PLAYER_QUERY.filterString, () => "");
+	bus.registerQuery(PLAYER_QUERY.transitionSettings, () => ({
+		enabled: transition,
+		durationMs: 30,
+		waitForBeat: false,
+		beatAlignMaxWaitMs: 0,
+	}));
+	if (transition) {
+		bus.registerRpc(CONTROLLER_RPC.transitionPlan, () => ({
+			enabled: true,
+			durationMs: 30,
+			waitForBeat: false,
+			beatAlignMaxWaitMs: 0,
+		}));
+	}
+	bus.subscribe(playerId, BUS_EVENT.trackError, (event) => playerErrors.push(event));
+	return {
+		backend,
+		bus,
+		playerId,
+		playback,
+		orchestrator,
+		sessions,
+		sources,
+		playerErrors,
+		recoveryReports,
+		start(track, signal) {
+			const from = sessions.current(playerId)?.track ?? null;
+			return orchestrator.states.get(playerId).start.start(track, playbackContext(playerId, signal), from);
+		},
+		async dispose() {
+			playback.detach(playerId);
+			await orchestrator.detach(playerId);
+			await orchestrator.dispose();
+			sessions.detach(playerId);
+			await backend.dispose();
+		},
+	};
+}
+
+function testTrack(id) {
+	return { id, title: id, url: `https://example.test/${id}`, duration: 1000, requestedBy: "test", source: "test" };
+}
 
 test("fake backend readiness gates start and supports the full output lifecycle", async () => {
 	const backend = new FakeAudioOutputBackend();
@@ -392,6 +537,116 @@ test("fake backend advertises bounded buffering and enforces stream backpressure
 	assert.equal(backend.capabilities.seek, "unsupported");
 	await backend.dispose();
 	assert.equal(backend.handles.size, 0);
+});
+
+test("PlaybackController selects Discord Voice by default for legacy AudioPlayer callers", () => {
+	const { Bus, PlaybackController } = require("../core/dist");
+	const player = new MockAudioPlayer();
+	const controller = new PlaybackController(new Bus());
+	controller.attach("default-discord", { audioPlayer: player });
+	const track = testTrack("default-track");
+	const resource = controller.createResource("default-discord", Readable.from([Buffer.from("opus")]), track, StreamType.Opus);
+	controller.play("default-discord", resource);
+	assert.equal(player.played[0], resource);
+	assert.equal(controller.getAudioPlayer("default-discord"), player);
+	controller.detach("default-discord");
+});
+
+test("injected fake backend runs playback orchestration and replacement without a voice connection", async () => {
+	const harness = createPlaybackHarness();
+	const firstTrack = testTrack("orchestrated-one");
+	const secondTrack = testTrack("orchestrated-two");
+	await harness.start(firstTrack);
+	const firstHandle = harness.backend.activeHandle;
+	assert.equal(firstHandle.state, "playing");
+	assert.equal(harness.sessions.current(harness.playerId).track, firstTrack);
+
+	await harness.start(secondTrack);
+	assert.equal(firstHandle.disposed, true);
+	assert.equal(harness.sources[0].destroyed, true);
+	assert.equal(harness.backend.handles.size, 1);
+	assert.equal(harness.backend.activeHandle.resource.metadata, secondTrack);
+	assert.equal(harness.sessions.current(harness.playerId).track, secondTrack);
+	await harness.dispose();
+	assert.equal(harness.backend.handles.size, 0);
+	assert.equal(harness.sources[1].destroyed, true);
+});
+
+test("injected playback releases transferred streams when startup or active playback is cancelled", async () => {
+	const startupBackend = new FakeAudioOutputBackend();
+	const startupHarness = createPlaybackHarness({ backend: startupBackend, playerId: "startup-cancel", ready: false });
+	const startupAbort = new AbortController();
+	const startup = startupHarness.start(testTrack("startup-cancel-track"), startupAbort.signal);
+	await startupBackend.waitForSessionCount(1);
+	startupAbort.abort();
+	await startup;
+	assert.equal(startupBackend.handles.size, 0);
+	assert.equal(startupHarness.sources[0].destroyed, true);
+	await startupHarness.dispose();
+
+	const activeBackend = new FakeAudioOutputBackend();
+	activeBackend.readyGate.resolve();
+	const activeHarness = createPlaybackHarness({ backend: activeBackend, playerId: "active-cancel" });
+	const activeAbort = new AbortController();
+	await activeHarness.start(testTrack("active-cancel-track"), activeAbort.signal);
+	activeAbort.abort();
+	assert.equal(activeBackend.handles.size, 0);
+	assert.equal(activeHarness.sources[0].destroyed, true);
+	await activeHarness.dispose();
+});
+
+test("injected output failures reach track error and anti-stuck recovery handlers", async () => {
+	const harness = createPlaybackHarness({ playerId: "output-failure" });
+	await harness.start(testTrack("output-failure-track"));
+	const handle = harness.backend.activeHandle;
+	const failure = new Error("fake sink failure");
+	handle.fail(failure);
+	assert.equal(harness.playerErrors[0].error, failure);
+	assert.equal(harness.backend.handles.size, 0);
+	assert.equal(harness.sources[0].destroyed, true);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(harness.recoveryReports[0].reason, "audio output error: fake sink failure");
+	await harness.dispose();
+});
+
+test("injected backend crossfades through its volume operation and rejects unsupported crossfade", async () => {
+	const harness = createPlaybackHarness({ playerId: "fake-crossfade", transition: true });
+	const first = testTrack("crossfade-one");
+	const second = testTrack("crossfade-two");
+	await harness.start(first);
+	const firstHandle = harness.backend.activeHandle;
+	await harness.start(second, undefined);
+	await harness.backend.waitForStarted(2);
+	const secondHandle = harness.backend.activeHandle;
+	assert.equal(firstHandle.disposed, true);
+	assert.ok(secondHandle.volumeValues?.includes(0));
+	harness.playback.cancelFade(harness.playerId);
+	assert.equal(harness.playback.getFadeGain(harness.playerId), null);
+	await harness.dispose();
+
+	const unsupportedBackend = new FakeAudioOutputBackend();
+	unsupportedBackend.capabilities.volume = "unsupported";
+	unsupportedBackend.readyGate.resolve();
+	const unsupported = createPlaybackHarness({
+		backend: unsupportedBackend,
+		playerId: "unsupported-crossfade",
+		transition: true,
+	});
+	await unsupported.start(testTrack("unsupported-one"));
+	await assert.rejects(unsupported.start(testTrack("unsupported-two")), AudioOutputUnsupportedOperationError);
+	assert.equal(unsupportedBackend.handles.size, 0);
+	await unsupported.dispose();
+});
+
+test("injected backend disposal is idempotent and releases handle listeners", async () => {
+	const harness = createPlaybackHarness({ playerId: "idempotent-dispose" });
+	await harness.start(testTrack("dispose-track"));
+	const handle = harness.backend.activeHandle;
+	assert.equal(handle.listeners.size, 1);
+	await harness.dispose();
+	await harness.backend.dispose();
+	assert.equal(harness.backend.handles.size, 0);
+	assert.equal(handle.listeners.size, 0);
 });
 
 test("Discord backend converts float32 PCM at the adapter boundary and controls inline volume", async () => {

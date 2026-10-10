@@ -19,9 +19,10 @@ export interface LifecycleControllerOptions {
 }
 /** Per-player resources handed to the shared `PlaybackController` via `attach(playerId, options)`. */
 export interface PlaybackControllerOptions {
-	audioPlayer: AudioPlayer;
+	audioPlayer?: AudioPlayer;
 	stuckTimeoutMs?: number;
 	audioProcessing?: import("../audio/AudioProcessingEngine").AudioProcessingOptions;
+	audioOutputBackendFactory?: import("../output/AudioOutputBackend").AudioOutputBackendFactory<AudioResource>;
 }
 
 export interface ActiveStream {

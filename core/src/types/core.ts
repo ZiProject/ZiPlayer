@@ -5,6 +5,7 @@ import type { AudioFilter } from "./filter";
 import type { SourcePluginLike } from "./plugin";
 import type { AudioResource, StreamType } from "@discordjs/voice";
 import type { PlayerDebugLevel } from "./debug";
+import type { AudioOutputBackendFactory } from "../output/AudioOutputBackend";
 
 export enum PlaybackMode {
 	NATIVE = "native",
@@ -202,6 +203,8 @@ export interface PlayerOptions {
 		resampleRate?: number;
 		maxBufferBytes?: number;
 	};
+	/** Creates an output backend owned by this player. Discord Voice is used when omitted. */
+	audioOutputBackendFactory?: AudioOutputBackendFactory<AudioResource>;
 	maxStreamStore?: number;
 }
 

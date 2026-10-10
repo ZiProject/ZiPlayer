@@ -44,7 +44,7 @@ export class PlaybackStartController {
 				this.bus.requestRpcSync<{ track: Track }, boolean>(this.playerId, CONTROLLER_RPC.preloadHas, { track })
 			:	(this.adapters?.hasPreload?.(track) ?? false);
 		const transition = this.transitionEnabled();
-		if (!transition) this.stopPlayback(parentContext.signal, !hasPreload);
+		if (!transition) await this.stopPlayback(parentContext.signal, !hasPreload);
 
 		this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.trackResetRecovery, {});
 
@@ -104,11 +104,16 @@ export class PlaybackStartController {
 				{ signal: context.signal },
 			);
 			if (context.signal.aborted || !this.isCurrentSession(session, context)) {
-				resource.playStream.destroy();
 				return;
 			}
 			session.setResource(resource);
-			this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackPlay, { resource, session, from, to: track });
+			await this.bus.requestRpc(
+				this.playerId,
+				CONTROLLER_RPC.playbackPlay,
+				{ resource, session, from, to: track },
+				{ signal: context.signal },
+			);
+			if (context.signal.aborted || !this.isCurrentSession(session, context)) return;
 			session.markPlaying(0);
 			this.consecutiveFailures = 0;
 			if (transition) this.sessionController.retirePendingPrevious(this.playerId);

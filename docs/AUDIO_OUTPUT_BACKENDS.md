@@ -1,9 +1,10 @@
 # Audio output backend boundary
 
-ZiPlayer remains Discord-first. `PlayerManager` creates a Discord `AudioPlayer`, `ConnectionController` subscribes it to a Discord
-voice connection, and `PlaybackController` remains the compatibility-facing owner of its Discord playback state. The first
-extracted seam is deliberately limited to resource construction and output operations; it does not move queueing, track
-resolution, recovery, fades, preload, or session policy into the adapter.
+ZiPlayer remains Discord-first. `PlayerManager` creates a Discord `AudioPlayer` when no custom output factory is supplied, and
+`ConnectionController` subscribes that player to a Discord voice connection. `PlaybackController` is still the compatibility
+boundary for legacy Discord resources and synchronous APIs, but generic playback operations use normalized backend handle
+state and lifecycle methods. The extraction does not move queueing, track resolution, recovery, fades, preload, or session
+policy into the adapter.
 
 ## Current dependency map
 
@@ -11,7 +12,7 @@ resolution, recovery, fades, preload, or session policy into the adapter.
 Player / PlaybackOrchestrator
   -> Bus RPCs for stream replacement, resource creation, and play/stop
   -> PlaybackSession (currently stores AudioResource)
-  -> PlaybackController (Discord player state, resource state, fades, watchdog)
+  -> PlaybackController (normalized handle state; Discord compatibility state, fades, watchdog)
        -> DiscordVoiceOutputBackend
             -> createAudioResource / StreamType / AudioPlayer start-pause-resume-stop
             -> Discord inline volume and PCM conversion
@@ -50,11 +51,38 @@ types; doing that in this extraction would make it a broad, risky rewrite.
 - Volume is identified as backend-, upstream-, or unsupported. Discord advertises backend volume because its adapter creates an
   inline-volume resource.
 
-The Discord adapter implements this contract and owns the Discord resource factory and the controller's
-start/pause/resume/stop/volume operations. The old synchronous `PlaybackController.createResource()` and `Player.createResource()`
-behavior remains as a compatibility path; it returns the original `AudioResource` shape. Playback start and resource refresh now
-pass cancellation to resource creation. `audioProcessing` only selects DSP options; it does not select or replace the output
-backend.
+The Discord adapter implements this contract and owns Discord resource creation and player start/pause/resume/stop/volume
+operations. The old synchronous `PlaybackController.createResource()` and `Player.createResource()` behavior remains a
+compatibility path; it returns the original `AudioResource` shape. Playback start and resource refresh pass cancellation to
+resource creation. `audioProcessing` only selects DSP options; it does not select or replace the output backend.
+
+## Selecting a backend
+
+Backend selection is per player and has no global mutable default. `PlayerOptions.audioOutputBackendFactory` is optional; when
+omitted, ZiPlayer constructs `DiscordVoiceOutputBackend` around the manager-created `AudioPlayer`. A factory is invoked once per
+attached player and its backend instance is owned by that player's `PlaybackController` slot. Detaching/replacing the slot aborts
+its lifecycle signal, disposes its handles, detaches event listeners, and disposes the backend. A caller should therefore return
+a fresh backend instance for each factory invocation unless it explicitly manages safe sharing itself.
+
+```ts
+const player = await manager.create(guildId, {
+	audioOutputBackendFactory: ({ playerId }) => createMyBackend(playerId),
+});
+```
+
+The factory is a typed injection seam, not a plugin registry. At this stage its resource type remains
+`AudioOutputBackendFactory<AudioResource>` to preserve the Bus, `PlaybackSession`, preload, and public `Player` compatibility
+contracts. A custom transport can run without a Discord voice connection (as the fake integration backend does), but a fully
+Discord-independent resource type is not yet supported at the public TypeScript boundary. Generalizing that identity without
+breaking existing `AudioResource` consumers is follow-up work; do not treat the current seam as a completed Web backend API.
+
+The backend owns each session handle it creates; the slot owns the backend and registered handle-event detachers. A transferred
+input stream is destroyed on stop, cancellation, replacement, failure cleanup, or disposal. A borrowed stream must not be
+destroyed by the backend. Session readiness and backend initialization must settle before start; failure is reported through the
+existing track-error/recovery path. A consumed stream is never replayed after DSP or sink failure. Operations unsupported by
+the selected backend reject explicitly, including seek or volume operations when the capability says unsupported. The fake
+backend tests cover lifecycle, startup cancellation, replacement, output failure, volume/crossfade capability, and disposal
+without opening a Discord voice connection.
 
 ## Processed audio format and failure behavior
 
@@ -93,3 +121,17 @@ simpler transport to deploy and observe; it handles framing/application messages
 more jitter/buffering than a media-native transport. WebRTC is a better candidate when interactive controls, low latency, or
 synchronized listening dominate, at the cost of signaling, NAT traversal, congestion-control and more involved client lifecycle.
 These are transport choices only: neither transport, server, authentication, nor browser protocol is implemented here.
+
+## Verification
+
+From the repository root, run:
+
+```sh
+npm run build:core
+node --test tests/audio_output_backend.test.js tests/audio_processing_engine.test.js
+npm test
+npm run format:check
+```
+
+The Node.js CI workflow runs required package builds without success-shaped fallbacks. It checks formatting but does not rewrite,
+commit, or push source files.

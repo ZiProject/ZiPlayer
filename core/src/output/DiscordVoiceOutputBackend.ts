@@ -43,7 +43,7 @@ function isCurrentResource(state: AudioPlayerState, resource: AudioResource): bo
 	return "resource" in state && state.resource === resource;
 }
 
-function discordStreamType(format: AudioFrameFormat): StreamType {
+function discordStreamType(format: AudioFrameFormat): StreamType | undefined {
 	if (format.kind === "pcm") {
 		if (
 			format.sampleRateHz !== 48_000 ||
@@ -62,6 +62,7 @@ function discordStreamType(format: AudioFrameFormat): StreamType {
 	if (format.codec === "opus" && format.container === "ogg") return StreamType.OggOpus;
 	if (format.codec === "opus" && format.container === "webm") return StreamType.WebmOpus;
 	if (format.codec === "opus") return StreamType.Opus;
+	if (!format.codec && !format.container) return undefined;
 	return StreamType.Arbitrary;
 }
 
@@ -436,6 +437,10 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 
 	public getVolume(resource: AudioResource): number | null {
 		return resource.volume?.volume ?? null;
+	}
+
+	public getSessionHandle(resource: AudioResource): AudioOutputHandle<AudioResource> {
+		return this.handleFor(resource);
 	}
 
 	public isCurrent(handle: DiscordVoiceOutputHandle): boolean {

@@ -161,7 +161,7 @@ export class PlaybackTrackEndController {
 			const finalSession = this.currentSession();
 			if (!finalSession || finalSession.id !== snapshot.id || !finalSession.isActive()) return;
 			endedSession.markEnded();
-			this.stopPlayback(context.signal);
+			await this.stopPlayback(context.signal);
 			this.publishState();
 			this.waitingForQueue = true;
 			this.bus.event(this.playerId, { type: BUS_EVENT.queueEnd });
