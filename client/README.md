@@ -3,10 +3,13 @@
 Small browser client for ZiPlayer's WebSocket PCM protocol. It validates the publisher configuration and binary frame headers,
 converts little-endian s16 stereo PCM to Float32, and plays it through an AudioWorklet with a bounded jitter buffer.
 
-The package is only the receiving/playback client. Your Node.js application still needs an authenticated WebSocket gateway and a
-ZiPlayer `WebSocketAudioOutputBackend` publisher. The gateway example in
+The package is only the receiving/playback client and event source; it does not expose remote `pause`, `stop`, `seek`, or volume
+methods. Your Node.js application still needs an authenticated WebSocket gateway and a ZiPlayer
+`WebSocketAudioOutputBackend` publisher. Authentication is determined by your gateway; the `token` connect option is optional
+for gateways that do not require it. Add playback controls to your own server API and bind them to the intended ZiPlayer player.
+The gateway example in
 [`../examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend) shows a complete local setup with
-search, publisher routing, and browser playback.
+search, publisher routing, browser playback, queue display, and multi-player controls.
 
 ## Install and use
 
@@ -53,8 +56,9 @@ await client.connect({
 await fetch("/play", { method: "POST", body: JSON.stringify({ query }) });
 ```
 
-The browser fills in `client.sessionId` when the next publisher sends `audio:config`. If a publisher is already active and you
-want to join that live stream, pass its `sessionId` instead. Call `disconnect()` to release browser resources.
+The `token` option is optional for gateways that do not require authentication; provide it when your server uses token-based
+authentication. The browser fills in `client.sessionId` when the next publisher sends `audio:config`. If a publisher is already
+active and you want to join that live stream, pass its `sessionId` instead. Call `disconnect()` to release browser resources.
 
 ## Events
 

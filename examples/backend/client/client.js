@@ -3,9 +3,16 @@ import { WEB_AUDIO_CHANNELS, WEB_AUDIO_SAMPLE_RATE_HZ, WEB_AUDIO_SAMPLE_BYTES, W
 const connectForm = document.querySelector("#connect-form");
 const gatewayUrlInput = document.querySelector("#gateway-url");
 const sessionIdInput = document.querySelector("#session-id");
-const tokenInput = document.querySelector("#token");
 const connectButton = document.querySelector("#connect");
 const disconnectButton = document.querySelector("#disconnect");
+const pauseButton = document.querySelector("#pause");
+const resumeButton = document.querySelector("#resume");
+const stopPlaybackButton = document.querySelector("#stop-playback");
+const seekForm = document.querySelector("#seek-form");
+const seekPositionInput = document.querySelector("#seek-position");
+const volumeInput = document.querySelector("#volume");
+const volumeValue = document.querySelector("#volume-value");
+const controlStatusElement = document.querySelector("#control-status");
 const statusElement = document.querySelector("#status");
 const recordButton = document.querySelector("#record");
 const downloadRecordingButton = document.querySelector("#download-recording");
@@ -15,6 +22,16 @@ const searchForm = document.querySelector("#search-form");
 const searchQueryInput = document.querySelector("#search-query");
 const searchButton = document.querySelector("#search");
 const searchStatusElement = document.querySelector("#search-status");
+const currentTrackElement = document.querySelector("#current-track");
+const queueListElement = document.querySelector("#queue-list");
+const relatedListElement = document.querySelector("#related-list");
+const skipButton = document.querySelector("#skip");
+const loopModeSelect = document.querySelector("#loop-mode");
+const autoplayInput = document.querySelector("#autoplay");
+const filterSelect = document.querySelector("#filter-select");
+const applyFilterButton = document.querySelector("#apply-filter");
+const clearFiltersButton = document.querySelector("#clear-filters");
+const filterStatusElement = document.querySelector("#filter-status");
 const BYTES_PER_SECOND = WEB_AUDIO_SAMPLE_RATE_HZ * WEB_AUDIO_CHANNELS * WEB_AUDIO_SAMPLE_BYTES;
 const MAX_RECORDING_BYTES = BYTES_PER_SECOND * 60 * 10;
 
@@ -36,12 +53,14 @@ void playbackConfig.catch((error) => {
 
 const audioClient = new WebAudioClient();
 let followsPublisher = false;
+let listeningSessionId = null;
 let recordingActive = false;
 let recordedChunks = [];
 let recordedBytes = 0;
 let receivedPcmFrames = 0;
 let receivedPcmBytes = 0;
 let pcmWatchdog = null;
+let currentActiveFilters = new Set();
 
 function setStatus(message) {
 	statusElement.textContent = message;
@@ -49,6 +68,94 @@ function setStatus(message) {
 
 function setSearchStatus(message) {
 	searchStatusElement.textContent = message;
+}
+
+function setControlStatus(message) {
+	controlStatusElement.textContent = message;
+}
+
+async function sendPlaybackControl(action, values = {}) {
+	const sessionId = sessionIdInput.value.trim();
+	if (!sessionId) throw new Error("Enter the player ID to control");
+	const response = await fetch("/control", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ sessionId, action, ...values }),
+	});
+	const result = await response.json();
+	if (!response.ok) throw new Error(result.error || `Control request failed (${response.status})`);
+	setControlStatus(`${action} applied to ${result.sessionId}`);
+	await refreshPlayerState();
+}
+
+function reportControlError(error) {
+	console.error("Playback control failed:", error);
+	setControlStatus(`Control failed: ${error.message}`);
+}
+
+function displayTrack(track) {
+	if (!track) return "No track";
+	const duration = track.isLive ? "LIVE" : formatDuration((track.duration || 0) / 1000);
+	return `${track.title}${track.author ? ` — ${track.author}` : ""} (${duration})`;
+}
+
+function renderTrackList(element, tracks, emptyMessage) {
+	element.replaceChildren();
+	if (!tracks.length) {
+		const empty = document.createElement("li");
+		empty.textContent = emptyMessage;
+		element.append(empty);
+		return;
+	}
+	for (const track of tracks) {
+		const item = document.createElement("li");
+		item.textContent = displayTrack(track);
+		element.append(item);
+	}
+}
+
+async function refreshPlayerState() {
+	const sessionId = sessionIdInput.value.trim();
+	if (!sessionId) return;
+	try {
+		const response = await fetch(`/player-state?sessionId=${encodeURIComponent(sessionId)}`);
+		const state = await response.json();
+		if (response.status === 404) {
+			currentTrackElement.textContent = "No player created yet";
+			renderTrackList(queueListElement, [], "Queue is empty");
+			renderTrackList(relatedListElement, [], "No related tracks");
+			currentActiveFilters = new Set();
+			filterSelect.replaceChildren(new Option("No player selected", ""));
+			filterStatusElement.textContent = "No player selected";
+			loopModeSelect.value = "off";
+			autoplayInput.checked = false;
+			volumeInput.value = "100";
+			volumeValue.textContent = "100%";
+			return;
+		}
+		if (!response.ok) throw new Error(state.error || `Player state request failed (${response.status})`);
+		currentTrackElement.textContent = displayTrack(state.currentTrack);
+		renderTrackList(queueListElement, state.tracks, "Queue is empty");
+		renderTrackList(relatedListElement, state.related, "No related tracks");
+		loopModeSelect.value = state.loopMode;
+		autoplayInput.checked = state.autoPlay;
+		volumeInput.value = String(state.volume);
+		volumeValue.textContent = `${state.volume}%`;
+		const activeNames = new Set(state.activeFilters.map((filter) => filter.name));
+		currentActiveFilters = activeNames;
+		const selectedFilter = filterSelect.value;
+		filterSelect.replaceChildren(new Option("Select a filter", ""));
+		for (const filter of state.filters) {
+			filterSelect.add(
+				new Option(`${filter.description}${activeNames.has(filter.name) ? " (active)" : ""}`, filter.name),
+			);
+		}
+		if (state.filters.some((filter) => filter.name === selectedFilter)) filterSelect.value = selectedFilter;
+		filterStatusElement.textContent = activeNames.size ? `Active: ${[...activeNames].join(", ")}` : "No active filters";
+	} catch (error) {
+		console.error("Unable to load player state:", error);
+		filterStatusElement.textContent = `Unable to load player state: ${error.message}`;
+	}
 }
 
 function updateRecordingControls(message) {
@@ -153,6 +260,7 @@ audioClient.addEventListener("statechange", ({ detail }) => {
 	}
 	if (detail.state === "disconnected") {
 		followsPublisher = false;
+		listeningSessionId = null;
 		clearTimeout(pcmWatchdog);
 		pcmWatchdog = null;
 		receivedPcmFrames = 0;
@@ -190,16 +298,17 @@ audioClient.addEventListener("close", ({ detail }) => {
 	console.warn(`Audio listener closed (${detail.code}${detail.reason ? `: ${detail.reason}` : ""})`);
 });
 
-async function connectToSession({ nextPublisher = false } = {}) {
+async function connectToSession({ nextPublisher = false, sessionId = sessionIdInput.value.trim() } = {}) {
 	connectButton.disabled = true;
 	setStatus("Starting browser audio output…");
 	try {
+		if (sessionId) sessionIdInput.value = sessionId;
 		await audioClient.connect({
 			gatewayUrl: gatewayUrlInput.value,
-			token: tokenInput.value,
-			sessionId: sessionIdInput.value,
+			sessionId,
 			nextPublisher,
 		});
+		listeningSessionId = sessionId || null;
 		return true;
 	} catch (error) {
 		console.error("Unable to connect Web audio client:", error);
@@ -255,20 +364,17 @@ searchForm.addEventListener("submit", async (event) => {
 	setSearchStatus("Searching with ZiPlayer plugins…");
 	try {
 		const config = await playbackConfig;
-		const sessionId = sessionIdInput.value || config.defaultSessionId;
-		if (!sessionId) throw new Error("Enter the playback session ID before searching");
+		const sessionId = sessionIdInput.value.trim() || config.defaultSessionId;
+		if (!sessionId) throw new Error("Enter the player ID for this playback session");
 		sessionIdInput.value = sessionId;
-		if (!(followsPublisher && audioClient.state === "connected")) {
+		if (!(followsPublisher && audioClient.state === "connected" && listeningSessionId === sessionId)) {
 			if (audioClient.state !== "disconnected") await audioClient.disconnect();
-			const listenerReady = await connectToSession({ nextPublisher: true });
+			const listenerReady = await connectToSession({ nextPublisher: true, sessionId });
 			if (!listenerReady) throw new Error("Could not connect a listener before starting playback");
 		}
 		const response = await fetch("/play", {
 			method: "POST",
-			headers: {
-				"content-type": "application/json",
-				authorization: `Bearer ${tokenInput.value}`,
-			},
+			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ query: searchQueryInput.value, sessionId }),
 		});
 		const result = await response.json();
@@ -278,6 +384,7 @@ searchForm.addEventListener("submit", async (event) => {
 			throw new Error("The audio publisher session did not match the listener session");
 		}
 		setSearchStatus(`Added to playback: ${result.track.title}`);
+		await refreshPlayerState();
 		if (result.track.url) console.info(`Selected track: ${result.track.title} (${result.track.url})`);
 	} catch (error) {
 		console.error("Web track search failed:", error);
@@ -286,5 +393,54 @@ searchForm.addEventListener("submit", async (event) => {
 		searchButton.disabled = false;
 	}
 });
+
+pauseButton.addEventListener("click", () => void sendPlaybackControl("pause").catch(reportControlError));
+resumeButton.addEventListener("click", () => void sendPlaybackControl("resume").catch(reportControlError));
+stopPlaybackButton.addEventListener("click", () => void sendPlaybackControl("stop").catch(reportControlError));
+skipButton.addEventListener("click", () => void sendPlaybackControl("skip").catch(reportControlError));
+seekForm.addEventListener("submit", (event) => {
+	event.preventDefault();
+	const seconds = Number(seekPositionInput.value);
+	if (!Number.isFinite(seconds) || seconds < 0) {
+		setControlStatus("Seek position must be a non-negative number of seconds.");
+		return;
+	}
+	void sendPlaybackControl("seek", { positionMs: seconds * 1000 }).catch(reportControlError);
+});
+volumeInput.addEventListener("input", () => {
+	volumeValue.textContent = `${volumeInput.value}%`;
+});
+volumeInput.addEventListener("change", () => {
+	void sendPlaybackControl("volume", { volume: Number(volumeInput.value) }).catch(reportControlError);
+});
+loopModeSelect.addEventListener("change", () => {
+	void sendPlaybackControl("loop", { mode: loopModeSelect.value }).catch(reportControlError);
+});
+autoplayInput.addEventListener("change", () => {
+	void sendPlaybackControl("autoplay", { enabled: autoplayInput.checked }).catch(reportControlError);
+});
+applyFilterButton.addEventListener("click", () => {
+	const filterName = filterSelect.value;
+	if (!filterName) {
+		filterStatusElement.textContent = "Choose a filter first.";
+		return;
+	}
+	const isActive = currentActiveFilters.has(filterName);
+	void sendPlaybackControl("filter", { filterName, enabled: !isActive })
+		.then(() => {
+			filterStatusElement.textContent = `${isActive ? "Removed" : "Applied"} ${filterName}`;
+		})
+		.catch(reportControlError);
+});
+clearFiltersButton.addEventListener("click", () => {
+	void sendPlaybackControl("filter-clear")
+		.then(() => {
+			filterStatusElement.textContent = "Cleared all filters";
+		})
+		.catch(reportControlError);
+});
+sessionIdInput.addEventListener("change", () => void refreshPlayerState());
+void refreshPlayerState();
+setInterval(() => void refreshPlayerState(), 3000);
 
 window.addEventListener("beforeunload", () => void audioClient.disconnect());

@@ -168,6 +168,7 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 	private readonly signal?: AbortSignal;
 	private socket: WebSocketLike | null = null;
 	private sequence = 0;
+	private volume = 1;
 	private sendingPromise: Promise<void> | null = null;
 	public completion: Promise<void> = Promise.resolve();
 	private started = false;
@@ -311,7 +312,10 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 
 	public setVolume(value: number, signal?: AbortSignal): void {
 		assertNotAborted(this.signal, signal);
-		throw new AudioOutputUnsupportedOperationError("volume control; apply volume upstream");
+		if (!Number.isFinite(value) || value < 0) {
+			throw new TypeError("volume must be a non-negative finite number");
+		}
+		this.volume = value;
 	}
 
 	public onEvent(listener: (event: AudioOutputEvent) => void): () => void {
@@ -374,7 +378,7 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 				const combined: Buffer = remainder.length > 0 ? Buffer.concat([remainder, nextChunk]) : nextChunk;
 				const completeFrames = Math.floor(combined.length / frameBytes) * frameBytes;
 				for (let offset = 0; offset < completeFrames; offset += frameBytes) {
-					const framePayload: Buffer = combined.subarray(offset, offset + frameBytes);
+					const framePayload = this.applyVolume(combined.subarray(offset, offset + frameBytes));
 					if (!(await this.sendFrame(framePayload, signal))) return;
 				}
 				remainder = combined.subarray(completeFrames) as Buffer;
@@ -384,7 +388,7 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 				if (remainder.length % sampleBytes !== 0) {
 					throw new Error("WebSocket audio stream ended with an incomplete PCM sample frame");
 				}
-				if (!(await this.sendFrame(remainder, signal))) return;
+				if (!(await this.sendFrame(this.applyVolume(remainder), signal))) return;
 			}
 			if (this.stopped || this.disposed || this.transportClosed) return;
 			this.stateValue = "ended";
@@ -421,6 +425,18 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 			throw new TypeError("WebSocket backend requires interleaved s16 PCM input");
 		}
 		return this.format.channels * WEB_AUDIO_SAMPLE_BYTES;
+	}
+
+	private applyVolume(payload: Buffer): Buffer {
+		const volume = this.volume;
+		if (volume === 1) return payload;
+		const output = Buffer.allocUnsafe(payload.length);
+		for (let offset = 0; offset < payload.length; offset += WEB_AUDIO_SAMPLE_BYTES) {
+			const sample = payload.readInt16LE(offset);
+			const amplified = Math.max(-32768, Math.min(32767, Math.round(sample * volume)));
+			output.writeInt16LE(amplified, offset);
+		}
+		return output;
 	}
 
 	private async sendFrame(payload: Uint8Array, signal?: AbortSignal): Promise<boolean> {
@@ -579,7 +595,7 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 		seek: "unsupported",
 		replacement: "stop-before-start",
 		ownership: "both",
-		volume: "unsupported",
+		volume: "backend",
 		backpressure: "bounded",
 		maxBufferedBytes: 256 * 1024,
 	};

@@ -184,7 +184,7 @@ export class WebAudioClient extends EventTarget {
 
 	async connect({ gatewayUrl, token, sessionId, nextPublisher = false } = {}) {
 		if (typeof gatewayUrl !== "string" || !gatewayUrl) throw new TypeError("gatewayUrl is required");
-		if (typeof token !== "string" || !token) throw new TypeError("token is required");
+		if (token !== undefined && typeof token !== "string") throw new TypeError("token must be a string when provided");
 		if (!nextPublisher && (typeof sessionId !== "string" || !sessionId || sessionId.length > 128)) {
 			throw new TypeError("sessionId is required unless nextPublisher is enabled");
 		}
@@ -193,7 +193,7 @@ export class WebAudioClient extends EventTarget {
 
 		const url = new URL(nextPublisher ? "/listen-next" : "/listen", gatewayUrl);
 		if (typeof sessionId === "string" && sessionId) url.searchParams.set("sessionId", sessionId);
-		url.searchParams.set("token", token);
+		if (token) url.searchParams.set("token", token);
 		this.sessionId = nextPublisher ? null : sessionId;
 		this.config = null;
 		this.expectedSequence = null;
@@ -228,7 +228,7 @@ export class WebAudioClient extends EventTarget {
 					else resolve();
 				};
 				const onOpen = () => finish();
-				const onError = () => finish(new Error("WebSocket listener connection failed; check gateway URL and token"));
+				const onError = () => finish(new Error("WebSocket listener connection failed; check the gateway URL and access policy"));
 				const onClose = (event) => finish(new Error(`WebSocket listener closed before connecting (${event.code})`));
 				socket.addEventListener("open", onOpen, { once: true });
 				socket.addEventListener("error", onError, { once: true });

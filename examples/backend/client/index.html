@@ -36,6 +36,7 @@
 			}
 
 			input,
+			select,
 			button {
 				box-sizing: border-box;
 				width: 100%;
@@ -48,6 +49,15 @@
 			input {
 				background: #111827;
 				color: inherit;
+			}
+
+			select {
+				background: #111827;
+				color: inherit;
+			}
+
+			input[type="checkbox"] {
+				width: auto;
 			}
 
 			button {
@@ -67,9 +77,47 @@
 				background: #4b5563;
 			}
 
+			#controls {
+				display: grid;
+				gap: 0.75rem;
+				padding: 1rem;
+				border: 1px solid #374151;
+				border-radius: 0.75rem;
+				background: #1f2937;
+			}
+
+			#player-state {
+				display: grid;
+				gap: 0.75rem;
+				margin: 1rem 0;
+				padding: 1rem;
+				border: 1px solid #374151;
+				border-radius: 0.75rem;
+				background: #1f2937;
+			}
+
+			#player-state ul {
+				margin: 0.25rem 0;
+				padding-left: 1.25rem;
+			}
+
+			#player-state li {
+				margin: 0.35rem 0;
+			}
+
+			#controls button,
+			#controls input {
+				margin-top: 0.35rem;
+			}
+
 			#download-recording,
 			#clear-recording {
 				background: #4b5563;
+			}
+
+			#control-status {
+				min-height: 1.5em;
+				color: #fbbf24;
 			}
 
 			#status {
@@ -91,7 +139,10 @@
 	</head>
 	<body>
 		<h1>ZiPlayer Web Audio</h1>
-		<p class="hint">Search for a track through the configured ZiPlayer source plugins, then connect to its live PCM stream.</p>
+		<p class="hint">
+			Each player ID is an independent ZiPlayer session. Enter the same ID to play, listen, or control that player's stream;
+			enter a new ID and choose Search and play to create another player.
+		</p>
 		<form id="search-form">
 			<label>
 				Search query or media URL
@@ -113,10 +164,56 @@
 				role="status"
 				aria-live="polite"></div>
 		</form>
+		<section id="player-state" aria-label="Player queue">
+			<strong>Current track</strong>
+			<div id="current-track">No track playing</div>
+			<strong>Queue</strong>
+			<ul id="queue-list"><li>Queue is empty</li></ul>
+			<strong>Related tracks</strong>
+			<ul id="related-list"><li>No related tracks</li></ul>
+		</section>
 		<p class="hint">
-			Enter the listener token below before searching. Search and play automatically connects this page to the new audio stream.
-			You can also use the session fields below to connect manually.
+			<code>PLAYER_ID</code> is the default player created when the server starts;
+			other valid IDs create separate players the first time you request playback for them.
 		</p>
+		<section id="controls" aria-label="Playback controls">
+			<strong>Playback controls for the player ID below</strong>
+			<button id="pause" type="button">Pause</button>
+			<button id="resume" type="button">Resume</button>
+			<button id="stop-playback" type="button">Stop playback</button>
+			<button id="skip" type="button">Skip track</button>
+			<form id="seek-form">
+				<label>
+					Seek to (seconds)
+					<input id="seek-position" type="number" min="0" step="0.1" value="0" />
+				</label>
+				<button type="submit">Seek</button>
+			</form>
+			<label>
+				Volume: <span id="volume-value">100%</span>
+				<input id="volume" type="range" min="0" max="200" step="1" value="100" />
+			</label>
+			<label>
+				Loop mode
+				<select id="loop-mode">
+					<option value="off">Off</option>
+					<option value="track">Repeat track</option>
+					<option value="queue">Repeat queue</option>
+				</select>
+			</label>
+			<label>
+				<input id="autoplay" type="checkbox" />
+				Enable autoplay
+			</label>
+			<label>
+				Audio filter
+				<select id="filter-select"><option value="">Loading filters…</option></select>
+			</label>
+			<button id="apply-filter" type="button">Toggle selected filter</button>
+			<button id="clear-filters" type="button">Clear filters</button>
+			<div id="filter-status" role="status" aria-live="polite"></div>
+			<div id="control-status" role="status" aria-live="polite"></div>
+		</section>
 		<form id="connect-form">
 			<label>
 				Gateway WebSocket URL
@@ -128,19 +225,10 @@
 					required />
 			</label>
 			<label>
-				Session ID
+				Player / session ID
 				<input
 					id="session-id"
 					name="sessionId"
-					autocomplete="off"
-					required />
-			</label>
-			<label>
-				Listener token
-				<input
-					id="token"
-					name="token"
-					type="password"
 					autocomplete="off"
 					required />
 			</label>
@@ -188,10 +276,7 @@
 			Recording captures the received 48 kHz stereo PCM into WAV while playback continues. Browser memory is capped at 10 minutes
 			per recording; use Download current WAV to save a snapshot without stopping capture.
 		</p>
-		<p class="hint">
-			For browser connections the example gateway accepts a token in the listener URL. Use a short-lived token and serve this page
-			over HTTPS/WSS outside local development.
-		</p>
+		<p class="hint">This example binds to loopback only and does not provide authentication. Do not expose it to a network.</p>
 		<script
 			src="/client.js"
 			type="module"></script>

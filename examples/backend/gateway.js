@@ -1,9 +1,7 @@
 "use strict";
 
-// Authenticates publisher/listener sockets and relays PCM to browser clients.
-// For production, use HTTPS/WSS and short-lived per-session tokens.
+// Relays PCM to browser clients; the example intentionally binds to loopback only.
 const { createServer } = require("node:http");
-const { timingSafeEqual } = require("node:crypto");
 const { readFile } = require("node:fs/promises");
 const { isIP } = require("node:net");
 const path = require("node:path");
@@ -18,19 +16,13 @@ const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_LISTENER_BUFFER_BYTES = 256 * 1024;
 const MAX_QUERY_LENGTH = 500;
 const WS_OPEN = 1;
-const INSECURE_DEMO_TOKEN = "change-this-local-token";
+const RESERVED_SESSION_ID = "__ziplayer_search__";
+const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const STATIC_FILES = new Map([
 	["/", ["client/index.html", "text/html; charset=utf-8"]],
 	["/client.js", ["client/client.js", "text/javascript; charset=utf-8"]],
 	["/web-audio-client.js", ["../../client/browser/index.js", "text/javascript; charset=utf-8"]],
 ]);
-
-function equalSecret(actual, expected) {
-	if (typeof actual !== "string" || !actual || !expected) return false;
-	const actualBytes = Buffer.from(actual);
-	const expectedBytes = Buffer.from(expected);
-	return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
-}
 
 function sendHttpError(socket, status, message) {
 	socket.end(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\n\r\n`);
@@ -47,12 +39,15 @@ function readRequest(request) {
 	if (!role || (sessionId !== null && (!sessionId.trim() || sessionId.length > 128))) return null;
 	if ((role === "publisher" || role === "listener") && (!sessionId || !sessionId.trim())) return null;
 
-	const token =
-		request.headers.authorization?.startsWith("Bearer ") ?
-			request.headers.authorization.slice("Bearer ".length)
-		: url.searchParams.get("token");
+	return { role, sessionId: sessionId ?? null };
+}
 
-	return { role, sessionId: sessionId ?? null, token };
+function isValidSessionId(sessionId) {
+	return typeof sessionId === "string" && sessionId !== RESERVED_SESSION_ID && SESSION_ID_PATTERN.test(sessionId);
+}
+
+function invalidSessionIdMessage() {
+	return "sessionId must contain 1-128 letters, numbers, underscores, or hyphens and cannot use ZiPlayer's reserved ID";
 }
 
 function isAudioConfig(message, sessionId) {
@@ -285,18 +280,16 @@ function attachPublisher(session, socket, sessions) {
 function createWebAudioGateway({
 	host = "127.0.0.1",
 	port = 8080,
-	token = process.env.WEB_AUDIO_TOKEN,
 	defaultSessionId,
 	onPlayQuery,
+	onControl,
+	onGetPlayerState,
 } = {}) {
-	if (!token) throw new Error("Set WEB_AUDIO_TOKEN to a non-empty secret before starting the gateway");
 	if (!Number.isInteger(port) || port < 0 || port > 65535) throw new TypeError("port must be an integer from 0 to 65535");
-	if (defaultSessionId !== undefined && (typeof defaultSessionId !== "string" || !defaultSessionId.trim() || defaultSessionId.length > 128)) {
-		throw new TypeError("defaultSessionId must be a non-empty string of at most 128 characters");
+	if (defaultSessionId !== undefined && !isValidSessionId(defaultSessionId)) {
+		throw new TypeError(invalidSessionIdMessage());
 	}
-	if (!isLoopbackHost(host) && token === INSECURE_DEMO_TOKEN) {
-		throw new Error(`Refusing to bind to ${host} with the example token; set WEB_AUDIO_TOKEN to a unique secret first`);
-	}
+	if (!isLoopbackHost(host)) throw new Error(`The example gateway only supports loopback hosts; refusing to bind to ${host}`);
 
 	const sessions = new Map();
 	const pendingListeners = new Map();
@@ -311,14 +304,124 @@ function createWebAudioGateway({
 			response.end(JSON.stringify({ status: "ok", activeSessions: sessions.size }));
 			return;
 		}
-		if (request.method === "POST" && pathname === "/play") {
+		if (request.method === "GET" && pathname === "/player-state") {
 			void (async () => {
-				const authorization = request.headers.authorization ?? "";
-				if (!authorization.startsWith("Bearer ") || !equalSecret(authorization.slice("Bearer ".length), token)) {
-					sendJson(response, 401, { error: "Unauthorized" });
+				const sessionId = new URL(request.url ?? "/", "http://localhost").searchParams.get("sessionId");
+				if (!isValidSessionId(sessionId)) {
+					sendJson(response, 400, { error: invalidSessionIdMessage() });
+					return;
+				}
+				if (typeof onGetPlayerState !== "function") {
+					sendJson(response, 503, { error: "Player state is not available" });
+					return;
+				}
+				try {
+					const state = await onGetPlayerState(sessionId);
+					if (state === null) {
+						sendJson(response, 404, { error: `No player exists for session ${sessionId}` });
+						return;
+					}
+					sendJson(response, 200, { sessionId, ...state });
+				} catch (error) {
+					const statusCode = error && typeof error === "object" ? error.statusCode : undefined;
+					if (statusCode) {
+						sendJson(response, statusCode, { error: error.message });
+						return;
+					}
+					console.error("Web player state request failed:", error);
+					sendJson(response, 500, { error: "Player state request failed" });
+				}
+			})();
+			return;
+		}
+		if (request.method === "POST" && pathname === "/control") {
+			void (async () => {
+				if (request.headers["content-type"]?.split(";")[0] !== "application/json") {
+					sendJson(response, 415, { error: "Content-Type must be application/json" });
 					request.resume();
 					return;
 				}
+				if (typeof onControl !== "function") {
+					sendJson(response, 503, { error: "Playback controls are not available" });
+					request.resume();
+					return;
+				}
+				try {
+					const body = await readJsonBody(request, 4096);
+					if (!body || typeof body !== "object" || Array.isArray(body) || !isValidSessionId(body.sessionId)) {
+						sendJson(response, 400, { error: invalidSessionIdMessage() });
+						return;
+					}
+					const { action } = body;
+					const supportedActions = [
+						"pause",
+						"resume",
+						"stop",
+						"skip",
+						"seek",
+						"volume",
+						"loop",
+						"autoplay",
+						"filter",
+						"filter-clear",
+					];
+					if (!supportedActions.includes(action)) {
+						sendJson(response, 400, { error: "Unsupported playback control action" });
+						return;
+					}
+					if (action === "seek" && (!Number.isFinite(body.positionMs) || body.positionMs < 0)) {
+						sendJson(response, 400, { error: "positionMs must be a non-negative number" });
+						return;
+					}
+					if (action === "volume" && (!Number.isFinite(body.volume) || body.volume < 0 || body.volume > 200)) {
+						sendJson(response, 400, { error: "volume must be a number from 0 to 200" });
+						return;
+					}
+					if (action === "loop" && !["off", "track", "queue"].includes(body.mode)) {
+						sendJson(response, 400, { error: "mode must be off, track, or queue" });
+						return;
+					}
+					if (action === "autoplay" && typeof body.enabled !== "boolean") {
+						sendJson(response, 400, { error: "enabled must be a boolean" });
+						return;
+					}
+					if (
+						action === "filter" &&
+						(typeof body.filterName !== "string" || !body.filterName.trim() || body.filterName.length > 100)
+					) {
+						sendJson(response, 400, { error: "filterName must be a non-empty string of at most 100 characters" });
+						return;
+					}
+					if (action === "filter" && typeof body.enabled !== "boolean") {
+						sendJson(response, 400, { error: "enabled must be a boolean" });
+						return;
+					}
+					const result = await onControl(action, body, body.sessionId);
+					if (result === null) {
+						sendJson(response, 503, { error: "Player is not ready" });
+						return;
+					}
+					if (result === false) {
+						sendJson(response, 409, {
+							error: `${action} was not applied; check that the player has an active track and supports this operation`,
+						});
+						return;
+					}
+					sendJson(response, 200, { sessionId: body.sessionId, action, result: result ?? null });
+				} catch (error) {
+					const statusCode = error && typeof error === "object" ? error.statusCode : undefined;
+					if (statusCode) {
+						if (!response.destroyed) sendJson(response, statusCode, { error: error.message });
+						return;
+					}
+					console.error("Web playback control failed:", error);
+					if (!response.destroyed) sendJson(response, 500, { error: "Playback control failed" });
+				}
+			})();
+			return;
+		}
+		if (request.method === "POST" && pathname === "/play") {
+			void (async () => {
 				if (request.headers["content-type"]?.split(";")[0] !== "application/json") {
 					sendJson(response, 415, { error: "Content-Type must be application/json" });
 					request.resume();
@@ -337,12 +440,8 @@ function createWebAudioGateway({
 						return;
 					}
 					const sessionId = body.sessionId ?? defaultSessionId;
-					if (typeof sessionId !== "string" || !sessionId.trim() || sessionId.length > 128) {
-						sendJson(response, 400, { error: "sessionId must identify the player that will handle this request" });
-						return;
-					}
-					if (defaultSessionId && sessionId !== defaultSessionId) {
-						sendJson(response, 400, { error: "sessionId does not match the configured playback session" });
+					if (!isValidSessionId(sessionId)) {
+						sendJson(response, 400, { error: invalidSessionIdMessage() });
 						return;
 					}
 					const result = await onPlayQuery(body.query.trim(), sessionId);
@@ -409,11 +508,6 @@ function createWebAudioGateway({
 			sendHttpError(socket, 404, "Not Found");
 			return;
 		}
-		if (!equalSecret(parsed.token, token)) {
-			sendHttpError(socket, 401, "Unauthorized");
-			return;
-		}
-
 		const existing = sessions.get(parsed.sessionId);
 		if (parsed.role === "publisher" && existing?.publisher?.readyState === WS_OPEN) {
 			sendHttpError(socket, 409, "Session Already Published");

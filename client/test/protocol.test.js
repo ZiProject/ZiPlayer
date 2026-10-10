@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodePcmFrame, parseAudioConfig } from "../browser/index.js";
+import { decodePcmFrame, parseAudioConfig, WebAudioClient } from "../browser/index.js";
 
 const config = {
 	v: 1,
@@ -52,4 +52,49 @@ test("PCM frame decoder rejects invalid headers and unaligned payloads", () => {
 
 	const validFrame = new Uint8Array(frame(0));
 	assert.throws(() => decodePcmFrame(validFrame.slice(0, validFrame.length - 1).buffer, config), /invalid PCM/i);
+});
+
+test("WebAudioClient can connect to a gateway that does not require a token", async () => {
+	const originalAudioWorkletNode = globalThis.AudioWorkletNode;
+	let socketUrl;
+	class FakeSocket extends EventTarget {
+		readyState = 1;
+		binaryType = "";
+		close() {
+			this.readyState = 3;
+		}
+	}
+	class FakeAudioWorkletNode {
+		port = { postMessage() {} };
+		connect() {}
+		disconnect() {}
+	}
+	globalThis.AudioWorkletNode = FakeAudioWorkletNode;
+	const client = new WebAudioClient({
+		audioContextFactory: () => ({
+			sampleRate: 48_000,
+			state: "running",
+			destination: {},
+			audioWorklet: { async addModule() {} },
+			async resume() {},
+			async close() {
+				this.state = "closed";
+			},
+		}),
+		webSocketFactory: (url) => {
+			socketUrl = url;
+			const socket = new FakeSocket();
+			queueMicrotask(() => socket.dispatchEvent(new Event("open")));
+			return socket;
+		},
+	});
+	try {
+		await client.connect({ gatewayUrl: "ws://127.0.0.1:8080", sessionId: "player-1" });
+		assert.equal(socketUrl.searchParams.get("sessionId"), "player-1");
+		assert.equal(socketUrl.searchParams.has("token"), false);
+	} finally {
+		await client.disconnect();
+		if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+		else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+	}
 });

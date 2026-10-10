@@ -6,8 +6,6 @@ const { WebSocket } = require("ws");
 const { encodeWebAudioFrame } = require("ziplayer");
 const { createWebAudioGateway } = require("../gateway");
 
-const token = "gateway-test-token";
-
 function waitForOpen(socket) {
 	return new Promise((resolve, reject) => {
 		socket.once("open", resolve);
@@ -26,7 +24,7 @@ function waitForMessage(socket) {
 }
 
 test("a next-track listener receives the publisher config and first PCM frame", async () => {
-	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0, token });
+	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0 });
 	let listener;
 	let publisher;
 	let replacementPublisher;
@@ -46,10 +44,10 @@ test("a next-track listener receives the publisher config and first PCM frame", 
 		assert.equal(audioClient.status, 200);
 		assert.match(await audioClient.text(), /class WebAudioClient/);
 
-		listener = new WebSocket(`${gatewayUrl}/listen-next?token=${token}`);
+		listener = new WebSocket(`${gatewayUrl}/listen-next`);
 		await waitForOpen(listener);
 
-		publisher = new WebSocket(`${gatewayUrl}/publish?sessionId=gateway-test-session&token=${token}`);
+		publisher = new WebSocket(`${gatewayUrl}/publish?sessionId=gateway-test-session`);
 		await waitForOpen(publisher);
 
 		const configMessage = waitForMessage(listener);
@@ -79,7 +77,7 @@ test("a next-track listener receives the publisher config and first PCM frame", 
 		const publisherClosed = new Promise((resolve) => publisher.once("close", resolve));
 		publisher.close();
 		await publisherClosed;
-		replacementPublisher = new WebSocket(`${gatewayUrl}/publish?sessionId=gateway-test-session&token=${token}`);
+		replacementPublisher = new WebSocket(`${gatewayUrl}/publish?sessionId=gateway-test-session`);
 		await waitForOpen(replacementPublisher);
 
 		const replacementConfigMessage = waitForMessage(listener);
@@ -114,7 +112,7 @@ test("a next-track listener receives the publisher config and first PCM frame", 
 });
 
 test("session-scoped next-listener routing keeps concurrent publishers isolated", async () => {
-	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0, token });
+	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0 });
 	let alphaListener;
 	let betaListener;
 	let alphaPublisher;
@@ -122,11 +120,11 @@ test("session-scoped next-listener routing keeps concurrent publishers isolated"
 	try {
 		const address = await gateway.listen();
 		const gatewayUrl = `ws://127.0.0.1:${address.port}`;
-		alphaListener = new WebSocket(`${gatewayUrl}/listen-next?sessionId=alpha-session&token=${token}`);
-		betaListener = new WebSocket(`${gatewayUrl}/listen-next?sessionId=beta-session&token=${token}`);
+		alphaListener = new WebSocket(`${gatewayUrl}/listen-next?sessionId=alpha-session`);
+		betaListener = new WebSocket(`${gatewayUrl}/listen-next?sessionId=beta-session`);
 		await Promise.all([waitForOpen(alphaListener), waitForOpen(betaListener)]);
 
-		alphaPublisher = new WebSocket(`${gatewayUrl}/publish?sessionId=alpha-session&token=${token}`);
+		alphaPublisher = new WebSocket(`${gatewayUrl}/publish?sessionId=alpha-session`);
 		await waitForOpen(alphaPublisher);
 		const alphaConfigMessage = waitForMessage(alphaListener);
 		alphaPublisher.send(
@@ -145,7 +143,7 @@ test("session-scoped next-listener routing keeps concurrent publishers isolated"
 		const alphaConfig = await alphaConfigMessage;
 		assert.equal(JSON.parse(alphaConfig.data.toString()).sessionId, "alpha-session");
 
-		betaPublisher = new WebSocket(`${gatewayUrl}/publish?sessionId=beta-session&token=${token}`);
+		betaPublisher = new WebSocket(`${gatewayUrl}/publish?sessionId=beta-session`);
 		await waitForOpen(betaPublisher);
 		const betaConfigMessage = waitForMessage(betaListener);
 		betaPublisher.send(
@@ -175,12 +173,15 @@ test("session-scoped next-listener routing keeps concurrent publishers isolated"
 });
 
 test("play waits for its requested session instead of returning another active publisher", async () => {
+	const playCalls = [];
 	const gateway = createWebAudioGateway({
 		host: "127.0.0.1",
 		port: 0,
-		token,
 		defaultSessionId: "requested-session",
-		onPlayQuery: async () => ({ track: { title: "Requested track", url: null } }),
+		onPlayQuery: async (query, sessionId) => {
+			playCalls.push({ query, sessionId });
+			return { track: { title: "Requested track", url: null } };
+		},
 	});
 	let unrelatedPublisher;
 	let requestedPublisher;
@@ -192,7 +193,7 @@ test("play waits for its requested session instead of returning another active p
 		assert.equal((await configResponse.json()).defaultSessionId, "requested-session");
 
 		unrelatedPublisher = new WebSocket(
-			`ws://127.0.0.1:${address.port}/publish?sessionId=unrelated-session&token=${token}`,
+			`ws://127.0.0.1:${address.port}/publish?sessionId=unrelated-session`,
 		);
 		await waitForOpen(unrelatedPublisher);
 
@@ -200,19 +201,19 @@ test("play waits for its requested session instead of returning another active p
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
-				authorization: `Bearer ${token}`,
 			},
 			body: JSON.stringify({ query: "requested track", sessionId: "requested-session" }),
 		});
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		requestedPublisher = new WebSocket(
-			`ws://127.0.0.1:${address.port}/publish?sessionId=requested-session&token=${token}`,
+			`ws://127.0.0.1:${address.port}/publish?sessionId=requested-session`,
 		);
 		await waitForOpen(requestedPublisher);
 
 		const playResponse = await playResponsePromise;
 		assert.equal(playResponse.status, 200);
 		assert.equal((await playResponse.json()).sessionId, "requested-session");
+		assert.deepEqual(playCalls, [{ query: "requested track", sessionId: "requested-session" }]);
 	} finally {
 		unrelatedPublisher?.close();
 		requestedPublisher?.close();
@@ -220,9 +221,157 @@ test("play waits for its requested session instead of returning another active p
 	}
 });
 
-test("the example token is rejected when binding outside loopback", () => {
-	assert.throws(
-		() => createWebAudioGateway({ host: "0.0.0.0", token: "change-this-local-token" }),
-		/refusing to bind.*unique secret/i,
-	);
+test("the example gateway only binds to loopback", () => {
+	assert.throws(() => createWebAudioGateway({ host: "0.0.0.0" }), /only supports loopback/i);
+});
+
+test("playback controls are routed to the requested player session without a demo token", async () => {
+	const controlCalls = [];
+	const gateway = createWebAudioGateway({
+		host: "127.0.0.1",
+		port: 0,
+		defaultSessionId: "single-player",
+		onControl: (action, body, sessionId) => {
+			controlCalls.push({ action, body, sessionId });
+			return true;
+		},
+	});
+	try {
+		const address = await gateway.listen();
+		const url = `http://127.0.0.1:${address.port}/control`;
+		const sendControl = (body) =>
+			fetch(url, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(body),
+			});
+
+		const pause = await sendControl({ sessionId: "single-player", action: "pause" });
+		assert.equal(pause.status, 200);
+		assert.deepEqual(await pause.json(), { sessionId: "single-player", action: "pause", result: true });
+		assert.equal(controlCalls[0].sessionId, "single-player");
+
+		const seek = await sendControl({ sessionId: "second-player", action: "seek", positionMs: 1250 });
+		assert.equal(seek.status, 200);
+		assert.deepEqual(controlCalls[1], {
+			action: "seek",
+			body: { sessionId: "second-player", action: "seek", positionMs: 1250 },
+			sessionId: "second-player",
+		});
+
+		assert.equal((await sendControl({ sessionId: "single-player", action: "volume", volume: 201 })).status, 400);
+		assert.equal(controlCalls.length, 2);
+	} finally {
+		await gateway.close();
+	}
+});
+
+test("playback controls report unsuccessful operations instead of returning success", async () => {
+	const gateway = createWebAudioGateway({
+		host: "127.0.0.1",
+		port: 0,
+		onControl: () => false,
+	});
+	try {
+		const address = await gateway.listen();
+		const response = await fetch(`http://127.0.0.1:${address.port}/control`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ sessionId: "test-player", action: "pause" }),
+		});
+		assert.equal(response.status, 409);
+		assert.match((await response.json()).error, /pause was not applied/);
+	} finally {
+		await gateway.close();
+	}
+});
+
+test("the player-state endpoint returns the requested player's queue and controls", async () => {
+	const gateway = createWebAudioGateway({
+		host: "127.0.0.1",
+		port: 0,
+		onGetPlayerState: (sessionId) => ({
+			currentTrack: { title: `${sessionId} current` },
+			tracks: [{ title: `${sessionId} queued` }],
+			related: [],
+			loopMode: "queue",
+			autoPlay: true,
+			volume: 85,
+			filters: [],
+			activeFilters: [],
+		}),
+	});
+	try {
+		const address = await gateway.listen();
+		const response = await fetch(
+			`http://127.0.0.1:${address.port}/player-state?sessionId=second-player`,
+		);
+		assert.equal(response.status, 200);
+		assert.deepEqual(await response.json(), {
+			sessionId: "second-player",
+			currentTrack: { title: "second-player current" },
+			tracks: [{ title: "second-player queued" }],
+			related: [],
+			loopMode: "queue",
+			autoPlay: true,
+			volume: 85,
+			filters: [],
+			activeFilters: [],
+		});
+		assert.equal(
+			(await fetch(`http://127.0.0.1:${address.port}/player-state?sessionId=bad%2Fid`)).status,
+			400,
+		);
+	} finally {
+		await gateway.close();
+	}
+});
+
+test("queue, loop, autoplay, and filter controls are validated and routed", async () => {
+	const controlCalls = [];
+	const gateway = createWebAudioGateway({
+		host: "127.0.0.1",
+		port: 0,
+		onControl: (action, body, sessionId) => {
+			controlCalls.push({ action, body, sessionId });
+			return true;
+		},
+	});
+	try {
+		const address = await gateway.listen();
+		const send = (body) =>
+			fetch(`http://127.0.0.1:${address.port}/control`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ sessionId: "player-a", ...body }),
+			});
+		for (const body of [
+			{ action: "skip" },
+			{ action: "loop", mode: "queue" },
+			{ action: "autoplay", enabled: true },
+			{ action: "filter", filterName: "bassboost", enabled: true },
+			{ action: "filter-clear" },
+		]) {
+			assert.equal((await send(body)).status, 200);
+		}
+		assert.deepEqual(
+			controlCalls.map(({ action, sessionId }) => ({ action, sessionId })),
+			[
+				{ action: "skip", sessionId: "player-a" },
+				{ action: "loop", sessionId: "player-a" },
+				{ action: "autoplay", sessionId: "player-a" },
+				{ action: "filter", sessionId: "player-a" },
+				{ action: "filter-clear", sessionId: "player-a" },
+			],
+		);
+		assert.equal((await send({ action: "loop", mode: "invalid" })).status, 400);
+		assert.equal((await send({ action: "autoplay", enabled: "yes" })).status, 400);
+		assert.equal((await send({ action: "filter", filterName: "", enabled: true })).status, 400);
+	} finally {
+		await gateway.close();
+	}
 });

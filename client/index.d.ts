@@ -43,7 +43,7 @@ export interface WebAudioClientOptions {
 
 export interface WebAudioConnectOptions {
 	gatewayUrl: string;
-	token: string;
+	token?: string;
 	sessionId?: string;
 	nextPublisher?: boolean;
 }
