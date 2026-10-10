@@ -5,6 +5,7 @@ require("dotenv").config();
 const { WebSocket } = require("ws");
 const { PlayerManager, WebSocketAudioOutputBackend } = require("ziplayer");
 const { createWebAudioGateway } = require("./gateway");
+const pluginPackage = require("@ziplayer/plugin");
 
 const SAMPLE_RATE_HZ = 48_000;
 const CHANNELS = 2;
@@ -121,9 +122,33 @@ async function main() {
 	const port = Number(process.env.PORT ?? 8080);
 	const trackQuery = process.env.TRACK_QUERY ?? process.argv.slice(2).join(" ").trim();
 	const playerId = process.env.PLAYER_ID ?? "web-audio-demo";
-	let manager;
+	const plugins = [
+		new pluginPackage.YouTubePlugin({ preferYoutubei: true }),
+		new pluginPackage.SoundCloudPlugin(),
+		new pluginPackage.SpotifyPlugin(),
+		new pluginPackage.AttachmentsPlugin(),
+		new pluginPackage.TTSPlugin({ defaultLang: process.env.TTS_LANGUAGE ?? "vi" }),
+	];
+
+	let manager = new PlayerManager({
+		plugins,
+		autoCleanup: false,
+		extractorTimeout: Number(process.env.EXTRACTOR_TIMEOUT_MS ?? 30_000),
+		debugLevel: "verbose",
+	});
+	let playerIdleCleanup = createPlayerIdleCleanup(manager);
+	manager.on("trackStart", (_player, track) => {
+		console.info(`Now playing: ${track.title} (${track.url})`);
+	});
+	manager.on("trackAdd", (_player, track) => {
+		console.info(`Queued: ${track.title}`);
+	});
+
+	manager.on("error", (_queue, error) => {
+		console.error("ZiPlayer playback error:", error);
+	});
+	manager.on("debug", console.debug);
 	let gatewayUrl;
-	let playerIdleCleanup;
 	const gateway = createWebAudioGateway({
 		host,
 		port,
@@ -184,6 +209,28 @@ async function main() {
 		},
 		onListenerCount: (sessionId, listenerCount) => playerIdleCleanup?.onListenerCount(sessionId, listenerCount),
 	});
+
+	for (const event of [
+		"willPlay",
+		"trackStart",
+		"trackEnd",
+		"queueEnd",
+		"trackAdd",
+		"queueAdd",
+		"queueAddList",
+		"queueRemove",
+		"volumeChange",
+		"playerPause",
+		"playerResume",
+		"playerStop",
+		"filterApplied",
+		"filterRemoved",
+		"filtersCleared",
+		"seek",
+		"playerDestroy",
+	]) {
+		manager.on(event, (player) => void gateway.publishPlayerState(player.playerId));
+	}
 	let shuttingDown = false;
 	async function getOrCreatePlayer(sessionId) {
 		let player = manager.getPlayer(sessionId);
@@ -218,31 +265,6 @@ async function main() {
 	try {
 		const address = await gateway.listen();
 		gatewayUrl = process.env.GATEWAY_URL ?? `ws://${host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host}:${address.port}`;
-		const pluginPackage = await import("@ziplayer/plugin");
-		const plugins = [
-			new pluginPackage.YouTubePlugin(),
-			new pluginPackage.SoundCloudPlugin(),
-			new pluginPackage.SpotifyPlugin(),
-			new pluginPackage.AttachmentsPlugin(),
-			new pluginPackage.TTSPlugin({ defaultLang: process.env.TTS_LANGUAGE ?? "vi" }),
-		];
-
-		manager = new PlayerManager({
-			plugins,
-			autoCleanup: false,
-			extractorTimeout: Number(process.env.EXTRACTOR_TIMEOUT_MS ?? 30_000),
-		});
-		playerIdleCleanup = createPlayerIdleCleanup(manager);
-		manager.on("trackStart", (_player, track) => {
-			console.info(`Now playing: ${track.title} (${track.url})`);
-		});
-		manager.on("trackAdd", (_player, track) => {
-			console.info(`Queued: ${track.title}`);
-		});
-		manager.on("error", (_queue, error) => {
-			console.error("ZiPlayer playback error:", error);
-		});
-
 		const defaultPlayer = await getOrCreatePlayer(playerId);
 		const requestedBy = process.env.REQUESTED_BY ?? "client";
 		console.info(`Web audio gateway and client listening on http://${address.address}:${address.port}`);

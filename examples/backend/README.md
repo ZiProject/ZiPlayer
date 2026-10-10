@@ -52,12 +52,13 @@ requested ID, not for whichever player publishes first. A session-scoped `/liste
 player; omitting `sessionId` explicitly opts into whichever publisher connects next.
 
 Pause, resume, stop, skip, seek, volume, loop mode, autoplay, and filter requests include the selected player ID and are routed to
-the matching `PlayerManager` instance. The `/player-state` endpoint supplies the current track, queue, related tracks, active
-filters, and player settings displayed by the page. The reusable `@ziplayer/client` package remains an audio receiver and event
-source, not a remote player-control API. Volume is applied to outgoing PCM; seeking requires a current track and a position within
-its duration. A control that cannot be applied returns an error rather than a successful-looking response. When the last browser
-listener disconnects, that player's instance is destroyed after 100 seconds; reconnecting a listener during that grace period
-cancels cleanup.
+the matching `PlayerManager` instance. The page subscribes to `/player-events?sessionId=...`, a Server-Sent Events stream that
+sends the initial player state and pushes updates when tracks, queue entries, playback controls, volume, or filters change. The
+JSON `/player-state` endpoint remains available for one-off reads; the page does not poll it. The reusable `@ziplayer/client`
+package remains an audio receiver and event source, not a remote player-control API. Volume is applied to outgoing PCM; seeking
+requires a current track and a position within its duration. A control that cannot be applied returns an error rather than a
+successful-looking response. When the last browser listener disconnects, that player's instance is destroyed after 100 seconds;
+reconnecting a listener during that grace period cancels cleanup.
 
 You can optionally start a query automatically by adding `TRACK_QUERY` to `examples/backend/.env`:
 

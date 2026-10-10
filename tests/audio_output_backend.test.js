@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const { EventEmitter, getEventListeners } = require("node:events");
 const { PassThrough, Readable } = require("node:stream");
 const { AudioOutputUnsupportedOperationError, DiscordVoiceOutputBackend, convertFloat32PcmToS16Le } = require("../core/dist");
-const { StreamType, TransformerType } = require("@discordjs/voice");
+const { AudioPlayerStatus, StreamType, TransformerType } = require("@discordjs/voice");
 
 function abortError() {
 	const error = new Error("output aborted");
@@ -646,6 +646,22 @@ test("injected fake backend runs playback orchestration and replacement without 
 	await harness.dispose();
 	assert.equal(harness.backend.handles.size, 0);
 	assert.equal(harness.sources[1].destroyed, true);
+});
+
+test("custom output playback status follows the backend for pause and resume", async () => {
+	const harness = createPlaybackHarness({ playerId: "custom-output-pause-resume" });
+	try {
+		await harness.start(testTrack("custom-output-pause-resume-track"));
+		assert.equal(harness.playback.status(harness.playerId), AudioPlayerStatus.Playing);
+
+		assert.equal(await harness.playback.pause(harness.playerId), true);
+		assert.equal(harness.playback.status(harness.playerId), AudioPlayerStatus.Paused);
+
+		assert.equal(await harness.playback.resume(harness.playerId), true);
+		assert.equal(harness.playback.status(harness.playerId), AudioPlayerStatus.Playing);
+	} finally {
+		await harness.dispose();
+	}
 });
 
 test("injected playback releases transferred streams when startup or active playback is cancelled", async () => {

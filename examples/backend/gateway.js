@@ -282,6 +282,19 @@ function attachPublisher(session, socket, sessions, onListenerCount) {
 	});
 }
 
+function attachListener(session, socket, onListenerCount, sessions) {
+	session.listeners.add(socket);
+	notifyListenerCount(session, onListenerCount);
+	if (session.config) socket.send(JSON.stringify(session.config));
+	socket.once("close", () => {
+		if (session.listeners.delete(socket)) notifyListenerCount(session, onListenerCount);
+		removeSessionIfUnused(session, sessions);
+	});
+	socket.on("error", (error) => {
+		console.error(`Audio listener socket error for ${session.sessionId}:`, error);
+	});
+}
+
 function createWebAudioGateway({
 	host = "127.0.0.1",
 	port = 8080,
@@ -299,6 +312,38 @@ function createWebAudioGateway({
 
 	const sessions = new Map();
 	const pendingListeners = new Map();
+	const playerStateListeners = new Map();
+	const publishPlayerState = async (sessionId) => {
+		const listeners = playerStateListeners.get(sessionId);
+		if (!listeners?.size || typeof onGetPlayerState !== "function") return;
+		try {
+			const state = await onGetPlayerState(sessionId);
+			const message = `event: player-state\ndata: ${JSON.stringify({ sessionId, state })}\n\n`;
+			for (const response of listeners) {
+				if (!response.destroyed && !response.writableEnded) response.write(message);
+			}
+		} catch (error) {
+			console.error(`Unable to publish player state for ${sessionId}:`, error);
+			const message = `event: player-state-error\ndata: ${JSON.stringify({ message: "Player state is temporarily unavailable" })}\n\n`;
+			for (const response of listeners) {
+				if (!response.destroyed && !response.writableEnded) response.write(message);
+			}
+		}
+	};
+	const sendPlayerState = async (sessionId, response) => {
+		try {
+			const state = await onGetPlayerState(sessionId);
+			if (response.destroyed || response.writableEnded) return;
+			response.write(`event: player-state\ndata: ${JSON.stringify({ sessionId, state })}\n\n`);
+		} catch (error) {
+			console.error(`Unable to load player state for ${sessionId}:`, error);
+			if (!response.destroyed && !response.writableEnded) {
+				response.write(
+					`event: player-state-error\ndata: ${JSON.stringify({ message: "Player state is temporarily unavailable" })}\n\n`,
+				);
+			}
+		}
+	};
 	const httpServer = createServer((request, response) => {
 		const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
 		if (request.method === "GET" && pathname === "/config") {
@@ -308,6 +353,42 @@ function createWebAudioGateway({
 		if (request.method === "GET" && pathname === "/health") {
 			response.writeHead(200, { "content-type": "application/json" });
 			response.end(JSON.stringify({ status: "ok", activeSessions: sessions.size }));
+			return;
+		}
+		if (request.method === "GET" && pathname === "/player-events") {
+			const sessionId = new URL(request.url ?? "/", "http://localhost").searchParams.get("sessionId");
+			if (!isValidSessionId(sessionId)) {
+				sendJson(response, 400, { error: invalidSessionIdMessage() });
+				return;
+			}
+			if (typeof onGetPlayerState !== "function") {
+				sendJson(response, 503, { error: "Player state is not available" });
+				return;
+			}
+			response.writeHead(200, {
+				"content-type": "text/event-stream; charset=utf-8",
+				"cache-control": "no-cache, no-transform",
+				connection: "keep-alive",
+				"x-accel-buffering": "no",
+			});
+			response.flushHeaders();
+			response.write("retry: 3000\n\n");
+			let listeners = playerStateListeners.get(sessionId);
+			if (!listeners) {
+				listeners = new Set();
+				playerStateListeners.set(sessionId, listeners);
+			}
+			listeners.add(response);
+			const keepAlive = setInterval(() => {
+				if (!response.destroyed && !response.writableEnded) response.write(": keep-alive\n\n");
+			}, 15_000);
+			keepAlive.unref?.();
+			response.on("close", () => {
+				clearInterval(keepAlive);
+				listeners.delete(response);
+				if (listeners.size === 0) playerStateListeners.delete(sessionId);
+			});
+			void sendPlayerState(sessionId, response);
 			return;
 		}
 		if (request.method === "GET" && pathname === "/player-state") {
@@ -413,6 +494,7 @@ function createWebAudioGateway({
 						});
 						return;
 					}
+					void publishPlayerState(body.sessionId);
 					sendJson(response, 200, { sessionId: body.sessionId, action, result: result ?? null });
 				} catch (error) {
 					const statusCode = error && typeof error === "object" ? error.statusCode : undefined;
@@ -463,6 +545,7 @@ function createWebAudioGateway({
 						sendJson(response, 504, { error: `No audio publisher appeared for session ${sessionId}` });
 						return;
 					}
+					void publishPlayerState(sessionId);
 					sendJson(response, 200, {
 						sessionId,
 						track: {
@@ -538,6 +621,12 @@ function createWebAudioGateway({
 				attachPublisher(session, webSocket, sessions, onListenerCount);
 				console.info(`Audio publisher connected: ${parsed.sessionId}`);
 			} else if (parsed.role === "next-listener") {
+				const activeSession = parsed.sessionId ? sessions.get(parsed.sessionId) : null;
+				if (activeSession?.publisher?.readyState === WS_OPEN) {
+					attachListener(activeSession, webSocket, onListenerCount, sessions);
+					console.info(`Audio listener connected to active session ${parsed.sessionId}`);
+					return;
+				}
 				const queue = queuePendingListener(pendingListeners, webSocket, parsed.sessionId ?? null);
 				webSocket.on("error", (error) => {
 					console.error(`Waiting audio listener socket error for ${parsed.sessionId ?? "next publisher"}:`, error);
@@ -550,16 +639,7 @@ function createWebAudioGateway({
 					webSocket.close(1012, "Publisher disconnected");
 					return;
 				}
-				session.listeners.add(webSocket);
-				notifyListenerCount(session, onListenerCount);
-				if (session.config) webSocket.send(JSON.stringify(session.config));
-				webSocket.once("close", () => {
-					if (session.listeners.delete(webSocket)) notifyListenerCount(session, onListenerCount);
-					removeSessionIfUnused(session, sessions);
-				});
-				webSocket.on("error", (error) => {
-					console.error(`Listener socket error for ${parsed.sessionId}:`, error);
-				});
+				attachListener(session, webSocket, onListenerCount, sessions);
 				console.info(`Audio listener connected: ${parsed.sessionId}`);
 			}
 		});
@@ -583,6 +663,10 @@ function createWebAudioGateway({
 			});
 		},
 		async close() {
+			for (const listeners of playerStateListeners.values()) {
+				for (const response of listeners) response.end();
+			}
+			playerStateListeners.clear();
 			for (const listeners of pendingListeners.values()) {
 				for (const listener of listeners) listener.close(1001, "Gateway shutting down");
 			}
@@ -600,6 +684,7 @@ function createWebAudioGateway({
 				});
 			}
 		},
+		publishPlayerState,
 	};
 }
 

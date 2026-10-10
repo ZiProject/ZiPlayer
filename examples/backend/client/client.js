@@ -70,6 +70,8 @@ let receivedPcmFrames = 0;
 let receivedPcmBytes = 0;
 let pcmWatchdog = null;
 let currentActiveFilters = new Set();
+let playerStateSource = null;
+let subscribedPlayerStateSession = null;
 
 function setStatus(message) {
 	statusElement.textContent = message;
@@ -94,7 +96,6 @@ async function sendPlaybackControl(action, values = {}) {
 	const result = await response.json();
 	if (!response.ok) throw new Error(result.error || `Control request failed (${response.status})`);
 	setControlStatus(`${action} applied to ${result.sessionId}`);
-	await refreshPlayerState();
 }
 
 function reportControlError(error) {
@@ -176,50 +177,84 @@ function renderTrackList(element, tracks, emptyMessage) {
 	}
 }
 
-async function refreshPlayerState() {
-	const sessionId = sessionIdInput.value.trim();
-	if (!sessionId) return;
+function clearPlayerState() {
+	renderCurrentTrack(null);
+	renderTrackList(queueListElement, [], "Queue is empty");
+	renderTrackList(relatedListElement, [], "No related tracks");
+	queueCountElement.textContent = "0 tracks";
+	currentActiveFilters = new Set();
+	filterSelect.replaceChildren(new Option("No player selected", ""));
+	filterStatusElement.textContent = "No player selected";
+	loopModeSelect.value = "off";
+	autoplayInput.checked = false;
+	volumeInput.value = "100";
+	volumeValue.textContent = "100%";
+}
+
+function renderPlayerState(state, sessionId) {
 	playerNameElement.textContent = sessionId;
-	try {
-		const response = await fetch(`/player-state?sessionId=${encodeURIComponent(sessionId)}`);
-		const state = await response.json();
-		if (response.status === 404) {
-			renderCurrentTrack(null);
-			renderTrackList(queueListElement, [], "Queue is empty");
-			renderTrackList(relatedListElement, [], "No related tracks");
-			queueCountElement.textContent = "0 tracks";
-			currentActiveFilters = new Set();
-			filterSelect.replaceChildren(new Option("No player selected", ""));
-			filterStatusElement.textContent = "No player selected";
-			loopModeSelect.value = "off";
-			autoplayInput.checked = false;
-			volumeInput.value = "100";
-			volumeValue.textContent = "100%";
-			return;
-		}
-		if (!response.ok) throw new Error(state.error || `Player state request failed (${response.status})`);
-		renderCurrentTrack(state.currentTrack);
-		renderTrackList(queueListElement, state.tracks, "Queue is empty");
-		renderTrackList(relatedListElement, state.related, "No related tracks");
-		queueCountElement.textContent = `${state.tracks.length} ${state.tracks.length === 1 ? "track" : "tracks"}`;
-		playerNameElement.textContent = sessionId;
-		loopModeSelect.value = state.loopMode;
-		autoplayInput.checked = state.autoPlay;
-		volumeInput.value = String(state.volume);
-		volumeValue.textContent = `${state.volume}%`;
-		const activeNames = new Set(state.activeFilters.map((filter) => filter.name));
-		currentActiveFilters = activeNames;
-		const selectedFilter = filterSelect.value;
-		filterSelect.replaceChildren(new Option("Select a filter", ""));
-		for (const filter of state.filters) {
-			filterSelect.add(new Option(`${filter.description}${activeNames.has(filter.name) ? " (active)" : ""}`, filter.name));
-		}
-		if (state.filters.some((filter) => filter.name === selectedFilter)) filterSelect.value = selectedFilter;
-		filterStatusElement.textContent = activeNames.size ? `Active: ${[...activeNames].join(", ")}` : "No active filters";
-	} catch (error) {
-		console.error("Unable to load player state:", error);
-		filterStatusElement.textContent = `Unable to load player state: ${error.message}`;
+	if (!state) {
+		clearPlayerState();
+		return;
 	}
+	renderCurrentTrack(state.currentTrack);
+	renderTrackList(queueListElement, state.tracks, "Queue is empty");
+	renderTrackList(relatedListElement, state.related, "No related tracks");
+	queueCountElement.textContent = `${state.tracks.length} ${state.tracks.length === 1 ? "track" : "tracks"}`;
+	loopModeSelect.value = state.loopMode;
+	autoplayInput.checked = state.autoPlay;
+	volumeInput.value = String(state.volume);
+	volumeValue.textContent = `${state.volume}%`;
+	const activeNames = new Set(state.activeFilters.map((filter) => filter.name));
+	currentActiveFilters = activeNames;
+	const selectedFilter = filterSelect.value;
+	filterSelect.replaceChildren(new Option("Select a filter", ""));
+	for (const filter of state.filters) {
+		filterSelect.add(new Option(`${filter.description}${activeNames.has(filter.name) ? " (active)" : ""}`, filter.name));
+	}
+	if (state.filters.some((filter) => filter.name === selectedFilter)) filterSelect.value = selectedFilter;
+	filterStatusElement.textContent = activeNames.size ? `Active: ${[...activeNames].join(", ")}` : "No active filters";
+}
+
+function subscribeToPlayerState() {
+	const sessionId = sessionIdInput.value.trim();
+	if (sessionId === subscribedPlayerStateSession && playerStateSource) return;
+	playerStateSource?.close();
+	playerStateSource = null;
+	subscribedPlayerStateSession = sessionId || null;
+	if (!sessionId) {
+		playerNameElement.textContent = "—";
+		clearPlayerState();
+		return;
+	}
+	playerNameElement.textContent = sessionId;
+	const source = new EventSource(`/player-events?sessionId=${encodeURIComponent(sessionId)}`);
+	playerStateSource = source;
+	source.addEventListener("player-state", (event) => {
+		if (playerStateSource !== source || sessionIdInput.value.trim() !== sessionId) return;
+		try {
+			const message = JSON.parse(event.data);
+			renderPlayerState(message.state, sessionId);
+		} catch (error) {
+			console.error("Unable to parse player state event:", error);
+			filterStatusElement.textContent = "Received an invalid player state update.";
+		}
+	});
+	source.addEventListener("player-state-error", (event) => {
+		if (playerStateSource !== source) return;
+		try {
+			const message = JSON.parse(event.data);
+			filterStatusElement.textContent = message.message || "Player state is temporarily unavailable.";
+		} catch (error) {
+			console.error("Unable to parse player state error event:", error);
+			filterStatusElement.textContent = "Player state is temporarily unavailable.";
+		}
+	});
+	source.onerror = () => {
+		if (playerStateSource === source && source.readyState === EventSource.CLOSED) {
+			filterStatusElement.textContent = "Player state connection closed.";
+		}
+	};
 }
 
 function updateRecordingControls(message) {
@@ -431,6 +466,7 @@ searchForm.addEventListener("submit", async (event) => {
 		const sessionId = sessionIdInput.value.trim() || config.defaultSessionId;
 		if (!sessionId) throw new Error("Enter the player ID for this playback session");
 		sessionIdInput.value = sessionId;
+		subscribeToPlayerState();
 		if (!(followsPublisher && audioClient.state === "connected" && listeningSessionId === sessionId)) {
 			if (audioClient.state !== "disconnected") await audioClient.disconnect();
 			const listenerReady = await connectToSession({ nextPublisher: true, sessionId });
@@ -448,7 +484,6 @@ searchForm.addEventListener("submit", async (event) => {
 			throw new Error("The audio publisher session did not match the listener session");
 		}
 		setSearchStatus(`Added to playback: ${result.track.title}`);
-		await refreshPlayerState();
 		if (result.track.url) console.info(`Selected track: ${result.track.title} (${result.track.url})`);
 	} catch (error) {
 		console.error("Web track search failed:", error);
@@ -503,8 +538,10 @@ clearFiltersButton.addEventListener("click", () => {
 		})
 		.catch(reportControlError);
 });
-sessionIdInput.addEventListener("change", () => void refreshPlayerState());
-void refreshPlayerState();
-setInterval(() => void refreshPlayerState(), 3000);
+sessionIdInput.addEventListener("change", subscribeToPlayerState);
+void playbackConfig.then(subscribeToPlayerState);
 
-window.addEventListener("beforeunload", () => void audioClient.disconnect());
+window.addEventListener("beforeunload", () => {
+	playerStateSource?.close();
+	void audioClient.disconnect();
+});

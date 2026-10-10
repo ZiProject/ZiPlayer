@@ -310,7 +310,13 @@ export class PlaybackController {
 	}
 	public status(playerId: string): AudioPlayerStatus | undefined {
 		const slot = this.slots.get(playerId);
-		return slot ? (slot.audioPlayer?.state.status ?? this.mapOutputState(slot.outputState)) : undefined;
+		return slot ? this.outputStatus(slot) : undefined;
+	}
+	private outputStatus(slot: PlaybackSlot): AudioPlayerStatus {
+		if (slot.outputBackend instanceof DiscordVoiceOutputBackend) {
+			return slot.audioPlayer?.state.status ?? this.mapOutputState(slot.outputState);
+		}
+		return this.mapOutputState(slot.outputState);
 	}
 	private mapPlayerStatus(status: AudioPlayerStatus): AudioOutputState {
 		switch (status) {
@@ -768,7 +774,7 @@ export class PlaybackController {
 		this.cancelTransition(slot);
 		const track = session?.track ?? to ?? (resource.metadata as Track | undefined);
 		const plan = from && to ? this.requestTransitionPlan(slot.playerId, from, to) : undefined;
-		const currentStatus = slot.audioPlayer?.state.status ?? this.mapOutputState(slot.outputState);
+		const currentStatus = this.outputStatus(slot);
 		if (plan?.enabled && slot.activeResource && currentStatus !== AudioPlayerStatus.Idle) {
 			if (slot.outputBackend.capabilities.volume === "unsupported") {
 				void this.disposeOutputHandle(slot, handle);

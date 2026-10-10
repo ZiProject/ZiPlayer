@@ -355,8 +355,7 @@ export class Player extends EventEmitter {
 			this.debug("[Player] Cannot pause while subscribed to another player");
 			return false;
 		}
-		if (!this.isPlaying || this.isPaused) return false;
-		this.invalidatePlay();
+		if (!this.currentTrack) return false;
 		return this.action({ type: PLAYER_ACTION.pause })
 			.then(() => this.isPaused)
 			.catch(() => false);
@@ -366,9 +365,9 @@ export class Player extends EventEmitter {
 			this.debug("[Player] Cannot resume while subscribed to another player");
 			return false;
 		}
-		if (!this.isPaused) return false;
+		if (!this.currentTrack) return false;
 		return this.action({ type: PLAYER_ACTION.resume })
-			.then(() => !this.isPaused)
+			.then(() => this.isPlaying)
 			.catch(() => false);
 	}
 	public async stop(): Promise<boolean> {

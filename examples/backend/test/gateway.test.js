@@ -24,6 +24,31 @@ function waitForMessage(socket) {
 	});
 }
 
+function createSseEventReader(stream) {
+	const reader = stream.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+	return {
+		reader,
+		async next() {
+			while (true) {
+				const boundary = buffer.indexOf("\n\n");
+				if (boundary !== -1) {
+					const message = buffer.slice(0, boundary);
+					buffer = buffer.slice(boundary + 2);
+					const event = message.match(/^event: (.+)$/m)?.[1] ?? "message";
+					const data = message.match(/^data: (.+)$/m)?.[1];
+					if (data !== undefined) return { event, data: JSON.parse(data) };
+					continue;
+				}
+				const { done, value } = await reader.read();
+				if (done) throw new Error("SSE stream ended before the next event");
+				buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+			}
+		},
+	};
+}
+
 test("a next-track listener receives the publisher config and first PCM frame", async () => {
 	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0 });
 	let listener;
@@ -108,6 +133,48 @@ test("a next-track listener receives the publisher config and first PCM frame", 
 		listener?.close();
 		publisher?.close();
 		replacementPublisher?.close();
+		await gateway.close();
+	}
+});
+
+test("a session-scoped next listener joins an already active publisher", async () => {
+	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0 });
+	let listener;
+	let publisher;
+	try {
+		const address = await gateway.listen();
+		const gatewayUrl = `ws://127.0.0.1:${address.port}`;
+		publisher = new WebSocket(`${gatewayUrl}/publish?sessionId=active-session`);
+		await waitForOpen(publisher);
+		publisher.send(
+			JSON.stringify({
+				v: 1,
+				type: "audio:config",
+				sessionId: "active-session",
+				protocolVersion: 1,
+				sampleRateHz: 48_000,
+				channels: 2,
+				sampleFormat: "s16",
+				endianness: "little",
+				channelLayout: "interleaved",
+			}),
+		);
+
+		listener = new WebSocket(`${gatewayUrl}/listen-next?sessionId=active-session`);
+		const configMessage = waitForMessage(listener);
+		await waitForOpen(listener);
+		const config = await configMessage;
+		assert.equal(config.isBinary, false);
+		assert.equal(JSON.parse(config.data.toString()).sessionId, "active-session");
+
+		const frameMessage = waitForMessage(listener);
+		publisher.send(encodeWebAudioFrame(Buffer.alloc(3840), 0, 0), { binary: true });
+		const frame = await frameMessage;
+		assert.equal(frame.isBinary, true);
+		assert.deepEqual(Buffer.from(frame.data), Buffer.from(encodeWebAudioFrame(Buffer.alloc(3840), 0, 0)));
+	} finally {
+		listener?.close();
+		publisher?.close();
 		await gateway.close();
 	}
 });
@@ -388,6 +455,54 @@ test("the player-state endpoint returns the requested player's queue and control
 			activeFilters: [],
 		});
 		assert.equal((await fetch(`http://127.0.0.1:${address.port}/player-state?sessionId=bad%2Fid`)).status, 400);
+	} finally {
+		await gateway.close();
+	}
+});
+
+test("player-events streams initial and published player state as server-sent events", async () => {
+	let currentTrack = "initial track";
+	const gateway = createWebAudioGateway({
+		host: "127.0.0.1",
+		port: 0,
+		onGetPlayerState: (sessionId) => ({
+			currentTrack: { title: `${sessionId} ${currentTrack}` },
+			tracks: [],
+			related: [],
+			loopMode: "off",
+			autoPlay: false,
+			volume: 100,
+			filters: [],
+			activeFilters: [],
+		}),
+		onControl: () => {
+			currentTrack = "updated track";
+			return true;
+		},
+	});
+	let eventStream;
+	try {
+		const address = await gateway.listen();
+		eventStream = await fetch(`http://127.0.0.1:${address.port}/player-events?sessionId=event-player`);
+		assert.equal(eventStream.status, 200);
+		assert.match(eventStream.headers.get("content-type"), /^text\/event-stream/);
+		const events = createSseEventReader(eventStream.body);
+		const initial = await events.next();
+		assert.equal(initial.event, "player-state");
+		assert.equal(initial.data.state.currentTrack.title, "event-player initial track");
+
+		const controlResponse = await fetch(`http://127.0.0.1:${address.port}/control`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ sessionId: "event-player", action: "pause" }),
+		});
+		assert.equal(controlResponse.status, 200);
+		const updated = await events.next();
+		assert.equal(updated.event, "player-state");
+		assert.equal(updated.data.state.currentTrack.title, "event-player updated track");
+
+		await events.reader.cancel();
+		assert.equal((await fetch(`http://127.0.0.1:${address.port}/player-events?sessionId=bad%2Fid`)).status, 400);
 	} finally {
 		await gateway.close();
 	}
