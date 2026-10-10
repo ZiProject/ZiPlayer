@@ -33,6 +33,25 @@ export {
 	convertFloat32PcmToS16Le,
 	resolveOutputStreamType,
 } from "./output/DiscordVoiceOutputBackend";
+export {
+	WebSocketAudioOutputBackend,
+	WebAudioOutputBackend,
+	WebSocketOutputBackend,
+	WebAudioOutputHandle,
+	WebSocketAudioOutputHandleImpl,
+	WEB_AUDIO_PROTOCOL_VERSION,
+	WEB_AUDIO_SAMPLE_RATE_HZ,
+	WEB_AUDIO_CHANNELS,
+	WEB_AUDIO_SAMPLE_BYTES,
+	WEB_AUDIO_MAX_MESSAGE_BYTES,
+	webAudioFormatFromPcm,
+	validateWebAudioOutputFormat,
+	encodeWebAudioControlMessage,
+	decodeWebAudioControlMessage,
+	encodeWebAudioFrame,
+	decodeWebAudioFrame,
+	defaultWebAudioSocketFactory,
+} from "./output/WebSocketAudioOutputBackend";
 export type {
 	AudioFrameFormat,
 	AudioOutputInput,
@@ -45,6 +64,13 @@ export type {
 	AudioOutputState,
 	AudioOutputBackend,
 } from "./output/AudioOutputBackend";
+export type {
+	WebSocketLike,
+	WebSocketAudioControlMessage,
+	WebSocketAudioBackendContext,
+	WebSocketAudioOutputBackendOptions,
+	WebSocketAudioSessionResource,
+} from "./output/WebSocketAudioOutputBackend";
 export { AudioOutputUnsupportedOperationError } from "./output/AudioOutputBackend";
 export { TrackLoader } from "./structures/TrackLoader";
 export { PlaybackController } from "./controller/PlaybackController";

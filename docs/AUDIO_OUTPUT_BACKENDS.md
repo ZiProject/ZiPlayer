@@ -96,6 +96,57 @@ The shared remote RPC is not bound to an individual caller's `AbortSignal`: abor
 callers may continue waiting and the eventual remote result is still applied once. The same per-caller cancellation rule applies
 to direct `PlaybackController.stop()` calls.
 
+### Remote STOP examples
+
+**Session replacement while STOP is pending:** the STOP result describes the remote endpoint, not only the session that existed
+when the request began. If session A is replaced by session B before the remote endpoint confirms the stop, a successful result
+stops the session that is current when the result is applied (provided playback is still in remote mode).
+
+```text
+time  action                                  current session   result
+t0    remote playback starts                 A / playing
+t1    STOP RPC starts                        A / playing
+t2    a new track replaces A                 B / playing
+t3    STOP RPC resolves true                 B / stopped
+                                              queue cleared; one playerStop event
+```
+
+For application code, listen for the stop event rather than assuming that the session observed before `stop()` is still current:
+
+```ts
+player.on("playerStop", () => {
+	console.log("Remote playback has stopped");
+});
+
+const stopRequest = player.stop();
+await player.play(nextTrack); // may replace the current session while the remote STOP is pending
+await stopRequest;
+```
+
+The result cases are intentionally different:
+
+| Remote STOP result                                  | Current session and queue                           | `playerStop` |
+| --------------------------------------------------- | --------------------------------------------------- | ------------ |
+| `true`, still in remote mode                        | Current session is marked stopped; queue is cleared | Emitted once |
+| `false`                                             | Left unchanged                                      | Not emitted  |
+| Rejected RPC                                        | Left unchanged; action reports the failure          | Not emitted  |
+| `true`, playback left remote mode before completion | Left unchanged by the stale remote result           | Not emitted  |
+
+**Concurrent callers and cancellation:** overlapping STOP actions share one remote RPC and apply its outcome once, but each caller
+waits with its own cancellation signal. Aborting one waiter rejects only that caller; it does not cancel the endpoint request or
+another caller's wait.
+
+```ts
+const firstAbort = new AbortController();
+const firstStop = stopRemoteWithSignal(firstAbort.signal);
+const secondStop = stopRemoteWithSignal(new AbortController().signal);
+
+firstAbort.abort(); // firstStop rejects with AbortError
+await secondStop; // still observes the shared remote result
+```
+
+`stopRemoteWithSignal` above is pseudocode for an internal caller; the public `Player.stop()` currently takes no signal.
+
 Backend start is transactional: readiness and initial volume must succeed before activation is committed, and failed/unactivated
 handles are disposed; adapters should ensure a rejected `start()` does not leave an active output session behind. Related-track
 generation failure is reported as `streamError`, then the normal queue-end/autoplay fallback proceeds without treating the lookup
