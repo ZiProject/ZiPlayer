@@ -909,6 +909,33 @@ test("overlapping remote STOP requests share one RPC and commit once", async () 
 	await harness.dispose();
 });
 
+test("successful remote STOP commits against the current session after a replacement race", async () => {
+	const harness = createPlaybackHarness({ playerId: "remote-stop-replaced-session" });
+	await harness.start(testTrack("remote-stop-session-a"));
+	const sessionA = harness.sessions.current(harness.playerId);
+	const stopEvents = [];
+	harness.bus.subscribe(harness.playerId, "playerStop", (event) => stopEvents.push(event));
+	harness.setMode(require("../core/dist").PlaybackMode.REMOTE);
+	const gate = deferred();
+	harness.setRemoteStopGate(gate);
+	const context = { ...playbackContext(harness.playerId), sessionId: sessionA.sessionId };
+
+	const stop = harness.bus.action(harness.playerId, { type: "STOP" }, context);
+	await harness.remoteStopStarted;
+	const sessionB = harness.sessions.replace(harness.playerId, testTrack("remote-stop-session-b"));
+	sessionB.markPlaying();
+
+	gate.resolve(true);
+	await stop;
+
+	assert.notEqual(sessionA.id, sessionB.id);
+	assert.equal(sessionB.status, "stopped");
+	assert.equal(harness.queueClearCalls(), 1);
+	assert.equal(stopEvents.length, 1);
+	assert.equal(harness.backend.stopCalls, 0);
+	await harness.dispose();
+});
+
 test("remote STOP action awaits remote completion without entering local stop logic", async () => {
 	const harness = createPlaybackHarness({ playerId: "remote-stop-action" });
 	const track = testTrack("remote-stop-action-track");

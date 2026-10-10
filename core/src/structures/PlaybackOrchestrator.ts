@@ -326,7 +326,7 @@ export class PlaybackOrchestrator {
 				const session = this.sessionController.current(playerId);
 				const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
 				if (mode === PlaybackMode.REMOTE) {
-					await this.stopRemotePlayback(playerId, session, context.signal);
+					await this.stopRemotePlayback(playerId, context.signal);
 					break;
 				}
 				if (session && !this.matchesContext(session, context)) break;
@@ -340,18 +340,17 @@ export class PlaybackOrchestrator {
 		}
 	}
 
-	private async stopRemotePlayback(playerId: string, session: PlaybackSession | null, signal: AbortSignal): Promise<void> {
+	private async stopRemotePlayback(playerId: string, signal: AbortSignal): Promise<void> {
 		if (signal.aborted) throw this.abortError();
 		const pending = this.remoteStopOperations.get(playerId);
 		let operation = pending;
 		if (!operation) {
-			const sessionId = session?.id ?? null;
 			operation = this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteStop, {}).then((stopped) => {
 				if (!stopped) return;
+				if (this.bus.querySync(playerId, PLAYER_QUERY.playbackMode) !== PlaybackMode.REMOTE) return;
 				const current = this.sessionController.current(playerId);
-				if ((current?.id ?? null) !== sessionId) return;
 				this.bus.requestRpcSync(playerId, PLAYER_RPC.queueClear, undefined);
-				if (session?.isActive()) session.markStopped();
+				if (current?.isActive()) current.markStopped();
 				this.publishState(playerId);
 				this.bus.event(playerId, { type: BUS_EVENT.playerStop });
 			});
