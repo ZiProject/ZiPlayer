@@ -91,18 +91,22 @@ jobs:
 
       - name: Bootstrap core package
         run: |
-          npm -C core ci
+          # package-lock.json is ignored and no lockfiles are committed for these packages.
+          npm -C core install --package-lock=false
           npm -C core run build
 
       - name: Bootstrap plugins package
         run: |
-          npm -C plugins ci
+          npm -C plugins install --package-lock=false
           npm -C plugins run build
 
       - name: Bootstrap extension package
         run: |
-          npm -C extension ci
+          npm -C extension install --package-lock=false
           npm -C extension run build
+
+      - name: Bootstrap root package
+        run: npm install --no-save --package-lock=false ./core
 
       - name: Run tests
         id: tests

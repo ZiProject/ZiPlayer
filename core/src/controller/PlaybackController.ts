@@ -1174,19 +1174,17 @@ export class PlaybackController {
 		const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
 		if (mode === PlaybackMode.REMOTE) {
 			const pending = this.remoteStopPromises.get(playerId);
-			if (pending) return pending;
-			const operation = this.bus.requestRpc<Record<string, never>, boolean>(
-				playerId,
-				CONTROLLER_RPC.playbackRemoteStop,
-				{},
-				{ signal },
-			);
-			this.remoteStopPromises.set(playerId, operation);
-			try {
-				return await operation;
-			} finally {
-				if (this.remoteStopPromises.get(playerId) === operation) this.remoteStopPromises.delete(playerId);
+			if (signal?.aborted) throw this.outputAbortError();
+			let operation = pending;
+			if (!operation) {
+				operation = this.bus.requestRpc<Record<string, never>, boolean>(playerId, CONTROLLER_RPC.playbackRemoteStop, {});
+				this.remoteStopPromises.set(playerId, operation);
+				const clearPending = () => {
+					if (this.remoteStopPromises.get(playerId) === operation) this.remoteStopPromises.delete(playerId);
+				};
+				void operation.then(clearPending, clearPending);
 			}
+			return signal ? this.awaitWithAbort(operation, signal) : operation;
 		}
 		const slot = this.slots.get(playerId);
 		if (!slot) return false;

@@ -341,25 +341,54 @@ export class PlaybackOrchestrator {
 	}
 
 	private async stopRemotePlayback(playerId: string, session: PlaybackSession | null, signal: AbortSignal): Promise<void> {
+		if (signal.aborted) throw this.abortError();
 		const pending = this.remoteStopOperations.get(playerId);
-		if (pending) return pending;
-		const sessionId = session?.id ?? null;
-		const operation = (async () => {
-			const stopped = await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteStop, {}, { signal });
-			if (!stopped) return;
-			const current = this.sessionController.current(playerId);
-			if ((current?.id ?? null) !== sessionId) return;
-			this.bus.requestRpcSync(playerId, PLAYER_RPC.queueClear, undefined);
-			if (session?.isActive()) session.markStopped();
-			this.publishState(playerId);
-			this.bus.event(playerId, { type: BUS_EVENT.playerStop });
-		})();
-		this.remoteStopOperations.set(playerId, operation);
-		try {
-			await operation;
-		} finally {
-			if (this.remoteStopOperations.get(playerId) === operation) this.remoteStopOperations.delete(playerId);
+		let operation = pending;
+		if (!operation) {
+			const sessionId = session?.id ?? null;
+			operation = this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteStop, {}).then((stopped) => {
+				if (!stopped) return;
+				const current = this.sessionController.current(playerId);
+				if ((current?.id ?? null) !== sessionId) return;
+				this.bus.requestRpcSync(playerId, PLAYER_RPC.queueClear, undefined);
+				if (session?.isActive()) session.markStopped();
+				this.publishState(playerId);
+				this.bus.event(playerId, { type: BUS_EVENT.playerStop });
+			});
+			this.remoteStopOperations.set(playerId, operation);
+			const clearPending = () => {
+				if (this.remoteStopOperations.get(playerId) === operation) this.remoteStopOperations.delete(playerId);
+			};
+			void operation.then(clearPending, clearPending);
 		}
+		await this.awaitWithAbort(operation, signal);
+	}
+
+	private async awaitWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+		if (signal.aborted) throw this.abortError();
+		return new Promise<T>((resolve, reject) => {
+			const onAbort = () => {
+				signal.removeEventListener("abort", onAbort);
+				reject(this.abortError());
+			};
+			signal.addEventListener("abort", onAbort, { once: true });
+			operation.then(
+				(value) => {
+					signal.removeEventListener("abort", onAbort);
+					resolve(value);
+				},
+				(error) => {
+					signal.removeEventListener("abort", onAbort);
+					reject(error);
+				},
+			);
+		});
+	}
+
+	private abortError(): Error {
+		const error = new Error("Playback operation was aborted");
+		error.name = "AbortError";
+		return error;
 	}
 
 	private reportStreamError(playerId: string, track: Track | null, error: unknown): void {

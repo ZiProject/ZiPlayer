@@ -90,7 +90,9 @@ Slot state is cleared only if that same handle is still active, so a late stop c
 disposal requests share per-handle cleanup. In remote playback mode, stop awaits the remote stop RPC and does not also stop the
 local output backend. A remote `false` result means the remote endpoint did not stop; the local session and queue remain unchanged
 and no successful `playerStop` event is emitted. Concurrent remote STOP actions share the in-flight RPC and commit the resulting
-state transition at most once.
+state transition at most once. The shared remote RPC is not bound to an individual caller's `AbortSignal`: abort rejects only that
+caller's wait, while other callers may continue waiting and the eventual remote result is still applied once. The same per-caller
+cancellation rule applies to direct `PlaybackController.stop()` calls.
 
 Backend start is transactional: readiness and initial volume must succeed before activation is committed, and failed/unactivated
 handles are disposed; adapters should ensure a rejected `start()` does not leave an active output session behind. Related-track

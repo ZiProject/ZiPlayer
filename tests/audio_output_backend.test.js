@@ -833,6 +833,27 @@ test("remote stop rejection propagates and does not stop the local backend", asy
 	await harness.dispose();
 });
 
+test("aborting one direct remote STOP caller does not cancel its coalesced peer", async () => {
+	const harness = createPlaybackHarness({ playerId: "remote-stop-caller-abort" });
+	await harness.start(testTrack("remote-stop-caller-abort-track"));
+	harness.setMode(require("../core/dist").PlaybackMode.REMOTE);
+	const gate = deferred();
+	harness.setRemoteStopGate(gate);
+	const firstAbort = new AbortController();
+	const first = harness.playback.stop(harness.playerId, firstAbort.signal);
+	const second = harness.playback.stop(harness.playerId, new AbortController().signal);
+	await harness.remoteStopStarted;
+
+	firstAbort.abort();
+	await assert.rejects(first, { name: "AbortError" });
+	assert.equal(harness.remoteStopCalls(), 1);
+	gate.resolve(true);
+	assert.equal(await second, true);
+	assert.equal(harness.remoteStopCalls(), 1);
+	assert.equal(harness.backend.stopCalls, 0);
+	await harness.dispose();
+});
+
 test("remote STOP false result preserves session, queue, and stop events", async () => {
 	const harness = createPlaybackHarness({ playerId: "remote-stop-false" });
 	await harness.start(testTrack("remote-stop-false-track"));
@@ -861,14 +882,26 @@ test("overlapping remote STOP requests share one RPC and commit once", async () 
 	harness.setMode(require("../core/dist").PlaybackMode.REMOTE);
 	const gate = deferred();
 	harness.setRemoteStopGate(gate);
-	const context = { ...playbackContext(harness.playerId), sessionId: session.sessionId };
+	const firstAbort = new AbortController();
+	const firstContext = {
+		...playbackContext(harness.playerId, firstAbort.signal),
+		sessionId: session.sessionId,
+	};
+	const secondContext = {
+		...playbackContext(harness.playerId, new AbortController().signal),
+		sessionId: session.sessionId,
+	};
 
-	const first = harness.bus.action(harness.playerId, { type: "STOP" }, context);
-	const second = harness.bus.action(harness.playerId, { type: "STOP" }, context);
+	const first = harness.bus.action(harness.playerId, { type: "STOP" }, firstContext);
+	const second = harness.bus.action(harness.playerId, { type: "STOP" }, secondContext);
 	await harness.remoteStopStarted;
 	assert.equal(harness.remoteStopCalls(), 1);
+	firstAbort.abort();
+	await assert.rejects(first, { name: "AbortError" });
+	assert.equal(session.isActive(), true);
+	assert.equal(harness.queueClearCalls(), 0);
 	gate.resolve(true);
-	await Promise.all([first, second]);
+	await second;
 	assert.equal(harness.queueClearCalls(), 1);
 	assert.equal(stopEvents, 1);
 	assert.equal(session.status, "stopped");
