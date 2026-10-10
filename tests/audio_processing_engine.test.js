@@ -8,7 +8,7 @@ const { StreamType } = require("@discordjs/voice");
 
 test("audio processing engine can apply gain and emit valid PCM output", async () => {
 	const engine = createAudioProcessingEngine({ enabled: true, gainDb: 6, highpassHz: 80, resampleRate: 8000 });
-	const audioMod = await import("audio");
+	const audioMod = await import("../core/node_modules/audio/audio.js");
 	const source = audioMod.default.from((t) => Math.sin(2 * Math.PI * 440 * t), {
 		duration: 0.05,
 		sampleRate: 8000,
@@ -53,7 +53,7 @@ test("audio processing engine rejects raw PCM input because the runtime only sup
 
 test("audio processing engine emits valid PCM16 bytes for processed output", async () => {
 	const engine = createAudioProcessingEngine({ enabled: true, outputFormat: "pcm16le" });
-	const audioMod = await import("audio");
+	const audioMod = await import("../core/node_modules/audio/audio.js");
 	const source = audioMod.default.from((t) => Math.sin(2 * Math.PI * 440 * t), {
 		duration: 0.05,
 		sampleRate: 8000,
@@ -82,9 +82,25 @@ test("audio processing engine emits valid PCM16 bytes for processed output", asy
 	await pipeline.dispose();
 });
 
+test("audio processing accepts Node readable streams with an attached audio pages field", async () => {
+	const engine = createAudioProcessingEngine({ enabled: true, outputFormat: "pcm16le" });
+	const audioMod = await import("../core/node_modules/audio/audio.js");
+	const wav = await audioMod.default
+		.from((t) => Math.sin(2 * Math.PI * 440 * t), { duration: 0.02, sampleRate: 8000, channels: 1 })
+		.encode("wav");
+	const stream = Readable.from([wav]);
+	stream.pages = [];
+	const pipeline = await engine.createPipeline({ enabled: true, outputFormat: "pcm16le" });
+	const chunks = [];
+	for await (const chunk of pipeline.process(stream, AbortSignal.timeout(3000))) chunks.push(chunk);
+	assert.ok(chunks.length > 0);
+	assert.ok(chunks.some((chunk) => chunk.length > 0));
+	await pipeline.dispose();
+});
+
 test("audio processing declares and enforces its PCM sample rate, channel count, and chunk alignment", async () => {
 	const engine = createAudioProcessingEngine({ enabled: true, outputFormat: "pcm16le" });
-	const audioMod = await import("audio");
+	const audioMod = await import("../core/node_modules/audio/audio.js");
 	const wav = await audioMod.default
 		.from((t) => Math.sin(2 * Math.PI * 440 * t), { duration: 0.02, sampleRate: 8000, channels: 1 })
 		.encode("wav");

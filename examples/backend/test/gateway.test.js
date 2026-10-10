@@ -5,6 +5,7 @@ const test = require("node:test");
 const { WebSocket } = require("ws");
 const { encodeWebAudioFrame } = require("ziplayer");
 const { createWebAudioGateway } = require("../gateway");
+const { createPlayerIdleCleanup } = require("../index");
 
 function waitForOpen(socket) {
 	return new Promise((resolve, reject) => {
@@ -169,6 +170,76 @@ test("session-scoped next-listener routing keeps concurrent publishers isolated"
 		alphaPublisher?.close();
 		betaPublisher?.close();
 		await gateway.close();
+	}
+});
+
+test("gateway reports per-session browser listener counts as listeners connect and disconnect", async () => {
+	const changes = [];
+	let resolveEmpty;
+	let sawListener = false;
+	const empty = new Promise((resolve) => {
+		resolveEmpty = resolve;
+	});
+	const gateway = createWebAudioGateway({
+		host: "127.0.0.1",
+		port: 0,
+		onListenerCount: (sessionId, count) => {
+			changes.push({ sessionId, count });
+			if (count > 0) sawListener = true;
+			else if (sawListener) resolveEmpty();
+		},
+	});
+	let listener;
+	let publisher;
+	try {
+		const address = await gateway.listen();
+		const origin = `ws://127.0.0.1:${address.port}`;
+		publisher = new WebSocket(`${origin}/publish?sessionId=listener-count-player`);
+		await waitForOpen(publisher);
+		listener = new WebSocket(`${origin}/listen?sessionId=listener-count-player`);
+		await waitForOpen(listener);
+		const closed = new Promise((resolve) => listener.once("close", resolve));
+		listener.close();
+		await closed;
+		await empty;
+		assert.deepEqual(changes, [
+			{ sessionId: "listener-count-player", count: 0 },
+			{ sessionId: "listener-count-player", count: 1 },
+			{ sessionId: "listener-count-player", count: 0 },
+		]);
+	} finally {
+		listener?.close();
+		publisher?.close();
+		await gateway.close();
+	}
+});
+
+test("listener-idle cleanup deletes after the timeout and reconnect cancels deletion", async () => {
+	const players = new Map();
+	const destroyed = [];
+	const player = {};
+	players.set("idle-player", player);
+	const manager = {
+		getPlayer: (id) => players.get(id) ?? null,
+		async destroy(id) {
+			destroyed.push(id);
+			players.delete(id);
+		},
+	};
+	const cleanup = createPlayerIdleCleanup(manager, 30);
+	try {
+		cleanup.onListenerCount("idle-player", 0);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		cleanup.onListenerCount("idle-player", 1);
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		assert.deepEqual(destroyed, []);
+
+		cleanup.onListenerCount("idle-player", 0);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.deepEqual(destroyed, ["idle-player"]);
+		assert.equal(players.has("idle-player"), false);
+	} finally {
+		cleanup.dispose();
 	}
 });
 

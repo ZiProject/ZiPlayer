@@ -288,15 +288,15 @@ test("web backend unregisters disposed sessions exactly once", async () => {
 	await backend.dispose();
 });
 
-test("web backend declares volume unsupported", async () => {
+test("web backend declares backend-managed volume", async () => {
 	const backend = new WebSocketAudioOutputBackend({ socketFactory: () => makeSocket() });
 	const handle = backend.createSession({
 		stream: Readable.from([]),
 		format: pcmFormat,
 		ownership: "transfer",
 	});
-	assert.equal(backend.capabilities.volume, "unsupported");
-	assert.throws(() => handle.setVolume(0.5), /volume control/i);
+	assert.equal(backend.capabilities.volume, "backend");
+	assert.doesNotThrow(() => handle.setVolume(0.5));
 	await backend.dispose();
 });
 

@@ -55,7 +55,9 @@ Pause, resume, stop, skip, seek, volume, loop mode, autoplay, and filter request
 to the matching `PlayerManager` instance. The `/player-state` endpoint supplies the current track, queue, related tracks, active
 filters, and player settings displayed by the page. The reusable `@ziplayer/client` package remains an audio receiver and event
 source, not a remote player-control API. Volume is applied to outgoing PCM; seeking requires a current track and a position
-within its duration. A control that cannot be applied returns an error rather than a successful-looking response.
+within its duration. A control that cannot be applied returns an error rather than a successful-looking response. When the last
+browser listener disconnects, that player's instance is destroyed after 100 seconds; reconnecting a listener during that grace
+period cancels cleanup.
 
 You can optionally start a query automatically by adding `TRACK_QUERY` to `examples/backend/.env`:
 

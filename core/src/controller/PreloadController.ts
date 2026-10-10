@@ -195,9 +195,13 @@ export class PreloadController {
 		if (this.bus)
 			this.bus.emitOutput({ type: BUS_OUTPUT.preloadLoading, requestId: event.requestId, playerId, track: event.track });
 		try {
-			await this.loader.preloadNext(playerId);
-			const valid = this.loader.hasPreload(playerId, event.track);
-			if (!valid) throw new Error(`Preload did not produce the requested track: ${event.track.title}`);
+			const preloaded = await this.loader.preloadNext(playerId);
+			if (!preloaded || !this.loader.hasPreload(playerId, event.track)) {
+				this.debug?.(`[PreloadController] No preload available for ${event.track.title}; playback will resolve it on demand`);
+				if (this.bus)
+					this.bus.emitOutput({ type: BUS_OUTPUT.preloadReady, requestId: event.requestId, playerId, track: event.track });
+				return;
+			}
 			this.debug?.(`[PreloadController] ${traceBusSignal(BUS_OUTPUT.preloadReady)} guild=${playerId} track=${event.track.title}`);
 			if (this.bus)
 				this.bus.emitOutput({ type: BUS_OUTPUT.preloadReady, requestId: event.requestId, playerId, track: event.track });

@@ -43,11 +43,13 @@ function isFiniteNumber(value: unknown): value is number {
 
 function normalizeAsyncInput(input: AsyncIterable<Uint8Array> | Iterable<Uint8Array> | Readable): AsyncIterable<Uint8Array> {
 	if (input == null) throw new TypeError("Audio processing input is required");
-	if (typeof (input as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] === "function") {
-		return input as AsyncIterable<Uint8Array>;
+	if (input instanceof Readable) {
+		return Readable.toWeb(input) as unknown as AsyncIterable<Uint8Array>;
 	}
-	if ((input as any) instanceof Readable) {
-		return Readable.toWeb(input as Readable) as unknown as AsyncIterable<Uint8Array>;
+	if (typeof (input as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] === "function") {
+		return (async function* () {
+			yield* input as AsyncIterable<Uint8Array>;
+		})();
 	}
 	if (typeof (input as Iterable<Uint8Array>)[Symbol.iterator] === "function") {
 		return (async function* () {

@@ -1142,6 +1142,35 @@ test("preload promotion reports asynchronous output startup failures", async () 
 	await harness.dispose();
 });
 
+test("disabled preload requests complete without reporting a stream error", async () => {
+	const { Bus, PreloadController, BUS_REQUEST, BUS_OUTPUT } = require("../core/dist");
+	const bus = new Bus();
+	const preloader = new PreloadController(bus, {
+		loader: {
+			hasPreload: () => false,
+			cancelPreload: () => {},
+			cancelPreloadSafely: async () => {},
+			preloadNext: async () => false,
+		},
+		manager: {
+			takePreloaded: () => null,
+			slotState: () => ({}),
+			clearPreloadSlot: () => {},
+		},
+	});
+	preloader.attach("disabled-preload");
+	const requestId = "disabled-preload-request";
+	const result = await bus.request("disabled-preload", {
+		type: BUS_REQUEST.preloadRequest,
+		requestId,
+		track: testTrack("not-preloaded"),
+	});
+	assert.equal(result.requestId, requestId);
+	assert.equal(result.type, BUS_OUTPUT.preloadReady);
+	preloader.detach("disabled-preload");
+	bus.dispose();
+});
+
 test("Discord backend converts float32 PCM at the adapter boundary and controls inline volume", async () => {
 	const player = new MockAudioPlayer();
 	const backend = new DiscordVoiceOutputBackend(player);

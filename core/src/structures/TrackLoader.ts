@@ -172,9 +172,9 @@ export class TrackLoader {
 		return this.loadWithRecoverySlot(this.requireSlot(playerId), track, session);
 	}
 
-	public async preloadNext(playerId: string): Promise<void> {
+	public async preloadNext(playerId: string): Promise<boolean> {
 		this.requireSlot(playerId);
-		await this.preloadManager?.preloadNextTrack(playerId);
+		return (await this.preloadManager?.preloadNextTrack(playerId)) ?? false;
 	}
 
 	public async applyMiddleware(playerId: string, track: Track): Promise<Track> {

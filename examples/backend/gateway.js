@@ -185,7 +185,11 @@ async function readJsonBody(request, maxBytes) {
 	}
 }
 
-function attachPublisher(session, socket, sessions) {
+function notifyListenerCount(session, onListenerCount) {
+	onListenerCount?.(session.sessionId, session.listeners.size);
+}
+
+function attachPublisher(session, socket, sessions, onListenerCount) {
 	let configured = false;
 	let frameCount = 0;
 	let frameBytes = 0;
@@ -194,13 +198,15 @@ function attachPublisher(session, socket, sessions) {
 	session.publisher = socket;
 	session.config = null;
 	for (const listener of session.nextListeners) {
+		if (listener.readyState !== WS_OPEN) continue;
 		session.listeners.add(listener);
 		listener.once("close", () => {
-			session.listeners.delete(listener);
+			if (session.listeners.delete(listener)) notifyListenerCount(session, onListenerCount);
 			removeSessionIfUnused(session, sessions);
 		});
 	}
 	session.nextListeners.clear();
+	notifyListenerCount(session, onListenerCount);
 
 	socket.on("message", (data, isBinary) => {
 		if (isBinary) {
@@ -284,6 +290,7 @@ function createWebAudioGateway({
 	onPlayQuery,
 	onControl,
 	onGetPlayerState,
+	onListenerCount,
 } = {}) {
 	if (!Number.isInteger(port) || port < 0 || port > 65535) throw new TypeError("port must be an integer from 0 to 65535");
 	if (defaultSessionId !== undefined && !isValidSessionId(defaultSessionId)) {
@@ -529,7 +536,7 @@ function createWebAudioGateway({
 				};
 				attachPendingListeners(session, pendingListeners);
 				sessions.set(parsed.sessionId, session);
-				attachPublisher(session, webSocket, sessions);
+				attachPublisher(session, webSocket, sessions, onListenerCount);
 				console.info(`Audio publisher connected: ${parsed.sessionId}`);
 			} else if (parsed.role === "next-listener") {
 				const queue = queuePendingListener(pendingListeners, webSocket, parsed.sessionId ?? null);
@@ -545,9 +552,10 @@ function createWebAudioGateway({
 					return;
 				}
 				session.listeners.add(webSocket);
+				notifyListenerCount(session, onListenerCount);
 				if (session.config) webSocket.send(JSON.stringify(session.config));
 				webSocket.once("close", () => {
-					session.listeners.delete(webSocket);
+					if (session.listeners.delete(webSocket)) notifyListenerCount(session, onListenerCount);
 					removeSessionIfUnused(session, sessions);
 				});
 				webSocket.on("error", (error) => {

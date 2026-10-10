@@ -81,6 +81,41 @@ function serializeTrack(track) {
 	};
 }
 
+function createPlayerIdleCleanup(manager, timeoutMs = 100_000) {
+	const idlePlayers = new Map();
+	let disposed = false;
+
+	return {
+		onListenerCount(sessionId, listenerCount) {
+			const current = idlePlayers.get(sessionId);
+			if (current) {
+				clearTimeout(current.timer);
+				idlePlayers.delete(sessionId);
+			}
+			if (disposed || listenerCount > 0) return;
+			const player = manager.getPlayer(sessionId);
+			if (!player) return;
+
+			const state = { player, listenerCount, timer: null };
+			state.timer = setTimeout(() => {
+				if (idlePlayers.get(sessionId) !== state || state.listenerCount !== 0) return;
+				idlePlayers.delete(sessionId);
+				if (manager.getPlayer(sessionId) !== player) return;
+				void manager.destroy(sessionId).catch((error) => {
+					console.error(`Failed to remove listener-idle player ${sessionId}:`, error);
+				});
+			}, timeoutMs);
+			state.timer.unref?.();
+			idlePlayers.set(sessionId, state);
+		},
+		dispose() {
+			disposed = true;
+			for (const state of idlePlayers.values()) clearTimeout(state.timer);
+			idlePlayers.clear();
+		},
+	};
+}
+
 async function main() {
 	const host = process.env.HOST ?? "127.0.0.1";
 	const port = Number(process.env.PORT ?? 8080);
@@ -88,6 +123,7 @@ async function main() {
 	const playerId = process.env.PLAYER_ID ?? "web-audio-demo";
 	let manager;
 	let gatewayUrl;
+	let playerIdleCleanup;
 	const gateway = createWebAudioGateway({
 		host,
 		port,
@@ -146,6 +182,7 @@ async function main() {
 				activeFilters: player.filter.getActiveFilters().map(toFilterSummary),
 			};
 		},
+		onListenerCount: (sessionId, listenerCount) => playerIdleCleanup?.onListenerCount(sessionId, listenerCount),
 	});
 	let shuttingDown = false;
 	async function getOrCreatePlayer(sessionId) {
@@ -199,6 +236,7 @@ async function main() {
 			autoCleanup: false,
 			extractorTimeout: Number(process.env.EXTRACTOR_TIMEOUT_MS ?? 30_000),
 		});
+		playerIdleCleanup = createPlayerIdleCleanup(manager);
 		manager.on("trackStart", (_player, track) => {
 			console.info(`Now playing: ${track.title} (${track.url})`);
 		});
@@ -217,6 +255,7 @@ async function main() {
 			if (shuttingDown) return;
 			shuttingDown = true;
 			console.info(`Received ${signal}; stopping ZiPlayer and Web audio gateway`);
+			playerIdleCleanup?.dispose();
 			try {
 				await manager?.dispose();
 			} finally {
@@ -231,6 +270,7 @@ async function main() {
 			if (!result) throw new Error(`ZiPlayer could not start playback for query: ${trackQuery}`);
 		}
 	} catch (error) {
+		playerIdleCleanup?.dispose();
 		await manager?.dispose();
 		await gateway.close();
 		throw error;
@@ -248,4 +288,5 @@ module.exports = {
 	createAudioOutputBackendFactory,
 	createPublisherSocketFactory,
 	createWebAudioGateway,
+	createPlayerIdleCleanup,
 };
