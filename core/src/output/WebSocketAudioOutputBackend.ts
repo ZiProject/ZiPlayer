@@ -1,4 +1,4 @@
-import type { Readable } from "stream";
+import { performance } from "node:perf_hooks";
 import { AudioOutputUnsupportedOperationError, createAudioAbortError } from "./AudioOutputBackend";
 import type {
 	AudioFrameFormat,
@@ -51,6 +51,7 @@ export type WebSocketAudioControlMessage =
 export interface WebSocketAudioOutputBackendOptions {
 	protocolVersion?: number;
 	maxBufferedBytes?: number;
+	sessionId?: string;
 	socketFactory?: (context: WebSocketAudioBackendContext) => WebSocketLike | Promise<WebSocketLike>;
 	authorize?: (context: WebSocketAudioBackendContext) => boolean | Promise<boolean>;
 }
@@ -67,6 +68,10 @@ export interface WebSocketAudioSessionResource {
 	readonly sessionId: string;
 	socket: WebSocketLike | null;
 	readonly protocolVersion: number;
+}
+
+export interface WebSocketAudioOutputHandleContract extends AudioOutputHandle<WebSocketAudioSessionResource> {
+	readonly completion: Promise<void>;
 }
 
 export function webAudioFormatFromPcm(options: {
@@ -155,7 +160,7 @@ function assertNotAborted(...signals: Array<AbortSignal | undefined>): void {
 	}
 }
 
-class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSessionResource> {
+class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 	private stateValue: AudioOutputState = "ready";
 	private disposed = false;
 	private readonly listeners = new Set<(event: AudioOutputEvent) => void>();
@@ -164,9 +169,11 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 	private socket: WebSocketLike | null = null;
 	private sequence = 0;
 	private sendingPromise: Promise<void> | null = null;
+	public completion: Promise<void> = Promise.resolve();
 	private started = false;
 	private stopped = false;
 	private transportClosed = false;
+	private playbackDeadline: number | null = null;
 	private pendingReadCancel: (() => void) | null = null;
 	private pendingReadRetry: (() => void) | null = null;
 	private readonly activityWaiters = new Set<(active: boolean) => void>();
@@ -251,36 +258,28 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 		this.stateValue = "playing";
 		this.emit({ type: "state", state: "playing" });
 		this.sendingPromise = this.consumeInput(signal);
-		await this.sendingPromise;
+		this.completion = this.sendingPromise;
+		void this.completion.catch(() => undefined);
 	}
 
 	public pause(signal?: AbortSignal): boolean {
 		assertNotAborted(this.signal, signal);
 		if (this.stateValue !== "playing") return false;
+		if (!this.sendControlMessage("playback:pause")) return false;
 		this.stateValue = "paused";
 		this.emit({ type: "state", state: "paused" });
-		this.socket?.send(
-			encodeWebAudioControlMessage({
-				type: "playback:pause",
-				sessionId: this.resource.sessionId,
-			}),
-		);
 		return true;
 	}
 
 	public resume(signal?: AbortSignal): boolean {
 		assertNotAborted(this.signal, signal);
 		if (this.stateValue !== "paused") return false;
+		if (!this.sendControlMessage("playback:resume")) return false;
 		this.stateValue = "playing";
 		this.emit({ type: "state", state: "playing" });
+		this.playbackDeadline = null;
 		this.wakeActivityWaiters(true);
 		this.pendingReadRetry?.();
-		this.socket?.send(
-			encodeWebAudioControlMessage({
-				type: "playback:resume",
-				sessionId: this.resource.sessionId,
-			}),
-		);
 		return true;
 	}
 
@@ -293,13 +292,7 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 		this.pendingReadCancel?.();
 		this.wakeActivityWaiters(false);
 		this.destroyTransferredInput();
-		this.socket?.send(
-			encodeWebAudioControlMessage({
-				type: "playback:stop",
-				sessionId: this.resource.sessionId,
-			}),
-		);
-		return true;
+		return this.sendControlMessage("playback:stop");
 	}
 
 	public seek(_positionMs: number, signal?: AbortSignal): boolean {
@@ -307,27 +300,18 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 		throw new AudioOutputUnsupportedOperationError("seek");
 	}
 
-	public async replace(input: AudioOutputInput, signal?: AbortSignal): Promise<AudioOutputHandle<WebSocketAudioSessionResource>> {
+	public async replace(input: AudioOutputInput, signal?: AbortSignal): Promise<WebSocketAudioOutputHandleContract> {
 		assertNotAborted(this.signal, signal);
+		this.stop(signal);
+		await this.dispose();
 		const replacement = this.backend.createSession(input, { signal, metadata: { sessionId: this.resource.sessionId } });
 		await replacement.start(signal);
-		await this.dispose();
 		return replacement;
 	}
 
 	public setVolume(value: number, signal?: AbortSignal): void {
 		assertNotAborted(this.signal, signal);
-		if (this.backend.capabilities.volume !== "backend") {
-			throw new AudioOutputUnsupportedOperationError("volume control");
-		}
-		this.socket?.send(
-			encodeWebAudioControlMessage({
-				type: "playback:state",
-				sessionId: this.resource.sessionId,
-				state: this.stateValue,
-				volume: value,
-			}),
-		);
+		throw new AudioOutputUnsupportedOperationError("volume control; apply volume upstream");
 	}
 
 	public onEvent(listener: (event: AudioOutputEvent) => void): () => void {
@@ -355,6 +339,7 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 		this.socket = null;
 		this.resource.socket = null;
 		this.listeners.clear();
+		this.backend.unregisterSession(this);
 	}
 
 	public get disposedState(): boolean {
@@ -453,12 +438,66 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 				this.transportClosed = true;
 				return false;
 			}
-			if (maxBufferedBytes === null || socket.bufferedAmount + messageBytes <= maxBufferedBytes) break;
-			await new Promise<void>((resolve) => setTimeout(resolve, 10));
+			if (maxBufferedBytes !== null && socket.bufferedAmount + messageBytes > maxBufferedBytes) {
+				await new Promise<void>((resolve) => setTimeout(resolve, 10));
+				continue;
+			}
+			const now = performance.now();
+			const deadline = this.playbackDeadline ?? now;
+			this.playbackDeadline = deadline;
+			if (deadline > now) {
+				await new Promise<void>((resolve) => setTimeout(resolve, deadline - now));
+				continue;
+			}
+			break;
 		}
+		assertNotAborted(this.signal, signal);
 		if (this.stopped || this.disposed || this.transportClosed) return false;
+		if (socket.readyState !== 1) {
+			this.transportClosed = true;
+			return false;
+		}
+		const format = this.format;
+		if (format.kind !== "pcm") throw new TypeError("WebSocket backend requires PCM stream input");
+		const frameDurationMs = (payload.byteLength / (format.sampleRateHz * this.calculateSampleFrameBytes())) * 1000;
 		socket.send(encodeWebAudioFrame(payload, this.sequence++, Date.now()));
+		this.playbackDeadline = (this.playbackDeadline ?? performance.now()) + frameDurationMs;
 		return true;
+	}
+
+	private sendControlMessage(type: "playback:pause" | "playback:resume" | "playback:stop"): boolean {
+		const socket = this.socket;
+		if (!socket || socket.readyState !== 1 || this.transportClosed) {
+			this.failTransport(new Error(`Cannot send ${type}: WebSocket audio transport is not open`));
+			return false;
+		}
+		try {
+			socket.send(
+				encodeWebAudioControlMessage({
+					type,
+					sessionId: this.resource.sessionId,
+				}),
+			);
+			return true;
+		} catch (error) {
+			this.failTransport(error instanceof Error ? error : new Error(String(error)));
+			return false;
+		}
+	}
+
+	private failTransport(error: Error): void {
+		if (this.transportClosed || this.disposed) return;
+		this.transportClosed = true;
+		this.stateValue = "failed";
+		this.emit({ type: "error", error });
+		this.pendingReadCancel?.();
+		this.wakeActivityWaiters(false);
+		this.destroyTransferredInput();
+		try {
+			this.socket?.close();
+		} catch {
+			// The transport is already unusable; local cleanup must still complete.
+		}
 	}
 
 	private waitUntilActive(): Promise<boolean> {
@@ -525,14 +564,7 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 		if (!this.socket?.addEventListener) return;
 		const socket = this.socket;
 		const onClose = () => {
-			this.transportClosed = true;
-			if (!this.stopped && !this.disposed) {
-				this.stateValue = "failed";
-				this.emit({ type: "error", error: new Error("WebSocket audio transport closed") });
-			}
-			this.destroyTransferredInput();
-			this.pendingReadCancel?.();
-			this.wakeActivityWaiters(false);
+			if (!this.stopped && !this.disposed) this.failTransport(new Error("WebSocket audio transport closed"));
 		};
 		socket.addEventListener?.("close", onClose);
 		this.cleanupFns.add(() => socket.removeEventListener?.("close", onClose));
@@ -545,15 +577,16 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 		resume: true,
 		stop: true,
 		seek: "unsupported",
-		replacement: "atomic",
+		replacement: "stop-before-start",
 		ownership: "both",
-		volume: "upstream",
+		volume: "unsupported",
 		backpressure: "bounded",
 		maxBufferedBytes: 256 * 1024,
 	};
 	public readonly ready: Promise<void>;
 	private readonly protocolVersion: number;
 	private readonly maxBufferedBytes: number;
+	private readonly sessionId?: string;
 	private readonly socketFactory: (context: WebSocketAudioBackendContext) => WebSocketLike | Promise<WebSocketLike>;
 	private readonly authorize?: (context: WebSocketAudioBackendContext) => boolean | Promise<boolean>;
 	private disposed = false;
@@ -563,6 +596,13 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 	public constructor(options: WebSocketAudioOutputBackendOptions = {}) {
 		this.protocolVersion = options.protocolVersion ?? WEB_AUDIO_PROTOCOL_VERSION;
 		this.maxBufferedBytes = options.maxBufferedBytes ?? 256 * 1024;
+		if (
+			options.sessionId !== undefined &&
+			(typeof options.sessionId !== "string" || !options.sessionId || options.sessionId.length > 128)
+		) {
+			throw new TypeError("sessionId must be a non-empty string of at most 128 characters");
+		}
+		this.sessionId = options.sessionId;
 		this.capabilities.maxBufferedBytes = this.maxBufferedBytes;
 		this.socketFactory = options.socketFactory ?? defaultWebAudioSocketFactory;
 		this.authorize = options.authorize;
@@ -577,10 +617,7 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 		this.abortController.signal.throwIfAborted?.();
 	}
 
-	public createSession(
-		input: AudioOutputInput,
-		context: AudioOutputContext = {},
-	): AudioOutputHandle<WebSocketAudioSessionResource> {
+	public createSession(input: AudioOutputInput, context: AudioOutputContext = {}): WebSocketAudioOutputHandleContract {
 		if (this.disposed) throw new Error("WebSocket audio backend is disposed");
 		validateWebAudioOutputFormat(input.format);
 		if (input.ownership !== "transfer" && input.ownership !== "borrow") {
@@ -591,13 +628,17 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 			metadata && typeof metadata === "object" && "sessionId" in metadata ? String((metadata as any).sessionId) : undefined;
 		const resource: WebSocketAudioSessionResource = {
 			id: `web-audio-${Math.random().toString(16).slice(2)}`,
-			sessionId: sessionId ?? `session-${Math.random().toString(16).slice(2)}`,
+			sessionId: sessionId ?? this.sessionId ?? `session-${Math.random().toString(16).slice(2)}`,
 			socket: null,
 			protocolVersion: this.protocolVersion,
 		};
 		const handle = new WebSocketAudioOutputHandle(this, input, resource, context);
 		this.sessions.add(handle);
 		return handle;
+	}
+
+	public unregisterSession(handle: WebSocketAudioOutputHandle): void {
+		this.sessions.delete(handle);
 	}
 
 	public async dispose(): Promise<void> {

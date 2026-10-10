@@ -1,0 +1,26 @@
+{
+	"name": "@ziplayer/client",
+	"version": "1.0.0",
+	"description": "Browser AudioWorklet client for ZiPlayer WebSocket PCM streams",
+	"license": "MIT",
+	"type": "module",
+	"files": [
+		"browser",
+		"index.d.ts",
+		"README.md",
+		"AGENTS.md"
+	],
+	"exports": {
+		".": {
+			"types": "./index.d.ts",
+			"browser": "./browser/index.js",
+			"import": "./browser/index.js"
+		}
+	},
+	"scripts": {
+		"test": "node --test"
+	},
+	"engines": {
+		"node": ">=20.3.0"
+	}
+}

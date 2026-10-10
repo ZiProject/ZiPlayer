@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1" />
+		<title>ZiPlayer Web Audio</title>
+		<style>
+			:root {
+				color-scheme: dark;
+				font-family: system-ui, sans-serif;
+				background: #111827;
+				color: #f3f4f6;
+			}
+
+			body {
+				box-sizing: border-box;
+				width: min(100% - 2rem, 34rem);
+				margin: 4rem auto;
+			}
+
+			form {
+				display: grid;
+				gap: 1rem;
+				padding: 1.5rem;
+				border: 1px solid #374151;
+				border-radius: 0.75rem;
+				background: #1f2937;
+			}
+
+			label {
+				display: grid;
+				gap: 0.4rem;
+				font-size: 0.9rem;
+			}
+
+			input,
+			button {
+				box-sizing: border-box;
+				width: 100%;
+				padding: 0.7rem;
+				border: 1px solid #4b5563;
+				border-radius: 0.4rem;
+				font: inherit;
+			}
+
+			input {
+				background: #111827;
+				color: inherit;
+			}
+
+			button {
+				border: 0;
+				background: #2563eb;
+				color: white;
+				font-weight: 650;
+				cursor: pointer;
+			}
+
+			button:disabled {
+				cursor: not-allowed;
+				opacity: 0.55;
+			}
+
+			#disconnect {
+				background: #4b5563;
+			}
+
+			#download-recording,
+			#clear-recording {
+				background: #4b5563;
+			}
+
+			#status {
+				min-height: 1.5em;
+				color: #93c5fd;
+			}
+
+			#recording-status {
+				min-height: 1.5em;
+				color: #fbbf24;
+			}
+
+			.hint {
+				color: #9ca3af;
+				font-size: 0.85rem;
+				line-height: 1.5;
+			}
+		</style>
+	</head>
+	<body>
+		<h1>ZiPlayer Web Audio</h1>
+		<p class="hint">Search for a track through the configured ZiPlayer source plugins, then connect to its live PCM stream.</p>
+		<form id="search-form">
+			<label>
+				Search query or media URL
+				<input
+					id="search-query"
+					name="query"
+					autocomplete="off"
+					maxlength="500"
+					placeholder="Search for a track"
+					required />
+			</label>
+			<button
+				id="search"
+				type="submit">
+				Search and play
+			</button>
+			<div
+				id="search-status"
+				role="status"
+				aria-live="polite"></div>
+		</form>
+		<p class="hint">
+			Enter the listener token below before searching. Search and play automatically connects this page to the new audio stream.
+			You can also use the session fields below to connect manually.
+		</p>
+		<form id="connect-form">
+			<label>
+				Gateway WebSocket URL
+				<input
+					id="gateway-url"
+					name="gatewayUrl"
+					value=""
+					placeholder="ws://localhost:8080"
+					required />
+			</label>
+			<label>
+				Session ID
+				<input
+					id="session-id"
+					name="sessionId"
+					autocomplete="off"
+					required />
+			</label>
+			<label>
+				Listener token
+				<input
+					id="token"
+					name="token"
+					type="password"
+					autocomplete="off"
+					required />
+			</label>
+			<button
+				id="connect"
+				type="submit">
+				Connect and play
+			</button>
+			<button
+				id="disconnect"
+				type="button"
+				disabled>
+				Disconnect
+			</button>
+			<button
+				id="record"
+				type="button"
+				disabled>
+				Start WAV recording
+			</button>
+			<button
+				id="download-recording"
+				type="button"
+				disabled>
+				Download current WAV
+			</button>
+			<button
+				id="clear-recording"
+				type="button"
+				disabled>
+				Clear recording
+			</button>
+			<div
+				id="status"
+				role="status"
+				aria-live="polite">
+				Disconnected
+			</div>
+			<div
+				id="recording-status"
+				role="status"
+				aria-live="polite"></div>
+		</form>
+		<p class="hint">
+			Recording captures the received 48 kHz stereo PCM into WAV while playback continues. Browser memory is capped at 10 minutes
+			per recording; use Download current WAV to save a snapshot without stopping capture.
+		</p>
+		<p class="hint">
+			For browser connections the example gateway accepts a token in the listener URL. Use a short-lived token and serve this page
+			over HTTPS/WSS outside local development.
+		</p>
+		<script
+			src="/client.js"
+			type="module"></script>
+	</body>
+</html>

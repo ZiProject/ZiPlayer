@@ -140,6 +140,49 @@ client.login(process.env.DISCORD_TOKEN);
 
 ---
 
+## 🌐 Browser Playback with `@ziplayer/client`
+
+ZiPlayer can send a player's processed PCM to a browser instead of Discord Voice. The core package provides
+`WebSocketAudioOutputBackend`; your application provides an authenticated WebSocket gateway and a `socketFactory` that returns a
+connected publisher socket. The backend sends 48 kHz stereo s16 LE PCM and manages playback controls and stream cleanup. It does
+not create or host the gateway.
+
+Install the browser receiver separately:
+
+```bash
+npm install @ziplayer/client
+```
+
+Configure the output backend when creating a regular player. Keep the player ID as the backend's `sessionId` so browser listeners
+can stay subscribed when the player's output socket is replaced for the next track:
+
+```ts
+import { PlayerManager, WebSocketAudioOutputBackend } from "ziplayer";
+
+const playerId = "web-player";
+const player = await manager.create(playerId, {
+	audioOutputBackendFactory: ({ playerId }) =>
+		new WebSocketAudioOutputBackend({
+			sessionId: playerId,
+			socketFactory: ({ sessionId, signal }) => connectPublisherSocket({ sessionId, signal, gatewayUrl, token }),
+		}),
+});
+
+await player.play(query, userId);
+```
+
+`connectPublisherSocket` is application/gateway-specific and must resolve to an open WebSocket; authenticate the publisher on the
+server and honor the provided abort signal. In the browser, import `WebAudioClient` from `@ziplayer/client` and call `connect()`
+from a user gesture. For a newly starting stream, connect with `nextPublisher: true` before requesting playback so the listener is
+ready before the first PCM frames arrive. The client handles protocol validation, s16 conversion, and bounded AudioWorklet
+playback.
+
+For a complete runnable gateway, player session, and browser UI example, see
+[`examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend/README.md). For client events, options, and
+browser requirements, see [`@ziplayer/client` documentation](https://github.com/ZiProject/ZiPlayer/tree/main/client/README.md).
+
+---
+
 ## Singleton Access
 
 ZiPlayer exposes a process-wide manager singleton. Create `PlayerManager` once during application startup so it registers the

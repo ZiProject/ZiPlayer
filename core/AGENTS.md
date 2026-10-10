@@ -63,7 +63,9 @@ async function playInGuild(guildId: string, voiceChannel: VoiceChannel, query: s
 		leaveOnEnd: true,
 		leaveOnEmpty: true,
 		volume: 80,
-		userdata: {/*User store data*/},
+		userdata: {
+			/*User store data*/
+		},
 	});
 
 	if (!player.connection) await player.connect(voiceChannel);
@@ -173,6 +175,39 @@ The first event argument is the affected `Player`, which is useful when one mana
   and crossfade belong in `PlayerOptions`.
 - The canonical option definitions are `PlayerManagerOptions` and `PlayerOptions` in [`src/types/core.ts`](src/types/core.ts).
   Prefer those definitions over guessing option names or defaults.
+
+### Browser audio output
+
+Use the public `WebSocketAudioOutputBackend` when a player must publish PCM to a WebSocket gateway rather than Discord Voice. The
+backend accepts only 48 kHz, stereo, interleaved s16 little-endian PCM. Configure `audioProcessing` to produce that exact format
+and provide a socket factory that resolves only after its publisher WebSocket is connected.
+
+```ts
+import { WebSocketAudioOutputBackend } from "ziplayer";
+
+const player = await manager.create("web-player", {
+	audioProcessing: {
+		enabled: true,
+		inputFormat: "encoded",
+		outputFormat: "pcm16le",
+		sampleRate: 48_000,
+		channels: 2,
+	},
+	audioOutputBackendFactory: ({ playerId }) =>
+		new WebSocketAudioOutputBackend({
+			sessionId: playerId,
+			socketFactory: ({ sessionId }) => connectPublisherToYourGateway(sessionId),
+		}),
+});
+```
+
+The stable `sessionId: playerId` lets gateway subscribers follow different per-track publisher sockets belonging to the same
+player. Do not reuse one session ID for unrelated players. ZiPlayer provides the publisher backend and PCM protocol only: an
+application still owns its gateway, authentication/authorization, listener routing, and web server. Use
+[`@ziplayer/client`](https://github.com/ZiProject/ZiPlayer/tree/main/client/README.md) for browser-side configuration/frame
+validation and AudioWorklet playback, or see
+[`examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend/README.md) for a runnable search-and-play
+application. Never expose publisher credentials or a long-lived shared gateway secret in browser code.
 
 ## Common Mistakes to Avoid
 

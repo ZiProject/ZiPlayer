@@ -69,6 +69,7 @@ export type {
 	WebSocketAudioControlMessage,
 	WebSocketAudioBackendContext,
 	WebSocketAudioOutputBackendOptions,
+	WebSocketAudioOutputHandleContract,
 	WebSocketAudioSessionResource,
 } from "./output/WebSocketAudioOutputBackend";
 export { AudioOutputUnsupportedOperationError } from "./output/AudioOutputBackend";

@@ -172,31 +172,27 @@ s16le before it can be sent down Discord's raw path.
 
 ## WebSocket PCM backend status
 
-`WebSocketAudioOutputBackend` implements the output handle contract for one-way PCM s16le sessions. Its socket factory supplies an
-already-connected WebSocket-compatible transport; the backend does not create a gateway, browser client, or authentication flow.
-The initial protocol is fixed at 48 kHz stereo interleaved PCM. It uses bounded PCM messages and gates source reads on
-pause/resume, while transport backpressure is measured through the socket's `bufferedAmount`. A transport that does not expose
-that measurement is rejected rather than advertised as bounded. Stop and disconnect prevent further sends; only transfer-owned
-input streams are destroyed.
+`WebSocketAudioOutputBackend` implements one-way PCM s16le sessions. Its socket factory supplies an already-connected
+WebSocket-compatible transport; it does not create a gateway or authentication flow. The protocol is fixed at 48 kHz stereo
+interleaved PCM. The backend applies a bounded WebSocket `bufferedAmount` limit and paces output against a monotonic sample
+duration clock so source streams cannot flood the browser. A transport without a measurable `bufferedAmount` is rejected.
+`start()` resolves after configuration is sent; the handle's `completion` promise tracks stream consumption. Replacement uses
+`stop-before-start`; volume is unsupported and must be applied upstream.
 
-The backend is not yet a complete browser playback feature. A gateway/client integration will additionally need:
+Set `WebSocketAudioOutputBackendOptions.sessionId` to a stable player routing ID when the gateway should keep browser listeners
+attached across per-track publisher socket replacement. A backend factory receives `{ playerId }` and can use that value as the
+session ID. Without the option, each output session receives an independent random ID.
 
-- A transport frame envelope with codec/configuration and sequence/timestamp data; PCM frames need sample boundaries and format
-  negotiation.
-- Per-client buffering limits, backpressure/drop policy, reconnect behavior, and a bounded queue so slow clients cannot stall or
-  exhaust shared playback.
-- Client join/leave lifecycle, ownership, and synchronization policy (shared live edge versus independently seekable sessions).
-- Authentication, authorization, origin policy, TLS/deployment requirements, rate limits, and protection against a client
-  selecting another user's session.
-- A latency budget and clock/drift strategy, especially for synchronized multi-client playback. Decoder and browser buffering
-  behavior also needs measurement.
+Browser playback is available from the dependency-free companion package [`@ziplayer/client`](../client/README.md). It validates
+protocol configuration and PCM frame headers, converts s16 LE to Float32, and feeds a bounded AudioWorklet jitter buffer. Browser
+clients need a gateway which authenticates publishers and listeners, routes sockets by a stable player ID, enforces listener
+buffering bounds, and exposes the application operations (for example search/play) that users need. The runnable
+[`examples/backend`](../examples/backend/README.md) demonstrates this pattern with ZiPlayer and its source plugins.
 
-For a first one-way browser listener with ordinary internet reachability and moderate latency tolerance, a WebSocket stream is the
-simpler transport to deploy and observe; it handles framing/application messages over a common browser transport but generally has
-more jitter/buffering than a media-native transport. WebRTC is a better candidate when interactive controls, low latency, or
-synchronized listening dominate, at the cost of signaling, NAT traversal, congestion-control and more involved client lifecycle.
-These are transport choices only: the WebSocket PCM protocol/backend exists, but the gateway, authentication, and browser playback
-client are not implemented here.
+Browser WebSocket APIs cannot set an Authorization header, so the demo accepts listener tokens in the query string. Use
+short-lived, session-scoped tokens, origin policy, rate limits, and HTTPS/WSS in a deployed service; never expose a long-lived
+shared secret to browsers. This one-way WebSocket transport targets moderate latency tolerance; choose WebRTC when low latency,
+congestion control, or synchronized playback is a primary requirement.
 
 ## Verification
 

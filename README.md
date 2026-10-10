@@ -106,6 +106,27 @@ create → connect → play → stream → events → destroy
 
 ---
 
+## 🌐 Browser playback and custom audio output
+
+ZiPlayer can send processed PCM to a custom output backend as well as the default Discord Voice output. A browser deployment needs
+a server-side gateway to authenticate and route WebSocket connections; the browser should not connect directly to a source plugin
+or receive provider credentials.
+
+The reusable browser receiver is [`@ziplayer/client`](client/README.md). It validates ZiPlayer's 48 kHz stereo s16 PCM protocol
+and plays it through a bounded AudioWorklet buffer. The complete runnable example combines the client with a WebSocket gateway,
+player-stable routing, and normal plugin-backed `PlayerManager` search/play:
+
+```powershell
+npm run build:core
+npm install --prefix examples/backend
+$env:WEB_AUDIO_TOKEN = "use-a-local-development-token"
+npm start --prefix examples/backend
+```
+
+Open <http://127.0.0.1:8080/> and enter the token. The gateway example is intended for local development, not public deployment.
+See [`docs/AUDIO_OUTPUT_BACKENDS.md`](docs/AUDIO_OUTPUT_BACKENDS.md) for the backend API and
+[`examples/backend/README.md`](examples/backend/README.md) for setup, operations, and security notes.
+
 ## 🎵 Core Usage
 
 ### Play music
