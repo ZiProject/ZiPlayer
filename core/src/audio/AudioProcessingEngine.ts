@@ -44,7 +44,7 @@ function isFiniteNumber(value: unknown): value is number {
 function normalizeAsyncInput(input: AsyncIterable<Uint8Array> | Iterable<Uint8Array> | Readable): AsyncIterable<Uint8Array> {
 	if (input == null) throw new TypeError("Audio processing input is required");
 	if (input instanceof Readable) {
-		return Readable.toWeb(input) as unknown as AsyncIterable<Uint8Array>;
+		return input as unknown as AsyncIterable<Uint8Array>;
 	}
 	if (typeof (input as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] === "function") {
 		return (async function* () {
@@ -217,7 +217,20 @@ class AudioJsAudioProcessingPipeline implements AudioProcessingPipeline {
 	): AsyncIterable<Uint8Array> {
 		if (this.disposed) throw new Error("Audio processing pipeline is disposed");
 		const normalizedSignal = signal ?? this.context.signal ?? new AbortController().signal;
-		const source = normalizeAsyncInput(input);
+		let failUpstream: (error: unknown) => void = () => {};
+			const upstreamFailed = new Promise<never>((_, reject) => {
+				failUpstream = reject;
+			});
+			upstreamFailed.catch(() => {});
+			const inner = normalizeAsyncInput(input);
+			const source = (async function* () {
+				try {
+					yield* inner;
+				} catch (error) {
+					failUpstream(error);
+					throw error;
+				}
+			})();
 		const instance = audio(source as any);
 		this.activeInstance = instance;
 		const pipeline = this;
@@ -226,6 +239,11 @@ class AudioJsAudioProcessingPipeline implements AudioProcessingPipeline {
 
 		const applyPipeline = async function* (): AsyncGenerator<Uint8Array> {
 			const iterator = (instance as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+				const ABORTED = Symbol("aborted");
+				const abortedPromise = new Promise<typeof ABORTED>((resolve) => {
+					if (normalizedSignal.aborted) return resolve(ABORTED);
+					normalizedSignal.addEventListener("abort", () => resolve(ABORTED), { once: true });
+				});
 			try {
 				if (normalizedSignal.aborted) return;
 				if (instance != null) {
@@ -253,8 +271,9 @@ class AudioJsAudioProcessingPipeline implements AudioProcessingPipeline {
 					instance.remix(outputChannels);
 				}
 				while (true) {
-					const { value, done } = await iterator.next();
-					if (done || normalizedSignal.aborted) break;
+					const step = await Promise.race([iterator.next(), abortedPromise, upstreamFailed]);
+						if (step === ABORTED || step.done || normalizedSignal.aborted) break;
+						const value = step.value;
 					const block = value as Uint8Array;
 					const channels =
 						Array.isArray(block) ?
@@ -272,7 +291,7 @@ class AudioJsAudioProcessingPipeline implements AudioProcessingPipeline {
 				}
 			} finally {
 				if (typeof iterator.return === "function") {
-					await iterator.return();
+					await Promise.race([Promise.resolve(iterator.return()).catch(() => {}), new Promise((r) => setTimeout(r, 1000).unref())]);
 				}
 				pipeline.activeInstance?.dispose?.();
 				pipeline.activeInstance = null;
