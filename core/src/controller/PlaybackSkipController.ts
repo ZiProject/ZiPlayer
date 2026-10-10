@@ -41,7 +41,12 @@ export class PlaybackSkipController {
 			}
 
 			return result;
-		} catch {
+		} catch (error) {
+			this.bus.event(this.playerId, {
+				type: BUS_EVENT.streamError,
+				error: error instanceof Error ? error : new Error(String(error)),
+				track: this.currentSession()?.track ?? null,
+			});
 			return false;
 		}
 	}
@@ -56,9 +61,18 @@ export class PlaybackSkipController {
 			if (context.signal.aborted) return false;
 			if (oldSession?.isActive()) {
 				const transition = this.bus.querySync(this.playerId, PLAYER_QUERY.transitionSettings) as
-					{ enabled?: boolean } | undefined;
+					| { enabled?: boolean }
+					| undefined;
 				if (transition?.enabled) {
-					await this.bus.requestRpc(this.playerId, PLAYER_RPC.transitionFadeOutCurrent, undefined).catch(() => undefined);
+					try {
+						await this.bus.requestRpc(this.playerId, PLAYER_RPC.transitionFadeOutCurrent, undefined);
+					} catch (error) {
+						this.bus.event(this.playerId, {
+							type: BUS_EVENT.streamError,
+							error: error instanceof Error ? error : new Error(String(error)),
+							track: oldSession.track,
+						});
+					}
 				}
 			}
 			if (context.signal.aborted) return false;
@@ -92,7 +106,7 @@ export class PlaybackSkipController {
 				oldSession.markEnded();
 			}
 			if (!next) {
-				this.stopPlayback(context.signal);
+				await this.stopPlayback(context.signal);
 				this.publishState();
 				this.setWaitingForQueue(true);
 				this.bus.event(this.playerId, { type: BUS_EVENT.queueEnd });

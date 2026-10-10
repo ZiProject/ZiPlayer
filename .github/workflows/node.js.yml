@@ -1,48 +1,16 @@
 name: Node.js CI
 
 permissions:
-  contents: write
+  contents: read
   issues: write
-  pull-requests: write
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "AudioEngine"]
   pull_request:
     branches: ["main"]
 
 jobs:
-  format-fix-on-push:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.ACTIONS_TOKEN }}
-          fetch-depth: 0
-
-      - name: Use Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20.x"
-
-      - name: Run Prettier (write)
-        run: npx prettier --ignore-path .gitignore --write .
-
-      - name: Commit changes
-        run: |
-          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add .
-          git diff --cached --exit-code || git commit -m "chore: format with prettier"
-
-      - name: Push changes
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.ACTIONS_TOKEN }}
-          branch: ${{ github.head_ref || github.ref_name }}
-
   format-check-on-pr:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -62,7 +30,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          OUTPUT="$(npx prettier --ignore-path .gitignore -l . || true)"
+          OUTPUT="$(npx prettier --ignore-path .gitignore -l .)"
           echo "files<<EOF" >> "$GITHUB_OUTPUT"
           echo "$OUTPUT" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -123,18 +91,22 @@ jobs:
 
       - name: Bootstrap core package
         run: |
-          npm -C core ci || npm -C core i --force
-          npm -C core run build || true
+          # package-lock.json is ignored and no lockfiles are committed for these packages.
+          npm -C core install --package-lock=false
+          npm -C core run build
 
       - name: Bootstrap plugins package
         run: |
-          npm -C plugins ci || npm -C plugins i --force
-          npm -C plugins run build || true
+          npm -C plugins install --package-lock=false
+          npm -C plugins run build
 
       - name: Bootstrap extension package
         run: |
-          npm -C extension ci || npm -C extension i --force
-          npm -C extension run build || true
+          npm -C extension install --package-lock=false
+          npm -C extension run build
+
+      - name: Bootstrap root package
+        run: npm install --no-save --package-lock=false ./core
 
       - name: Run tests
         id: tests
@@ -158,7 +130,7 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.ACTIONS_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const marker = '<!-- test-report -->';
             const status = `${{ steps.tests.outputs.status }}` || 'unknown';

@@ -21,6 +21,7 @@ export interface PluginOptions {
 	searchLimit?: number;
 	clientType?: Types.InnerTubeClient;
 	searchClientType?: Types.InnerTubeClient;
+	preferYoutubei?: boolean;
 	fallbackStream?: (track: Track) => Promise<StreamInfo>;
 	fistStream?: (track: Track) => Promise<StreamInfo>;
 }
@@ -525,39 +526,47 @@ export class YouTubePlugin extends BasePlugin {
 		const id = track.id || this.extractVideoId(track.url);
 		if (!id) throw new Error("Invalid track id");
 
-		try {
-			this.debug("🚀 Attempting SABR download");
-			return await this.downloadWithSabr(track, id, signal);
-		} catch (sabrError: any) {
-			if (signal?.aborted) {
-				throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
-			}
-
-			this.debug("⚠️ SABR stream failed, trying outubei.js download with BotGuard:", sabrError);
-
+		const downloads =
+			this.options?.preferYoutubei ?
+				[
+					{ name: "youtubei.js download with BotGuard", run: () => this.downloadWithYoutubei(track, id, signal) },
+					{ name: "SABR download", run: () => this.downloadWithSabr(track, id, signal) },
+				]
+			:	[
+					{ name: "SABR download", run: () => this.downloadWithSabr(track, id, signal) },
+					{ name: "youtubei.js download with BotGuard", run: () => this.downloadWithYoutubei(track, id, signal) },
+				];
+		let lastError: unknown;
+		for (let index = 0; index < downloads.length; index++) {
+			const download = downloads[index];
 			try {
-				return await this.downloadWithYoutubei(track, id, signal);
-			} catch (youtubeError: any) {
+				this.debug(`🚀 Attempting ${download.name}`);
+				return await download.run();
+			} catch (error) {
 				if (signal?.aborted) {
 					throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 				}
-
-				if (this.options?.fallbackStream && typeof this.options.fallbackStream === "function") {
-					this.debug("🔁 Attempting user-provided fallback stream method");
-					try {
-						const fbStream = await this.options.fallbackStream(track);
-						if (fbStream && fbStream.stream) {
-							this.debug("✅ User-provided fallback stream successful");
-							return fbStream;
-						}
-					} catch (err: any) {
-						this.debug("⚠️ User-provided fallback stream failed or returned invalid stream");
-					}
+				lastError = error;
+				if (index < downloads.length - 1) {
+					this.debug(`⚠️ ${download.name} failed, trying ${downloads[index + 1].name}:`, error);
 				}
-
-				throw youtubeError;
 			}
 		}
+
+		if (this.options?.fallbackStream && typeof this.options.fallbackStream === "function") {
+			this.debug("🔁 Attempting user-provided fallback stream method");
+			try {
+				const fbStream = await this.options.fallbackStream(track);
+				if (fbStream?.stream) {
+					this.debug("✅ User-provided fallback stream successful");
+					return fbStream;
+				}
+			} catch (error) {
+				this.debug("⚠️ User-provided fallback stream failed:", error);
+			}
+		}
+
+		throw lastError;
 	}
 
 	private async downloadWithYoutubei(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {

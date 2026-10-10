@@ -355,8 +355,7 @@ export class Player extends EventEmitter {
 			this.debug("[Player] Cannot pause while subscribed to another player");
 			return false;
 		}
-		if (!this.isPlaying || this.isPaused) return false;
-		this.invalidatePlay();
+		if (!this.currentTrack) return false;
 		return this.action({ type: PLAYER_ACTION.pause })
 			.then(() => this.isPaused)
 			.catch(() => false);
@@ -366,9 +365,9 @@ export class Player extends EventEmitter {
 			this.debug("[Player] Cannot resume while subscribed to another player");
 			return false;
 		}
-		if (!this.isPaused) return false;
+		if (!this.currentTrack) return false;
 		return this.action({ type: PLAYER_ACTION.resume })
-			.then(() => !this.isPaused)
+			.then(() => this.isPlaying)
 			.catch(() => false);
 	}
 	public async stop(): Promise<boolean> {
@@ -603,11 +602,10 @@ export class Player extends EventEmitter {
 			return false;
 		}
 		return this.bus
-			.requestRpc<{ query: string | Track | Track[]; index: number; requestedBy?: string }, boolean>(
-				this.playerId,
-				PLAYER_RPC.queueInsert,
-				{ query, index, requestedBy },
-			)
+			.requestRpc<
+				{ query: string | Track | Track[]; index: number; requestedBy?: string },
+				boolean
+			>(this.playerId, PLAYER_RPC.queueInsert, { query, index, requestedBy })
 			.catch(() => false);
 	}
 	public remove(index: number): Track | null {

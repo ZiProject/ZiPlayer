@@ -5,6 +5,7 @@ import type { AudioFilter } from "./filter";
 import type { SourcePluginLike } from "./plugin";
 import type { AudioResource, StreamType } from "@discordjs/voice";
 import type { PlayerDebugLevel } from "./debug";
+import type { AudioOutputBackendFactory } from "../output/AudioOutputBackend";
 
 export enum PlaybackMode {
 	NATIVE = "native",
@@ -28,7 +29,9 @@ export interface Track {
 }
 
 export interface SearchResult {
+	/** Search candidates; play() uses the first unless this result represents a playlist. */
 	tracks: Track[];
+	/** Present only when all tracks belong to a playlist. */
 	playlist?: {
 		name: string;
 		url?: string;
@@ -188,6 +191,22 @@ export interface PlayerOptions {
 		autoDisableInLowPerformance?: boolean;
 	};
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
+	audioProcessing?: {
+		enabled?: boolean;
+		inputFormat?: "encoded" | "pcm16le" | "pcmFloat32";
+		outputFormat?: "pcm16le" | "pcmFloat32";
+		sampleRate?: number;
+		channels?: number;
+		gainDb?: number;
+		gainLinear?: number;
+		highpassHz?: number;
+		lowpassHz?: number;
+		normalize?: boolean | "streaming" | "podcast" | "broadcast" | number;
+		resampleRate?: number;
+		maxBufferBytes?: number;
+	};
+	/** Creates an output backend owned by this player. Discord Voice is used when omitted. */
+	audioOutputBackendFactory?: AudioOutputBackendFactory<AudioResource>;
 	maxStreamStore?: number;
 }
 

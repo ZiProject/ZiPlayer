@@ -19,8 +19,10 @@ export interface LifecycleControllerOptions {
 }
 /** Per-player resources handed to the shared `PlaybackController` via `attach(playerId, options)`. */
 export interface PlaybackControllerOptions {
-	audioPlayer: AudioPlayer;
+	audioPlayer?: AudioPlayer;
 	stuckTimeoutMs?: number;
+	audioProcessing?: import("../audio/AudioProcessingEngine").AudioProcessingOptions;
+	audioOutputBackendFactory?: import("../output/AudioOutputBackend").AudioOutputBackendFactory<AudioResource>;
 }
 
 export interface ActiveStream {
@@ -76,7 +78,15 @@ export interface PlaybackSessionSnapshot {
 }
 
 export type PlaybackSessionStatus =
-	AudioPlayerStatus | "idle" | "loading" | "playing" | "paused" | "stopped" | "ended" | "destroyed" | "buffering";
+	| AudioPlayerStatus
+	| "idle"
+	| "loading"
+	| "playing"
+	| "paused"
+	| "stopped"
+	| "ended"
+	| "destroyed"
+	| "buffering";
 export interface AntiStuckControllerOptions {
 	enabled?: boolean;
 	maxRetries?: number;

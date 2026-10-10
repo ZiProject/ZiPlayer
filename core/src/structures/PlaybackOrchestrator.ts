@@ -19,7 +19,7 @@ import { PlaybackPlayController } from "../controller/PlaybackPlayController";
 interface OrchestratorCallbacks {
 	matchesContext: (session: PlaybackSession, context: PlayerMessageContext) => boolean;
 	transitionEnabled: (playerId: string) => boolean;
-	stopPlayback: (playerId: string, signal: AbortSignal, cancelPreload?: boolean) => void;
+	stopPlayback: (playerId: string, signal: AbortSignal, cancelPreload?: boolean) => void | Promise<void>;
 	nextThroughBus: (playerId: string, ignoreLoop: boolean, context: PlayerMessageContext) => Promise<Track | null>;
 	publishState: (playerId: string) => void;
 	queueSnapshot: (playerId: string) => Track[];
@@ -55,6 +55,7 @@ export class PlaybackOrchestrator {
 	private readonly sessionController: PlaybackSessionController;
 	private readonly seekController: PlaybackSeekController;
 	private readonly detachAction: () => void;
+	private readonly remoteStopOperations = new Map<string, Promise<void>>();
 
 	public constructor(bus: Bus, options: PlaybackOrchestratorOptions) {
 		this.bus = bus;
@@ -175,7 +176,7 @@ export class PlaybackOrchestrator {
 			if (!session || session.status === "ended" || session.status === "stopped") return;
 			const current = this.sessionController.current(playerId);
 			if (!current || current.id !== session.id) return;
-			void state.trackEnd.onTrackEnd(session);
+			void state.trackEnd.onTrackEnd(session).catch((error) => this.reportStreamError(playerId, session.track, error));
 		});
 		state.detachQueueEnd = this.bus.subscribe(playerId, BUS_EVENT.queueEnd, () => state.trackEnd.onQueueEnd());
 		state.detachQueueChanged = this.bus.subscribe(playerId, BUS_EVENT.queueChanged, () => state.trackEnd.onQueueChanged());
@@ -287,7 +288,7 @@ export class PlaybackOrchestrator {
 				if (
 					session?.isActive() &&
 					this.matchesContext(session, context) &&
-					this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackPause, {})
+					(await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackPause, {}, { signal: context.signal }))
 				) {
 					session.markPaused();
 					this.publishState(playerId);
@@ -313,7 +314,7 @@ export class PlaybackOrchestrator {
 				if (
 					session?.isActive() &&
 					this.matchesContext(session, context) &&
-					this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackResume, {})
+					(await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackResume, {}, { signal: context.signal }))
 				) {
 					session.markPlaying();
 					this.publishState(playerId);
@@ -325,10 +326,11 @@ export class PlaybackOrchestrator {
 				const session = this.sessionController.current(playerId);
 				const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
 				if (mode === PlaybackMode.REMOTE) {
-					void this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteStop, {});
+					await this.stopRemotePlayback(playerId, context.signal);
+					break;
 				}
 				if (session && !this.matchesContext(session, context)) break;
-				this.stopPlayback(playerId, context.signal);
+				await this.stopPlayback(playerId, context.signal);
 				this.bus.requestRpcSync(playerId, PLAYER_RPC.queueClear, undefined);
 				if (session?.isActive()) session.markStopped();
 				this.publishState(playerId);
@@ -338,12 +340,74 @@ export class PlaybackOrchestrator {
 		}
 	}
 
+	private async stopRemotePlayback(playerId: string, signal: AbortSignal): Promise<void> {
+		if (signal.aborted) throw this.abortError();
+		const pending = this.remoteStopOperations.get(playerId);
+		let operation = pending;
+		if (!operation) {
+			operation = this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteStop, {}).then((stopped) => {
+				if (!stopped) return;
+				if (this.bus.querySync(playerId, PLAYER_QUERY.playbackMode) !== PlaybackMode.REMOTE) return;
+				const current = this.sessionController.current(playerId);
+				this.bus.requestRpcSync(playerId, PLAYER_RPC.queueClear, undefined);
+				if (current?.isActive()) current.markStopped();
+				this.publishState(playerId);
+				this.bus.event(playerId, { type: BUS_EVENT.playerStop });
+			});
+			this.remoteStopOperations.set(playerId, operation);
+			const clearPending = () => {
+				if (this.remoteStopOperations.get(playerId) === operation) this.remoteStopOperations.delete(playerId);
+			};
+			void operation.then(clearPending, clearPending);
+		}
+		await this.awaitWithAbort(operation, signal);
+	}
+
+	private async awaitWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+		if (signal.aborted) throw this.abortError();
+		return new Promise<T>((resolve, reject) => {
+			const onAbort = () => {
+				signal.removeEventListener("abort", onAbort);
+				reject(this.abortError());
+			};
+			signal.addEventListener("abort", onAbort, { once: true });
+			operation.then(
+				(value) => {
+					signal.removeEventListener("abort", onAbort);
+					resolve(value);
+				},
+				(error) => {
+					signal.removeEventListener("abort", onAbort);
+					reject(error);
+				},
+			);
+		});
+	}
+
+	private abortError(): Error {
+		const error = new Error("Playback operation was aborted");
+		error.name = "AbortError";
+		return error;
+	}
+
+	private reportStreamError(playerId: string, track: Track | null, error: unknown): void {
+		try {
+			this.bus.event(playerId, {
+				type: BUS_EVENT.streamError,
+				error: error instanceof Error ? error : new Error(String(error)),
+				track,
+			});
+		} catch (reportError) {
+			console.error("Failed to report playback stream error", reportError);
+		}
+	}
+
 	private matchesContext(session: PlaybackSession, context: PlayerMessageContext): boolean {
 		return session.ownsContext(context.sessionId);
 	}
 
-	private stopPlayback(playerId: string, _s: AbortSignal, cancelPreload = true): void {
-		this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackStop, {});
+	private async stopPlayback(playerId: string, signal: AbortSignal, cancelPreload = true): Promise<void> {
+		await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackStop, {}, { signal });
 		if (!cancelPreload) return;
 		if (this.bus.hasRpc(PLAYER_RPC.preloadCancel)) {
 			this.bus.requestRpcSync(playerId, PLAYER_RPC.preloadCancel, {});

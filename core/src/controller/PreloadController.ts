@@ -120,18 +120,17 @@ export class PreloadController {
 	// ---------------------------------------------------------------------
 
 	public promotePreload(playerId: string, track: Track): AudioResource | null {
-		if (!this.bus) return null;
-		const session = this.bus.querySync(playerId, PLAYER_QUERY.playbackSessionInternal);
+		const bus = this.bus;
+		if (!bus) return null;
+		const session = bus.querySync(playerId, PLAYER_QUERY.playbackSessionInternal);
 		if (!session) return null;
-		const promoted = this.bus.requestRpcSync<{ track: Track }, PromotedPreload | null>(playerId, PLAYER_RPC.preloadPromote, {
-			track,
-		});
+		const promoted = bus.requestRpcSync<{ track: Track }, PromotedPreload | null>(playerId, PLAYER_RPC.preloadPromote, { track });
 		if (!promoted) return null;
 		const streamInfo: StreamInfo =
 			promoted.streamInfo ?
 				normalizeStreamInfo(promoted.track, promoted.streamInfo)
 			:	normalizeStreamInfo(promoted.track, { stream: promoted.stream as any, type: "arbitrary" });
-		const resource = this.bus.requestRpcSync<
+		const resource = bus.requestRpcSync<
 			{ stream: import("stream").Readable; track: Track; inputType?: import("@discordjs/voice").StreamType },
 			AudioResource
 		>(playerId, PLAYER_RPC.resourceCreate, {
@@ -140,9 +139,18 @@ export class PreloadController {
 			inputType: streamInfo.inputType,
 		});
 		session.setResource(resource);
-		this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackPlay, { resource, session });
-		session.markPlaying(0);
-		this.bus.event(playerId, { type: BUS_EVENT.playbackStateChanged, session: session.snapshot() });
+		void bus
+			.requestRpc(playerId, CONTROLLER_RPC.playbackPlay, { resource, session }, { signal: session.signal })
+			.then(() => {
+				if (!session.isActive()) return;
+				session.markPlaying(0);
+				bus.event(playerId, { type: BUS_EVENT.playbackStateChanged, session: session.snapshot() });
+			})
+			.catch((error) => {
+				if (!session.isActive()) return;
+				const normalized = error instanceof Error ? error : new Error(String(error));
+				bus.event(playerId, { type: BUS_EVENT.trackError, session: session.snapshot(), error: normalized });
+			});
 		return resource;
 	}
 
@@ -187,9 +195,13 @@ export class PreloadController {
 		if (this.bus)
 			this.bus.emitOutput({ type: BUS_OUTPUT.preloadLoading, requestId: event.requestId, playerId, track: event.track });
 		try {
-			await this.loader.preloadNext(playerId);
-			const valid = this.loader.hasPreload(playerId, event.track);
-			if (!valid) throw new Error(`Preload did not produce the requested track: ${event.track.title}`);
+			const preloaded = await this.loader.preloadNext(playerId);
+			if (!preloaded || !this.loader.hasPreload(playerId, event.track)) {
+				this.debug?.(`[PreloadController] No preload available for ${event.track.title}; playback will resolve it on demand`);
+				if (this.bus)
+					this.bus.emitOutput({ type: BUS_OUTPUT.preloadReady, requestId: event.requestId, playerId, track: event.track });
+				return;
+			}
 			this.debug?.(`[PreloadController] ${traceBusSignal(BUS_OUTPUT.preloadReady)} guild=${playerId} track=${event.track.title}`);
 			if (this.bus)
 				this.bus.emitOutput({ type: BUS_OUTPUT.preloadReady, requestId: event.requestId, playerId, track: event.track });
