@@ -19,6 +19,7 @@ export const WEB_AUDIO_MAX_MESSAGE_BYTES = 1024 * 1024;
 
 export interface WebSocketLike {
 	readyState: number;
+	bufferedAmount: number;
 	send(data: string | ArrayBuffer | Uint8Array): void;
 	close(code?: number, reason?: string): void;
 	addEventListener?(type: string, listener: (event: any) => void): void;
@@ -27,7 +28,17 @@ export interface WebSocketLike {
 
 export type WebSocketAudioControlMessage =
 	| { v: number; type: "ready"; sessionId: string; protocolVersion: number }
-	| { v: number; type: "audio:config"; sessionId: string; protocolVersion: number; sampleRateHz: number; channels: number; sampleFormat: "s16"; endianness: "little"; channelLayout: "interleaved"; }
+	| {
+			v: number;
+			type: "audio:config";
+			sessionId: string;
+			protocolVersion: number;
+			sampleRateHz: number;
+			channels: number;
+			sampleFormat: "s16";
+			endianness: "little";
+			channelLayout: "interleaved";
+	  }
 	| { v: number; type: "audio:frame"; sessionId: string; sequence: number; timestampMs: number }
 	| { v: number; type: "playback:pause"; sessionId: string }
 	| { v: number; type: "playback:resume"; sessionId: string }
@@ -58,7 +69,11 @@ export interface WebSocketAudioSessionResource {
 	readonly protocolVersion: number;
 }
 
-export function webAudioFormatFromPcm(options: { sampleRateHz?: number; channels?: number; sampleFormat?: "s16" | "f32"; }): AudioFrameFormat {
+export function webAudioFormatFromPcm(options: {
+	sampleRateHz?: number;
+	channels?: number;
+	sampleFormat?: "s16";
+}): AudioFrameFormat {
 	return {
 		kind: "pcm",
 		sampleFormat: options.sampleFormat ?? "s16",
@@ -146,11 +161,15 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 	private readonly listeners = new Set<(event: AudioOutputEvent) => void>();
 	private readonly cleanupFns = new Set<() => void>();
 	private readonly signal?: AbortSignal;
-	private readonly socketSignal?: AbortSignal;
 	private socket: WebSocketLike | null = null;
-	private queuedBytes = 0;
 	private sequence = 0;
 	private sendingPromise: Promise<void> | null = null;
+	private started = false;
+	private stopped = false;
+	private transportClosed = false;
+	private pendingReadCancel: (() => void) | null = null;
+	private pendingReadRetry: (() => void) | null = null;
+	private readonly activityWaiters = new Set<(active: boolean) => void>();
 	private readonly backend: WebSocketAudioOutputBackend;
 	public readonly resource: WebSocketAudioSessionResource;
 	public readonly format: AudioFrameFormat;
@@ -170,7 +189,6 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 		this.format = input.format;
 		this.ownership = input.ownership;
 		this.signal = context.signal;
-		this.socketSignal = context.signal;
 		this.ready = Promise.resolve();
 		if (this.signal) {
 			const abort = () => {
@@ -186,7 +204,7 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 	}
 
 	public get bufferedBytes(): number | null {
-		return this.queuedBytes;
+		return this.socket?.bufferedAmount ?? 0;
 	}
 
 	public emit(event: AudioOutputEvent): void {
@@ -195,24 +213,41 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 
 	public async start(signal?: AbortSignal): Promise<void> {
 		assertNotAborted(this.signal, signal);
-		if (this.disposed) throw new Error("WebSocket audio session is disposed");
+		if (this.disposed || this.stopped) throw new Error("WebSocket audio session is stopped or disposed");
+		if (this.started) throw new Error("WebSocket audio session has already started");
 		if (this.format.kind !== "pcm") throw new TypeError("WebSocket audio output backend only supports PCM streams");
+		this.started = true;
 		this.stateValue = "buffering";
 		this.emit({ type: "state", state: "buffering" });
-		this.socket = await this.backend.resolveSocket(this, signal);
-		if (!this.socket) throw new Error("WebSocket audio output requires a transport socket");
-		this.socket.send(
-			encodeWebAudioControlMessage({
-				type: "audio:config",
-				sessionId: this.resource.sessionId,
-				protocolVersion: this.resource.protocolVersion,
-				sampleRateHz: this.format.sampleRateHz,
-				channels: this.format.channels,
-				sampleFormat: this.format.sampleFormat,
-				endianness: this.format.endianness,
-				channelLayout: this.format.channelLayout,
-			}),
-		);
+		try {
+			const socket = await this.backend.resolveSocket(this, signal);
+			if (this.disposed || this.stopped || this.signal?.aborted || signal?.aborted) {
+				socket.close();
+				assertNotAborted(this.signal, signal);
+				throw new Error("WebSocket audio session was stopped while connecting");
+			}
+			this.socket = socket;
+			this.listenForTransportClose();
+			this.socket.send(
+				encodeWebAudioControlMessage({
+					type: "audio:config",
+					sessionId: this.resource.sessionId,
+					protocolVersion: this.resource.protocolVersion,
+					sampleRateHz: this.format.sampleRateHz,
+					channels: this.format.channels,
+					sampleFormat: this.format.sampleFormat,
+					endianness: this.format.endianness,
+					channelLayout: this.format.channelLayout,
+				}),
+			);
+		} catch (error) {
+			if (!this.disposed && !this.stopped) {
+				this.stateValue = "failed";
+				this.emit({ type: "error", error: error instanceof Error ? error : new Error(String(error)) });
+				await this.dispose();
+			}
+			throw error;
+		}
 		this.stateValue = "playing";
 		this.emit({ type: "state", state: "playing" });
 		this.sendingPromise = this.consumeInput(signal);
@@ -238,6 +273,8 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 		if (this.stateValue !== "paused") return false;
 		this.stateValue = "playing";
 		this.emit({ type: "state", state: "playing" });
+		this.wakeActivityWaiters(true);
+		this.pendingReadRetry?.();
 		this.socket?.send(
 			encodeWebAudioControlMessage({
 				type: "playback:resume",
@@ -250,15 +287,18 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 	public stop(signal?: AbortSignal): boolean {
 		assertNotAborted(this.signal, signal);
 		if (this.disposed) return false;
+		this.stopped = true;
 		this.stateValue = "stopped";
 		this.emit({ type: "state", state: "stopped" });
+		this.pendingReadCancel?.();
+		this.wakeActivityWaiters(false);
+		this.destroyTransferredInput();
 		this.socket?.send(
 			encodeWebAudioControlMessage({
 				type: "playback:stop",
 				sessionId: this.resource.sessionId,
 			}),
 		);
-		this.destroyTransferredInput();
 		return true;
 	}
 
@@ -299,8 +339,11 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 	public async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.stopped = true;
 		for (const cleanup of [...this.cleanupFns]) cleanup();
 		this.discoveryStop();
+		this.pendingReadCancel?.();
+		this.wakeActivityWaiters(false);
 		this.destroyTransferredInput();
 		if (this.socket && typeof this.socket.close === "function") {
 			try {
@@ -336,33 +379,33 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 		this.resource.socket = this.socket;
 		let remainder: Buffer = Buffer.alloc(0);
 		try {
-			for await (const chunk of this.input.stream) {
+			while (true) {
 				assertNotAborted(this.signal, signal);
-				const nextChunk: Buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+				if (!(await this.waitUntilActive())) return;
+				const chunk = await this.readNextChunk();
+				if (chunk === null) break;
+				if (!(await this.waitUntilActive())) return;
+				const nextChunk: Buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
 				const combined: Buffer = remainder.length > 0 ? Buffer.concat([remainder, nextChunk]) : nextChunk;
 				const completeFrames = Math.floor(combined.length / frameBytes) * frameBytes;
 				for (let offset = 0; offset < completeFrames; offset += frameBytes) {
 					const framePayload: Buffer = combined.subarray(offset, offset + frameBytes);
-					if (this.socket == null) return;
-					if (this.backend.capabilities.maxBufferedBytes != null) {
-						this.queuedBytes += framePayload.length;
-						if (this.queuedBytes > this.backend.capabilities.maxBufferedBytes) {
-							this.stateValue = "buffering";
-							this.emit({ type: "state", state: "buffering" });
-							throw new Error(`WebSocket audio output exceeded max buffered bytes: ${this.backend.capabilities.maxBufferedBytes}`);
-						}
-					}
-					this.socket.send(encodeWebAudioFrame(framePayload, this.sequence++, Date.now()));
+					if (!(await this.sendFrame(framePayload, signal))) return;
 				}
 				remainder = combined.subarray(completeFrames) as Buffer;
 			}
 			if (remainder.length !== 0) {
-				throw new Error("WebSocket audio stream ended with an incomplete audio frame");
+				const sampleBytes = this.calculateSampleFrameBytes();
+				if (remainder.length % sampleBytes !== 0) {
+					throw new Error("WebSocket audio stream ended with an incomplete PCM sample frame");
+				}
+				if (!(await this.sendFrame(remainder, signal))) return;
 			}
+			if (this.stopped || this.disposed || this.transportClosed) return;
 			this.stateValue = "ended";
 			this.emit({ type: "state", state: "ended" });
 		} catch (error) {
-			if (this.disposed) return;
+			if (this.disposed || this.stopped || this.transportClosed) return;
 			this.stateValue = "failed";
 			this.emit({ type: "error", error: error instanceof Error ? error : new Error(String(error)) });
 			this.destroyTransferredInput();
@@ -374,7 +417,125 @@ class WebSocketAudioOutputHandle implements AudioOutputHandle<WebSocketAudioSess
 
 	private calculateFrameBytes(): number {
 		if (this.format.kind !== "pcm") throw new TypeError("WebSocket backend requires PCM stream input");
-		return this.format.channels * (this.format.sampleFormat === "s16" ? 2 : 4);
+		const sampleFrameBytes = this.calculateSampleFrameBytes();
+		const maxPayloadBytes = Math.min(
+			WEB_AUDIO_MAX_MESSAGE_BYTES,
+			(this.backend.capabilities.maxBufferedBytes ?? WEB_AUDIO_MAX_MESSAGE_BYTES + 16) - 16,
+		);
+		const maxSamples = Math.floor(maxPayloadBytes / sampleFrameBytes);
+		if (maxSamples < 1) throw new TypeError("WebSocket audio buffer limit is too small for one PCM sample frame");
+		const samplesPerFrame = this.format.frameSamplesPerChannel ?? Math.min(960, maxSamples);
+		if (!Number.isInteger(samplesPerFrame) || samplesPerFrame < 1 || samplesPerFrame > maxSamples) {
+			throw new TypeError(`PCM frame size must be between 1 and ${maxSamples} samples per channel`);
+		}
+		return sampleFrameBytes * samplesPerFrame;
+	}
+
+	private calculateSampleFrameBytes(): number {
+		if (this.format.kind !== "pcm" || this.format.sampleFormat !== "s16") {
+			throw new TypeError("WebSocket backend requires interleaved s16 PCM input");
+		}
+		return this.format.channels * WEB_AUDIO_SAMPLE_BYTES;
+	}
+
+	private async sendFrame(payload: Uint8Array, signal?: AbortSignal): Promise<boolean> {
+		const socket = this.socket;
+		if (!socket || this.stopped || this.disposed || this.transportClosed) return false;
+		const messageBytes = payload.byteLength + 16;
+		const maxBufferedBytes = this.backend.capabilities.maxBufferedBytes;
+		if (maxBufferedBytes !== null && messageBytes > maxBufferedBytes) {
+			throw new Error(`Audio frame exceeds max buffered bytes: ${maxBufferedBytes}`);
+		}
+		while (true) {
+			assertNotAborted(this.signal, signal);
+			if (!(await this.waitUntilActive())) return false;
+			if (socket.readyState !== 1) {
+				this.transportClosed = true;
+				return false;
+			}
+			if (maxBufferedBytes === null || socket.bufferedAmount + messageBytes <= maxBufferedBytes) break;
+			await new Promise<void>((resolve) => setTimeout(resolve, 10));
+		}
+		if (this.stopped || this.disposed || this.transportClosed) return false;
+		socket.send(encodeWebAudioFrame(payload, this.sequence++, Date.now()));
+		return true;
+	}
+
+	private waitUntilActive(): Promise<boolean> {
+		if (this.stopped || this.disposed || this.transportClosed) return Promise.resolve(false);
+		if (this.stateValue !== "paused") return Promise.resolve(true);
+		return new Promise((resolve) => this.activityWaiters.add(resolve));
+	}
+
+	private wakeActivityWaiters(active: boolean): void {
+		for (const resolve of this.activityWaiters) resolve(active);
+		this.activityWaiters.clear();
+	}
+
+	private readNextChunk(): Promise<Buffer | null> {
+		const stream = this.input.stream;
+		const read = (): Buffer | null | undefined => {
+			const chunk = stream.read() as Buffer | Uint8Array | string | null;
+			if (chunk !== null) return Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			if (stream.readableEnded || stream.destroyed || this.stopped || this.disposed) return null;
+			return undefined;
+		};
+		const initial = read();
+		if (initial !== undefined) return Promise.resolve(initial);
+		return new Promise((resolve, reject) => {
+			let settled = false;
+			const cleanup = () => {
+				stream.removeListener("readable", onReadable);
+				stream.removeListener("end", onEnd);
+				stream.removeListener("close", onClose);
+				stream.removeListener("error", onError);
+				this.pendingReadCancel = null;
+				this.pendingReadRetry = null;
+			};
+			const finish = (chunk: Buffer | null) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(chunk);
+			};
+			const onReadable = () => {
+				if (this.stateValue === "paused") return;
+				const chunk = read();
+				if (chunk !== undefined) finish(chunk);
+			};
+			const onEnd = () => finish(null);
+			const onClose = () => finish(null);
+			const onError = (error: Error) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(error);
+			};
+			this.pendingReadCancel = () => finish(null);
+			this.pendingReadRetry = onReadable;
+			stream.on("readable", onReadable);
+			stream.once("end", onEnd);
+			stream.once("close", onClose);
+			stream.once("error", onError);
+			onReadable();
+		});
+	}
+
+	private listenForTransportClose(): void {
+		if (!this.socket?.addEventListener) return;
+		const socket = this.socket;
+		const onClose = () => {
+			this.transportClosed = true;
+			if (!this.stopped && !this.disposed) {
+				this.stateValue = "failed";
+				this.emit({ type: "error", error: new Error("WebSocket audio transport closed") });
+			}
+			this.destroyTransferredInput();
+			this.pendingReadCancel?.();
+			this.wakeActivityWaiters(false);
+		};
+		socket.addEventListener?.("close", onClose);
+		this.cleanupFns.add(() => socket.removeEventListener?.("close", onClose));
 	}
 }
 
@@ -385,7 +546,7 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 		stop: true,
 		seek: "unsupported",
 		replacement: "atomic",
-		ownership: "transfer",
+		ownership: "both",
 		volume: "upstream",
 		backpressure: "bounded",
 		maxBufferedBytes: 256 * 1024,
@@ -406,6 +567,9 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 		this.socketFactory = options.socketFactory ?? defaultWebAudioSocketFactory;
 		this.authorize = options.authorize;
 		this.ready = Promise.resolve();
+		if (!Number.isInteger(this.maxBufferedBytes) || this.maxBufferedBytes <= 16) {
+			throw new TypeError("maxBufferedBytes must be an integer greater than the 16-byte audio header");
+		}
 	}
 
 	public async initialize(_signal?: AbortSignal): Promise<void> {
@@ -413,14 +577,18 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 		this.abortController.signal.throwIfAborted?.();
 	}
 
-	public createSession(input: AudioOutputInput, context: AudioOutputContext = {}): AudioOutputHandle<WebSocketAudioSessionResource> {
+	public createSession(
+		input: AudioOutputInput,
+		context: AudioOutputContext = {},
+	): AudioOutputHandle<WebSocketAudioSessionResource> {
 		if (this.disposed) throw new Error("WebSocket audio backend is disposed");
 		validateWebAudioOutputFormat(input.format);
 		if (input.ownership !== "transfer" && input.ownership !== "borrow") {
 			throw new TypeError(`Unsupported WebSocket audio ownership mode: ${String(input.ownership)}`);
 		}
 		const metadata = context.metadata as Record<string, unknown> | undefined;
-		const sessionId = metadata && typeof metadata === "object" && "sessionId" in metadata ? String((metadata as any).sessionId) : undefined;
+		const sessionId =
+			metadata && typeof metadata === "object" && "sessionId" in metadata ? String((metadata as any).sessionId) : undefined;
 		const resource: WebSocketAudioSessionResource = {
 			id: `web-audio-${Math.random().toString(16).slice(2)}`,
 			sessionId: sessionId ?? `session-${Math.random().toString(16).slice(2)}`,
@@ -454,7 +622,14 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 		const authorized = this.authorize ? await this.authorize(context) : true;
 		if (!authorized) throw new Error("WebSocket audio session is not authorized");
 		const socket = await this.socketFactory(context);
-		if (!socket || typeof socket.send !== "function") {
+		if (
+			!socket ||
+			typeof socket.send !== "function" ||
+			typeof socket.close !== "function" ||
+			typeof socket.bufferedAmount !== "number" ||
+			!Number.isFinite(socket.bufferedAmount) ||
+			socket.bufferedAmount < 0
+		) {
 			throw new TypeError("WebSocket audio output transport did not provide a valid WebSocket-like object");
 		}
 		return socket;

@@ -170,10 +170,16 @@ may already have been consumed. The stream error flows through the Discord playe
 owned streams rather than trying to replay them. Raw PCM from non-DSP sources must also be explicitly described as 48 kHz stereo
 s16le before it can be sent down Discord's raw path.
 
-## Adding a Web backend later
+## WebSocket PCM backend status
 
-A `WebOutputBackend` can implement the generic session contract and consume the same encoded or explicit PCM input without
-inheriting Discord behavior. It will additionally need:
+`WebSocketAudioOutputBackend` implements the output handle contract for one-way PCM s16le sessions. Its socket factory supplies an
+already-connected WebSocket-compatible transport; the backend does not create a gateway, browser client, or authentication flow.
+The initial protocol is fixed at 48 kHz stereo interleaved PCM. It uses bounded PCM messages and gates source reads on
+pause/resume, while transport backpressure is measured through the socket's `bufferedAmount`. A transport that does not expose
+that measurement is rejected rather than advertised as bounded. Stop and disconnect prevent further sends; only transfer-owned
+input streams are destroyed.
+
+The backend is not yet a complete browser playback feature. A gateway/client integration will additionally need:
 
 - A transport frame envelope with codec/configuration and sequence/timestamp data; PCM frames need sample boundaries and format
   negotiation.
@@ -189,7 +195,8 @@ For a first one-way browser listener with ordinary internet reachability and mod
 simpler transport to deploy and observe; it handles framing/application messages over a common browser transport but generally has
 more jitter/buffering than a media-native transport. WebRTC is a better candidate when interactive controls, low latency, or
 synchronized listening dominate, at the cost of signaling, NAT traversal, congestion-control and more involved client lifecycle.
-These are transport choices only: neither transport, server, authentication, nor browser protocol is implemented here.
+These are transport choices only: the WebSocket PCM protocol/backend exists, but the gateway, authentication, and browser playback
+client are not implemented here.
 
 ## Verification
 
