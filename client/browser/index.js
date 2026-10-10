@@ -192,7 +192,7 @@ export class WebAudioClient extends EventTarget {
 		await this.createAudioOutput();
 
 		const url = new URL(nextPublisher ? "/listen-next" : "/listen", gatewayUrl);
-		if (!nextPublisher) url.searchParams.set("sessionId", sessionId);
+		if (typeof sessionId === "string" && sessionId) url.searchParams.set("sessionId", sessionId);
 		url.searchParams.set("token", token);
 		this.sessionId = nextPublisher ? null : sessionId;
 		this.config = null;

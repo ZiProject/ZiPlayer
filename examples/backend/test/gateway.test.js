@@ -112,3 +112,64 @@ test("a next-track listener receives the publisher config and first PCM frame", 
 		await gateway.close();
 	}
 });
+
+test("session-scoped next-listener routing keeps concurrent publishers isolated", async () => {
+	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0, token });
+	let alphaListener;
+	let betaListener;
+	let alphaPublisher;
+	let betaPublisher;
+	try {
+		const address = await gateway.listen();
+		const gatewayUrl = `ws://127.0.0.1:${address.port}`;
+		alphaListener = new WebSocket(`${gatewayUrl}/listen-next?sessionId=alpha-session&token=${token}`);
+		betaListener = new WebSocket(`${gatewayUrl}/listen-next?sessionId=beta-session&token=${token}`);
+		await Promise.all([waitForOpen(alphaListener), waitForOpen(betaListener)]);
+
+		alphaPublisher = new WebSocket(`${gatewayUrl}/publish?sessionId=alpha-session&token=${token}`);
+		await waitForOpen(alphaPublisher);
+		const alphaConfigMessage = waitForMessage(alphaListener);
+		alphaPublisher.send(
+			JSON.stringify({
+				v: 1,
+				type: "audio:config",
+				sessionId: "alpha-session",
+				protocolVersion: 1,
+				sampleRateHz: 48_000,
+				channels: 2,
+				sampleFormat: "s16",
+				endianness: "little",
+				channelLayout: "interleaved",
+			}),
+		);
+		const alphaConfig = await alphaConfigMessage;
+		assert.equal(JSON.parse(alphaConfig.data.toString()).sessionId, "alpha-session");
+
+		betaPublisher = new WebSocket(`${gatewayUrl}/publish?sessionId=beta-session&token=${token}`);
+		await waitForOpen(betaPublisher);
+		const betaConfigMessage = waitForMessage(betaListener);
+		betaPublisher.send(
+			JSON.stringify({
+				v: 1,
+				type: "audio:config",
+				sessionId: "beta-session",
+				protocolVersion: 1,
+				sampleRateHz: 48_000,
+				channels: 2,
+				sampleFormat: "s16",
+				endianness: "little",
+				channelLayout: "interleaved",
+			}),
+		);
+		const betaConfig = await betaConfigMessage;
+		assert.equal(JSON.parse(betaConfig.data.toString()).sessionId, "beta-session");
+		assert.equal(alphaListener.readyState, 1);
+		assert.equal(betaListener.readyState, 1);
+	} finally {
+		alphaListener?.close();
+		betaListener?.close();
+		alphaPublisher?.close();
+		betaPublisher?.close();
+		await gateway.close();
+	}
+});

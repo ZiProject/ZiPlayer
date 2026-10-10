@@ -42,14 +42,15 @@ function readRequest(request) {
 		: url.pathname === "/listen" ? "listener"
 		: null;
 	const sessionId = url.searchParams.get("sessionId");
-	if (!role || (role !== "next-listener" && (!sessionId || sessionId.length > 128))) return null;
+	if (!role || (sessionId !== null && (!sessionId.trim() || sessionId.length > 128))) return null;
+	if ((role === "publisher" || role === "listener") && (!sessionId || !sessionId.trim())) return null;
 
 	const token =
 		request.headers.authorization?.startsWith("Bearer ") ?
 			request.headers.authorization.slice("Bearer ".length)
-		:	url.searchParams.get("token");
+		: url.searchParams.get("token");
 
-	return { role, sessionId, token };
+	return { role, sessionId: sessionId ?? null, token };
 }
 
 function isAudioConfig(message, sessionId) {
@@ -94,7 +95,49 @@ function relayToListeners(session, data, isBinary) {
 
 function removeSessionIfUnused(session, sessions) {
 	if (!session.publisher && session.listeners.size === 0 && sessions.get(session.sessionId) === session) {
+		session.nextListeners.clear();
 		sessions.delete(session.sessionId);
+	}
+}
+
+function getPendingListenerSet(pendingListeners, sessionId) {
+	const key = sessionId ?? "__global__";
+	let listeners = pendingListeners.get(key);
+	if (!listeners) {
+		listeners = new Set();
+		pendingListeners.set(key, listeners);
+	}
+	return listeners;
+}
+
+function queuePendingListener(pendingListeners, webSocket, sessionId) {
+	const listeners = getPendingListenerSet(pendingListeners, sessionId);
+	listeners.add(webSocket);
+	webSocket.once("close", () => {
+		listeners.delete(webSocket);
+		if (listeners.size === 0) pendingListeners.delete(sessionId ?? "__global__");
+	});
+	return listeners;
+}
+
+function attachPendingListeners(session, pendingListeners) {
+	const sessionKey = session.sessionId;
+	const globalKey = "__global__";
+	const queued = new Set([
+		...(pendingListeners.get(sessionKey) ?? []),
+		...(pendingListeners.get(globalKey) ?? []),
+	]);
+	for (const listener of queued) {
+		session.nextListeners.add(listener);
+		listener.once("close", () => {
+			session.nextListeners.delete(listener);
+		});
+	}
+	for (const key of [sessionKey, globalKey]) {
+		const listeners = pendingListeners.get(key);
+		if (!listeners) continue;
+		listeners.clear();
+		pendingListeners.delete(key);
 	}
 }
 
@@ -236,7 +279,7 @@ function createWebAudioGateway({ host = "127.0.0.1", port = 8080, token = proces
 	if (!Number.isInteger(port) || port < 0 || port > 65535) throw new TypeError("port must be an integer from 0 to 65535");
 
 	const sessions = new Map();
-	const pendingListeners = new Set();
+	const pendingListeners = new Map();
 	const httpServer = createServer((request, response) => {
 		const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
 		if (request.method === "GET" && pathname === "/health") {
@@ -354,18 +397,17 @@ function createWebAudioGateway({ host = "127.0.0.1", port = 8080, token = proces
 					nextListeners: new Set(),
 					config: null,
 				};
-				for (const listener of pendingListeners) session.nextListeners.add(listener);
-				pendingListeners.clear();
+				attachPendingListeners(session, pendingListeners);
 				sessions.set(parsed.sessionId, session);
 				attachPublisher(session, webSocket, sessions);
 				console.info(`Audio publisher connected: ${parsed.sessionId}`);
 			} else if (parsed.role === "next-listener") {
-				pendingListeners.add(webSocket);
-				webSocket.once("close", () => pendingListeners.delete(webSocket));
+				const queue = queuePendingListener(pendingListeners, webSocket, parsed.sessionId ?? null);
 				webSocket.on("error", (error) => {
-					console.error("Waiting audio listener socket error:", error);
+					console.error(`Waiting audio listener socket error for ${parsed.sessionId ?? "next publisher"}:`, error);
+					queue.delete(webSocket);
 				});
-				console.info("Audio listener waiting for next publisher");
+				console.info(`Audio listener waiting for ${parsed.sessionId ? `session ${parsed.sessionId}` : "the next publisher"}`);
 			} else {
 				const session = sessions.get(parsed.sessionId);
 				if (!session || session.publisher?.readyState !== WS_OPEN) {
@@ -404,11 +446,14 @@ function createWebAudioGateway({ host = "127.0.0.1", port = 8080, token = proces
 			});
 		},
 		async close() {
-			for (const listener of pendingListeners) listener.close(1001, "Gateway shutting down");
+			for (const listeners of pendingListeners.values()) {
+				for (const listener of listeners) listener.close(1001, "Gateway shutting down");
+			}
 			pendingListeners.clear();
 			for (const session of sessions.values()) {
 				session.publisher?.close(1001, "Gateway shutting down");
 				for (const listener of session.listeners) listener.close(1001, "Gateway shutting down");
+				session.nextListeners.clear();
 			}
 			sessions.clear();
 			webSocketServer.close();

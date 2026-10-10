@@ -1,46 +1,63 @@
-# ZiPlayer Web Audio session
+# ZiPlayer Web Audio quick start
 
-This example starts a regular ZiPlayer playback session with its source plugins, then routes the resulting 48 kHz stereo s16 LE
-PCM through the WebSocket output backend to browser listeners. `index.js` wires up ZiPlayer; `gateway.js` handles WebSocket
-authentication, publisher/listener routing, and serving the browser client.
+Hear a ZiPlayer stream in your browser without setting up a Discord bot. This runnable local demo starts ZiPlayer and its source
+plugins, routes processed 48 kHz stereo PCM through an authenticated WebSocket gateway, and serves the browser player.
 
-## Run locally
+## Requirements
 
-From the repository root, build the core package and install the example dependencies:
+- Node.js 20.3 or newer and npm.
+- Internet access to install packages and resolve online media.
+- A modern browser with AudioWorklet support (for example, current Chrome, Edge, Firefox, or Safari).
+
+No Discord bot or Discord token is required for this browser example.
+
+## Start from a fresh clone
+
+Run these commands from the repository root. If you have not cloned the project yet:
 
 ```sh
+git clone https://github.com/ZiProject/ZiPlayer.git
+cd ZiPlayer
+npm install
 npm run build:core
 npm install --prefix examples/backend
 ```
 
-Set a local development token and start the session. `TRACK_QUERY` is optional:
+Create `examples/backend/.env` by copying `examples/backend/.env.example`, then open the new file and set `WEB_AUDIO_TOKEN` to a
+non-empty local development value. Keep this value private; `.env` is ignored by Git.
 
-```powershell
-$env:WEB_AUDIO_TOKEN = "replace-with-a-local-development-token"
+Start the gateway and player from the repository root:
+
+```sh
 npm start --prefix examples/backend
 ```
 
-You can also provide an initial query through `TRACK_QUERY`:
+Open <http://127.0.0.1:8080/>. Enter the same token in the **Listener token** field, enter a track search or media URL, then click
+**Search and play**. The page connects to the next audio stream before playback starts, so its first frames are not missed. Click
+**Disconnect** to stop listening and release browser audio resources. Press **Ctrl+C** in the terminal to stop the server.
 
-```powershell
-$env:TRACK_QUERY = "lofi hip hop radio"
-npm start --prefix examples/backend
+The browser's first play/search click also unlocks audio playback in browsers that require a user gesture. If the browser reports
+that it connected but PCM is silent, check the terminal for source/plugin errors and try a different query.
+
+You can optionally start a query automatically by adding `TRACK_QUERY` to `examples/backend/.env`:
+
+```dotenv
+TRACK_QUERY=lofi hip hop radio
 ```
 
-Or pass a media URL as a command-line argument:
+Alternatively, pass a search phrase or URL after `--`:
 
-```powershell
+```sh
 npm start --prefix examples/backend -- "https://www.youtube.com/watch?v=..."
 ```
 
-The example registers YouTube, SoundCloud, Spotify, attachments, and TTS plugins with `PlayerManager`. Enter a search phrase or
-media URL on the web page and choose **Search and play**; ZiPlayer resolves it through the registered source plugins, starts it on
-the normal player/queue pipeline, and the page subscribes to the next audio publisher before starting playback so the first PCM
-frames are not lost. Enter the gateway token in the Listener token field before searching. `audioOutputBackendFactory` sends
-processed PCM to the gateway instead of Discord Voice. The browser uses the reusable `@ziplayer/client` package to validate and
-play the PCM stream. The backend paces PCM frames at their configured sample rate, and a player-stable session ID lets the gateway
-keep listeners attached while the player's publisher socket is replaced for the next track. Open <http://127.0.0.1:8080/> to
-search and listen. The session fields remain available for manual connections.
+## What is running?
+
+The example registers YouTube, SoundCloud, Spotify, attachments, and TTS source plugins with `PlayerManager`. It uses the regular
+ZiPlayer playback pipeline, but sends processed PCM through `WebSocketAudioOutputBackend` to the local gateway instead of Discord
+Voice. The gateway authenticates the publisher and browser listener and forwards audio; the browser's reusable
+`@ziplayer/client` validates and plays it through an AudioWorklet. The page's session fields are available for manual connections
+if you want to listen to an already-running player.
 
 Run the gateway handoff test from the repository root with `npm test --prefix examples/backend`.
 
@@ -61,8 +78,7 @@ publisher from sending its first frames before the browser is subscribed.
 Configuration:
 
 - `WEB_AUDIO_TOKEN` is required by both the gateway and publisher connection.
-- `TRACK_QUERY` or a command-line argument optionally starts an initial search query or media URL; otherwise, search from the web
-  page.
+- `TRACK_QUERY` or a command-line argument optionally starts an initial search query or media URL; otherwise, use the web page.
 - `HOST` and `PORT` control the HTTP/WebSocket listener (defaults: `127.0.0.1:8080`).
 - `GATEWAY_URL` overrides the WebSocket publisher URL if the public address differs from `HOST`.
 - `PLAYER_ID`, `REQUESTED_BY`, `TTS_LANGUAGE`, and `EXTRACTOR_TIMEOUT_MS` are optional.

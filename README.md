@@ -113,19 +113,36 @@ a server-side gateway to authenticate and route WebSocket connections; the brows
 or receive provider credentials.
 
 The reusable browser receiver is [`@ziplayer/client`](client/README.md). It validates ZiPlayer's 48 kHz stereo s16 PCM protocol
-and plays it through a bounded AudioWorklet buffer. The complete runnable example combines the client with a WebSocket gateway,
-player-stable routing, and normal plugin-backed `PlayerManager` search/play:
+and plays it through a bounded AudioWorklet buffer. To hear browser audio from a fresh clone, use the complete local example:
 
-```powershell
-npm run build:core
-npm install --prefix examples/backend
-$env:WEB_AUDIO_TOKEN = "use-a-local-development-token"
-npm start --prefix examples/backend
-```
+1. Install [Node.js 20.3 or newer](https://nodejs.org/) and Git, then clone this repository.
+2. From the repository root, install dependencies and build the core:
 
-Open <http://127.0.0.1:8080/> and enter the token. The gateway example is intended for local development, not public deployment.
-See [`docs/AUDIO_OUTPUT_BACKENDS.md`](docs/AUDIO_OUTPUT_BACKENDS.md) for the backend API and
-[`examples/backend/README.md`](examples/backend/README.md) for setup, operations, and security notes.
+   ```sh
+   npm install
+   npm run build:core
+   ```
+
+3. Install the runnable example's dependencies:
+
+   ```sh
+   npm install --prefix examples/backend
+   ```
+
+4. Open `examples/backend/.env.example`, save a local copy as `examples/backend/.env`, and set `WEB_AUDIO_TOKEN` to a
+   non-empty development-only value.
+5. Start the example from the repository root:
+
+   ```sh
+   npm start --prefix examples/backend
+   ```
+
+6. Open <http://127.0.0.1:8080/>, enter the same token in **Listener token**, type a search phrase or media URL, and choose
+   **Search and play**. Choose **Disconnect** to stop browser playback; press **Ctrl+C** in the terminal to stop the server.
+
+This example includes a WebSocket gateway and source plugins; it needs internet access to resolve online media. It is for local
+development, not public deployment. See [`examples/backend/README.md`](examples/backend/README.md) for troubleshooting and
+configuration, and [`docs/AUDIO_OUTPUT_BACKENDS.md`](docs/AUDIO_OUTPUT_BACKENDS.md) for the backend API.
 
 ## 🎵 Core Usage
 
