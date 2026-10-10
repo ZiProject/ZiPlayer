@@ -2,53 +2,50 @@
 
 # ZiPlayer
 
-A powerful, extensible Discord music engine built on top of `@discordjs/voice`, designed for scalability, flexibility, and
-developer experience.
+ZiPlayer is a Discord audio engine built on top of `@discordjs/voice` and designed for real-time playback, queue orchestration,
+advanced filter pipelines, custom output backends, and resilient player lifecycle management.
 
-ZiPlayer is not just a player — it's a **full ecosystem** with plugins, extensions, and a modular architecture that lets you build
-advanced music bots quickly.
-
----
-
-## ✨ Highlights
-
-- 🔌 **Plugin-driven architecture** — Easily support new audio sources
-- 🌐 **Multi-source playback** — YouTube, SoundCloud, Spotify (with fallback), TTS, and more
-- 🧠 **Smart fallback system** — Automatically resolves streams across plugins
-- 🎛️ **Advanced audio filters** — Real-time FFmpeg effects (bassboost, nightcore, etc.)
-- 🔁 **Autoplay & looping** — Seamless listening experience
-- 🧩 **Extension system** — Add STT, lyrics, Lavalink, and custom logic
-- 🗂️ **Per-guild player system** — Scales across multiple Discord servers
-- 📡 **Event-driven core** — Full lifecycle hooks for customization
-- 💾 **Custom userdata** — Attach context to each player
-- ⚡ **Smart caching** — Search and stream caching for better performance
-- 🎯 **Queue management** — Advanced queue operations (move, swap, batch remove)
-- 💹 **Preload** - Auto Preload next Track
-- 🔃 **Crossfade** - Suport crossfade for new/slip Track
-- 🧠 **Transition Engine** - BPM/genre-aware crossfade (chill → long fade, EDM → short fade) with beat-aligned entry instead of
-  blind time-based fading
-- 🔄 **Anti-Stuck Recovery 2.0** - Automatic stream failure recovery: reuse preload → fallback plugin → reduce quality →
-  controlled skip (no chaotic skipping)
-- 🔊 **Loudness Normalization** - LUFS-based normalization prevents sudden volume jumps between tracks, with gentle limiter to
-  avoid distortion
+The public API is intentionally centered on `PlayerManager` and `Player`; the internal bus/controllers are operational details
+used by the runtime, not the normal application integration surface.
 
 ---
 
-## 📦 Installation
+## Highlights
+
+- Robust per-guild `PlayerManager` + `Player` facade
+- Source plugins for search, extraction, and playback fallback
+- Queue management with loop, autoplay, insert, swap, move, and history operations
+- FFmpeg filter pipeline with safe filter validation and early failure handling
+- Preload, crossfade, smart transition, and anti-stuck recovery flow
+- Loudness normalization and volume shaping for smoother transitions
+- Custom and browser audio output through `audioOutputBackendFactory`
+- WebSocket PCM publishing for browser clients using a strict 48 kHz stereo s16 LE contract
+- Explicitly encoded-input-only DSP pipeline: raw PCM input is rejected by design
+
+---
+
+## Installation
 
 ```bash
-npm install ziplayer @ziplayer/plugin @ziplayer/extension @ziplayer/infinity @discordjs/voice discord.js opusscript
+npm install ziplayer @discordjs/voice discord.js
+npm install --prefix core
+```
+
+Optional extras:
+
+```bash
+npm install @ziplayer/plugin @ziplayer/extension @ziplayer/infinity
+npm install @discordjs/opus ffmpeg-static
 ```
 
 ---
 
-## 🚀 Quick Start
+## Quick start
 
 ```ts
 import { Client, GatewayIntentBits } from "discord.js";
 import { PlayerManager } from "ziplayer";
-import { YouTubePlugin, SoundCloudPlugin, SpotifyPlugin } from "@ziplayer/plugin";
-import { InfinityPlugin } from "@ziplayer/infinity";
+import { YouTubePlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin, AttachmentsPlugin } from "@ziplayer/plugin";
 
 const client = new Client({
 	intents: [
@@ -60,203 +57,212 @@ const client = new Client({
 });
 
 const manager = new PlayerManager({
-	plugins: [new YouTubePlugin(), new SoundCloudPlugin(), new SpotifyPlugin(), new InfinityPlugin()],
+	plugins: [
+		new TTSPlugin({ defaultLang: "en" }),
+		new YouTubePlugin(),
+		new SoundCloudPlugin(),
+		new SpotifyPlugin(),
+		new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }),
+	],
+	autoCleanup: true,
 });
 
-client.on("messageCreate", async (msg) => {
-	if (!msg.content.startsWith("!play ") || !msg.guildId) return;
+client.on("messageCreate", async (message) => {
+	if (message.author.bot || !message.guildId) return;
+	if (!message.content.startsWith("!play ")) return;
 
-	const voiceChannel = msg.member?.voice?.channel;
-	if (!voiceChannel) return msg.reply("Join a voice channel first!");
+	const voiceChannel = message.member?.voice?.channel;
+	if (!voiceChannel) return message.reply("Join a voice channel first!");
 
-	const player = await manager.create(msg.guildId, {
+	const player = await manager.create(message.guildId, {
 		leaveOnEnd: true,
-		userdata: { channel: msg.channel },
+		leaveOnEmpty: true,
+		volume: 80,
+		userdata: { channelId: message.channelId },
 	});
 
 	if (!player.connection) await player.connect(voiceChannel);
-	await player.play(msg.content.slice(6), msg.author.id);
+	await player.play(message.content.slice(6).trim(), message.author.id);
 });
 
+manager.on("trackStart", (player, track) => console.log(`[${player.id}] now playing: ${track.title}`));
 client.login(process.env.DISCORD_TOKEN);
 ```
 
 ---
 
-## 🧱 Architecture Overview
+## Public API overview
 
-```
-PlayerManager (global)
-  └── Player (per guild)
-        ├── Queue (advanced operations)
-        ├── PluginManager (with caching & fallback)
-        ├── ExtensionManager (with priority & caching)
-        └── FilterManager (FFmpeg filters)
-```
-
-### Flow
-
-```
-create → connect → play → stream → events → destroy
-         ↓
-    auto-save (periodic)
-         ↓
-    restore on restart
-```
-
----
-
-## 🌐 Browser playback and custom audio output
-
-ZiPlayer can send processed PCM to a custom output backend as well as the default Discord Voice output. A browser deployment needs
-a server-side gateway to authenticate and route WebSocket connections; the browser should not connect directly to a source plugin
-or receive provider credentials.
-
-The reusable browser receiver is [`@ziplayer/client`](client/README.md). It validates ZiPlayer's 48 kHz stereo s16 PCM protocol
-and plays it through a bounded AudioWorklet buffer. To hear browser audio from a fresh clone, use the complete local example:
-
-1. Install [Node.js 20.3 or newer](https://nodejs.org/) and Git, then clone this repository.
-2. From the repository root, install the project dependencies, install the core package's build tools, and build the core:
-
-   ```sh
-   npm install
-   npm install --prefix core
-   npm run build:core
-   ```
-
-3. Install the runnable example's dependencies:
-
-   ```sh
-   npm install --prefix examples/backend
-   ```
-
-4. Open `examples/backend/.env.example`, save a local copy as `examples/backend/.env`, and set `WEB_AUDIO_TOKEN` to a non-empty
-   development-only value.
-5. Start the example from the repository root:
-
-   ```sh
-   npm start --prefix examples/backend
-   ```
-
-6. Open <http://127.0.0.1:8080/>, enter the same token in **Listener token**, type a search phrase or media URL, and choose
-   **Search and play**. Choose **Disconnect** to stop browser playback; press **Ctrl+C** in the terminal to stop the server.
-
-This example includes a WebSocket gateway and source plugins; it needs internet access to resolve online media. It is for local
-development, not public deployment. See [`examples/backend/README.md`](examples/backend/README.md) for troubleshooting and
-configuration, and [`docs/AUDIO_OUTPUT_BACKENDS.md`](docs/AUDIO_OUTPUT_BACKENDS.md) for the backend API.
-
-## 🎵 Core Usage
-
-### Play music
+### Playback control
 
 ```ts
 await player.play("Never Gonna Give You Up", userId);
-await player.play("https://youtube.com/watch?v=...", userId);
-await player.play("tts: Hello world", userId);
-await player.play(searchResult, userId); // Play the first match, or all tracks when it represents a playlist
-await player.play(null); // Resume from queue
+await player.play("https://example.com/audio");
+await player.play(track);
+await player.play(searchResult);
+await player.play(null); // resume from queue when supported
+
+await player.pause();
+await player.resume();
+await player.skip();
+await player.skip(2);
+await player.previous();
+await player.seek(45_000);
+await player.stop();
+player.setVolume(80);
 ```
 
-### Controls
+### Queue operations
 
 ```ts
-player.pause();
-player.resume();
-player.skip();
-player.skip(2); // Skip to track at index 2
-player.stop();
-player.setVolume(100);
-player.loop("track"); // Loop current track
-player.loop("queue"); // Loop entire queue
-player.loop(1); // Number mode: 0=off, 1=track, 2=queue
-player.shuffle();
-player.seek(30000); // Seek to 30 seconds
-player.previous(); // Go back to previous track
-```
-
-### Queue Management
-
-```ts
-// Basic operations
 player.queue.add(track);
 player.queue.addMultiple([track1, track2]);
 player.queue.remove(0);
-player.queue.removeMultiple([0, 2, 5]); // Remove multiple indices
-player.queue.removeWhere((t) => t.source === "youtube"); // Remove by condition
-player.queue.clear();
-
-// Queue manipulation
-player.queue.move(3, 0); // Move track at index 3 to front
-player.queue.swap(1, 3); // Swap positions 1 and 3
+player.queue.removeMultiple([0, 2, 5]);
+player.queue.move(2, 0);
+player.queue.swap(1, 3);
 player.queue.shuffle();
+player.queue.clear();
+player.queue.loop("queue");
+player.queue.autoPlay(true);
 
-// Queue inspection
-player.queue.size;
-player.queue.isEmpty;
-player.queue.currentTrack;
-player.queue.nextTrack;
-player.queue.lastTrack;
-player.queue.previousTracks;
-player.queue.getTrack(5);
-player.queue.findTracks((t) => t.duration > 300000);
-player.queue.indexOf(track);
-player.queue.has(track);
+console.log(player.queue.size, player.queue.isEmpty);
+console.log(player.queue.currentTrack, player.queue.nextTrack);
+```
 
-// History navigation
-player.queue.jumpToHistory(2); // Go back 2 tracks
+### State and events
+
+```ts
+player.currentTrack;
+player.connection;
+player.isPlaying;
+player.isPaused;
+player.isIdle;
+player.volume;
+player.queue;
+```
+
+Manager-level events:
+
+```ts
+manager.on("trackStart", (player, track) => {});
+manager.on("trackEnd", (player, track) => {});
+manager.on("queueEnd", (player) => {});
+manager.on("playerError", (player, error, track) => {});
+manager.on("playerPause", (player, track) => {});
+manager.on("playerResume", (player, track) => {});
+manager.on("queueAdd", (player, track) => {});
+manager.on("playerDestroy", (player) => {});
 ```
 
 ---
 
-## 🔌 Plugins
+## Browser and custom audio outputs
 
-Install via `@ziplayer/plugin`:
+ZiPlayer supports both the default Discord Voice backend and custom output backends. For browser playback, use a gateway-owned
+WebSocket and route PCM to the browser client. The browser package is `@ziplayer/client` and validates the protocol on the client
+side.
 
-- **YouTubePlugin** — YouTube + search
-- **SoundCloudPlugin** — SoundCloud streaming
-- **SpotifyPlugin** — Metadata (uses fallback)
-- **TTSPlugin** — Text-to-speech
-- **AttachmentsPlugin** — Local/URL audio files
+The runtime audio DSP is intentionally encoded-input-only and emits PCM. In other words, `audioProcessing.inputFormat` must be
+`"encoded"`; raw PCM input is rejected by design. The downstream raw PCM output contract is:
 
-### Example
+- 48 kHz
+- stereo
+- interleaved
+- little-endian
+- signed 16-bit samples (`pcm16le`) or float32 PCM when explicitly configured
 
 ```ts
-import { TTSPlugin } from "@ziplayer/plugin";
+import { PlayerManager, WebSocketAudioOutputBackend } from "ziplayer";
 
-new PlayerManager({
-	plugins: [new TTSPlugin({ defaultLang: "en" })],
+const manager = new PlayerManager({ autoCleanup: true });
+
+const player = await manager.create("web-player", {
+	audioProcessing: {
+		enabled: true,
+		inputFormat: "encoded",
+		outputFormat: "pcm16le",
+		sampleRate: 48_000,
+		channels: 2,
+		maxBufferBytes: 64 * 1024,
+	},
+	audioOutputBackendFactory: ({ playerId }) =>
+		new WebSocketAudioOutputBackend({
+			sessionId: playerId,
+			socketFactory: ({ sessionId, signal }) => connectPublisherSocket({ sessionId, signal, gatewayUrl, token }),
+		}),
 });
+
+await player.play("https://example.com/audio.mp3", "user-1");
 ```
 
-### Dynamic Plugin Registration
+For a full runnable example, see the backend sample in `examples/backend` and the client receiver package in `client`.
+
+---
+
+## Player configuration
 
 ```ts
-// Register plugin after initialization
-manager.registerPlugin(new YouTubePlugin());
-
-// Get all registered plugins
-const plugins = manager.getPlugins();
+const player = await manager.create(guildId, {
+	volume: 80,
+	leaveOnEnd: true,
+	leaveOnEmpty: true,
+	lowPerformance: false,
+	preload: { enabled: true, autoDisableInLowPerformance: true },
+	crossfade: { enabled: true, durationMs: 4000 },
+	smartTransition: {
+		enabled: true,
+		genreAware: true,
+		beatAlign: true,
+		baseDurationMs: 4000,
+	},
+	antiStuck: {
+		enabled: true,
+		maxRetries: 2,
+		retryDelayMs: 800,
+	},
+	audioProcessing: {
+		enabled: true,
+		inputFormat: "encoded",
+		outputFormat: "pcm16le",
+		sampleRate: 48_000,
+		channels: 2,
+		normalize: "streaming",
+		maxBufferBytes: 64 * 1024,
+	},
+	userdata: { customField: "value" },
+});
 ```
 
 ---
 
-## 🧩 Extensions
+## Filters, transitions, and recovery
 
-Enhance player behavior:
+- `player.filter.applyFilter()` / `player.filter.applyFilters()` for incremental FFmpeg chain updates
+- `player.queue.loop("off" | "track" | "queue")`
+- `preload` and `crossfade` can be enabled or auto-disabled in low-performance mode
+- `antiStuck` retries stalled streams and falls back to safer recovery paths before skipping
+- `smartTransition` can align fade timing across track transitions
+- `loudnessNormalization` smooths volume jumps between tracks
 
-- 🎤 `voiceExt` — Speech-to-text commands
-- 🎤 `lyricsExt` — Auto lyrics (synced support)
-- ⚡ `lavalinkExt` — External Lavalink node
+---
 
-### Example
+## Recommended usage notes
 
-```ts
-import { voiceExt, lyricsExt } from "@ziplayer/extension";
+- Create one `PlayerManager` per bot process; reuse it across commands.
+- Call `await player.connect(voiceChannel)` before playback unless the voice channel is passed as part of the play call.
+- Keep `audioOutputBackendFactory` custom backends explicit and return a connected output backend instance.
+- Prefer `PlayerManager`/`Player` exports over bus/controller internals for application code.
+- Treat raw PCM as a transport/output contract, not an input format for the DSP engine.
 
-const manager = new PlayerManager({
-	extensions: [new voiceExt(null, { lang: "en-US" }), new lyricsExt(null, { provider: "lrclib" })],
-});
-```
+---
+
+## Further reading
+
+- [core/AGENTS.md](core/AGENTS.md)
+- [core/README.md](core/README.md)
+- [client/AGENTS.md](client/AGENTS.md)
+- [examples/backend](examples/backend)
 
 ### Extension Capabilities
 

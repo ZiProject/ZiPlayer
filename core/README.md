@@ -39,7 +39,8 @@ backwards-compatible `Player` facade.
   volume, active filters, loop mode).
 - ⚡ **High Performance & Auto-Scaling** — Low-performance mode automatically disables memory-heavy features (preload, crossfade)
   on constrained host environments.
-
+- 🎛️ Custom and browser audio output through `audioOutputBackendFactory`
+- 🌐 WebSocket PCM publishing for browser clients using a strict 48 kHz stereo s16 LE contract
 ---
 
 ## 📦 Installation
@@ -161,6 +162,14 @@ import { PlayerManager, WebSocketAudioOutputBackend } from "ziplayer";
 
 const playerId = "web-player";
 const player = await manager.create(playerId, {
+	audioProcessing: {
+		enabled: true,
+		inputFormat: "encoded",
+		outputFormat: "pcm16le",
+		sampleRate: 48_000,
+		channels: 2,
+		maxBufferBytes: 64 * 1024,
+	},
 	audioOutputBackendFactory: ({ playerId }) =>
 		new WebSocketAudioOutputBackend({
 			sessionId: playerId,

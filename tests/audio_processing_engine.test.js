@@ -98,6 +98,21 @@ test("audio processing accepts Node readable streams with an attached audio page
 	await pipeline.dispose();
 });
 
+test("audio processing enforces maxBufferBytes before a larger chunk can escape the pipeline", async () => {
+	const engine = createAudioProcessingEngine({ enabled: true, outputFormat: "pcm16le", maxBufferBytes: 64 });
+	const audioMod = await import("../core/node_modules/audio/audio.js");
+	const wav = await audioMod.default
+		.from((t) => Math.sin(2 * Math.PI * 440 * t), { duration: 0.05, sampleRate: 8000, channels: 1 })
+		.encode("wav");
+	const pipeline = await engine.createPipeline({ enabled: true, outputFormat: "pcm16le", maxBufferBytes: 64 }, { playerId: "p7" });
+	await assert.rejects(async () => {
+		for await (const _chunk of pipeline.process([wav], AbortSignal.timeout(3000))) {
+			// The engine must reject a chunk larger than its buffer budget before yielding it.
+		}
+	}, /maxBufferBytes/i);
+	await pipeline.dispose();
+});
+
 test("audio processing declares and enforces its PCM sample rate, channel count, and chunk alignment", async () => {
 	const engine = createAudioProcessingEngine({ enabled: true, outputFormat: "pcm16le" });
 	const audioMod = await import("../core/node_modules/audio/audio.js");

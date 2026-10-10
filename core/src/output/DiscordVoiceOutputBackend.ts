@@ -111,7 +111,8 @@ export function convertFloat32PcmToS16Le(input: Readable): Readable {
 				if (alignedLength > 0) {
 					const output = Buffer.allocUnsafe((alignedLength / 4) * 2);
 					for (let inputOffset = 0, outputOffset = 0; inputOffset < alignedLength; inputOffset += 4, outputOffset += 2) {
-						const sample = Math.max(-1, Math.min(1, data.readFloatLE(inputOffset)));
+						const rawSample = data.readFloatLE(inputOffset);
+						const sample = Number.isFinite(rawSample) ? Math.max(-1, Math.min(1, rawSample)) : 0;
 						output.writeInt16LE(Math.round(sample * 32767), outputOffset);
 					}
 					yield output;

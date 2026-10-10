@@ -130,15 +130,18 @@ function validateOptions(options: AudioProcessingOptions): AudioProcessingOption
 	return resolved;
 }
 
-function toFloat32Channels(block: Float32Array | Float32Array[] | number[] | number[][]): Float32Array[] {
+function toFloat32Channels(
+	block: Float32Array | Float32Array[] | number[] | number[][] | Uint8Array | ArrayLike<number>,
+): Float32Array[] {
 	if (Array.isArray(block)) {
 		if (block.length === 0) return [new Float32Array(0)];
 		if (typeof block[0] === "number") {
-			return [Float32Array.from(block as number[])];
+			return [Float32Array.from(block as ArrayLike<number>)];
 		}
-		const channels = Array.from(block as ArrayLike<Float32Array | number[]>).map((channel: Float32Array | number[]) =>
-			Float32Array.from(channel as ArrayLike<number>),
-		);
+		const channels = Array.from(block as ArrayLike<Float32Array | number[] | Uint8Array>).map((channel) => {
+			if (channel instanceof Uint8Array) return Float32Array.from(channel);
+			return Float32Array.from(channel as ArrayLike<number>);
+		});
 		const sampleCount = Math.max(0, ...channels.map((channel: Float32Array) => channel.length));
 		return channels.map((channel: Float32Array) => {
 			if (channel.length === sampleCount) return channel;
@@ -147,6 +150,7 @@ function toFloat32Channels(block: Float32Array | Float32Array[] | number[] | num
 			return aligned;
 		});
 	}
+	if (block instanceof Uint8Array) return [Float32Array.from(block)];
 	return [Float32Array.from(block as ArrayLike<number>)];
 }
 
@@ -160,7 +164,8 @@ function encodePcm16le(channels: Float32Array[]): Uint8Array {
 	for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
 		for (let channelIndex = 0; channelIndex < channelCount; channelIndex++) {
 			const channel = channels[channelIndex] ?? channels[0];
-			const value = Math.max(-1, Math.min(1, channel[sampleIndex] ?? 0));
+			const rawValue = channel[sampleIndex] ?? 0;
+			const value = Number.isFinite(rawValue) ? Math.max(-1, Math.min(1, rawValue)) : 0;
 			buffer.writeInt16LE(Math.round(value * 32767), offset);
 			offset += 2;
 		}
@@ -178,7 +183,8 @@ function encodePcmFloat32(channels: Float32Array[]): Uint8Array {
 	for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
 		for (let channelIndex = 0; channelIndex < channelCount; channelIndex++) {
 			const channel = channels[channelIndex] ?? channels[0];
-			output[offset++] = Math.max(-1, Math.min(1, channel[sampleIndex] ?? 0));
+			const rawValue = channel[sampleIndex] ?? 0;
+			output[offset++] = Number.isFinite(rawValue) ? Math.max(-1, Math.min(1, rawValue)) : 0;
 		}
 	}
 	return new Uint8Array(output.buffer);
@@ -216,8 +222,10 @@ class AudioJsAudioProcessingPipeline implements AudioProcessingPipeline {
 		this.activeInstance = instance;
 		const pipeline = this;
 		const pipelineOptions = this.options;
+		const maxOutputBytes = pipelineOptions.maxBufferBytes ?? Number.MAX_SAFE_INTEGER;
 
 		const applyPipeline = async function* (): AsyncGenerator<Uint8Array> {
+			const iterator = (instance as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
 			try {
 				if (normalizedSignal.aborted) return;
 				if (instance != null) {
@@ -244,16 +252,28 @@ class AudioJsAudioProcessingPipeline implements AudioProcessingPipeline {
 					if (typeof instance.remix !== "function") throw new Error("Audio processing runtime does not support channel remixing");
 					instance.remix(outputChannels);
 				}
-				for await (const block of instance as any) {
-					if (normalizedSignal.aborted) break;
+				while (true) {
+					const { value, done } = await iterator.next();
+					if (done || normalizedSignal.aborted) break;
+					const block = value as Uint8Array;
 					const channels =
 						Array.isArray(block) ?
 							toFloat32Channels(block as Float32Array[] | number[][])
-						:	toFloat32Channels([block as Float32Array]);
+							: block instanceof Uint8Array ?
+								toFloat32Channels(block)
+							: toFloat32Channels([block as Float32Array]);
 					const encoded = pipelineOptions.outputFormat === "pcmFloat32" ? encodePcmFloat32(channels) : encodePcm16le(channels);
+					if (encoded.length > maxOutputBytes) {
+						throw new Error(
+							`Audio processing output block exceeded maxBufferBytes (${maxOutputBytes} bytes); the engine cannot buffer a larger output chunk without dropping data.`,
+						);
+					}
 					if (encoded.length > 0) yield encoded;
 				}
 			} finally {
+				if (typeof iterator.return === "function") {
+					await iterator.return();
+				}
 				pipeline.activeInstance?.dispose?.();
 				pipeline.activeInstance = null;
 			}

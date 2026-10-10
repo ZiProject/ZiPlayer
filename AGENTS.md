@@ -20,6 +20,10 @@ Read the root [`README.md`](README.md) for public setup and player workflows. Fo
 - Discord Voice remains the default output. Custom output is selected per player through `audioOutputBackendFactory`.
 - WebSocket output requires 48 kHz stereo s16 LE PCM and an application-owned gateway. The browser client is a separate package;
   it does not replace gateway authentication or routing.
+- The current player stack supports queue orchestration, smart preloading, crossfade/transition flow, loudness normalization,
+  anti-stuck recovery, filter chains, and browser/WebSocket publishing in addition to standard voice playback.
+- The DSP pipeline is intentionally encoded-input-only and emits PCM. Raw PCM input is rejected by design; downstream output must
+  follow the PCM transport contract rather than treating PCM as an input format.
 - Keep public documentation and the package `AGENTS.md` guides aligned with changes to exported APIs and expected workflows.
 
 ## Validation
