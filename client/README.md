@@ -4,10 +4,9 @@ Small browser client for ZiPlayer's WebSocket PCM protocol. It validates the pub
 converts little-endian s16 stereo PCM to Float32, and plays it through an AudioWorklet with a bounded jitter buffer.
 
 The package is only the receiving/playback client and event source; it does not expose remote `pause`, `stop`, `seek`, or volume
-methods. Your Node.js application still needs an authenticated WebSocket gateway and a ZiPlayer
-`WebSocketAudioOutputBackend` publisher. Authentication is determined by your gateway; the `token` connect option is optional
-for gateways that do not require it. Add playback controls to your own server API and bind them to the intended ZiPlayer player.
-The gateway example in
+methods. Your Node.js application still needs an authenticated WebSocket gateway and a ZiPlayer `WebSocketAudioOutputBackend`
+publisher. Authentication is determined by your gateway; the `token` connect option is optional for gateways that do not require
+it. Add playback controls to your own server API and bind them to the intended ZiPlayer player. The gateway example in
 [`../examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend) shows a complete local setup with
 search, publisher routing, browser playback, queue display, and multi-player controls.
 

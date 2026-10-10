@@ -146,9 +146,7 @@ async function refreshPlayerState() {
 		const selectedFilter = filterSelect.value;
 		filterSelect.replaceChildren(new Option("Select a filter", ""));
 		for (const filter of state.filters) {
-			filterSelect.add(
-				new Option(`${filter.description}${activeNames.has(filter.name) ? " (active)" : ""}`, filter.name),
-			);
+			filterSelect.add(new Option(`${filter.description}${activeNames.has(filter.name) ? " (active)" : ""}`, filter.name));
 		}
 		if (state.filters.some((filter) => filter.name === selectedFilter)) filterSelect.value = selectedFilter;
 		filterStatusElement.textContent = activeNames.size ? `Active: ${[...activeNames].join(", ")}` : "No active filters";

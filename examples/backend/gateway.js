@@ -120,10 +120,7 @@ function queuePendingListener(pendingListeners, webSocket, sessionId) {
 function attachPendingListeners(session, pendingListeners) {
 	const sessionKey = session.sessionId;
 	const globalKey = null;
-	const queued = new Set([
-		...(pendingListeners.get(sessionKey) ?? []),
-		...(pendingListeners.get(globalKey) ?? []),
-	]);
+	const queued = new Set([...(pendingListeners.get(sessionKey) ?? []), ...(pendingListeners.get(globalKey) ?? [])]);
 	for (const listener of queued) {
 		session.nextListeners.add(listener);
 		listener.once("close", () => {
@@ -158,7 +155,9 @@ async function waitForPublisher(sessions, sessionId, timeoutMs = 5000) {
 }
 
 function isLoopbackHost(host) {
-	const normalizedHost = String(host).toLowerCase().replace(/^\[|\]$/g, "");
+	const normalizedHost = String(host)
+		.toLowerCase()
+		.replace(/^\[|\]$/g, "");
 	if (normalizedHost === "localhost" || normalizedHost.endsWith(".localhost") || normalizedHost === "::1") return true;
 	if (isIP(normalizedHost) === 4) return normalizedHost.startsWith("127.");
 	return false;

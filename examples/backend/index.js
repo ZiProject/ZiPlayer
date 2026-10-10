@@ -207,10 +207,7 @@ async function main() {
 		if (webAudioMetadata.listenersAttached) return player;
 		player.userdata.webAudioGateway = { ...webAudioMetadata, sessionId, listenersAttached: true };
 		player.on("streamError", (error, track) => {
-			console.error(
-				`ZiPlayer stream/output error for session ${sessionId}${track?.title ? ` (${track.title})` : ""}:`,
-				error,
-			);
+			console.error(`ZiPlayer stream/output error for session ${sessionId}${track?.title ? ` (${track.title})` : ""}:`, error);
 		});
 		player.on("playerError", (error, track) => {
 			console.error(`ZiPlayer track error for session ${sessionId}${track?.title ? ` (${track.title})` : ""}:`, error);
@@ -220,8 +217,7 @@ async function main() {
 	}
 	try {
 		const address = await gateway.listen();
-		gatewayUrl =
-			process.env.GATEWAY_URL ?? `ws://${host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host}:${address.port}`;
+		gatewayUrl = process.env.GATEWAY_URL ?? `ws://${host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host}:${address.port}`;
 		const pluginPackage = await import("@ziplayer/plugin");
 		const plugins = [
 			new pluginPackage.YouTubePlugin(),

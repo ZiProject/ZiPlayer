@@ -38,26 +38,26 @@ npm start --prefix examples/backend
 ```
 
 Open <http://127.0.0.1:8080/>. Enter a track search or media URL, then click **Search and play**. The page connects to the next
-audio stream before playback starts, so its first frames are not missed. Click
-**Disconnect** to stop listening and release browser audio resources. Press **Ctrl+C** in the terminal to stop the server.
+audio stream before playback starts, so its first frames are not missed. Click **Disconnect** to stop listening and release
+browser audio resources. Press **Ctrl+C** in the terminal to stop the server.
 
 The browser's first play/search click also unlocks audio playback in browsers that require a user gesture. If the browser reports
 that it connected but PCM is silent, check the terminal for source/plugin errors and try a different query.
 
 The example starts a default ZiPlayer whose ID is `PLAYER_ID` (default `web-audio-demo`). To add another independent player, enter
 a different player ID in the browser and use **Search and play**. The gateway creates or reuses exactly one `PlayerManager` player
-for that ID; valid IDs contain 1-128 letters, numbers, underscores, or hyphens (ZiPlayer's reserved ID is not allowed). The ID
-is also the audio `sessionId`. Reuse that same ID to hear or control the player. The Gateway waits for the publisher for the
+for that ID; valid IDs contain 1-128 letters, numbers, underscores, or hyphens (ZiPlayer's reserved ID is not allowed). The ID is
+also the audio `sessionId`. Reuse that same ID to hear or control the player. The Gateway waits for the publisher for the
 requested ID, not for whichever player publishes first. A session-scoped `/listen-next?sessionId=...` listener waits for that
 player; omitting `sessionId` explicitly opts into whichever publisher connects next.
 
-Pause, resume, stop, skip, seek, volume, loop mode, autoplay, and filter requests include the selected player ID and are routed
-to the matching `PlayerManager` instance. The `/player-state` endpoint supplies the current track, queue, related tracks, active
+Pause, resume, stop, skip, seek, volume, loop mode, autoplay, and filter requests include the selected player ID and are routed to
+the matching `PlayerManager` instance. The `/player-state` endpoint supplies the current track, queue, related tracks, active
 filters, and player settings displayed by the page. The reusable `@ziplayer/client` package remains an audio receiver and event
-source, not a remote player-control API. Volume is applied to outgoing PCM; seeking requires a current track and a position
-within its duration. A control that cannot be applied returns an error rather than a successful-looking response. When the last
-browser listener disconnects, that player's instance is destroyed after 100 seconds; reconnecting a listener during that grace
-period cancels cleanup.
+source, not a remote player-control API. Volume is applied to outgoing PCM; seeking requires a current track and a position within
+its duration. A control that cannot be applied returns an error rather than a successful-looking response. When the last browser
+listener disconnects, that player's instance is destroyed after 100 seconds; reconnecting a listener during that grace period
+cancels cleanup.
 
 You can optionally start a query automatically by adding `TRACK_QUERY` to `examples/backend/.env`:
 
@@ -75,9 +75,9 @@ npm start --prefix examples/backend -- "https://www.youtube.com/watch?v=..."
 
 The example registers YouTube, SoundCloud, Spotify, attachments, and TTS source plugins with `PlayerManager`. It uses the regular
 ZiPlayer playback pipeline, but sends processed PCM through `WebSocketAudioOutputBackend` to the local gateway instead of Discord
-Voice. The gateway forwards audio to browser listeners; the browser's reusable
-`@ziplayer/client` validates and plays it through an AudioWorklet. The page's session fields are available for manual connections
-if you want to listen to an already-running player.
+Voice. The gateway forwards audio to browser listeners; the browser's reusable `@ziplayer/client` validates and plays it through
+an AudioWorklet. The page's session fields are available for manual connections if you want to listen to an already-running
+player.
 
 Run the gateway handoff test from the repository root with `npm test --prefix examples/backend`.
 

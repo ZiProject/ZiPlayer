@@ -263,9 +263,7 @@ test("play waits for its requested session instead of returning another active p
 		assert.equal(configResponse.status, 200);
 		assert.equal((await configResponse.json()).defaultSessionId, "requested-session");
 
-		unrelatedPublisher = new WebSocket(
-			`ws://127.0.0.1:${address.port}/publish?sessionId=unrelated-session`,
-		);
+		unrelatedPublisher = new WebSocket(`ws://127.0.0.1:${address.port}/publish?sessionId=unrelated-session`);
 		await waitForOpen(unrelatedPublisher);
 
 		const playResponsePromise = fetch(`${origin}/play`, {
@@ -276,9 +274,7 @@ test("play waits for its requested session instead of returning another active p
 			body: JSON.stringify({ query: "requested track", sessionId: "requested-session" }),
 		});
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		requestedPublisher = new WebSocket(
-			`ws://127.0.0.1:${address.port}/publish?sessionId=requested-session`,
-		);
+		requestedPublisher = new WebSocket(`ws://127.0.0.1:${address.port}/publish?sessionId=requested-session`);
 		await waitForOpen(requestedPublisher);
 
 		const playResponse = await playResponsePromise;
@@ -378,9 +374,7 @@ test("the player-state endpoint returns the requested player's queue and control
 	});
 	try {
 		const address = await gateway.listen();
-		const response = await fetch(
-			`http://127.0.0.1:${address.port}/player-state?sessionId=second-player`,
-		);
+		const response = await fetch(`http://127.0.0.1:${address.port}/player-state?sessionId=second-player`);
 		assert.equal(response.status, 200);
 		assert.deepEqual(await response.json(), {
 			sessionId: "second-player",
@@ -393,10 +387,7 @@ test("the player-state endpoint returns the requested player's queue and control
 			filters: [],
 			activeFilters: [],
 		});
-		assert.equal(
-			(await fetch(`http://127.0.0.1:${address.port}/player-state?sessionId=bad%2Fid`)).status,
-			400,
-		);
+		assert.equal((await fetch(`http://127.0.0.1:${address.port}/player-state?sessionId=bad%2Fid`)).status, 400);
 	} finally {
 		await gateway.close();
 	}

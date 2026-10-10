@@ -130,8 +130,8 @@ and plays it through a bounded AudioWorklet buffer. To hear browser audio from a
    npm install --prefix examples/backend
    ```
 
-4. Open `examples/backend/.env.example`, save a local copy as `examples/backend/.env`, and set `WEB_AUDIO_TOKEN` to a
-   non-empty development-only value.
+4. Open `examples/backend/.env.example`, save a local copy as `examples/backend/.env`, and set `WEB_AUDIO_TOKEN` to a non-empty
+   development-only value.
 5. Start the example from the repository root:
 
    ```sh
