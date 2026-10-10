@@ -19,12 +19,18 @@ Run these commands from the repository root. If you have not cloned the project 
 git clone https://github.com/ZiProject/ZiPlayer.git
 cd ZiPlayer
 npm install
+npm install --prefix core
 npm run build:core
 npm install --prefix examples/backend
 ```
 
+The root install does not install the core package's build tools, so install its dependencies separately before building.
+
 Create `examples/backend/.env` by copying `examples/backend/.env.example`, then open the new file and set `WEB_AUDIO_TOKEN` to a
-non-empty local development value. Keep this value private; `.env` is ignored by Git.
+non-empty local development value. The checked-in token is only a loopback placeholder: the gateway refuses to start with it
+when `HOST` is not a loopback address. Before exposing the gateway to a network, set a unique secret; keep `.env` private (it is
+ignored by Git). Network exposure still requires HTTPS/WSS and a production authentication design; a strong shared token alone
+does not make this demo production-ready.
 
 Start the gateway and player from the repository root:
 
@@ -38,6 +44,11 @@ Open <http://127.0.0.1:8080/>. Enter the same token in the **Listener token** fi
 
 The browser's first play/search click also unlocks audio playback in browsers that require a user gesture. If the browser reports
 that it connected but PCM is silent, check the terminal for source/plugin errors and try a different query.
+
+The page fetches the configured playback session ID from the gateway and uses it both for `/listen-next` and `/play`. These
+session-scoped listeners wait for that exact publisher. A listener that manually connects to `/listen-next` without a
+`sessionId` explicitly means “attach to whichever publisher connects next”; use a session ID whenever a specific player is
+intended.
 
 You can optionally start a query automatically by adding `TRACK_QUERY` to `examples/backend/.env`:
 

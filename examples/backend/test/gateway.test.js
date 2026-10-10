@@ -173,3 +173,56 @@ test("session-scoped next-listener routing keeps concurrent publishers isolated"
 		await gateway.close();
 	}
 });
+
+test("play waits for its requested session instead of returning another active publisher", async () => {
+	const gateway = createWebAudioGateway({
+		host: "127.0.0.1",
+		port: 0,
+		token,
+		defaultSessionId: "requested-session",
+		onPlayQuery: async () => ({ track: { title: "Requested track", url: null } }),
+	});
+	let unrelatedPublisher;
+	let requestedPublisher;
+	try {
+		const address = await gateway.listen();
+		const origin = `http://127.0.0.1:${address.port}`;
+		const configResponse = await fetch(`${origin}/config`);
+		assert.equal(configResponse.status, 200);
+		assert.equal((await configResponse.json()).defaultSessionId, "requested-session");
+
+		unrelatedPublisher = new WebSocket(
+			`ws://127.0.0.1:${address.port}/publish?sessionId=unrelated-session&token=${token}`,
+		);
+		await waitForOpen(unrelatedPublisher);
+
+		const playResponsePromise = fetch(`${origin}/play`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${token}`,
+			},
+			body: JSON.stringify({ query: "requested track", sessionId: "requested-session" }),
+		});
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		requestedPublisher = new WebSocket(
+			`ws://127.0.0.1:${address.port}/publish?sessionId=requested-session&token=${token}`,
+		);
+		await waitForOpen(requestedPublisher);
+
+		const playResponse = await playResponsePromise;
+		assert.equal(playResponse.status, 200);
+		assert.equal((await playResponse.json()).sessionId, "requested-session");
+	} finally {
+		unrelatedPublisher?.close();
+		requestedPublisher?.close();
+		await gateway.close();
+	}
+});
+
+test("the example token is rejected when binding outside loopback", () => {
+	assert.throws(
+		() => createWebAudioGateway({ host: "0.0.0.0", token: "change-this-local-token" }),
+		/refusing to bind.*unique secret/i,
+	);
+});

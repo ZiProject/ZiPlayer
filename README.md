@@ -116,10 +116,11 @@ The reusable browser receiver is [`@ziplayer/client`](client/README.md). It vali
 and plays it through a bounded AudioWorklet buffer. To hear browser audio from a fresh clone, use the complete local example:
 
 1. Install [Node.js 20.3 or newer](https://nodejs.org/) and Git, then clone this repository.
-2. From the repository root, install dependencies and build the core:
+2. From the repository root, install the project dependencies, install the core package's build tools, and build the core:
 
    ```sh
    npm install
+   npm install --prefix core
    npm run build:core
    ```
 

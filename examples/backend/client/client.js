@@ -20,6 +20,20 @@ const MAX_RECORDING_BYTES = BYTES_PER_SECOND * 60 * 10;
 
 gatewayUrlInput.value = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
 
+const playbackConfig = fetch("/config")
+	.then(async (response) => {
+		if (!response.ok) throw new Error(`Gateway configuration request failed (${response.status})`);
+		return response.json();
+	})
+	.then((config) => {
+		if (typeof config.defaultSessionId === "string") sessionIdInput.value = config.defaultSessionId;
+		return config;
+	});
+void playbackConfig.catch((error) => {
+	console.error("Unable to load gateway configuration:", error);
+	setSearchStatus(`Gateway setup unavailable: ${error.message}`);
+});
+
 const audioClient = new WebAudioClient();
 let followsPublisher = false;
 let recordingActive = false;
@@ -240,6 +254,10 @@ searchForm.addEventListener("submit", async (event) => {
 	searchButton.disabled = true;
 	setSearchStatus("Searching with ZiPlayer plugins…");
 	try {
+		const config = await playbackConfig;
+		const sessionId = sessionIdInput.value || config.defaultSessionId;
+		if (!sessionId) throw new Error("Enter the playback session ID before searching");
+		sessionIdInput.value = sessionId;
 		if (!(followsPublisher && audioClient.state === "connected")) {
 			if (audioClient.state !== "disconnected") await audioClient.disconnect();
 			const listenerReady = await connectToSession({ nextPublisher: true });
@@ -251,7 +269,7 @@ searchForm.addEventListener("submit", async (event) => {
 				"content-type": "application/json",
 				authorization: `Bearer ${tokenInput.value}`,
 			},
-			body: JSON.stringify({ query: searchQueryInput.value }),
+			body: JSON.stringify({ query: searchQueryInput.value, sessionId }),
 		});
 		const result = await response.json();
 		if (!response.ok) throw new Error(result.error || `Search failed (${response.status})`);

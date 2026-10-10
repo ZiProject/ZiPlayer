@@ -75,11 +75,13 @@ async function main() {
 	const port = Number(process.env.PORT ?? 8080);
 	const token = process.env.WEB_AUDIO_TOKEN;
 	const trackQuery = process.env.TRACK_QUERY ?? process.argv.slice(2).join(" ").trim();
+	const playerId = process.env.PLAYER_ID ?? "web-audio-demo";
 	let player;
 	const gateway = createWebAudioGateway({
 		host,
 		port,
 		token,
+		defaultSessionId: playerId,
 		onPlayQuery: (query) => (player ? player.play(query, { requestedBy: "client" }) : null),
 	});
 	let manager;
@@ -112,7 +114,6 @@ async function main() {
 			console.error("ZiPlayer playback error:", error);
 		});
 
-		const playerId = process.env.PLAYER_ID ?? "web-audio-demo";
 		player = await manager.create(playerId, {
 			audioOutputBackendFactory: createAudioOutputBackendFactory({ gatewayUrl, token }),
 			audioProcessing: {

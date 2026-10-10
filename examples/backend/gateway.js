@@ -5,6 +5,7 @@
 const { createServer } = require("node:http");
 const { timingSafeEqual } = require("node:crypto");
 const { readFile } = require("node:fs/promises");
+const { isIP } = require("node:net");
 const path = require("node:path");
 const { WebSocket, WebSocketServer } = require("ws");
 
@@ -17,6 +18,7 @@ const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_LISTENER_BUFFER_BYTES = 256 * 1024;
 const MAX_QUERY_LENGTH = 500;
 const WS_OPEN = 1;
+const INSECURE_DEMO_TOKEN = "change-this-local-token";
 const STATIC_FILES = new Map([
 	["/", ["client/index.html", "text/html; charset=utf-8"]],
 	["/client.js", ["client/client.js", "text/javascript; charset=utf-8"]],
@@ -101,7 +103,7 @@ function removeSessionIfUnused(session, sessions) {
 }
 
 function getPendingListenerSet(pendingListeners, sessionId) {
-	const key = sessionId ?? "__global__";
+	const key = sessionId;
 	let listeners = pendingListeners.get(key);
 	if (!listeners) {
 		listeners = new Set();
@@ -115,14 +117,14 @@ function queuePendingListener(pendingListeners, webSocket, sessionId) {
 	listeners.add(webSocket);
 	webSocket.once("close", () => {
 		listeners.delete(webSocket);
-		if (listeners.size === 0) pendingListeners.delete(sessionId ?? "__global__");
+		if (listeners.size === 0) pendingListeners.delete(sessionId);
 	});
 	return listeners;
 }
 
 function attachPendingListeners(session, pendingListeners) {
 	const sessionKey = session.sessionId;
-	const globalKey = "__global__";
+	const globalKey = null;
 	const queued = new Set([
 		...(pendingListeners.get(sessionKey) ?? []),
 		...(pendingListeners.get(globalKey) ?? []),
@@ -150,15 +152,21 @@ function sendJson(response, status, body) {
 	response.end(JSON.stringify(body));
 }
 
-async function waitForPublisherSession(sessions, timeoutMs = 5000) {
+async function waitForPublisher(sessions, sessionId, timeoutMs = 5000) {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		for (const session of sessions.values()) {
-			if (session.publisher?.readyState === WS_OPEN) return session.sessionId;
-		}
+		const session = sessions.get(sessionId);
+		if (session?.publisher?.readyState === WS_OPEN) return true;
 		await new Promise((resolve) => setTimeout(resolve, 50));
 	}
-	return null;
+	return false;
+}
+
+function isLoopbackHost(host) {
+	const normalizedHost = String(host).toLowerCase().replace(/^\[|\]$/g, "");
+	if (normalizedHost === "localhost" || normalizedHost.endsWith(".localhost") || normalizedHost === "::1") return true;
+	if (isIP(normalizedHost) === 4) return normalizedHost.startsWith("127.");
+	return false;
 }
 
 async function readJsonBody(request, maxBytes) {
@@ -274,14 +282,30 @@ function attachPublisher(session, socket, sessions) {
 	});
 }
 
-function createWebAudioGateway({ host = "127.0.0.1", port = 8080, token = process.env.WEB_AUDIO_TOKEN, onPlayQuery } = {}) {
+function createWebAudioGateway({
+	host = "127.0.0.1",
+	port = 8080,
+	token = process.env.WEB_AUDIO_TOKEN,
+	defaultSessionId,
+	onPlayQuery,
+} = {}) {
 	if (!token) throw new Error("Set WEB_AUDIO_TOKEN to a non-empty secret before starting the gateway");
 	if (!Number.isInteger(port) || port < 0 || port > 65535) throw new TypeError("port must be an integer from 0 to 65535");
+	if (defaultSessionId !== undefined && (typeof defaultSessionId !== "string" || !defaultSessionId.trim() || defaultSessionId.length > 128)) {
+		throw new TypeError("defaultSessionId must be a non-empty string of at most 128 characters");
+	}
+	if (!isLoopbackHost(host) && token === INSECURE_DEMO_TOKEN) {
+		throw new Error(`Refusing to bind to ${host} with the example token; set WEB_AUDIO_TOKEN to a unique secret first`);
+	}
 
 	const sessions = new Map();
 	const pendingListeners = new Map();
 	const httpServer = createServer((request, response) => {
 		const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+		if (request.method === "GET" && pathname === "/config") {
+			sendJson(response, 200, { defaultSessionId: defaultSessionId ?? null });
+			return;
+		}
 		if (request.method === "GET" && pathname === "/health") {
 			response.writeHead(200, { "content-type": "application/json" });
 			response.end(JSON.stringify({ status: "ok", activeSessions: sessions.size }));
@@ -312,7 +336,16 @@ function createWebAudioGateway({ host = "127.0.0.1", port = 8080, token = proces
 						sendJson(response, 400, { error: "query must be a non-empty string of at most 500 characters" });
 						return;
 					}
-					const result = await onPlayQuery(body.query.trim());
+					const sessionId = body.sessionId ?? defaultSessionId;
+					if (typeof sessionId !== "string" || !sessionId.trim() || sessionId.length > 128) {
+						sendJson(response, 400, { error: "sessionId must identify the player that will handle this request" });
+						return;
+					}
+					if (defaultSessionId && sessionId !== defaultSessionId) {
+						sendJson(response, 400, { error: "sessionId does not match the configured playback session" });
+						return;
+					}
+					const result = await onPlayQuery(body.query.trim(), sessionId);
 					if (result === null) {
 						sendJson(response, 503, { error: "Player is not ready" });
 						return;
@@ -321,7 +354,10 @@ function createWebAudioGateway({ host = "127.0.0.1", port = 8080, token = proces
 						sendJson(response, 422, { error: "No playable track found for this query" });
 						return;
 					}
-					const sessionId = await waitForPublisherSession(sessions);
+					if (!(await waitForPublisher(sessions, sessionId))) {
+						sendJson(response, 504, { error: `No audio publisher appeared for session ${sessionId}` });
+						return;
+					}
 					sendJson(response, 200, {
 						sessionId,
 						track: {
