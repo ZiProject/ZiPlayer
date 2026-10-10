@@ -22,8 +22,17 @@ const searchForm = document.querySelector("#search-form");
 const searchQueryInput = document.querySelector("#search-query");
 const searchButton = document.querySelector("#search");
 const searchStatusElement = document.querySelector("#search-status");
-const currentTrackElement = document.querySelector("#current-track");
+const currentTitleElement = document.querySelector("#current-title");
+const currentAuthorElement = document.querySelector("#current-author");
+const currentArtElement = document.querySelector("#current-art");
+const coverPlaceholderElement = document.querySelector("#cover-placeholder");
+const trackSourceElement = document.querySelector("#track-source");
+const trackDurationElement = document.querySelector("#track-duration");
+const dockTitleElement = document.querySelector("#dock-title");
+const dockAuthorElement = document.querySelector("#dock-author");
+const playerNameElement = document.querySelector("#player-name");
 const queueListElement = document.querySelector("#queue-list");
+const queueCountElement = document.querySelector("#queue-count");
 const relatedListElement = document.querySelector("#related-list");
 const skipButton = document.querySelector("#skip");
 const loopModeSelect = document.querySelector("#loop-mode");
@@ -93,23 +102,76 @@ function reportControlError(error) {
 	setControlStatus(`Control failed: ${error.message}`);
 }
 
-function displayTrack(track) {
-	if (!track) return "No track";
-	const duration = track.isLive ? "LIVE" : formatDuration((track.duration || 0) / 1000);
-	return `${track.title}${track.author ? ` — ${track.author}` : ""} (${duration})`;
+function trackDuration(track) {
+	return track.isLive ? "LIVE" : formatDuration((track.duration || 0) / 1000);
+}
+
+function renderCurrentTrack(track) {
+	if (!track) {
+		currentTitleElement.textContent = "No track playing";
+		currentAuthorElement.textContent = "Search for something to get started";
+		currentArtElement.hidden = true;
+		currentArtElement.removeAttribute("src");
+		coverPlaceholderElement.hidden = false;
+		trackSourceElement.textContent = "ZiPlayer";
+		trackDurationElement.textContent = "—:—";
+		dockTitleElement.textContent = "No track playing";
+		dockAuthorElement.textContent = "ZiPlayer Web Audio";
+		return;
+	}
+
+	currentTitleElement.textContent = track.title || "Untitled";
+	currentAuthorElement.textContent = track.author || "Unknown artist";
+	trackSourceElement.textContent = track.source || "ZiPlayer";
+	trackDurationElement.textContent = trackDuration(track);
+	dockTitleElement.textContent = track.title || "Untitled";
+	dockAuthorElement.textContent = track.author || track.source || "ZiPlayer";
+	if (track.thumbnail) {
+		if (currentArtElement.getAttribute("src") !== track.thumbnail) currentArtElement.src = track.thumbnail;
+		currentArtElement.alt = `${track.title || "Track"} artwork`;
+		currentArtElement.hidden = false;
+		coverPlaceholderElement.hidden = true;
+	} else {
+		currentArtElement.hidden = true;
+		currentArtElement.removeAttribute("src");
+		coverPlaceholderElement.hidden = false;
+	}
 }
 
 function renderTrackList(element, tracks, emptyMessage) {
 	element.replaceChildren();
 	if (!tracks.length) {
 		const empty = document.createElement("li");
+		empty.className = "empty-track";
 		empty.textContent = emptyMessage;
 		element.append(empty);
 		return;
 	}
 	for (const track of tracks) {
 		const item = document.createElement("li");
-		item.textContent = displayTrack(track);
+		item.className = "track-card";
+		const thumbnail = document.createElement(track.thumbnail ? "img" : "span");
+		thumbnail.className = track.thumbnail ? "track-thumb" : "track-placeholder";
+		if (track.thumbnail) {
+			thumbnail.src = track.thumbnail;
+			thumbnail.alt = "";
+		} else {
+			thumbnail.textContent = "♫";
+			thumbnail.setAttribute("aria-hidden", "true");
+		}
+		const copy = document.createElement("div");
+		copy.className = "track-copy";
+		const title = document.createElement("div");
+		title.className = "track-title";
+		title.textContent = track.title || "Untitled";
+		const subtitle = document.createElement("div");
+		subtitle.className = "track-subtitle";
+		subtitle.textContent = track.author || track.source || "Unknown artist";
+		copy.append(title, subtitle);
+		const duration = document.createElement("span");
+		duration.className = "track-duration";
+		duration.textContent = trackDuration(track);
+		item.append(thumbnail, copy, duration);
 		element.append(item);
 	}
 }
@@ -117,13 +179,15 @@ function renderTrackList(element, tracks, emptyMessage) {
 async function refreshPlayerState() {
 	const sessionId = sessionIdInput.value.trim();
 	if (!sessionId) return;
+	playerNameElement.textContent = sessionId;
 	try {
 		const response = await fetch(`/player-state?sessionId=${encodeURIComponent(sessionId)}`);
 		const state = await response.json();
 		if (response.status === 404) {
-			currentTrackElement.textContent = "No player created yet";
+			renderCurrentTrack(null);
 			renderTrackList(queueListElement, [], "Queue is empty");
 			renderTrackList(relatedListElement, [], "No related tracks");
+			queueCountElement.textContent = "0 tracks";
 			currentActiveFilters = new Set();
 			filterSelect.replaceChildren(new Option("No player selected", ""));
 			filterStatusElement.textContent = "No player selected";
@@ -134,9 +198,11 @@ async function refreshPlayerState() {
 			return;
 		}
 		if (!response.ok) throw new Error(state.error || `Player state request failed (${response.status})`);
-		currentTrackElement.textContent = displayTrack(state.currentTrack);
+		renderCurrentTrack(state.currentTrack);
 		renderTrackList(queueListElement, state.tracks, "Queue is empty");
 		renderTrackList(relatedListElement, state.related, "No related tracks");
+		queueCountElement.textContent = `${state.tracks.length} ${state.tracks.length === 1 ? "track" : "tracks"}`;
+		playerNameElement.textContent = sessionId;
 		loopModeSelect.value = state.loopMode;
 		autoplayInput.checked = state.autoPlay;
 		volumeInput.value = String(state.volume);

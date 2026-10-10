@@ -153,7 +153,7 @@ configuration, and [`docs/AUDIO_OUTPUT_BACKENDS.md`](docs/AUDIO_OUTPUT_BACKENDS.
 await player.play("Never Gonna Give You Up", userId);
 await player.play("https://youtube.com/watch?v=...", userId);
 await player.play("tts: Hello world", userId);
-await player.play(searchResult, userId); // Play from SearchResult
+await player.play(searchResult, userId); // Play the first match, or all tracks when it represents a playlist
 await player.play(null); // Resume from queue
 ```
 

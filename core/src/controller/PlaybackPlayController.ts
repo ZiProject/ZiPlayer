@@ -11,6 +11,14 @@ import type {
 } from "../types";
 import { BUS_EVENT, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, PLAYER_ACTION } from "../structures/BusContract";
 
+function selectPlaybackTracks(result: SearchResult): { tracks: Track[]; isPlaylist: boolean } {
+	const isPlaylist = Boolean(result.playlist);
+	return {
+		tracks: isPlaylist ? result.tracks : result.tracks.slice(0, 1),
+		isPlaylist,
+	};
+}
+
 /**
  * Owns the public play RPC: search, queue insertion, TTS interrupt, and initial skip.
  * Talks to sibling playback controllers only through Bus queries/actions —
@@ -109,8 +117,9 @@ export class PlaybackPlayController {
 
 			if (query && typeof query === "object" && "tracks" in query && Array.isArray((query as SearchResult).tracks)) {
 				const sr = query as SearchResult;
-				tracksToAdd = sr.tracks;
-				isPlaylist = !!sr.playlist || sr.tracks.length > 1;
+				const selection = selectPlaybackTracks(sr);
+				tracksToAdd = selection.tracks;
+				isPlaylist = selection.isPlaylist;
 			} else {
 				const hookOutcome = await this.beforePlayHooks(effectiveRequest);
 				effectiveRequest = hookOutcome.request;
@@ -166,8 +175,9 @@ export class PlaybackPlayController {
 						},
 						{ signal: context.signal },
 					);
-					tracksToAdd = result.tracks;
-					isPlaylist = !!result.playlist || result.tracks.length > 1;
+					const selection = selectPlaybackTracks(result);
+					tracksToAdd = selection.tracks;
+					isPlaylist = selection.isPlaylist;
 				} else if (effectiveRequest.query) {
 					tracksToAdd = [effectiveRequest.query as Track];
 				}

@@ -29,7 +29,9 @@ export interface Track {
 }
 
 export interface SearchResult {
+	/** Search candidates; play() uses the first unless this result represents a playlist. */
 	tracks: Track[];
+	/** Present only when all tracks belong to a playlist. */
 	playlist?: {
 		name: string;
 		url?: string;

@@ -5,331 +5,1283 @@
 		<meta
 			name="viewport"
 			content="width=device-width, initial-scale=1" />
+		<meta
+			name="theme-color"
+			content="#090c1a" />
 		<title>ZiPlayer Web Audio</title>
 		<style>
 			:root {
 				color-scheme: dark;
-				font-family: system-ui, sans-serif;
-				background: #111827;
-				color: #f3f4f6;
+				font-family:
+					Inter,
+					ui-sans-serif,
+					system-ui,
+					-apple-system,
+					BlinkMacSystemFont,
+					"Segoe UI",
+					sans-serif;
+				background: #090c1a;
+				color: #f3f4ff;
+				font-synthesis: none;
+				text-rendering: optimizeLegibility;
+				--panel: #101427;
+				--panel-soft: #151a32;
+				--line: #252b49;
+				--muted: #8991b2;
+				--accent: #9768ff;
+				--accent-bright: #c09cff;
+			}
+
+			* {
+				box-sizing: border-box;
 			}
 
 			body {
-				box-sizing: border-box;
-				width: min(100% - 2rem, 34rem);
-				margin: 4rem auto;
+				min-width: 320px;
+				min-height: 100vh;
+				margin: 0;
+				padding: clamp(0.75rem, 3vw, 2.75rem);
+				background:
+					radial-gradient(ellipse at 18% 12%, #40245e55, transparent 34rem),
+					radial-gradient(ellipse at 92% 76%, #182c6150, transparent 42rem), #090c1a;
 			}
 
-			form {
-				display: grid;
-				gap: 1rem;
-				padding: 1.5rem;
-				border: 1px solid #374151;
-				border-radius: 0.75rem;
-				background: #1f2937;
-			}
-
-			label {
-				display: grid;
-				gap: 0.4rem;
-				font-size: 0.9rem;
-			}
-
+			button,
 			input,
-			select,
-			button {
-				box-sizing: border-box;
-				width: 100%;
-				padding: 0.7rem;
-				border: 1px solid #4b5563;
-				border-radius: 0.4rem;
+			select {
 				font: inherit;
 			}
 
-			input {
-				background: #111827;
-				color: inherit;
-			}
-
-			select {
-				background: #111827;
-				color: inherit;
-			}
-
-			input[type="checkbox"] {
-				width: auto;
+			button,
+			a,
+			summary {
+				-webkit-tap-highlight-color: transparent;
 			}
 
 			button {
+				color: inherit;
+			}
+
+			button:focus-visible,
+			input:focus-visible,
+			select:focus-visible,
+			a:focus-visible,
+			summary:focus-visible {
+				outline: 2px solid var(--accent-bright);
+				outline-offset: 3px;
+			}
+
+			.app-shell {
+				display: grid;
+				grid-template:
+					"sidebar main queue" minmax(0, 1fr)
+					"sidebar dock dock" 76px
+					/ 112px minmax(0, 1fr) minmax(250px, 28%);
+				width: min(100%, 1440px);
+				min-height: min(850px, calc(100vh - clamp(1.5rem, 6vw, 5.5rem)));
+				margin: 0 auto;
+				overflow: hidden;
+				border: 1px solid #333958;
+				border-radius: 22px;
+				background: #0d1122ee;
+				box-shadow: 0 30px 100px #03040d99;
+			}
+
+			.sidebar {
+				grid-area: sidebar;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				gap: 2.25rem;
+				padding: 1.5rem 0.65rem 0.9rem;
+				border-right: 1px solid var(--line);
+				background: #0c1020;
+			}
+
+			.brand {
+				display: grid;
+				width: 48px;
+				height: 48px;
+				place-items: center;
+				border-radius: 15px;
+				background: linear-gradient(145deg, #b496ff, #6744ef);
+				color: #fff;
+				font-size: 1.25rem;
+				font-weight: 850;
+				letter-spacing: -0.08em;
+				box-shadow: 0 8px 24px #8457ff55;
+			}
+
+			.sidebar nav {
+				display: grid;
+				width: 100%;
+				gap: 0.45rem;
+			}
+
+			.nav-link {
+				display: grid;
+				min-height: 62px;
+				place-items: center;
+				gap: 0.35rem;
+				border-radius: 12px;
+				color: var(--muted);
+				font-size: 0.7rem;
+				text-decoration: none;
+				transition:
+					background 160ms ease,
+					color 160ms ease;
+			}
+
+			.nav-link:hover,
+			.nav-link.active {
+				background: linear-gradient(90deg, #7650e033, #7650e00c);
+				color: #fff;
+			}
+
+			.nav-link.active {
+				box-shadow: inset 2px 0 var(--accent);
+			}
+
+			.nav-icon {
+				font-size: 1.2rem;
+				line-height: 1;
+			}
+
+			.sidebar-note {
+				margin-top: auto;
+				color: var(--muted);
+				font-size: 0.65rem;
+				text-align: center;
+				line-height: 1.5;
+			}
+
+			.main-column {
+				grid-area: main;
+				display: flex;
+				min-width: 0;
+				flex-direction: column;
+				padding: 1.25rem clamp(1rem, 3vw, 2.4rem) 1.5rem;
+			}
+
+			.topbar {
+				display: flex;
+				align-items: center;
+				gap: 1rem;
+				margin-bottom: 1.5rem;
+			}
+
+			.eyebrow,
+			.track-author,
+			.meta-label {
+				color: var(--muted);
+				font-size: 0.75rem;
+			}
+
+			.eyebrow {
+				margin: 0 0 0.25rem;
+			}
+
+			.search-form {
+				display: flex;
+				min-width: 0;
+				flex: 1;
+				gap: 0.55rem;
+			}
+
+			.search-form input,
+			.utility-panel input:not([type="checkbox"]):not([type="range"]),
+			.utility-panel select {
+				min-width: 0;
+				border: 1px solid var(--line);
+				border-radius: 10px;
+				background: #0b0f20;
+				color: inherit;
+			}
+
+			.search-form input {
+				width: 100%;
+				padding: 0.78rem 1rem;
+			}
+
+			input::placeholder {
+				color: #68708f;
+			}
+
+			.primary-button {
+				flex: 0 0 auto;
+				padding: 0.7rem 1rem;
 				border: 0;
-				background: #2563eb;
-				color: white;
-				font-weight: 650;
+				border-radius: 10px;
+				background: linear-gradient(135deg, #986dff, #704ce8);
+				font-size: 0.85rem;
+				font-weight: 700;
 				cursor: pointer;
+				box-shadow: 0 6px 20px #8356ff30;
 			}
 
 			button:disabled {
 				cursor: not-allowed;
-				opacity: 0.55;
+				opacity: 0.48;
 			}
 
-			#disconnect {
-				background: #4b5563;
+			.connection-panel {
+				position: relative;
+				flex: 0 0 auto;
 			}
 
-			#controls {
-				display: grid;
-				gap: 0.75rem;
+			.connection-panel summary,
+			.utility-panel summary {
+				color: #c9cdea;
+				cursor: pointer;
+				font-size: 0.82rem;
+				list-style-position: inside;
+			}
+
+			.connection-panel[open] summary {
+				color: var(--accent-bright);
+			}
+
+			.connection-content {
+				position: absolute;
+				z-index: 5;
+				top: calc(100% + 0.8rem);
+				right: 0;
+				width: min(390px, calc(100vw - 2rem));
+				max-height: min(75vh, 650px);
+				overflow: auto;
 				padding: 1rem;
-				border: 1px solid #374151;
-				border-radius: 0.75rem;
-				background: #1f2937;
+				border: 1px solid #343b5e;
+				border-radius: 14px;
+				background: #11162a;
+				box-shadow: 0 18px 50px #0009;
 			}
 
-			#player-state {
+			#connect-form,
+			.utility-grid,
+			.utility-grid form {
 				display: grid;
-				gap: 0.75rem;
-				margin: 1rem 0;
-				padding: 1rem;
-				border: 1px solid #374151;
-				border-radius: 0.75rem;
-				background: #1f2937;
+				gap: 0.8rem;
 			}
 
-			#player-state ul {
-				margin: 0.25rem 0;
-				padding-left: 1.25rem;
+			#connect-form label,
+			.utility-grid label {
+				display: grid;
+				gap: 0.4rem;
+				color: #c9cdea;
+				font-size: 0.78rem;
 			}
 
-			#player-state li {
-				margin: 0.35rem 0;
+			#connect-form input,
+			.utility-grid input:not([type="checkbox"]):not([type="range"]),
+			.utility-grid select {
+				width: 100%;
+				padding: 0.65rem 0.75rem;
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				background: #0b0f20;
+				color: inherit;
 			}
 
-			#controls button,
-			#controls input {
-				margin-top: 0.35rem;
-			}
-
+			#disconnect,
 			#download-recording,
-			#clear-recording {
-				background: #4b5563;
+			#clear-recording,
+			.utility-grid button {
+				padding: 0.65rem 0.75rem;
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				background: #1a2038;
+				cursor: pointer;
 			}
 
-			#control-status {
-				min-height: 1.5em;
-				color: #fbbf24;
-			}
-
-			#status {
-				min-height: 1.5em;
-				color: #93c5fd;
-			}
-
-			#recording-status {
-				min-height: 1.5em;
-				color: #fbbf24;
+			.connection-actions,
+			.recording-actions {
+				display: grid;
+				grid-template-columns: repeat(2, minmax(0, 1fr));
+				gap: 0.5rem;
 			}
 
 			.hint {
-				color: #9ca3af;
-				font-size: 0.85rem;
+				margin: 0;
+				color: var(--muted);
+				font-size: 0.73rem;
 				line-height: 1.5;
+			}
+
+			.status {
+				min-height: 1.5em;
+				color: #aeb6dc;
+				font-size: 0.76rem;
+				line-height: 1.5;
+			}
+
+			#search-status {
+				margin-top: 0.6rem;
+				color: #d1c4ff;
+			}
+
+			#status {
+				color: #a8c8ff;
+			}
+
+			#recording-status,
+			#control-status {
+				color: #f4ca72;
+			}
+
+			.player-panel {
+				display: flex;
+				flex: 1;
+				min-height: 0;
+				flex-direction: column;
+				justify-content: center;
+			}
+
+			.player-heading {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				margin-bottom: 1rem;
+			}
+
+			.player-heading h1 {
+				margin: 0;
+				font-size: 0.96rem;
+				font-weight: 600;
+			}
+
+			.session-name {
+				color: var(--muted);
+				font-size: 0.75rem;
+			}
+
+			.now-playing {
+				display: grid;
+				grid-template-columns: minmax(180px, 0.95fr) minmax(0, 1fr);
+				align-items: center;
+				gap: clamp(1.25rem, 3vw, 2.5rem);
+			}
+
+			.cover-frame {
+				position: relative;
+				display: grid;
+				aspect-ratio: 1;
+				overflow: hidden;
+				place-items: center;
+				border: 1px solid #7050d9;
+				border-radius: 16px;
+				background:
+					radial-gradient(circle at 70% 28%, #d5a8ff88, transparent 20%),
+					radial-gradient(circle at 28% 78%, #7e59ff99, transparent 32%), linear-gradient(145deg, #1d3760, #17152d 62%, #432550);
+				box-shadow: 0 20px 50px #05061180;
+			}
+
+			.cover-frame::after {
+				position: absolute;
+				inset: 0;
+				border: 1px solid #ffffff16;
+				border-radius: inherit;
+				content: "";
+				pointer-events: none;
+			}
+
+			#current-art {
+				width: 100%;
+				height: 100%;
+				object-fit: cover;
+			}
+
+			.cover-placeholder {
+				color: #dfd0ff;
+				font-size: clamp(4rem, 12vw, 8rem);
+				text-shadow: 0 8px 35px #0008;
+			}
+
+			.track-details {
+				min-width: 0;
+			}
+
+			#current-title {
+				overflow-wrap: anywhere;
+				margin: 0 0 0.45rem;
+				font-size: clamp(1.4rem, 2.4vw, 2rem);
+				font-weight: 700;
+				letter-spacing: -0.04em;
+			}
+
+			#current-author {
+				margin: 0 0 1rem;
+				font-size: 0.95rem;
+			}
+
+			.track-meta {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 0.5rem;
+			}
+
+			.meta-chip {
+				padding: 0.35rem 0.6rem;
+				border: 1px solid #3a3f61;
+				border-radius: 999px;
+				color: #c1c7e4;
+				font-size: 0.72rem;
+			}
+
+			.waveform {
+				height: 62px;
+				margin: 1.7rem 0 0;
+				background: repeating-linear-gradient(90deg, transparent 0 5px, #9b68ff 5px 8px, transparent 8px 11px);
+				mask-image: linear-gradient(0deg, transparent 0 32%, #000 33% 67%, transparent 68% 100%);
+				opacity: 0.78;
+				clip-path: polygon(
+					0 47%,
+					3% 42%,
+					5% 53%,
+					8% 21%,
+					11% 72%,
+					14% 35%,
+					17% 60%,
+					20% 10%,
+					23% 79%,
+					26% 32%,
+					29% 62%,
+					32% 23%,
+					35% 71%,
+					38% 39%,
+					41% 57%,
+					44% 14%,
+					47% 82%,
+					50% 30%,
+					53% 63%,
+					56% 20%,
+					59% 74%,
+					62% 37%,
+					65% 61%,
+					68% 27%,
+					71% 78%,
+					74% 34%,
+					77% 66%,
+					80% 16%,
+					83% 73%,
+					86% 38%,
+					89% 60%,
+					92% 29%,
+					95% 68%,
+					98% 42%,
+					100% 50%,
+					100% 50%,
+					98% 58%,
+					95% 32%,
+					92% 71%,
+					89% 40%,
+					86% 62%,
+					83% 27%,
+					80% 84%,
+					77% 34%,
+					74% 66%,
+					71% 22%,
+					68% 73%,
+					65% 39%,
+					62% 63%,
+					59% 26%,
+					56% 80%,
+					53% 37%,
+					50% 70%,
+					47% 18%,
+					44% 86%,
+					41% 43%,
+					38% 61%,
+					35% 29%,
+					32% 77%,
+					29% 38%,
+					26% 68%,
+					23% 21%,
+					20% 90%,
+					17% 40%,
+					14% 65%,
+					11% 28%,
+					8% 79%,
+					5% 47%,
+					3% 58%,
+					0 53%
+				);
+			}
+
+			.utility-panel {
+				margin-top: 1.5rem;
+				padding: 0.85rem 1rem;
+				border: 1px solid var(--line);
+				border-radius: 12px;
+				background: #11162a80;
+			}
+
+			.utility-panel[open] summary {
+				margin-bottom: 1rem;
+			}
+
+			.utility-grid {
+				grid-template-columns: repeat(2, minmax(0, 1fr));
+				align-items: start;
+			}
+
+			.utility-grid .full-width {
+				grid-column: 1 / -1;
+			}
+
+			.utility-grid input[type="checkbox"] {
+				width: auto;
+				accent-color: var(--accent);
+			}
+
+			.queue-panel {
+				grid-area: queue;
+				display: flex;
+				min-width: 0;
+				flex-direction: column;
+				padding: 1.35rem 1rem 1rem;
+				border-left: 1px solid var(--line);
+				background: #0c1020a8;
+			}
+
+			.queue-heading {
+				display: flex;
+				align-items: baseline;
+				justify-content: space-between;
+				gap: 0.5rem;
+				margin-bottom: 1rem;
+			}
+
+			.queue-heading h2 {
+				margin: 0;
+				font-size: 0.95rem;
+				font-weight: 650;
+			}
+
+			.queue-heading span {
+				color: var(--muted);
+				font-size: 0.7rem;
+			}
+
+			#queue-list,
+			#related-list {
+				display: grid;
+				gap: 0.45rem;
+				margin: 0;
+				padding: 0;
+				list-style: none;
+			}
+
+			#queue-list {
+				overflow: auto;
+				padding-right: 0.15rem;
+			}
+
+			.track-card {
+				display: grid;
+				grid-template-columns: 44px minmax(0, 1fr) auto;
+				align-items: center;
+				gap: 0.65rem;
+				min-width: 0;
+				padding: 0.48rem;
+				border: 1px solid transparent;
+				border-radius: 10px;
+				background: #11162a;
+			}
+
+			.track-card.current {
+				border-color: #7451d9;
+				background: linear-gradient(100deg, #39245f, #1b1c38);
+			}
+
+			.track-thumb,
+			.track-placeholder {
+				display: grid;
+				width: 44px;
+				height: 44px;
+				overflow: hidden;
+				place-items: center;
+				border-radius: 7px;
+				background: linear-gradient(145deg, #574385, #1d3456);
+				object-fit: cover;
+			}
+
+			.track-placeholder {
+				color: #d8caff;
+				font-size: 1.2rem;
+			}
+
+			.track-copy {
+				min-width: 0;
+			}
+
+			.track-title {
+				overflow: hidden;
+				color: #f1f2ff;
+				font-size: 0.76rem;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+
+			.track-subtitle {
+				overflow: hidden;
+				margin-top: 0.25rem;
+				color: var(--muted);
+				font-size: 0.67rem;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+
+			.track-duration {
+				color: var(--muted);
+				font-size: 0.68rem;
+			}
+
+			.empty-track {
+				padding: 0.75rem 0.5rem;
+				color: var(--muted);
+				font-size: 0.76rem;
+			}
+
+			.related-section {
+				margin-top: auto;
+				padding-top: 1rem;
+			}
+
+			.related-section summary {
+				margin-bottom: 0.7rem;
+				color: #c9cdea;
+				cursor: pointer;
+				font-size: 0.78rem;
+			}
+
+			.dock {
+				grid-area: dock;
+				display: grid;
+				grid-template-columns: minmax(120px, 1fr) auto minmax(120px, 1fr);
+				align-items: center;
+				gap: 1rem;
+				padding: 0.75rem 1.4rem;
+				border-top: 1px solid var(--line);
+				background: #11162a;
+			}
+
+			.dock-track {
+				display: flex;
+				min-width: 0;
+				align-items: center;
+				gap: 0.7rem;
+			}
+
+			.dock-mark {
+				display: grid;
+				width: 40px;
+				height: 40px;
+				flex: 0 0 auto;
+				place-items: center;
+				border: 1px solid #40376a;
+				border-radius: 9px;
+				background: #262044;
+				color: #c1a9ff;
+			}
+
+			.dock-track-copy {
+				min-width: 0;
+			}
+
+			.dock-track-copy strong,
+			.dock-track-copy span {
+				display: block;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+
+			.dock-track-copy strong {
+				font-size: 0.76rem;
+				font-weight: 600;
+			}
+
+			.dock-track-copy span {
+				margin-top: 0.2rem;
+				color: var(--muted);
+				font-size: 0.68rem;
+			}
+
+			.transport {
+				display: flex;
+				align-items: center;
+				gap: 0.7rem;
+			}
+
+			.transport button {
+				display: grid;
+				width: 38px;
+				height: 38px;
+				place-items: center;
+				border: 0;
+				border-radius: 50%;
+				background: transparent;
+				color: #e5e7ff;
+				font-size: 1.15rem;
+				cursor: pointer;
+			}
+
+			.transport button:hover:not(:disabled) {
+				background: #262c49;
+			}
+
+			.transport .primary-control {
+				width: 50px;
+				height: 50px;
+				background: linear-gradient(145deg, #ab86ff, #744cf0);
+				font-size: 1.2rem;
+				box-shadow: 0 8px 24px #8659ff55;
+			}
+
+			.dock-tools {
+				display: flex;
+				align-items: center;
+				justify-content: flex-end;
+				gap: 0.7rem;
+			}
+
+			.volume-icon {
+				color: #aab2d9;
+			}
+
+			#volume {
+				width: min(120px, 12vw);
+				accent-color: var(--accent);
+			}
+
+			#volume-value {
+				min-width: 2.6rem;
+				color: var(--muted);
+				font-size: 0.7rem;
+				text-align: right;
+			}
+
+			.visually-hidden {
+				position: absolute;
+				width: 1px;
+				height: 1px;
+				overflow: hidden;
+				clip: rect(0, 0, 0, 0);
+				white-space: nowrap;
+				clip-path: inset(50%);
+			}
+
+			@media (min-width: 1100px) {
+				.queue-panel {
+					min-height: 0;
+				}
+			}
+
+			@media (max-width: 900px) {
+				.app-shell {
+					grid-template:
+						"sidebar main" minmax(0, 1fr)
+						"sidebar queue" minmax(220px, auto)
+						"sidebar dock" 76px
+						/ 78px minmax(0, 1fr);
+					min-height: calc(100vh - clamp(1.5rem, 6vw, 5.5rem));
+				}
+
+				.sidebar {
+					grid-row: 1 / -1;
+					gap: 1.5rem;
+					padding-right: 0.45rem;
+					padding-left: 0.45rem;
+				}
+
+				.queue-panel {
+					max-height: 330px;
+					border-top: 1px solid var(--line);
+					border-left: 0;
+				}
+
+				#queue-list {
+					grid-template-columns: repeat(2, minmax(0, 1fr));
+				}
+
+				.related-section {
+					margin-top: 0.75rem;
+				}
+			}
+
+			@media (max-width: 600px) {
+				body {
+					padding: 0;
+				}
+
+				.app-shell {
+					grid-template:
+						"main" auto
+						"queue" auto
+						"dock" auto
+						/ minmax(0, 1fr);
+					min-height: 100vh;
+					border: 0;
+					border-radius: 0;
+				}
+
+				.sidebar {
+					display: none;
+				}
+
+				.main-column {
+					min-height: 0;
+					padding: 1rem 1rem 1.2rem;
+				}
+
+				.topbar {
+					align-items: flex-start;
+				}
+
+				.connection-panel summary {
+					max-width: 80px;
+					line-height: 1.4;
+				}
+
+				.now-playing {
+					grid-template-columns: minmax(110px, 0.8fr) minmax(0, 1fr);
+					gap: 1rem;
+				}
+
+				#current-title {
+					font-size: 1.25rem;
+				}
+
+				#current-author {
+					margin-bottom: 0.7rem;
+					font-size: 0.82rem;
+				}
+
+				.waveform {
+					height: 42px;
+					margin-top: 1rem;
+				}
+
+				.utility-grid {
+					grid-template-columns: 1fr;
+				}
+
+				.utility-grid .full-width {
+					grid-column: auto;
+				}
+
+				.queue-panel {
+					max-height: none;
+					padding: 1rem;
+					border-top: 1px solid var(--line);
+				}
+
+				#queue-list {
+					grid-template-columns: 1fr;
+					max-height: 240px;
+				}
+
+				.dock {
+					position: sticky;
+					bottom: 0;
+					grid-template-columns: minmax(0, 1fr) auto;
+					gap: 0.5rem;
+					padding: 0.6rem 0.75rem;
+					box-shadow: 0 -10px 24px #05061166;
+				}
+
+				.dock-track {
+					gap: 0.45rem;
+				}
+
+				.dock-mark {
+					width: 34px;
+					height: 34px;
+				}
+
+				.transport {
+					gap: 0.15rem;
+				}
+
+				.transport button {
+					width: 34px;
+					height: 34px;
+				}
+
+				.transport .primary-control {
+					width: 42px;
+					height: 42px;
+				}
+
+				.dock-tools {
+					display: none;
+				}
+			}
+
+			@media (prefers-reduced-motion: reduce) {
+				* {
+					scroll-behavior: auto !important;
+					transition-duration: 0.01ms !important;
+				}
 			}
 		</style>
 	</head>
 	<body>
-		<h1>ZiPlayer Web Audio</h1>
-		<p class="hint">
-			Each player ID is an independent ZiPlayer session. Enter the same ID to play, listen, or control that player's stream; enter
-			a new ID and choose Search and play to create another player.
-		</p>
-		<form id="search-form">
-			<label>
-				Search query or media URL
-				<input
-					id="search-query"
-					name="query"
-					autocomplete="off"
-					maxlength="500"
-					placeholder="Search for a track"
-					required />
-			</label>
-			<button
-				id="search"
-				type="submit">
-				Search and play
-			</button>
-			<div
-				id="search-status"
-				role="status"
-				aria-live="polite"></div>
-		</form>
-		<section
-			id="player-state"
-			aria-label="Player queue">
-			<strong>Current track</strong>
-			<div id="current-track">No track playing</div>
-			<strong>Queue</strong>
-			<ul id="queue-list">
-				<li>Queue is empty</li>
-			</ul>
-			<strong>Related tracks</strong>
-			<ul id="related-list">
-				<li>No related tracks</li>
-			</ul>
-		</section>
-		<p class="hint">
-			<code>PLAYER_ID</code> is the default player created when the server starts; other valid IDs create separate players the
-			first time you request playback for them.
-		</p>
-		<section
-			id="controls"
-			aria-label="Playback controls">
-			<strong>Playback controls for the player ID below</strong>
-			<button
-				id="pause"
-				type="button">
-				Pause
-			</button>
-			<button
-				id="resume"
-				type="button">
-				Resume
-			</button>
-			<button
-				id="stop-playback"
-				type="button">
-				Stop playback
-			</button>
-			<button
-				id="skip"
-				type="button">
-				Skip track
-			</button>
-			<form id="seek-form">
-				<label>
-					Seek to (seconds)
+		<div class="app-shell">
+			<aside
+				class="sidebar"
+				aria-label="Main navigation">
+				<div
+					class="brand"
+					aria-label="ZiPlayer">
+					Z
+				</div>
+				<nav>
+					<a
+						class="nav-link"
+						href="#search-panel">
+						<span
+							class="nav-icon"
+							aria-hidden="true"
+							>⌕</span
+						>
+						<span>Search</span>
+					</a>
+					<a
+						class="nav-link"
+						href="#queue-panel">
+						<span
+							class="nav-icon"
+							aria-hidden="true"
+							>▤</span
+						>
+						<span>Queue</span>
+					</a>
+					<a
+						class="nav-link active"
+						href="#player-panel"
+						aria-current="page">
+						<span
+							class="nav-icon"
+							aria-hidden="true"
+							>▥</span
+						>
+						<span>Player</span>
+					</a>
+				</nav>
+				<div class="sidebar-note">Web Audio<br />48 kHz · Stereo</div>
+			</aside>
+
+			<main class="main-column">
+				<header
+					class="topbar"
+					id="search-panel">
+					<form
+						class="search-form"
+						id="search-form"
+						aria-label="Search and play">
+						<label
+							class="visually-hidden"
+							for="search-query"
+							>Search query or media URL</label
+						>
+						<input
+							id="search-query"
+							name="query"
+							autocomplete="off"
+							maxlength="500"
+							placeholder="Search a track or paste a media link"
+							required />
+						<button
+							class="primary-button"
+							id="search"
+							type="submit">
+							Search &amp; play
+						</button>
+					</form>
+					<details class="connection-panel">
+						<summary>Audio setup</summary>
+						<div class="connection-content">
+							<form id="connect-form">
+								<label>
+									Gateway WebSocket URL
+									<input
+										id="gateway-url"
+										name="gatewayUrl"
+										value=""
+										placeholder="ws://localhost:8080"
+										required />
+								</label>
+								<label>
+									Player / session ID
+									<input
+										id="session-id"
+										name="sessionId"
+										autocomplete="off"
+										required />
+								</label>
+								<div class="connection-actions">
+									<button
+										class="primary-button"
+										id="connect"
+										type="submit">
+										Connect listener
+									</button>
+									<button
+										id="disconnect"
+										type="button"
+										disabled>
+										Disconnect
+									</button>
+								</div>
+								<div
+									id="status"
+									class="status"
+									role="status"
+									aria-live="polite">
+									Disconnected
+								</div>
+								<div class="recording-actions">
+									<button
+										id="record"
+										type="button"
+										disabled>
+										Start WAV recording
+									</button>
+									<button
+										id="download-recording"
+										type="button"
+										disabled>
+										Download WAV
+									</button>
+									<button
+										id="clear-recording"
+										type="button"
+										disabled>
+										Clear recording
+									</button>
+								</div>
+								<div
+									id="recording-status"
+									class="status"
+									role="status"
+									aria-live="polite"></div>
+								<p class="hint">
+									Recording captures received PCM while playback continues. Captures are limited to 10 minutes. This loopback-only
+									example does not provide authentication; do not expose it to a network.
+								</p>
+							</form>
+						</div>
+					</details>
+				</header>
+				<div
+					id="search-status"
+					class="status"
+					role="status"
+					aria-live="polite"></div>
+
+				<section
+					class="player-panel"
+					id="player-panel"
+					aria-label="Now playing">
+					<div class="player-heading">
+						<div>
+							<p class="eyebrow">NOW PLAYING</p>
+							<h1>Listening room</h1>
+						</div>
+						<div class="session-name">Player <span id="player-name">—</span></div>
+					</div>
+					<div class="now-playing">
+						<div class="cover-frame">
+							<img
+								id="current-art"
+								alt=""
+								hidden />
+							<div
+								class="cover-placeholder"
+								id="cover-placeholder"
+								aria-hidden="true">
+								♫
+							</div>
+						</div>
+						<div class="track-details">
+							<div id="current-track">
+								<h2 id="current-title">No track playing</h2>
+								<p
+									class="track-author"
+									id="current-author">
+									Search for something to get started
+								</p>
+							</div>
+							<div class="track-meta">
+								<span
+									class="meta-chip"
+									id="track-source"
+									>ZiPlayer</span
+								>
+								<span
+									class="meta-chip"
+									id="track-duration"
+									>—:—</span
+								>
+							</div>
+							<div
+								class="waveform"
+								aria-hidden="true"></div>
+						</div>
+					</div>
+					<details
+						class="utility-panel"
+						id="controls"
+						aria-label="Playback settings">
+						<summary>Playback settings &amp; effects</summary>
+						<div class="utility-grid">
+							<form id="seek-form">
+								<label>
+									Seek to (seconds)
+									<input
+										id="seek-position"
+										type="number"
+										min="0"
+										step="0.1"
+										value="0" />
+								</label>
+								<button type="submit">Seek</button>
+							</form>
+							<label>
+								Loop mode
+								<select id="loop-mode">
+									<option value="off">Off</option>
+									<option value="track">Repeat track</option>
+									<option value="queue">Repeat queue</option>
+								</select>
+							</label>
+							<label>
+								<span>Autoplay</span>
+								<span
+									><input
+										id="autoplay"
+										type="checkbox" />
+									Enable autoplay</span
+								>
+							</label>
+							<label>
+								Audio filter
+								<select id="filter-select">
+									<option value="">Loading filters…</option>
+								</select>
+							</label>
+							<button
+								id="apply-filter"
+								type="button">
+								Toggle selected filter
+							</button>
+							<button
+								id="clear-filters"
+								type="button">
+								Clear filters
+							</button>
+							<div
+								id="filter-status"
+								class="status full-width"
+								role="status"
+								aria-live="polite"></div>
+							<div
+								id="control-status"
+								class="status full-width"
+								role="status"
+								aria-live="polite"></div>
+						</div>
+					</details>
+				</section>
+			</main>
+
+			<aside
+				class="queue-panel"
+				id="queue-panel"
+				aria-label="Player queue">
+				<div class="queue-heading">
+					<h2>Up next</h2>
+					<span id="queue-count">0 tracks</span>
+				</div>
+				<ul id="queue-list">
+					<li class="empty-track">Queue is empty</li>
+				</ul>
+				<details class="related-section">
+					<summary>Related tracks</summary>
+					<ul id="related-list">
+						<li class="empty-track">No related tracks</li>
+					</ul>
+				</details>
+			</aside>
+
+			<footer
+				class="dock"
+				aria-label="Playback controls">
+				<div class="dock-track">
+					<div
+						class="dock-mark"
+						aria-hidden="true">
+						▥
+					</div>
+					<div class="dock-track-copy">
+						<strong id="dock-title">No track playing</strong>
+						<span id="dock-author">ZiPlayer Web Audio</span>
+					</div>
+				</div>
+				<div class="transport">
+					<button
+						id="stop-playback"
+						type="button"
+						aria-label="Stop playback"
+						title="Stop">
+						■
+					</button>
+					<button
+						id="skip"
+						type="button"
+						aria-label="Skip track"
+						title="Skip">
+						▶|
+					</button>
+					<button
+						class="primary-control"
+						id="resume"
+						type="button"
+						aria-label="Resume playback"
+						title="Resume">
+						▶
+					</button>
+					<button
+						id="pause"
+						type="button"
+						aria-label="Pause playback"
+						title="Pause">
+						Ⅱ
+					</button>
+				</div>
+				<div class="dock-tools">
+					<span
+						class="volume-icon"
+						aria-hidden="true"
+						>◖))</span
+					>
+					<label
+						class="visually-hidden"
+						for="volume"
+						>Volume</label
+					>
 					<input
-						id="seek-position"
-						type="number"
+						id="volume"
+						type="range"
 						min="0"
-						step="0.1"
-						value="0" />
-				</label>
-				<button type="submit">Seek</button>
-			</form>
-			<label>
-				Volume: <span id="volume-value">100%</span>
-				<input
-					id="volume"
-					type="range"
-					min="0"
-					max="200"
-					step="1"
-					value="100" />
-			</label>
-			<label>
-				Loop mode
-				<select id="loop-mode">
-					<option value="off">Off</option>
-					<option value="track">Repeat track</option>
-					<option value="queue">Repeat queue</option>
-				</select>
-			</label>
-			<label>
-				<input
-					id="autoplay"
-					type="checkbox" />
-				Enable autoplay
-			</label>
-			<label>
-				Audio filter
-				<select id="filter-select">
-					<option value="">Loading filters…</option>
-				</select>
-			</label>
-			<button
-				id="apply-filter"
-				type="button">
-				Toggle selected filter
-			</button>
-			<button
-				id="clear-filters"
-				type="button">
-				Clear filters
-			</button>
-			<div
-				id="filter-status"
-				role="status"
-				aria-live="polite"></div>
-			<div
-				id="control-status"
-				role="status"
-				aria-live="polite"></div>
-		</section>
-		<form id="connect-form">
-			<label>
-				Gateway WebSocket URL
-				<input
-					id="gateway-url"
-					name="gatewayUrl"
-					value=""
-					placeholder="ws://localhost:8080"
-					required />
-			</label>
-			<label>
-				Player / session ID
-				<input
-					id="session-id"
-					name="sessionId"
-					autocomplete="off"
-					required />
-			</label>
-			<button
-				id="connect"
-				type="submit">
-				Connect and play
-			</button>
-			<button
-				id="disconnect"
-				type="button"
-				disabled>
-				Disconnect
-			</button>
-			<button
-				id="record"
-				type="button"
-				disabled>
-				Start WAV recording
-			</button>
-			<button
-				id="download-recording"
-				type="button"
-				disabled>
-				Download current WAV
-			</button>
-			<button
-				id="clear-recording"
-				type="button"
-				disabled>
-				Clear recording
-			</button>
-			<div
-				id="status"
-				role="status"
-				aria-live="polite">
-				Disconnected
-			</div>
-			<div
-				id="recording-status"
-				role="status"
-				aria-live="polite"></div>
-		</form>
-		<p class="hint">
-			Recording captures the received 48 kHz stereo PCM into WAV while playback continues. Browser memory is capped at 10 minutes
-			per recording; use Download current WAV to save a snapshot without stopping capture.
-		</p>
-		<p class="hint">This example binds to loopback only and does not provide authentication. Do not expose it to a network.</p>
+						max="200"
+						step="1"
+						value="100" />
+					<span id="volume-value">100%</span>
+				</div>
+			</footer>
+		</div>
 		<script
 			src="/client.js"
 			type="module"></script>

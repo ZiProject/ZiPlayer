@@ -13,6 +13,9 @@ const {
 	TrackLoader,
 	BUS_REQUEST,
 	BUS_OUTPUT,
+	CONTROLLER_RPC,
+	PLAYER_QUERY,
+	PLAYER_RPC,
 } = require("../core/dist");
 
 const waitFor = async (predicate) => {
@@ -79,6 +82,50 @@ const context = () => ({
 });
 
 const play = (harness, track) => harness.bus.action(harness.playerId, { type: "PLAY", track }, context());
+
+test("playing search candidates queues only the first match unless the result is a playlist", async () => {
+	const searchResult = {
+		tracks: [
+			{ id: "match-1", title: "Best Match", duration: 180000 },
+			{ id: "match-2", title: "Similar Match", duration: 180000 },
+			{ id: "match-3", title: "Another Similar Match", duration: 180000 },
+		],
+	};
+	const candidatesHarness = createOrchestrator();
+	candidatesHarness.bus.registerRpc(PLAYER_RPC.search, async () => searchResult);
+
+	const playResult = await candidatesHarness.bus.requestRpc(candidatesHarness.playerId, CONTROLLER_RPC.play, {
+		query: "song title",
+		requestedBy: "user",
+	});
+
+	assert.equal(playResult.track.id, "match-1");
+	assert.deepEqual(
+		candidatesHarness.bus.querySync(candidatesHarness.playerId, PLAYER_QUERY.queue).map((track) => track.id),
+		[],
+	);
+	await candidatesHarness.orchestrator.dispose();
+	candidatesHarness.queueController.dispose();
+
+	const playlistHarness = createOrchestrator();
+	playlistHarness.bus.registerRpc(PLAYER_RPC.search, async () => ({
+		...searchResult,
+		playlist: { name: "Album" },
+	}));
+
+	const playlistPlayResult = await playlistHarness.bus.requestRpc(playlistHarness.playerId, CONTROLLER_RPC.play, {
+		query: "album title",
+		requestedBy: "user",
+	});
+
+	assert.equal(playlistPlayResult.track.id, "match-1");
+	assert.deepEqual(
+		playlistHarness.bus.querySync(playlistHarness.playerId, PLAYER_QUERY.queue).map((track) => track.id),
+		["match-2", "match-3"],
+	);
+	await playlistHarness.orchestrator.dispose();
+	playlistHarness.queueController.dispose();
+});
 
 test("autoplay starts the related track after TRACK_END", async () => {
 	const trackA = { id: "track-a", title: "Track A", duration: 180000 };

@@ -94,7 +94,7 @@ manager.on("trackStart", (player, track) => {
 await player.play("song title", { requestedBy: userId });
 await player.play("https://example.com/audio");
 await player.play(track); // A Track already resolved by your application
-await player.play(searchResult); // A SearchResult
+await player.play(searchResult); // Plays the first match, or all tracks when it represents a playlist
 await player.play(null); // Resume playback from the existing queue when supported
 
 await player.pause();
