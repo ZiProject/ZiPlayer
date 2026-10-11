@@ -546,6 +546,11 @@ export class PlaybackController {
 				chunkAlignmentBytes: channels * (sampleFormat === "f32" ? 4 : 2),
 			};
 			let processedStream: Readable;
+			// Aborted as soon as the processed stream is destroyed for any reason (player stop/replace, error, end), so a
+			// stalled source cannot keep FFmpeg alive: Readable.from() only runs the generator's cleanup once its
+			// pending await settles, which never happens while the source is silent.
+			const processingAbort = new AbortController();
+			const pipelineSignal = outputSignal ? AbortSignal.any([outputSignal, processingAbort.signal]) : processingAbort.signal;
 			const abortProcessing = () => {
 				if (!stream.destroyed) stream.destroy();
 				if (!processedStream.destroyed) processedStream.destroy();
@@ -555,14 +560,21 @@ export class PlaybackController {
 					let pipeline: Awaited<ReturnType<typeof engine.createPipeline>> | null = null;
 					let completed = false;
 					try {
-						pipeline = await engine.createPipeline(processingOptions, { playerId, track, signal: outputSignal });
-						for await (const chunk of pipeline.process(stream, outputSignal)) {
-							if (outputSignal?.aborted) return;
+						pipeline = await engine.createPipeline(processingOptions, {
+							playerId,
+							track,
+							signal: pipelineSignal,
+							// FilterController emits StreamType.Raw (s16le 48 kHz stereo) after a seek; FFmpeg cannot probe raw PCM.
+							inputFormat:
+								resolvedInputType === StreamType.Raw ? audioFrameFormatFromDiscordStreamType(StreamType.Raw) : undefined,
+						});
+						for await (const chunk of pipeline.process(stream, pipelineSignal)) {
+							if (pipelineSignal.aborted) return;
 							yield chunk;
 						}
 						completed = true;
 					} catch (error) {
-						if (outputSignal?.aborted) return;
+						if (pipelineSignal.aborted) return;
 						if (!stream.destroyed) stream.destroy();
 						throw new Error(
 							`Audio processing failed for ${track.title}: ${error instanceof Error ? error.message : String(error)}`,
@@ -580,6 +592,16 @@ export class PlaybackController {
 				if (outputSignal.aborted) abortProcessing();
 				else outputSignal.addEventListener("abort", abortProcessing, { once: true });
 			}
+			// Readable.from() only emits "close" after the generator's pending await settles, so abort from _destroy,
+			// which runs immediately when the player (or anything else) destroys the stream.
+			const baseDestroy = processedStream._destroy;
+			processedStream._destroy = function (this: Readable, error: Error | null, callback: (error?: Error | null) => void) {
+				processingAbort.abort();
+				// The pipeline owns the source. If it never started (e.g. the backend rejected the format right after
+				// createResource) nothing else would ever close it, leaking the plugin's socket.
+				if (!stream.destroyed) stream.destroy();
+				baseDestroy.call(this, error, callback);
+			};
 			processedStream.once("close", () => outputSignal?.removeEventListener("abort", abortProcessing));
 			return this.createOutputResource(slot, processedStream, track, outputFormat, outputSignal);
 		}

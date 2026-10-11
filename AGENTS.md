@@ -22,8 +22,9 @@ Read the root [`README.md`](README.md) for public setup and player workflows. Fo
   it does not replace gateway authentication or routing.
 - The current player stack supports queue orchestration, smart preloading, crossfade/transition flow, loudness normalization,
   anti-stuck recovery, filter chains, and browser/WebSocket publishing in addition to standard voice playback.
-- The DSP pipeline is intentionally encoded-input-only and emits PCM. Raw PCM input is rejected by design; downstream output must
-  follow the PCM transport contract rather than treating PCM as an input format.
+- The DSP pipeline (`FFmpegAudioProcessingEngine`) runs FFmpeg as a child process and emits PCM. `audioProcessing.inputFormat` stays
+  `"encoded"`; a PCM stream (for example the output of a seek) is declared per stream through `AudioProcessingContext.inputFormat`
+  because FFmpeg cannot probe raw PCM and would guess it as noise. Downstream output must follow the PCM transport contract.
 - Keep public documentation and the package `AGENTS.md` guides aligned with changes to exported APIs and expected workflows.
 
 ## Validation

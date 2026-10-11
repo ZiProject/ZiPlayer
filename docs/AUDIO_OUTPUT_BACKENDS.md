@@ -18,7 +18,7 @@ Player / PlaybackOrchestrator
             -> Discord inline volume and PCM conversion
 
 AudioProcessingEngine
-  -> audio DSP (encoded stream decode -> DSP -> interleaved PCM)
+  -> FFmpeg child process (encoded stream decode -> filters -> interleaved PCM)
   -> AudioFrameFormat (no Discord runtime or Discord types)
 
 Still Discord-specific outside that seam:
@@ -170,6 +170,30 @@ may already have been consumed. The stream error flows through the Discord playe
 owned streams rather than trying to replay them. Raw PCM from non-DSP sources must also be explicitly described as 48 kHz stereo
 s16le before it can be sent down Discord's raw path.
 
+## FFmpeg processing engine
+
+`FFmpegAudioProcessingEngine` is the only `AudioProcessingEngine`. Each `process()` call spawns one FFmpeg child process, writes the
+source into its stdin and reads interleaved PCM from its stdout. It does not run codecs in the Node.js process, so decoding never
+blocks the event loop that drives Discord voice frames.
+
+- **Backpressure.** The source is only pulled while FFmpeg's stdin has room and FFmpeg only decodes while its stdout is read, so a slow
+  consumer stalls the source instead of buffering the decoded track in memory. `maxBufferBytes` bounds a single emitted chunk (larger
+  reads are split on frame boundaries; it is not an error).
+- **Cancellation.** Aborting the signal, ending the iteration early, destroying the processed stream or calling `dispose()` sends
+  `SIGKILL` to FFmpeg and releases the source (Node `Readable`s are destroyed). A source that is stalled inside an `await` cannot be
+  cancelled from outside; the engine terminates itself and the owner of the stream (`PlaybackController`) destroys it.
+- **Errors.** An upstream error, a non-zero FFmpeg exit, and an FFmpeg run that decodes nothing are all thrown; none of them hangs the
+  pipeline or ends as an empty success. FFmpeg can exit 0 without producing audio (for example an MP4 whose `moov` atom is at the end
+  of a non-seekable pipe), so the engine treats "input written, no output" as a failure. Pass a seekable URL to FFmpeg when you have one.
+- **Input detection.** Encoded input is restricted to common audio demuxers (`ffmpegInputFormats`, `null` disables the whitelist) so
+  unknown bytes fail instead of being guessed as a weak-probe format. Raw PCM cannot be probed: it must be declared through
+  `AudioProcessingContext.inputFormat`, which `PlaybackController` does for `StreamType.Raw` streams.
+- **Behaviour differences to be aware of.** A mono source is up-mixed to stereo with FFmpeg's equal-power law (-3 dB). `normalize`
+  uses single-pass `loudnorm` presets only (`streaming` -14, `podcast` -16, `broadcast` -23 LUFS); numeric RMS/peak targets are rejected.
+  Seeking, filters and processing each use their own FFmpeg process.
+- **Discord inline volume.** `DiscordVoiceOutputBackend` always creates resources with `inlineVolume: true`, so even without DSP
+  `@discordjs/voice` already decodes through FFmpeg and re-encodes Opus; the DSP path replaces that decode step rather than adding one.
+
 ## WebSocket PCM backend status
 
 `WebSocketAudioOutputBackend` implements one-way PCM s16le sessions. Its socket factory supplies an already-connected
@@ -177,7 +201,7 @@ WebSocket-compatible transport; it does not create a gateway or authentication f
 interleaved PCM. The backend applies a bounded WebSocket `bufferedAmount` limit and paces output against a monotonic sample
 duration clock so source streams cannot flood the browser. A transport without a measurable `bufferedAmount` is rejected.
 `start()` resolves after configuration is sent; the handle's `completion` promise tracks stream consumption. Replacement uses
-`stop-before-start`; volume is unsupported and must be applied upstream.
+`stop-before-start`; volume is applied by the backend to each s16 frame with clamping (capability `volume: "backend"`).
 
 Set `WebSocketAudioOutputBackendOptions.sessionId` to a stable player routing ID when the gateway should keep browser listeners
 attached across per-track publisher socket replacement. A backend factory receives `{ playerId }` and can use that value as the

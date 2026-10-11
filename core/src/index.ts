@@ -94,7 +94,7 @@ export { StreamManager } from "./structures/StreamManager";
 export {
 	createAudioProcessingEngine,
 	defaultAudioProcessingEngine,
-	AudioJsAudioProcessingEngine,
+	FFmpegAudioProcessingEngine,
 } from "./audio/AudioProcessingEngine";
 export type {
 	AudioProcessingEngine,

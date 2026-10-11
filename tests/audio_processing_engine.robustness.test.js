@@ -1,9 +1,10 @@
 // Regression tests cho AudioProcessingEngine: đúng dạng sóng/biên độ/sample rate và vòng đời huỷ/lỗi.
-// Chạy: node --test tests/audio_processing_engine.robustness.test.js (sau khi build core)
+// Chạy: npm test (build core trước). Engine: FFmpeg tiến trình con.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { Readable } = require("node:stream");
 const { createAudioProcessingEngine } = require("../core/dist");
+const helpers = require("./helpers/wav");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const settle = (p, ms) =>
@@ -15,54 +16,14 @@ const settle = (p, ms) =>
 		sleep(ms).then(() => ({ hung: true })),
 	]);
 
-/** WAV 16-bit PCM sinh theo chunk; stats theo dõi upstream đã kết thúc (finally) hay chưa. */
-function wavSource({
-	seconds,
-	sr = 44100,
-	ch = 1,
-	amp = 0.5,
-	freq = 440,
-	chunkBytes = 16384,
-	stats = {},
-	hangAfter,
-	errorAfter,
-}) {
-	const frames = Math.round(seconds * sr);
-	const data = frames * ch * 2;
-	const h = Buffer.alloc(44);
-	h.write("RIFF", 0);
-	h.writeUInt32LE(36 + data, 4);
-	h.write("WAVEfmt ", 8);
-	h.writeUInt32LE(16, 16);
-	h.writeUInt16LE(1, 20);
-	h.writeUInt16LE(ch, 22);
-	h.writeUInt32LE(sr, 24);
-	h.writeUInt32LE(sr * ch * 2, 28);
-	h.writeUInt16LE(ch * 2, 32);
-	h.writeUInt16LE(16, 34);
-	h.write("data", 36);
-	h.writeUInt32LE(data, 40);
-	stats.pulled = 0;
-	return (async function* () {
-		try {
-			yield h;
-			for (let f = 0; f < frames; ) {
-				if (hangAfter != null && stats.pulled >= hangAfter) await new Promise(() => {});
-				if (errorAfter != null && stats.pulled >= errorAfter) throw new Error("ECONNRESET");
-				const n = Math.min(chunkBytes / (ch * 2), frames - f);
-				const b = Buffer.alloc(n * ch * 2);
-				for (let i = 0; i < n; i++) {
-					const v = Math.round(amp * 32767 * Math.sin((2 * Math.PI * freq * (f + i)) / sr));
-					for (let c = 0; c < ch; c++) b.writeInt16LE(v, (i * ch + c) * 2);
-				}
-				f += n;
-				stats.pulled++;
-				yield b;
-			}
-		} finally {
-			stats.returned = true;
-		}
-	})();
+function wavSource(options) {
+	return helpers.wavSource({
+		...options,
+		sampleRate: options.sr,
+		channels: options.ch,
+		amplitude: options.amp,
+		frequency: options.freq,
+	});
 }
 
 async function render(opts, source) {
@@ -88,7 +49,7 @@ async function render(opts, source) {
 }
 
 test("PCM output preserves amplitude, frequency, duration and declared sample rate", async () => {
-	const r = await render({ outputFormat: "pcm16le", normalize: false }, wavSource({ seconds: 1, sr: 44100, ch: 1, amp: 0.5 }));
+	const r = await render({ outputFormat: "pcm16le", normalize: false }, wavSource({ seconds: 1, sr: 44100, ch: 2, amp: 0.5 }));
 	assert.equal(r.sampleRateHz, 48000);
 	assert.equal(r.channels, 2);
 	assert.ok(Math.abs(r.frames - 48000) <= 2, `frames=${r.frames}`);
@@ -96,13 +57,24 @@ test("PCM output preserves amplitude, frequency, duration and declared sample ra
 	assert.ok(Math.abs(r.freq - 440) < 3, `freq=${r.freq}`);
 	let maxDiff = 0;
 	for (let i = 0; i < r.frames; i++) maxDiff = Math.max(maxDiff, Math.abs(r.left[i] - r.right[i]));
+	assert.ok(maxDiff < 1e-3, "identical L/R source must stay identical");
+});
+
+test("mono source is upmixed to both channels (unity or equal-power, never lower)", async () => {
+	const r = await render({ outputFormat: "pcm16le", normalize: false }, wavSource({ seconds: 0.5, sr: 44100, ch: 1, amp: 0.5 }));
+	assert.ok(r.peak >= 0.5 * Math.SQRT1_2 - 0.01 && r.peak <= 0.51, `peak=${r.peak}`);
+	let maxDiff = 0;
+	for (let i = 0; i < r.frames; i++) maxDiff = Math.max(maxDiff, Math.abs(r.left[i] - r.right[i]));
 	assert.ok(maxDiff < 1e-3, "mono must be duplicated to both channels");
 });
 
 test("gain is applied linearly (+6 dB) and hard gain clamps instead of wrapping", async () => {
-	const g6 = await render({ outputFormat: "pcm16le", normalize: false, gainDb: 6 }, wavSource({ seconds: 0.5, amp: 0.5 }));
+	const g6 = await render({ outputFormat: "pcm16le", normalize: false, gainDb: 6 }, wavSource({ seconds: 0.5, ch: 2, amp: 0.5 }));
 	assert.ok(Math.abs(g6.peak - 0.5 * 10 ** (6 / 20)) < 0.02, `peak=${g6.peak}`);
-	const g12 = await render({ outputFormat: "pcm16le", normalize: false, gainDb: 12 }, wavSource({ seconds: 0.5, amp: 0.5 }));
+	const g12 = await render(
+		{ outputFormat: "pcm16le", normalize: false, gainDb: 12 },
+		wavSource({ seconds: 0.5, ch: 2, amp: 0.5 }),
+	);
 	assert.ok(g12.peak <= 1 && g12.peak > 0.99);
 	assert.ok(Math.abs(g12.freq - 440) < 3, "clipping must not wrap around / change the waveform period");
 });
@@ -186,4 +158,23 @@ test("repeated cancel of a Node Readable source raises no uncaught exceptions", 
 	} finally {
 		process.off("uncaughtException", onUncaught);
 	}
+});
+
+test("undecodable input is reported as an error, never as a silent empty success", async () => {
+	const p = await createAudioProcessingEngine({ normalize: false }).createPipeline({ normalize: false });
+	const r = await settle(
+		(async () => {
+			let bytes = 0;
+			for await (const c of p.process(
+				[Buffer.from("this is definitely not an audio container ".repeat(200))],
+				AbortSignal.timeout(5000),
+			))
+				bytes += c.length;
+			return bytes;
+		})(),
+		6000,
+	);
+	assert.ok(!r.hung, "pipeline hung on undecodable input");
+	assert.equal(r.ok, false, `completed with ${r.v} bytes instead of failing`);
+	await p.dispose();
 });

@@ -354,23 +354,33 @@ export class FilterEngine {
 	}
 }
 
-/** Shared, singleton controller: owns the playback filter pipeline for every player
- *  (registered on the bus), keyed by playerId. */
-/** FFmpeg filters that read local files / URLs or open sockets. Never accepted from a bare string. */
-const UNSAFE_FILTER_NAMES =
-	"a?movie|a?sendcmd|a?zmq|ladspa|lv2|sofalizer|arnndn|dnn_processing|drawtext|subtitles|ass|lavfi|frei0r|ocr|geq|hls_playlist";
-const UNSAFE_FILTER_PATTERN = new RegExp(`(?<![A-Za-z0-9_])(?:${UNSAFE_FILTER_NAMES})(?![A-Za-z0-9_])`, "i");
-const MAX_CUSTOM_FILTER_LENGTH = 1000;
-
-/**
- * Validate a custom filter supplied as a raw string (e.g. from user input). Predefined filters and
- * explicit AudioFilter objects are developer-controlled and are not checked here.
- */
-export function isSafeCustomFilter(filter: string): boolean {
-	if (!filter || filter.length > MAX_CUSTOM_FILTER_LENGTH) return false;
-	// eslint-disable-next-line no-control-regex
-	if (/[\u0000-\u001f]/.test(filter)) return false;
-	return !UNSAFE_FILTER_PATTERN.test(filter);
+const ALLOWED = new Set([
+	"bass",
+	"treble",
+	"equalizer",
+	"volume",
+	"aecho",
+	"atempo",
+	"asetrate",
+	"tremolo",
+	"vibrato",
+	"loudnorm",
+	"highpass",
+	"lowpass",
+	"aresample",
+	"stereotools",
+]);
+export function isSafeCustomFilter(f: string) {
+	if (!f || f.length > 1000 || /[\\'"\u0000-\u001f]/.test(f)) return false;
+	return f.split(/[,;]/).every((p) =>
+		ALLOWED.has(
+			p
+				.replace(/^\s*\[[^\]]*\]/, "")
+				.split("=")[0]
+				.trim()
+				.toLowerCase(),
+		),
+	);
 }
 
 export class FilterController {

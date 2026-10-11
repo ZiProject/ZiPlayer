@@ -92,7 +92,9 @@ export function webAudioFormatFromPcm(options: {
 
 export function validateWebAudioOutputFormat(format: AudioFrameFormat): void {
 	if (format.kind !== "pcm") {
-		throw new TypeError("WebSocket audio output backend only supports PCM input streams");
+		throw new TypeError(
+			"WebSocket audio output backend only supports PCM input streams; enable audioProcessing (pcm16le, 48 kHz, stereo) so sources are decoded to PCM",
+		);
 	}
 	if (format.sampleFormat !== "s16") {
 		throw new TypeError("WebSocket audio output backend only supports 16-bit little-endian PCM samples");

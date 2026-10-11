@@ -120,7 +120,6 @@ function createPlayerIdleCleanup(manager, timeoutMs = 100_000) {
 async function main() {
 	const host = process.env.HOST ?? "127.0.0.1";
 	const port = Number(process.env.PORT ?? 8080);
-	const trackQuery = process.env.TRACK_QUERY ?? process.argv.slice(2).join(" ").trim();
 	const playerId = process.env.PLAYER_ID ?? "web-audio-demo";
 	const plugins = [
 		new pluginPackage.YouTubePlugin({ preferYoutubei: true }),
@@ -283,10 +282,6 @@ async function main() {
 		process.once("SIGINT", () => void shutdown("SIGINT").catch((error) => console.error("Shutdown failed:", error)));
 		process.once("SIGTERM", () => void shutdown("SIGTERM").catch((error) => console.error("Shutdown failed:", error)));
 		console.info("Enter any valid player ID in the browser to create or select its independent playback session.");
-		if (trackQuery) {
-			const result = await defaultPlayer.play(trackQuery, { requestedBy });
-			if (!result) throw new Error(`ZiPlayer could not start playback for query: ${trackQuery}`);
-		}
 	} catch (error) {
 		playerIdleCleanup?.dispose();
 		await manager?.dispose();

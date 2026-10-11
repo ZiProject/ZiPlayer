@@ -201,9 +201,10 @@ export interface PlayerOptions {
 		gainLinear?: number;
 		highpassHz?: number;
 		lowpassHz?: number;
-		normalize?: boolean | "streaming" | "podcast" | "broadcast" | number;
+		normalize?: boolean | "streaming" | "podcast" | "broadcast";
 		resampleRate?: number;
 		maxBufferBytes?: number;
+		ffmpegPath?: string | null;
 	};
 	/** Creates an output backend owned by this player. Discord Voice is used when omitted. */
 	audioOutputBackendFactory?: AudioOutputBackendFactory<AudioResource>;

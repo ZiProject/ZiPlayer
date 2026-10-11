@@ -20,7 +20,7 @@ used by the runtime, not the normal application integration surface.
 - Loudness normalization and volume shaping for smoother transitions
 - Custom and browser audio output through `audioOutputBackendFactory`
 - WebSocket PCM publishing for browser clients using a strict 48 kHz stereo s16 LE contract
-- Explicitly encoded-input-only DSP pipeline: raw PCM input is rejected by design
+- FFmpeg-backed DSP pipeline (gain, high/low-pass, loudness presets, resample/remix) that decodes common containers to PCM in a child process
 
 ---
 
@@ -163,8 +163,10 @@ ZiPlayer supports both the default Discord Voice backend and custom output backe
 WebSocket and route PCM to the browser client. The browser package is `@ziplayer/client` and validates the protocol on the client
 side.
 
-The runtime audio DSP is intentionally encoded-input-only and emits PCM. In other words, `audioProcessing.inputFormat` must be
-`"encoded"`; raw PCM input is rejected by design. The downstream raw PCM output contract is:
+The runtime audio DSP runs FFmpeg as a child process (the bundled `ffmpeg-static`, `FFMPEG_PATH`, `audioProcessing.ffmpegPath`, or
+`ffmpeg` on `PATH`) and emits PCM. `audioProcessing.inputFormat` must be `"encoded"`: whether a stream is raw PCM is a property of
+that stream, not of the configuration, so PCM produced by a seek is declared automatically. A Web/WebSocket output backend needs
+`audioProcessing.enabled` because it only accepts PCM. The downstream raw PCM output contract is:
 
 - 48 kHz
 - stereo
@@ -253,7 +255,8 @@ const player = await manager.create(guildId, {
 - Call `await player.connect(voiceChannel)` before playback unless the voice channel is passed as part of the play call.
 - Keep `audioOutputBackendFactory` custom backends explicit and return a connected output backend instance.
 - Prefer `PlayerManager`/`Player` exports over bus/controller internals for application code.
-- Treat raw PCM as a transport/output contract, not an input format for the DSP engine.
+- Treat raw PCM as a transport/output contract; do not set `audioProcessing.inputFormat` to a PCM format.
+- `audioProcessing.normalize` accepts `true` or the presets `streaming` (-14 LUFS), `podcast` (-16), `broadcast` (-23); numeric targets are not supported.
 
 ---
 
