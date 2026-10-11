@@ -11,5 +11,9 @@
 		"dotenv": "^18.0.7",
 		"ws": "^8.19.0",
 		"ziplayer": "file:../../core"
+	},
+	"allowScripts": {
+		"file:../../../../plugins": true,
+		"file:../../../core": true
 	}
 }

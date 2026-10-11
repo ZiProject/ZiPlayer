@@ -648,6 +648,28 @@ test("injected fake backend runs playback orchestration and replacement without 
 	assert.equal(harness.sources[1].destroyed, true);
 });
 
+test("stop-before-start resource refresh preserves the playback session for repeated seeks", async () => {
+	const harness = createPlaybackHarness({ playerId: "repeated-seek-refresh" });
+	try {
+		const track = testTrack("repeated-seek-track");
+		await harness.start(track);
+		const session = harness.sessions.current(harness.playerId);
+		harness.backend.capabilities.replacement = "stop-before-start";
+		harness.playback.beginResourceRefresh(harness.playerId);
+
+		for (let i = 0; i < 2; i++) {
+			const resource = createOutputResource(harness, track);
+			await harness.playback.play(harness.playerId, resource, session);
+			assert.equal(harness.sessions.current(harness.playerId), session);
+			assert.equal(session.isActive(), true, `session became inactive after refresh ${i + 1}`);
+			assert.equal(session.ownsContext(session.sessionId), true);
+		}
+	} finally {
+		harness.playback.endResourceRefresh(harness.playerId);
+		await harness.dispose();
+	}
+});
+
 test("custom output playback status follows the backend for pause and resume", async () => {
 	const harness = createPlaybackHarness({ playerId: "custom-output-pause-resume" });
 	try {

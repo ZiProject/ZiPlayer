@@ -3,10 +3,10 @@ import { PREDEFINED_FILTERS } from "../types";
 import type { Readable } from "stream";
 import { spawn, type ChildProcess } from "child_process";
 import ffmpegStaticPath from "ffmpeg-static";
+import { resolveFfmpegExecutable } from "../audio/ffmpegLimits";
 import type { Bus, PlayerAction } from "../structures/Bus";
 import { StreamType } from "@discordjs/voice";
 import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
-import fs from "node:fs";
 
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 import type { FilterControllerOptions } from "../types";
@@ -223,6 +223,9 @@ export class FilterEngine {
 		const sourceStream: Readable | string = source;
 		const wasRecreated = false;
 		if (generation !== this.ffmpegGeneration) throw new Error("FFmpeg generation outdated");
+		if (hasSeek && typeof sourceStream === "string" && streamInfo.stream && !streamInfo.stream.destroyed) {
+			streamInfo.stream.destroy();
+		}
 		const filterString = this.getFilterString();
 		const ffmpegSeekSeconds = hasSeek ? (position / 1000).toFixed(3) : null;
 		if (!hasSeek && !filterString) {
@@ -231,13 +234,7 @@ export class FilterEngine {
 			return result;
 		}
 
-		const candidates = [this.options.ffmpegPath, process.env.FFMPEG_PATH, ffmpegStaticPath, "ffmpeg"];
-		const executable =
-			candidates.find((path) => {
-				if (!path) return false;
-				if (path === "ffmpeg") return true;
-				return fs.existsSync(path);
-			}) || "ffmpeg";
+		const executable = resolveFfmpegExecutable(this.options.ffmpegPath, ffmpegStaticPath);
 
 		this.debug(`Using FFmpeg: ${executable}`);
 		this.debug(
@@ -275,6 +272,7 @@ export class FilterEngine {
 			if (this.ffmpegAbortController === controller) this.ffmpegAbortController = null;
 		};
 		let processingFailed = false;
+		let outputClosedByConsumer = false;
 		const failProcessing = (error: Error) => {
 			if (processingFailed || generation !== this.ffmpegGeneration) return;
 			processingFailed = true;
@@ -302,7 +300,7 @@ export class FilterEngine {
 			cleanup();
 		});
 		proc.once("close", (code, signal) => {
-			if (hasSeek && !processingFailed && code !== 0)
+			if (hasSeek && !processingFailed && !outputClosedByConsumer && code !== 0)
 				failProcessing(new Error(`FFmpeg exited before seek completed (code=${code ?? "null"}, signal=${signal ?? "none"})`));
 			cleanup();
 		});
@@ -317,10 +315,12 @@ export class FilterEngine {
 			});
 		}
 		output.once("close", () => {
-			if (this.ffmpegProcess === proc)
+			if (this.ffmpegProcess === proc) {
+				outputClosedByConsumer = proc.exitCode === null && proc.signalCode === null;
 				try {
 					proc.kill("SIGKILL");
 				} catch {}
+			}
 			cleanup();
 		});
 		output.once("error", (error: Error) => {

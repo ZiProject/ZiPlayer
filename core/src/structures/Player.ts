@@ -398,7 +398,10 @@ export class Player extends EventEmitter {
 		this.invalidatePlay();
 		return this.action({ type: PLAYER_ACTION.seek, position })
 			.then(() => true)
-			.catch(() => false);
+			.catch((error) => {
+				this.debug(`[Player] Seek failed at ${position}ms:`, error);
+				return false;
+			});
 	}
 	public async skip(
 		indexOrOptions?: number | { index?: number; signal?: AbortSignal },

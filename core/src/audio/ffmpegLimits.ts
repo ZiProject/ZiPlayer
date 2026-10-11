@@ -117,8 +117,16 @@ export function acquireFfmpegSlot(signal?: AbortSignal, limit?: number): Promise
 	return gate.acquire(signal, limit);
 }
 
-export function resolveFfmpegExecutable(explicit?: string | null): string {
+export function resolveFfmpegExecutable(explicit?: string | null, bundledPath?: string | null): string {
 	const executableNames = process.platform === "win32" ? ["ffmpeg.exe", "ffmpeg"] : ["ffmpeg"];
+	for (const candidate of [explicit, process.env.FFMPEG_PATH, process.env.ffmpegPath, bundledPath]) {
+		if (!candidate || typeof candidate !== "string") continue;
+		const trimmed = candidate.trim();
+		if (!trimmed) continue;
+		if (trimmed === "ffmpeg" || trimmed === "ffmpeg.exe") return trimmed;
+		if (fs.existsSync(trimmed)) return trimmed;
+	}
+
 	const searchRoots = [
 		process.cwd(),
 		__dirname,
@@ -150,14 +158,6 @@ export function resolveFfmpegExecutable(explicit?: string | null): string {
 				if (fs.existsSync(candidate)) return candidate;
 			}
 		}
-	}
-	const candidates = [explicit, process.env.FFMPEG_PATH, process.env.ffmpegPath, "ffmpeg"];
-	for (const candidate of candidates) {
-		if (!candidate || typeof candidate !== "string") continue;
-		const trimmed = candidate.trim();
-		if (!trimmed) continue;
-		if (trimmed === "ffmpeg" || trimmed === "ffmpeg.exe") return trimmed;
-		if (fs.existsSync(trimmed)) return trimmed;
 	}
 	return "ffmpeg";
 }

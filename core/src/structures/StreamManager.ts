@@ -396,7 +396,7 @@ export class StreamManager extends EventEmitter {
 		for (const [streamId, managed] of this.streams) {
 			const age = now - managed.lastAccessed;
 
-			if (age > this.options.streamTimeout) {
+			if (age > this.options.streamTimeout && managed.status !== "active") {
 				this.debug(`Cleaning up expired stream: ${managed.track.title} (age: ${age}ms)`);
 				this.unregisterStream(streamId, this.options.autoDestroy);
 				cleaned++;

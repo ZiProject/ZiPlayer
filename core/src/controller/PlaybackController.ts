@@ -656,10 +656,12 @@ export class PlaybackController {
 				slot.activeResource = null;
 				slot.activeHandle = null;
 			} else if (event.state === "stopped" && slot.activeHandle === handle) {
-				slot.activeSession?.markStopped();
-				slot.activeSession = null;
 				slot.activeResource = null;
 				slot.activeHandle = null;
+				if (!slot.resourceRefreshInProgress) {
+					slot.activeSession?.markStopped();
+					slot.activeSession = null;
+				}
 			}
 		});
 		slot.handles.set(handle.resource, handle);
@@ -867,8 +869,10 @@ export class PlaybackController {
 						if (slot.activeHandle === previous) {
 							slot.activeHandle = null;
 							slot.activeResource = null;
-							slot.activeSession?.markStopped();
-							slot.activeSession = null;
+							if (!slot.resourceRefreshInProgress) {
+								slot.activeSession?.markStopped();
+								slot.activeSession = null;
+							}
 						}
 						throw error;
 					}
@@ -876,8 +880,10 @@ export class PlaybackController {
 					if (slot.activeHandle === previous) {
 						slot.activeHandle = null;
 						slot.activeResource = null;
-						slot.activeSession?.markStopped();
-						slot.activeSession = null;
+						if (!slot.resourceRefreshInProgress) {
+							slot.activeSession?.markStopped();
+							slot.activeSession = null;
+						}
 					}
 				}
 			}
@@ -905,8 +911,10 @@ export class PlaybackController {
 			) {
 				slot.activeHandle = null;
 				slot.activeResource = null;
-				slot.activeSession?.markStopped();
-				slot.activeSession = null;
+				if (!slot.resourceRefreshInProgress) {
+					slot.activeSession?.markStopped();
+					slot.activeSession = null;
+				}
 				slot.outputState = previous.state;
 				await this.disposeOutputHandle(slot, previous);
 			}

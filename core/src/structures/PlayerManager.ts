@@ -611,6 +611,7 @@ export class PlayerManager extends EventEmitter {
 			debug: channel("SaveController"),
 		});
 		this.controllers.filter?.attach(playerId, undefined, channel("FilterController"), {
+			ffmpegPath: options?.audioProcessing?.ffmpegPath ?? options?.ffmpegPath,
 			initialFilters: Array.isArray(options?.filters) ? options?.filters : [],
 			onFilterApplied: (filter) => this.bus.event(playerId, { type: BUS_EVENT.filterApplied, filter }),
 			onFilterRemoved: (filter) => this.bus.event(playerId, { type: BUS_EVENT.filterRemoved, filter }),

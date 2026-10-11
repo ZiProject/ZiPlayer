@@ -158,6 +158,7 @@ async function main() {
 			return player.play(query, { requestedBy: process.env.REQUESTED_BY ?? "client" });
 		},
 		onControl: (action, body, sessionId) => {
+			console.info(`Received control action "${action}" for session ${sessionId}`);
 			const player = manager?.getPlayer(sessionId);
 			if (!player) throw Object.assign(new Error(`No player exists for session ${sessionId}`), { statusCode: 404 });
 			switch (action) {
@@ -178,6 +179,7 @@ async function main() {
 				case "autoplay":
 					return player.autoPlay(body.enabled);
 				case "filter": {
+					console.info(`Applying filter ${body.filterName} (enabled=${body.enabled}) for session ${sessionId}`);
 					const available = player.filter.getAvailableFilters().some((filter) => filter.name === body.filterName);
 					if (!available) {
 						throw Object.assign(new Error(`Unknown filter: ${body.filterName}`), { statusCode: 400 });
