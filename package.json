@@ -17,6 +17,7 @@
 		"dotenv": "^17.2.2"
 	},
 	"dependencies": {
+		"@discordjs/voice": "^0.19.2",
 		"@ziplayer/plugin": "file:plugins",
 		"isomorphic-unfetch": "^4.0.2",
 		"spotify-url-info": "^3.3.0"

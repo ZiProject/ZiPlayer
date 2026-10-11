@@ -6,6 +6,7 @@ import type { SourcePluginLike } from "./plugin";
 import type { AudioResource, StreamType } from "@discordjs/voice";
 import type { PlayerDebugLevel } from "./debug";
 import type { AudioOutputBackendFactory } from "../output/AudioOutputBackend";
+import type { AudioProcessingOptions } from "../audio/AudioProcessingEngine";
 
 export enum PlaybackMode {
 	NATIVE = "native",
@@ -191,21 +192,7 @@ export interface PlayerOptions {
 		autoDisableInLowPerformance?: boolean;
 	};
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
-	audioProcessing?: {
-		enabled?: boolean;
-		inputFormat?: "encoded" | "pcm16le" | "pcmFloat32";
-		outputFormat?: "pcm16le" | "pcmFloat32";
-		sampleRate?: number;
-		channels?: number;
-		gainDb?: number;
-		gainLinear?: number;
-		highpassHz?: number;
-		lowpassHz?: number;
-		normalize?: boolean | "streaming" | "podcast" | "broadcast";
-		resampleRate?: number;
-		maxBufferBytes?: number;
-		ffmpegPath?: string | null;
-	};
+	audioProcessing?: AudioProcessingOptions;
 	/** Creates an output backend owned by this player. Discord Voice is used when omitted. */
 	audioOutputBackendFactory?: AudioOutputBackendFactory<AudioResource>;
 	maxStreamStore?: number;

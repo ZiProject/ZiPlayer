@@ -33,6 +33,10 @@ export interface AudioOutputCapabilities {
 	volume: "backend" | "upstream" | "unsupported";
 	backpressure: "source" | "bounded" | "unbounded";
 	maxBufferedBytes: number | null;
+	/** DSP formats this sink can consume. Playback picks among these instead of hard-coding the adapter class. */
+	acceptedProcessOutputs?: readonly ("pcm16le" | "pcmFloat32" | "encoded")[];
+	/** Used when `audioProcessing.outputFormat` is omitted. Discord prefers Ogg/Opus; WebSocket prefers PCM. */
+	preferredProcessOutput?: "pcm16le" | "pcmFloat32" | "encoded";
 }
 
 export type AudioOutputState = "ready" | "buffering" | "playing" | "paused" | "stopped" | "ended" | "failed";

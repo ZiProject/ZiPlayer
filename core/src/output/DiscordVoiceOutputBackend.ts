@@ -29,6 +29,8 @@ const DISCORD_CAPABILITIES: AudioOutputCapabilities = {
 	volume: "backend",
 	backpressure: "source",
 	maxBufferedBytes: null,
+	acceptedProcessOutputs: ["encoded", "pcm16le", "pcmFloat32"],
+	preferredProcessOutput: "encoded",
 };
 
 function isAbortError(signal?: AbortSignal): boolean {
@@ -94,9 +96,9 @@ export function resolveOutputStreamType(
 	fallback: StreamType = StreamType.Arbitrary,
 ): StreamType {
 	if (options.enabled === false) return fallback;
-	const outputFormat = options.outputFormat ?? "pcm16le";
+	const outputFormat = options.outputFormat ?? "encoded";
 	if (outputFormat === "pcm16le" || outputFormat === "pcmFloat32") return StreamType.Raw;
-	if (outputFormat === "encoded") return fallback;
+	if (outputFormat === "encoded") return StreamType.Opus;
 	throw new TypeError(`Invalid audio processing output format: ${String(outputFormat)}`);
 }
 
@@ -370,9 +372,12 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 			if (input.format.kind === "pcm" && input.format.sampleFormat === "f32") {
 				outputStream = convertFloat32PcmToS16Le(input.stream);
 			}
+			// inlineVolume forces @discordjs/voice to decode Opus to PCM and re-encode with opusscript.
+			// Encoded Ogg/Opus from the DSP engine is packet-forwarded; player volume is baked into FFmpeg.
+			const inlineVolume = input.format.kind === "pcm";
 			const resource = createAudioResource(outputStream, {
 				metadata: context.metadata,
-				inlineVolume: true,
+				inlineVolume,
 				...(inputType === undefined ? {} : { inputType }),
 			});
 			const handle = new DiscordVoiceOutputHandle(this, resource, input.format, input, context.signal);
@@ -432,7 +437,7 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 	}
 
 	public setVolume(resource: AudioResource, value: number): void {
-		if (!resource.volume) throw new AudioOutputUnsupportedOperationError("backend volume control");
+		if (!resource.volume) return;
 		resource.volume.setVolume(value);
 	}
 

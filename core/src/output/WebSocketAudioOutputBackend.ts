@@ -600,6 +600,8 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 		volume: "backend",
 		backpressure: "bounded",
 		maxBufferedBytes: 256 * 1024,
+		acceptedProcessOutputs: ["pcm16le"],
+		preferredProcessOutput: "pcm16le",
 	};
 	public readonly ready: Promise<void>;
 	private readonly protocolVersion: number;

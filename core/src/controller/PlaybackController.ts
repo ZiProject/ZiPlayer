@@ -14,7 +14,14 @@ import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
 import { PlaybackMode } from "../types";
 import type { AntiStuckRetryHandlers } from "../types";
-import { createAudioProcessingEngine, type AudioProcessingOptions } from "../audio/AudioProcessingEngine";
+import {
+	createAudioProcessingEngine,
+	describeOutputFormat,
+	readAudioProcessingHint,
+	resolveAudioProcessingOptions,
+	selectProcessOutputFormat,
+	type AudioProcessingOptions,
+} from "../audio/AudioProcessingEngine";
 import {
 	BUS_EVENT,
 	CONTROLLER_RPC,

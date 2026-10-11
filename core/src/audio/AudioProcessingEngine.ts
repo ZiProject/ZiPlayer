@@ -2,13 +2,38 @@ import type { Readable } from "stream";
 import type { Track } from "../types";
 import type { AudioFrameFormat } from "../output/AudioOutputBackend";
 import { FFmpegAudioProcessingEngine } from "./FFmpegAudioProcessingEngine";
+export {
+	FFmpegAudioProcessingEngine,
+	resolveAudioProcessingOptions,
+	buildFilterChain,
+	describeOutputFormat,
+	selectProcessOutputFormat,
+	DEFAULT_FFMPEG_INPUT_FORMATS,
+} from "./FFmpegAudioProcessingEngine";
 
-export type AudioProcessingFormat = "encoded" | "pcm16le" | "pcmFloat32";
+/** Player-level input is always an encoded container. PCM is declared per stream on `AudioProcessingContext`. */
+export type AudioProcessingInputFormat = "encoded";
+export type AudioProcessingOutputFormat = "pcm16le" | "pcmFloat32" | "encoded";
+/** @deprecated Use `AudioProcessingOutputFormat`. Player input is always `"encoded"`. */
+export type AudioProcessingFormat = AudioProcessingOutputFormat;
+
+export type EncodedOpusApplication = "voip" | "audio" | "lowdelay";
+
+export const AUDIO_PROCESSING_HINT = Symbol.for("ziplayer.audioProcessingHint");
+
+export interface AudioProcessingHint {
+	filterString?: string;
+	seekMs?: number;
+	inputUrl?: string;
+	/** When true, ignore piped bytes and load `inputUrl` (Node fetch, or FFmpeg if `allowFfmpegUrlInput`). */
+	useInputUrl?: boolean;
+}
 
 export interface AudioProcessingOptions {
 	enabled?: boolean;
-	inputFormat?: AudioProcessingFormat;
-	outputFormat?: AudioProcessingFormat;
+	/** Public API: encoded containers only. Per-stream PCM is `AudioProcessingContext.inputFormat`. */
+	inputFormat?: AudioProcessingInputFormat;
+	outputFormat?: AudioProcessingOutputFormat;
 	sampleRate?: number;
 	channels?: number;
 	gainDb?: number;
@@ -18,10 +43,11 @@ export interface AudioProcessingOptions {
 	/**
 	 * Single-pass loudness normalization (FFmpeg `loudnorm`): `true`/`"streaming"` = -14 LUFS,
 	 * `"podcast"` = -16 LUFS, `"broadcast"` = -23 LUFS. Numeric RMS/peak targets are not supported.
+	 * Mutually exclusive with a `loudnorm` filter in `AudioProcessingContext.filterString`.
 	 */
 	normalize?: boolean | "streaming" | "podcast" | "broadcast";
 	resampleRate?: number;
-	/** Upper bound for a single emitted PCM chunk. Larger FFmpeg reads are split on frame boundaries. */
+	/** Upper bound for a single emitted chunk. Larger FFmpeg reads are split on PCM frame boundaries. */
 	maxBufferBytes?: number;
 	/** Explicit FFmpeg executable. Falls back to `FFMPEG_PATH`, `ffmpeg-static`, then `ffmpeg` on PATH. */
 	ffmpegPath?: string | null;
@@ -31,6 +57,25 @@ export interface AudioProcessingOptions {
 	 * Pass `null` to disable the whitelist.
 	 */
 	ffmpegInputFormats?: readonly string[] | null;
+	/** libopus bitrate for `outputFormat: "encoded"` (default `"128k"`). */
+	encodedBitrate?: string | number;
+	/** libopus `-application` for encoded output (default `"audio"`). */
+	encodedApplication?: EncodedOpusApplication;
+	/** Kill FFmpeg after this many input bytes. `null` disables. Default 1 GiB. */
+	maxInputBytes?: number | null;
+	/** Cap output with FFmpeg `-t`. `null` disables. Default disabled (live tracks). */
+	maxDurationMs?: number | null;
+	/** Kill FFmpeg when stdin and stdout are idle this long. `null` disables. Default 30s. */
+	stallTimeoutMs?: number | null;
+	/** FFmpeg `-threads` (default 1). */
+	ffmpegThreads?: number;
+	/** Process-wide cap on concurrent FFmpeg children. Default: max(2, CPU count). */
+	maxConcurrentProcesses?: number;
+	/**
+	 * When true, FFmpeg may open `AudioProcessingContext.inputUrl` itself (still SSRF-checked).
+	 * Default false: Node fetches the URL (SSRF-guarded) and writes `pipe:0`.
+	 */
+	allowFfmpegUrlInput?: boolean;
 }
 
 export interface AudioProcessingContext {
@@ -43,6 +88,15 @@ export interface AudioProcessingContext {
 	 * declared here; omit it (or use `kind: "encoded"`) for containers FFmpeg can detect itself.
 	 */
 	inputFormat?: AudioFrameFormat;
+	/** Extra FFmpeg `-af` fragment from `player.filter` (already allowlisted). Combined into one graph. */
+	filterString?: string;
+	/** Output-side seek in milliseconds (`-ss` after `-i` unless a seekable FFmpeg URL is explicitly allowed). */
+	seekMs?: number;
+	/** Optional http(s) source. Used only when `useInputUrl` or `allowFfmpegUrlInput` is true. */
+	inputUrl?: string;
+	useInputUrl?: boolean;
+	/** Extra linear volume (player volume) baked into the FFmpeg graph for encoded Discord output. */
+	playbackVolumeLinear?: number;
 }
 
 export interface AudioProcessingPipeline {
@@ -55,10 +109,21 @@ export interface AudioProcessingEngine {
 	createPipeline(options: AudioProcessingOptions, context?: AudioProcessingContext): Promise<AudioProcessingPipeline>;
 }
 
-export { FFmpegAudioProcessingEngine };
+export { isSafeCustomFilter, parseFilterNames, ALLOWED_FFMPEG_AUDIO_FILTERS } from "./filterAllowlist";
+export { getFfmpegProcessStats, configureFfmpegConcurrency, sanitizeFfmpegLog } from "./ffmpegLimits";
+export { assertSafeMediaUrl, openSafeHttpStream, UnsafeMediaUrlError, isBlockedIpAddress } from "./urlSafety";
 
 export function createAudioProcessingEngine(defaults: AudioProcessingOptions = {}): AudioProcessingEngine {
 	return new FFmpegAudioProcessingEngine(defaults);
 }
 
 export const defaultAudioProcessingEngine = createAudioProcessingEngine();
+
+export function readAudioProcessingHint(stream: object | null | undefined): AudioProcessingHint | undefined {
+	if (!stream) return undefined;
+	return (stream as Record<symbol, AudioProcessingHint | undefined>)[AUDIO_PROCESSING_HINT];
+}
+
+export function writeAudioProcessingHint(stream: object, hint: AudioProcessingHint): void {
+	(stream as Record<symbol, AudioProcessingHint>)[AUDIO_PROCESSING_HINT] = hint;
+}
