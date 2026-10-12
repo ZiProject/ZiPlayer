@@ -36,6 +36,7 @@ interface PlaybackSlot {
 	readonly playerId: string;
 	readonly audioPlayer: AudioPlayer | null;
 	readonly outputBackend: AudioOutputBackend<AudioResource>;
+	readonly outputBackends: AudioOutputBackend<AudioResource>[];
 	backendInitialization: Promise<void> | null;
 	readonly stuckTimeoutMs: number;
 	readonly recoveryHandlers: AntiStuckRetryHandlers;
@@ -148,6 +149,7 @@ export class PlaybackController {
 			playerId,
 			audioPlayer: options.audioPlayer ?? null,
 			outputBackend,
+			outputBackends: [outputBackend],
 			backendInitialization: null,
 			stuckTimeoutMs: Math.max(0, options.stuckTimeoutMs ?? 10000),
 			lifecycleAbort: new AbortController(),
