@@ -79,12 +79,33 @@ function isAudioFrame(data, sessionConfig) {
 	const payloadLength = data.length - FRAME_HEADER_BYTES;
 	if (payloadLength === 0) return false;
 
+	// Wire Format v1: Magic 'ZI' (0x5A, 0x49)
+	if (data[0] === 0x5a && data[1] === 0x49) {
+		const version = data[2];
+		if (version !== 1) return false;
+		const flags = data[3];
+		const isOpus = (flags & 0x01) === 1;
+		const reserved = flags & 0xfe;
+		if (reserved !== 0) return false;
+
+		if (sessionConfig?.codec === "opus") {
+			return isOpus;
+		}
+		if (sessionConfig?.codec === "pcm16le" || sessionConfig?.codec === "pcm_s16le" || !sessionConfig?.codec) {
+			if (isOpus) return false;
+			const bytesPerSampleFrame = CHANNELS * SAMPLE_BYTES;
+			return payloadLength % bytesPerSampleFrame === 0;
+		}
+		return true;
+	}
+
+	// Backward-compatible fallback for legacy format:
 	if (sessionConfig?.codec === "opus") {
 		const magic = data.readUInt16LE(0);
 		const sampleRate = data.readUInt16LE(8);
 		const channels = data.readUInt16LE(10);
 		return (
-			(magic === 0x4f50 || data.readUInt16LE(0) === 1 || magic === 0) &&
+			(magic === 0x4f50 || magic === 1 || magic === 0) &&
 			(sampleRate === 0 || sampleRate === SAMPLE_RATE_HZ) &&
 			(channels === 0 || channels === CHANNELS)
 		);

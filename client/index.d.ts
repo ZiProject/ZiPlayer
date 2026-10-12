@@ -33,6 +33,7 @@ export type WebAudioConfig = WebAudioPcmConfig | WebAudioOpusConfig;
 export interface DecodedPcmFrame {
 	sequence: number;
 	timestampMs: number;
+	timestampUs?: bigint;
 	samples: Float32Array;
 	peak: number;
 	payload: Uint8Array;
@@ -42,6 +43,7 @@ export interface DecodedPcmFrame {
 export interface DecodedOpusFrame {
 	sequence: number;
 	timestampMs: number;
+	timestampUs?: bigint;
 	frameDurationMs: number;
 	payload: Uint8Array;
 	samples?: Float32Array;

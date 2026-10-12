@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { VoiceConnectionStatus, type AudioPlayer, type PlayerSubscription } from "@discordjs/voice";
 import { WEB_AUDIO_MAX_MESSAGE_BYTES, type WebSocketLike } from "./WebSocketAudioOutputBackend";
+import { getOpusPacketDurationMs } from "../audio/OpusSourceAdapter";
 import type {
 	AudioOutputBackend,
 	AudioOutputCapabilities,
@@ -12,10 +13,15 @@ import type {
 } from "./AudioOutputBackend";
 import { AudioOutputUnsupportedOperationError } from "./AudioOutputBackend";
 
+export const WEB_AUDIO_MAGIC_0 = 0x5a;
+export const WEB_AUDIO_MAGIC_1 = 0x49;
+export const WEB_AUDIO_PROTOCOL_VERSION_V1 = 1;
+export const WEB_AUDIO_FLAG_CODEC_PCM = 0x00;
+export const WEB_AUDIO_FLAG_CODEC_OPUS = 0x01;
+export const WEB_AUDIO_FRAME_HEADER_BYTES = 16;
 export const WEB_AUDIO_OPUS_CODEC_ID = 0;
 export const WEB_AUDIO_OPUS_SAMPLE_RATE_HZ = 48_000;
 export const WEB_AUDIO_OPUS_CHANNELS = 2;
-export const WEB_AUDIO_FRAME_HEADER_BYTES = 16;
 export const DEFAULT_MAX_BUFFERED_BYTES = 256 * 1024;
 export const DEFAULT_MAX_QUEUED_PACKETS = 50; // 50 * 20ms = 1s of audio
 
@@ -45,52 +51,78 @@ export interface WebAudioConnectionState {
 }
 
 /**
- * Encodes a raw Opus packet into the 16-byte protocol binary frame format:
- * - Bytes 0..3: sequence (UInt32LE)
- * - Bytes 4..7: timestampMs (UInt32LE)
- * - Bytes 8..9: sampleRateHz (UInt16LE, 48000)
- * - Bytes 10..11: channels (UInt16LE, 2)
- * - Bytes 12..13: codec (UInt16LE, 0 = Opus)
- * - Bytes 14..15: flags / reserved (UInt16LE, 0)
- * - Bytes 16..N: raw Opus packet payload
+ * Encodes a raw Opus packet into the 16-byte protocol binary frame format v1:
+ * - Bytes 0..1: Magic 0x5A 0x49 ('ZI')
+ * - Byte 2: Protocol version (0x01)
+ * - Byte 3: Flags (bit 0 = 1 for Opus, 0 for PCM; bits 1..7 = 0)
+ * - Bytes 4..7: Sequence (UInt32BE)
+ * - Bytes 8..15: Media timestamp in microseconds (BigUInt64BE)
+ * - Bytes 16..N: Raw Opus packet payload
  */
-export function encodeWebAudioOpusFrame(packet: Uint8Array | Buffer, sequence: number, timestampMs: number): Buffer {
+export function encodeWebAudioOpusFrame(packet: Uint8Array | Buffer, sequence: number, timestampUs: number | bigint = 0): Buffer {
 	if (packet.length > WEB_AUDIO_MAX_MESSAGE_BYTES) {
 		throw new Error(`Opus packet payload exceeds maximum limit of ${WEB_AUDIO_MAX_MESSAGE_BYTES} bytes`);
 	}
 	const header = Buffer.allocUnsafe(WEB_AUDIO_FRAME_HEADER_BYTES);
-	header.writeUInt32LE(sequence >>> 0, 0);
-	header.writeUInt32LE(timestampMs >>> 0, 4);
-	header.writeUInt16LE(WEB_AUDIO_OPUS_SAMPLE_RATE_HZ, 8);
-	header.writeUInt16LE(WEB_AUDIO_OPUS_CHANNELS, 10);
-	header.writeUInt16LE(WEB_AUDIO_OPUS_CODEC_ID, 12);
-	header.writeUInt16LE(0, 14);
+	header[0] = WEB_AUDIO_MAGIC_0;
+	header[1] = WEB_AUDIO_MAGIC_1;
+	header[2] = WEB_AUDIO_PROTOCOL_VERSION_V1;
+	header[3] = WEB_AUDIO_FLAG_CODEC_OPUS;
+	header.writeUInt32BE(sequence >>> 0, 4);
+	const us = typeof timestampUs === "bigint" ? timestampUs : BigInt(Math.round(Number(timestampUs)));
+	header.writeBigUInt64BE(us, 8);
 
 	return Buffer.concat([header, Buffer.isBuffer(packet) ? packet : Buffer.from(packet)]);
 }
 
 /**
  * Decodes a 16-byte protocol binary frame into its header fields and raw payload.
+ * Supports Wire Format v1 (Magic 'ZI') and legacy format fallback.
  */
 export function decodeWebAudioOpusFrame(frame: Uint8Array | Buffer): {
+	version: number;
+	codec: "opus" | "pcm16le";
 	sequence: number;
 	timestampMs: number;
+	timestampUs: bigint;
 	sampleRateHz: number;
 	channels: number;
-	codec: number;
 	payload: Buffer;
 } {
 	if (frame.length < WEB_AUDIO_FRAME_HEADER_BYTES) {
 		throw new Error("Malformed Web audio frame: missing 16-byte protocol header");
 	}
 	const view = Buffer.isBuffer(frame) ? frame : Buffer.from(frame);
-	const sequence = view.readUInt32LE(0);
-	const timestampMs = view.readUInt32LE(4);
-	const sampleRateHz = view.readUInt16LE(8);
-	const channels = view.readUInt16LE(10);
-	const codec = view.readUInt16LE(12);
-	const payload = view.subarray(WEB_AUDIO_FRAME_HEADER_BYTES);
-	return { sequence, timestampMs, sampleRateHz, channels, codec, payload };
+	if (view[0] === WEB_AUDIO_MAGIC_0 && view[1] === WEB_AUDIO_MAGIC_1) {
+		const version = view[2];
+		const flags = view[3];
+		const codec = (flags & 0x01) === 1 ? "opus" : "pcm16le";
+		const sequence = view.readUInt32BE(4);
+		const timestampUs = view.readBigUInt64BE(8);
+		const timestampMs = Number(timestampUs / 1000n);
+		const payload = view.subarray(WEB_AUDIO_FRAME_HEADER_BYTES);
+		return {
+			version,
+			codec,
+			sequence,
+			timestampMs,
+			timestampUs,
+			sampleRateHz: WEB_AUDIO_OPUS_SAMPLE_RATE_HZ,
+			channels: WEB_AUDIO_OPUS_CHANNELS,
+			payload,
+		};
+	} else {
+		// Legacy format fallback
+		const sequence = view.readUInt32LE(0);
+		const timestampMs = view.readUInt32LE(4);
+		const timestampUs = BigInt(timestampMs) * 1000n;
+		const sampleRateHz = view.readUInt16LE(8);
+		const channels = view.readUInt16LE(10);
+		const codecId = view.readUInt16LE(12);
+		const codec = codecId === 0 ? "opus" : "pcm16le";
+		const payload = view.subarray(WEB_AUDIO_FRAME_HEADER_BYTES);
+		return { version: 0, codec, sequence, timestampMs, timestampUs, sampleRateHz, channels, payload };
+	}
 }
 
 /**
@@ -128,6 +160,7 @@ export class WebAudioConnection extends EventEmitter {
 
 	private pendingPacket: Buffer | null = null;
 	private sequence = 0;
+	private mediaTimestampUs = 0n;
 	private startTime = 0;
 	private speaking = false;
 	private destroyed = false;
@@ -237,8 +270,18 @@ export class WebAudioConnection extends EventEmitter {
 		this.state.subscription = subscription;
 		this.state.status = VoiceConnectionStatus.Ready;
 		this.startTime = Date.now();
+		this.reset();
 		this.emit("stateChange", this.state.status);
 		return subscription;
+	}
+
+	/**
+	 * Resets sequence and media timestamp counters to 0 (e.g. for a new track or session generation).
+	 */
+	public reset(): void {
+		this.sequence = 0;
+		this.mediaTimestampUs = 0n;
+		this.pendingPacket = null;
 	}
 
 	/**
@@ -288,8 +331,15 @@ export class WebAudioConnection extends EventEmitter {
 		if (!packet) return;
 		this.pendingPacket = null;
 
-		const seq = this.sequence++;
-		const timestampMs = Math.round(seq * 20);
+		const seq = this.sequence;
+		this.sequence = (this.sequence + 1) >>> 0;
+		const timestampUs = this.mediaTimestampUs;
+
+		// Determine duration from packet TOC or default 20ms
+		const durationMs = getOpusPacketDurationMs(packet) || 20;
+		const durationUs = BigInt(Math.round(durationMs * 1000));
+		this.mediaTimestampUs += durationUs;
+
 		let encodedFrame: Buffer | null = null;
 
 		// Dispatch to all attached sockets
@@ -324,7 +374,7 @@ export class WebAudioConnection extends EventEmitter {
 			}
 
 			if (!encodedFrame) {
-				encodedFrame = encodeWebAudioOpusFrame(packet, seq, timestampMs);
+				encodedFrame = encodeWebAudioOpusFrame(packet, seq, timestampUs);
 			}
 
 			try {
@@ -337,7 +387,12 @@ export class WebAudioConnection extends EventEmitter {
 			}
 		}
 
-		this.emit("packet", { sequence: seq, size: packet.length, timestampMs });
+		this.emit("packet", {
+			sequence: seq,
+			size: packet.length,
+			timestampMs: Number(timestampUs / 1000n),
+			timestampUs,
+		});
 	}
 
 	/**

@@ -139,30 +139,78 @@ export function decodeWebAudioControlMessage(payload: string): Record<string, un
 	return parsed;
 }
 
-export function encodeWebAudioFrame(payload: Uint8Array, sequence: number, timestampMs: number): Uint8Array {
+export function encodeWebAudioFrame(
+	payload: Uint8Array,
+	sequence: number,
+	timestampUsOrMs: number | bigint = 0,
+	options: { protocolVersion?: number; isMicroseconds?: boolean } = {},
+): Uint8Array {
 	if (payload.length > WEB_AUDIO_MAX_MESSAGE_BYTES) {
 		throw new Error(`Audio frame payload exceeds ${WEB_AUDIO_MAX_MESSAGE_BYTES} bytes`);
 	}
 	const header = Buffer.allocUnsafe(16);
-	header.writeUInt32LE(sequence >>> 0, 0);
-	header.writeUInt32LE(timestampMs >>> 0, 4);
-	header.writeUInt16LE(WEB_AUDIO_SAMPLE_RATE_HZ, 8);
-	header.writeUInt16LE(WEB_AUDIO_CHANNELS, 10);
-	header.writeUInt16LE(WEB_AUDIO_SAMPLE_BYTES, 12);
-	header.writeUInt16LE(0, 14);
+	const version = options.protocolVersion ?? 1;
+	if (version === 0) {
+		// Legacy format
+		header.writeUInt32LE(sequence >>> 0, 0);
+		header.writeUInt32LE(Number(timestampUsOrMs) >>> 0, 4);
+		header.writeUInt16LE(WEB_AUDIO_SAMPLE_RATE_HZ, 8);
+		header.writeUInt16LE(WEB_AUDIO_CHANNELS, 10);
+		header.writeUInt16LE(WEB_AUDIO_SAMPLE_BYTES, 12);
+		header.writeUInt16LE(0, 14);
+	} else {
+		// Wire Format v1
+		header[0] = 0x5a; // 'Z'
+		header[1] = 0x49; // 'I'
+		header[2] = 0x01; // Version 1
+		header[3] = 0x00; // Flags: bit 0 = 0 (PCM16LE)
+		header.writeUInt32BE(sequence >>> 0, 4);
+		const us = options.isMicroseconds ? BigInt(timestampUsOrMs) : BigInt(Math.round(Number(timestampUsOrMs) * 1000));
+		header.writeBigUInt64BE(us, 8);
+	}
 	const output = Buffer.alloc(header.length + payload.length);
 	output.set(header, 0);
 	output.set(Buffer.from(payload), header.length);
 	return new Uint8Array(output.buffer, output.byteOffset, output.byteLength);
 }
 
-export function decodeWebAudioFrame(frame: Uint8Array): { sequence: number; timestampMs: number; payload: Uint8Array } {
+export function decodeWebAudioFrame(frame: Uint8Array): {
+	version: number;
+	sequence: number;
+	timestampMs: number;
+	timestampUs: bigint;
+	payload: Uint8Array;
+} {
 	if (frame.length < 16) throw new Error("Malformed Web audio frame: missing protocol header");
 	const view = Buffer.from(frame);
-	const sequence = view.readUInt32LE(0);
-	const timestampMs = view.readUInt32LE(4);
-	const payload = view.subarray(16);
-	return { sequence, timestampMs, payload: new Uint8Array(payload) };
+	if (view[0] === 0x5a && view[1] === 0x49) {
+		// Wire format v1
+		const version = view[2];
+		const sequence = view.readUInt32BE(4);
+		const timestampUs = view.readBigUInt64BE(8);
+		const timestampMs = Number(timestampUs / 1000n);
+		const payload = view.subarray(16);
+		return {
+			version,
+			sequence,
+			timestampMs,
+			timestampUs,
+			payload: new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength),
+		};
+	} else {
+		// Legacy format fallback
+		const sequence = view.readUInt32LE(0);
+		const timestampMs = view.readUInt32LE(4);
+		const timestampUs = BigInt(timestampMs) * 1000n;
+		const payload = view.subarray(16);
+		return {
+			version: 0,
+			sequence,
+			timestampMs,
+			timestampUs,
+			payload: new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength),
+		};
+	}
 }
 
 export function defaultWebAudioSocketFactory(_context: WebSocketAudioBackendContext): WebSocketLike {
@@ -183,6 +231,7 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 	private readonly signal?: AbortSignal;
 	private socket: WebSocketLike | null = null;
 	private sequence = 0;
+	private mediaTimestampUs = 0n;
 	private volume = 1;
 	private sendingPromise: Promise<void> | null = null;
 	public completion: Promise<void> = Promise.resolve();
@@ -532,13 +581,28 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 		const format = this.format;
 		if (format.kind === "encoded") {
 			const frameDurationMs = 20;
-			socket.send(encodeWebAudioOpusFrame(payload, this.sequence++, Date.now()));
+			const timestampUs = this.mediaTimestampUs;
+			this.mediaTimestampUs += BigInt(Math.round(frameDurationMs * 1000));
+			const seq = this.sequence;
+			this.sequence = (this.sequence + 1) >>> 0;
+			socket.send(encodeWebAudioOpusFrame(payload, seq, timestampUs));
 			this.playbackDeadline = (this.playbackDeadline ?? performance.now()) + frameDurationMs;
 			return true;
 		}
 		if (format.kind !== "pcm") throw new TypeError("WebSocket backend requires PCM stream input");
-		const frameDurationMs = (payload.byteLength / (format.sampleRateHz * this.calculateSampleFrameBytes())) * 1000;
-		socket.send(encodeWebAudioFrame(payload, this.sequence++, Date.now()));
+		const sampleBytes = this.calculateSampleFrameBytes();
+		const frameDurationMs = (payload.byteLength / (format.sampleRateHz * sampleBytes)) * 1000;
+		const frameDurationUs = BigInt(Math.round((payload.byteLength / (format.sampleRateHz * sampleBytes)) * 1_000_000));
+		const timestampUs = this.mediaTimestampUs;
+		this.mediaTimestampUs += frameDurationUs;
+		const seq = this.sequence;
+		this.sequence = (this.sequence + 1) >>> 0;
+		socket.send(
+			encodeWebAudioFrame(payload, seq, timestampUs, {
+				isMicroseconds: true,
+				protocolVersion: this.resource.protocolVersion,
+			}),
+		);
 		this.playbackDeadline = (this.playbackDeadline ?? performance.now()) + frameDurationMs;
 		return true;
 	}

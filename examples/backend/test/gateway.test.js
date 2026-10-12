@@ -653,10 +653,70 @@ test("a listener receives Opus audio:config and Opus audio frames", async () => 
 
 		const framePromise = waitForMessage(listener);
 		const opusPacket = Buffer.from([0xf8, 0xff, 0xfe, 0x01, 0x02, 0x03]); // valid Opus TOC
-		publisher.send(encodeWebAudioOpusFrame(opusPacket, 1, 20), { binary: true });
+		publisher.send(encodeWebAudioOpusFrame(opusPacket, 1, 20_000n), { binary: true });
 		const frameMsg = await framePromise;
 		assert.equal(frameMsg.isBinary, true);
 		assert.ok(frameMsg.data.length >= 16 + opusPacket.length);
+	} finally {
+		listener?.close();
+		publisher?.close();
+		await gateway.close();
+	}
+});
+
+test("gateway relays consecutive Opus frames across sequences 0..10 without false rejection", async () => {
+	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0 });
+	let listener;
+	let publisher;
+	try {
+		const address = await gateway.listen();
+		const gatewayUrl = `ws://127.0.0.1:${address.port}`;
+
+		publisher = new WebSocket(`${gatewayUrl}/publish?sessionId=opus-seq-session`);
+		await waitForOpen(publisher);
+
+		listener = new WebSocket(`${gatewayUrl}/listen?sessionId=opus-seq-session`);
+		await waitForOpen(listener);
+
+		const configPromise = waitForMessage(listener);
+		publisher.send(
+			JSON.stringify({
+				v: 1,
+				type: "audio:config",
+				sessionId: "opus-seq-session",
+				protocolVersion: 1,
+				codec: "opus",
+				sampleRateHz: 48_000,
+				channels: 2,
+			}),
+		);
+		await configPromise;
+
+		const opusPacket = Buffer.from([0xf8, 0xff, 0xfe, 0xaa, 0xbb]);
+		const receivedFrames = [];
+		listener.on("message", (data, isBinary) => {
+			if (isBinary) receivedFrames.push(Buffer.from(data));
+		});
+
+		// Send sequences 0, 1, 2, 3, 4, 5, 10, 100
+		const sequences = [0, 1, 2, 3, 4, 5, 10, 100];
+		for (const seq of sequences) {
+			const frame = encodeWebAudioOpusFrame(opusPacket, seq, BigInt(seq * 20_000));
+			publisher.send(frame, { binary: true });
+		}
+
+		// Wait briefly for all frames to be relayed
+		await new Promise((resolve) => setTimeout(resolve, 80));
+
+		assert.equal(receivedFrames.length, sequences.length);
+		for (let i = 0; i < sequences.length; i++) {
+			const frame = receivedFrames[i];
+			assert.equal(frame[0], 0x5a, "Magic byte 0 must be 'Z'");
+			assert.equal(frame[1], 0x49, "Magic byte 1 must be 'I'");
+			assert.equal(frame[2], 0x01, "Protocol version must be 1");
+			assert.equal(frame[3], 0x01, "Flags bit 0 must be 1 (Opus)");
+			assert.equal(frame.readUInt32BE(4), sequences[i], `Sequence must match ${sequences[i]}`);
+		}
 	} finally {
 		listener?.close();
 		publisher?.close();

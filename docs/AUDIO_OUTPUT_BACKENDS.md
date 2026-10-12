@@ -298,18 +298,28 @@ webConnection.subscribe(player);
 During each 20 ms tick of `AudioPlayer`, `_stepPrepare()` reads one Opus packet from the resource and calls
 `prepareAudioPacket(packet)` on all ready subscribers. `_stepDispatch()` then calls `dispatchAudio()` to transmit the packet.
 
-### Binary Frame Protocol
+### Binary Frame Protocol (Wire Format v1)
 
-Binary frames transmitted by `WebAudioConnection` and `WebSocketAudioOutputBackend` use a 16-byte fixed header:
+Binary audio frames transmitted by `WebAudioConnection` and `WebSocketAudioOutputBackend` use a unified 16-byte fixed header:
 
-| Offset  | Size | Type     | Description                                           |
-| ------- | ---- | -------- | ----------------------------------------------------- |
-| 0..1    | 2    | Bytes    | Magic `0x5A 0x49` (`'Z'`, `'I'`)                      |
-| 2       | 1    | UInt8    | Protocol version (`0x01`)                             |
-| 3       | 1    | UInt8    | Flags: bit 0 codec (`0 = PCM16LE`, `1 = Opus`)        |
-| 4..7    | 4    | UInt32BE | Monotonic sequence number                             |
-| 8..15   | 8    | UInt64BE | Timestamp in milliseconds (monotonic clock)           |
-| 16..end | N    | Bytes    | Audio payload (raw Opus packet or s16 LE PCM samples) |
+| Offset  | Size | Type     | Description                                                                              |
+| ------- | ---- | -------- | ---------------------------------------------------------------------------------------- |
+| 0..1    | 2    | Bytes    | Magic `0x5A 0x49` (`'Z'`, `'I'`)                                                         |
+| 2       | 1    | UInt8    | Protocol version (`0x01`)                                                                |
+| 3       | 1    | UInt8    | Flags: bit 0 codec (`0 = PCM16LE`, `1 = Opus`); bits 1..7 reserved (must be `0`)         |
+| 4..7    | 4    | UInt32BE | Monotonic sequence number (Big-Endian, uint32 wraparound support)                        |
+| 8..15   | 8    | UInt64BE | Audio timestamp in microseconds from track start (`BigUInt64BE`)                         |
+| 16..end | N    | Bytes    | Audio payload: raw Opus packet (for flag `0x01`) or interleaved s16 LE PCM (flag `0x00`) |
+
+- **Sequence**: Monotonically increments with each dispatched frame. Wraps around safely at $2^{32}-1$ to `0` via
+  `(seq + 1) >>> 0`. Reset to `0` upon starting a new track.
+- **Timestamp**: Monotonically advances by the exact audio frame duration in microseconds ($\mu s$). For 20 ms Opus packets,
+  timestamp advances by $+20,000\,\mu s$ per packet. For PCM frames, timestamp advances by
+  `(sampleBytes / (channels * sampleRate * 2)) * 1_000_000\,\mu s`. Reset to `0` on track start.
+- **Demuxers**: ZiPlayer provides pure-JavaScript in-process demuxers for Ogg Opus (`demuxOggOpusToPackets`) and WebM Opus
+  (`demuxWebmOpusToPackets`) using `prism-media`, parsing container streams directly into raw Opus packets for
+  `createOpusAudioResource(stream, { inputType: StreamType.Opus })` with zero FFmpeg child processes spawned.
+- **Backward Compatibility**: Decoders and WebSocket Gateway accept Wire Format v1 with graceful fallback for legacy PCM frames.
 
 ### Backpressure and Non-blocking Fan-Out
 

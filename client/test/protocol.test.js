@@ -147,3 +147,46 @@ test("OpusDecoderAdapter decodes Opus frame to interleaved stereo Float32Array",
 		adapter.free();
 	}
 });
+
+test("Wire Format v1 Opus frame decoding parses magic 'ZI', sequence BE, and timestampUs", () => {
+	const payload = [0xf8, 0xff, 0xfe, 0x01, 0x02, 0x03];
+	const buf = Buffer.alloc(16 + payload.length);
+	buf[0] = 0x5a; // 'Z'
+	buf[1] = 0x49; // 'I'
+	buf[2] = 0x01; // Version 1
+	buf[3] = 0x01; // Flags: bit 0 = 1 (Opus)
+	buf.writeUInt32BE(42, 4); // Sequence Big-Endian
+	buf.writeBigUInt64BE(840_000n, 8); // 840,000 microseconds = 840 ms
+	buf.set(payload, 16);
+
+	const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+	const decoded = decodeOpusFrame(arrayBuffer, { codec: "opus" }, 42);
+	assert.equal(decoded.sequence, 42);
+	assert.equal(decoded.timestampMs, 840);
+	assert.equal(decoded.timestampUs, 840_000n);
+	assert.equal(decoded.frameDurationMs, 20);
+	assert.equal(decoded.sequenceGap, false);
+	assert.deepEqual(Array.from(decoded.payload), payload);
+});
+
+test("Wire Format v1 PCM frame decoding parses magic 'ZI', sequence BE, and timestampUs", () => {
+	const values = [16384, -16384];
+	const payload = Buffer.alloc(values.length * 2);
+	values.forEach((value, index) => payload.writeInt16LE(value, index * 2));
+	const buf = Buffer.alloc(16 + payload.length);
+	buf[0] = 0x5a; // 'Z'
+	buf[1] = 0x49; // 'I'
+	buf[2] = 0x01; // Version 1
+	buf[3] = 0x00; // Flags: bit 0 = 0 (PCM16LE)
+	buf.writeUInt32BE(7, 4); // Sequence Big-Endian
+	buf.writeBigUInt64BE(140_000n, 8); // 140,000 microseconds = 140 ms
+	payload.copy(buf, 16);
+
+	const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+	const decoded = decodePcmFrame(arrayBuffer, config, 7);
+	assert.equal(decoded.sequence, 7);
+	assert.equal(decoded.timestampMs, 140);
+	assert.equal(decoded.timestampUs, 140_000n);
+	assert.equal(decoded.sequenceGap, false);
+	assert.equal(decoded.samples.length, 2);
+});

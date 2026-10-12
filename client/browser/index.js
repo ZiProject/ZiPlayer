@@ -54,18 +54,31 @@ export function decodeOpusFrame(data, config, expectedSequence = null) {
 		throw new Error("Received a malformed Opus frame");
 	}
 	const view = new DataView(data);
-	const magic = view.getUint16(0, true);
-	let sequence, timestampMs, frameDurationMs;
-	if (magic === 0x4f50) {
-		// WebAudioOpusFrame magic ('OP')
-		sequence = view.getUint32(4, true);
-		timestampMs = view.getUint32(8, true);
-		frameDurationMs = view.getUint16(12, true);
-	} else {
-		// Generic 16-byte header
-		sequence = view.getUint32(0, true);
-		timestampMs = view.getUint32(4, true);
+	let sequence, timestampMs, timestampUs, frameDurationMs;
+
+	if (view.getUint8(0) === 0x5a && view.getUint8(1) === 0x49) {
+		// Wire Format v1: Magic 'ZI'
+		const version = view.getUint8(2);
+		const flags = view.getUint8(3);
+		if (version !== 1) throw new Error(`Unsupported audio frame protocol version: ${version}`);
+		if ((flags & 0x01) !== 1) throw new Error("Expected Opus frame flag in audio header");
+		sequence = view.getUint32(4, false); // Big-Endian
+		timestampUs = view.getBigUint64(8, false); // Big-Endian
+		timestampMs = Number(timestampUs / 1000n);
 		frameDurationMs = 20;
+	} else {
+		// Legacy format fallback
+		const magic = view.getUint16(0, true);
+		if (magic === 0x4f50) {
+			sequence = view.getUint32(4, true);
+			timestampMs = view.getUint32(8, true);
+			frameDurationMs = view.getUint16(12, true);
+		} else {
+			sequence = view.getUint32(0, true);
+			timestampMs = view.getUint32(4, true);
+			frameDurationMs = 20;
+		}
+		timestampUs = BigInt(timestampMs) * 1000n;
 	}
 	const payloadBytes = data.byteLength - WEB_AUDIO_FRAME_HEADER_BYTES;
 	if (payloadBytes === 0) {
@@ -75,6 +88,7 @@ export function decodeOpusFrame(data, config, expectedSequence = null) {
 	return {
 		sequence,
 		timestampMs,
+		timestampUs,
 		frameDurationMs,
 		payload,
 		sequenceGap: expectedSequence !== null && sequence !== expectedSequence,
@@ -142,21 +156,37 @@ export function decodePcmFrame(data, config, expectedSequence = null) {
 		throw new Error("Received a malformed PCM frame");
 	}
 	const view = new DataView(data);
-	const sequence = view.getUint32(0, true);
-	const timestampMs = view.getUint32(4, true);
-	const sampleRateHz = view.getUint16(8, true);
-	const channels = view.getUint16(10, true);
-	const sampleBytes = view.getUint16(12, true);
 	const payloadBytes = data.byteLength - WEB_AUDIO_FRAME_HEADER_BYTES;
-	if (
-		sampleRateHz !== config.sampleRateHz ||
-		channels !== config.channels ||
-		sampleBytes !== WEB_AUDIO_SAMPLE_BYTES ||
-		payloadBytes === 0 ||
-		payloadBytes % (channels * sampleBytes) !== 0
-	) {
+	let sequence, timestampMs, timestampUs;
+
+	if (view.getUint8(0) === 0x5a && view.getUint8(1) === 0x49) {
+		// Wire Format v1: Magic 'ZI'
+		const version = view.getUint8(2);
+		const flags = view.getUint8(3);
+		if (version !== 1) throw new Error(`Unsupported audio frame protocol version: ${version}`);
+		if ((flags & 0x01) !== 0) throw new Error("Expected PCM frame flag in audio header");
+		sequence = view.getUint32(4, false); // Big-Endian
+		timestampUs = view.getBigUint64(8, false); // Big-Endian
+		timestampMs = Number(timestampUs / 1000n);
+	} else {
+		// Legacy format fallback
+		sequence = view.getUint32(0, true);
+		timestampMs = view.getUint32(4, true);
+		timestampUs = BigInt(timestampMs) * 1000n;
+		const sampleRateHz = view.getUint16(8, true);
+		const channels = view.getUint16(10, true);
+		const sampleBytes = view.getUint16(12, true);
+		if (sampleRateHz !== config.sampleRateHz || channels !== config.channels || sampleBytes !== WEB_AUDIO_SAMPLE_BYTES) {
+			throw new Error("Received an invalid PCM frame header or payload");
+		}
+	}
+
+	const channels = config.channels ?? WEB_AUDIO_CHANNELS;
+	const sampleBytes = WEB_AUDIO_SAMPLE_BYTES;
+	if (payloadBytes === 0 || payloadBytes % (channels * sampleBytes) !== 0) {
 		throw new Error("Received an invalid PCM frame header or payload");
 	}
+
 	const sampleCount = payloadBytes / sampleBytes;
 	const samples = new Float32Array(sampleCount);
 	let peak = 0;
@@ -169,6 +199,7 @@ export function decodePcmFrame(data, config, expectedSequence = null) {
 	return {
 		sequence,
 		timestampMs,
+		timestampUs,
 		samples,
 		peak,
 		payload: new Uint8Array(data, WEB_AUDIO_FRAME_HEADER_BYTES, payloadBytes),
@@ -517,6 +548,9 @@ export class WebAudioClient extends EventTarget {
 			}
 		}
 		dispatchDetail(this, "opus", frame);
+		if (frame.samples) {
+			dispatchDetail(this, "pcm", { ...frame, codec: "opus" });
+		}
 	}
 
 	receivePcmFrame(data) {

@@ -170,14 +170,12 @@ export function createOpusAudioResource(
  */
 export function demuxOggOpusToPackets(stream: Readable): Readable {
 	const demuxer = new prism.opus.OggDemuxer();
+	stream.on("error", (err) => demuxer.destroy(err));
 	return stream.pipe(demuxer);
 }
 
-/**
- * Demuxes a WebM Opus stream into raw Opus packets using prism-media's in-process demuxer.
- * Zero FFmpeg processes spawned.
- */
 export function demuxWebmOpusToPackets(stream: Readable): Readable {
 	const demuxer = new prism.opus.WebmDemuxer();
+	stream.on("error", (err) => demuxer.destroy(err));
 	return stream.pipe(demuxer);
 }
