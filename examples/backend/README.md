@@ -75,10 +75,18 @@ npm start --prefix examples/backend -- "https://www.youtube.com/watch?v=..."
 ## What is running?
 
 The example registers YouTube, SoundCloud, Spotify, attachments, and TTS source plugins with `PlayerManager`. It uses the regular
-ZiPlayer playback pipeline, but sends processed PCM through `WebSocketAudioOutputBackend` to the local gateway instead of Discord
-Voice. The gateway forwards audio to browser listeners; the browser's reusable `@ziplayer/client` validates and plays it through
-an AudioWorklet. The page's session fields are available for manual connections if you want to listen to an already-running
-player.
+ZiPlayer playback pipeline with concurrent multi-output support:
+
+- Instead of locking the player to a single output backend at creation time, the player starts with standard playback capabilities
+  and dynamically registers a `WebSocketAudioOutputBackend` via `player.connect(backend)`.
+- If a Discord voice channel connection is also established via `player.connect(channel)`, both Discord Voice and Web Audio PCM
+  stream concurrently from the exact same DSP pipeline without duplicate FFmpeg processes.
+- The pacing sink automatically adapts: while Discord Voice is actively connected, it acts as pacing master; when only Web Audio
+  is active, Web Audio paces the stream in real time.
+- The web page allows viewing active outputs (`/outputs` or in the player panel), disconnecting outputs
+  (`player.disconnectOutput(id)`), and dynamically connecting secondary outputs mid-stream. The gateway forwards audio to browser
+  listeners; the browser's reusable `@ziplayer/client` validates and plays it through an AudioWorklet. The page's session fields
+  are available for manual connections if you want to listen to an already-running player.
 
 Run the gateway handoff test from the repository root with `npm test --prefix examples/backend`.
 

@@ -51,11 +51,21 @@ function invalidSessionIdMessage() {
 }
 
 function isAudioConfig(message, sessionId) {
+	if (
+		message.v !== PROTOCOL_VERSION ||
+		message.type !== "audio:config" ||
+		message.sessionId !== sessionId ||
+		(message.protocolVersion !== PROTOCOL_VERSION && message.protocolVersion !== undefined)
+	) {
+		return false;
+	}
+	if (message.codec === "opus") {
+		return (
+			(message.sampleRateHz === undefined || message.sampleRateHz === SAMPLE_RATE_HZ) &&
+			(message.channels === undefined || message.channels === CHANNELS)
+		);
+	}
 	return (
-		message.v === PROTOCOL_VERSION &&
-		message.type === "audio:config" &&
-		message.sessionId === sessionId &&
-		message.protocolVersion === PROTOCOL_VERSION &&
 		message.sampleRateHz === SAMPLE_RATE_HZ &&
 		message.channels === CHANNELS &&
 		message.sampleFormat === "s16" &&
@@ -64,11 +74,24 @@ function isAudioConfig(message, sessionId) {
 	);
 }
 
-function isAudioFrame(data) {
+function isAudioFrame(data, sessionConfig) {
 	if (data.length < FRAME_HEADER_BYTES || data.length > MAX_MESSAGE_BYTES + FRAME_HEADER_BYTES) return false;
-	const samplesPerChannel = data.length - FRAME_HEADER_BYTES;
+	const payloadLength = data.length - FRAME_HEADER_BYTES;
+	if (payloadLength === 0) return false;
+
+	if (sessionConfig?.codec === "opus") {
+		const magic = data.readUInt16LE(0);
+		const sampleRate = data.readUInt16LE(8);
+		const channels = data.readUInt16LE(10);
+		return (
+			(magic === 0x4f50 || data.readUInt16LE(0) === 1 || magic === 0) &&
+			(sampleRate === 0 || sampleRate === SAMPLE_RATE_HZ) &&
+			(channels === 0 || channels === CHANNELS)
+		);
+	}
+
 	const bytesPerSampleFrame = CHANNELS * SAMPLE_BYTES;
-	if (samplesPerChannel === 0 || samplesPerChannel % bytesPerSampleFrame !== 0) return false;
+	if (payloadLength % bytesPerSampleFrame !== 0) return false;
 
 	return data.readUInt16LE(8) === SAMPLE_RATE_HZ && data.readUInt16LE(10) === CHANNELS && data.readUInt16LE(12) === SAMPLE_BYTES;
 }
@@ -209,8 +232,8 @@ function attachPublisher(session, socket, sessions, onListenerCount) {
 
 	socket.on("message", (data, isBinary) => {
 		if (isBinary) {
-			if (!configured || !isAudioFrame(data)) {
-				socket.close(1003, "Invalid or unexpected PCM audio frame");
+			if (!configured || !isAudioFrame(data, session.config)) {
+				socket.close(1003, "Invalid or unexpected audio frame");
 				return;
 			}
 			frameCount++;
@@ -421,6 +444,32 @@ function createWebAudioGateway({
 			})();
 			return;
 		}
+		if (request.method === "GET" && pathname === "/outputs") {
+			void (async () => {
+				const sessionId = new URL(request.url ?? "/", "http://localhost").searchParams.get("sessionId");
+				if (!isValidSessionId(sessionId)) {
+					sendJson(response, 400, { error: invalidSessionIdMessage() });
+					return;
+				}
+				if (typeof onControl !== "function") {
+					sendJson(response, 503, { error: "Playback controls are not available" });
+					return;
+				}
+				try {
+					const outputs = await onControl("outputs", {}, sessionId);
+					sendJson(response, 200, { sessionId, outputs: outputs ?? [] });
+				} catch (error) {
+					const statusCode = error && typeof error === "object" ? error.statusCode : undefined;
+					if (statusCode) {
+						sendJson(response, statusCode, { error: error.message });
+						return;
+					}
+					console.error("Web audio outputs request failed:", error);
+					sendJson(response, 500, { error: "Audio outputs request failed" });
+				}
+			})();
+			return;
+		}
 		if (request.method === "POST" && pathname === "/control") {
 			void (async () => {
 				if (request.headers["content-type"]?.split(";")[0] !== "application/json") {
@@ -451,9 +500,24 @@ function createWebAudioGateway({
 						"autoplay",
 						"filter",
 						"filter-clear",
+						"outputs",
+						"connect-output",
+						"disconnect-output",
 					];
 					if (!supportedActions.includes(action)) {
 						sendJson(response, 400, { error: "Unsupported playback control action" });
+						return;
+					}
+					if (action === "disconnect-output" && (typeof body.outputId !== "string" || !body.outputId.trim())) {
+						sendJson(response, 400, { error: "outputId must be a non-empty string" });
+						return;
+					}
+					if (
+						action === "connect-output" &&
+						body.outputId !== undefined &&
+						(typeof body.outputId !== "string" || !body.outputId.trim())
+					) {
+						sendJson(response, 400, { error: "outputId must be a non-empty string when provided" });
 						return;
 					}
 					if (action === "seek" && (!Number.isFinite(body.positionMs) || body.positionMs < 0)) {

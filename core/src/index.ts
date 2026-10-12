@@ -55,6 +55,26 @@ export {
 	decodeWebAudioFrame,
 	defaultWebAudioSocketFactory,
 } from "./output/WebSocketAudioOutputBackend";
+export {
+	WebAudioConnection,
+	WebAudioConnectionBackend,
+	encodeWebAudioOpusFrame,
+	decodeWebAudioOpusFrame,
+	WEB_AUDIO_OPUS_SAMPLE_RATE_HZ,
+	WEB_AUDIO_OPUS_CHANNELS,
+	WEB_AUDIO_OPUS_CODEC_ID,
+	DEFAULT_MAX_BUFFERED_BYTES,
+	DEFAULT_MAX_QUEUED_PACKETS,
+} from "./output/WebAudioConnection";
+export type { WebAudioConnectionOptions, WebAudioConnectionStats, WebAudioConnectionState } from "./output/WebAudioConnection";
+export {
+	createOpusAudioResource,
+	demuxOggOpusToPackets,
+	demuxWebmOpusToPackets,
+	getOpusPacketDurationMs,
+	validateOpusPacketDuration,
+} from "./audio/OpusSourceAdapter";
+export type { CreateOpusAudioResourceOptions } from "./audio/OpusSourceAdapter";
 export type {
 	AudioFrameFormat,
 	AudioOutputInput,
@@ -108,7 +128,14 @@ export type {
 } from "./audio/AudioProcessingEngine";
 export { resolveAudioProcessingOptions, getFfmpegProcessStats, configureFfmpegConcurrency } from "./audio/AudioProcessingEngine";
 export { resolveFfmpegExecutable } from "./audio/ffmpegLimits";
-export { isBlockedIpAddress, parseMediaUrl, resolvePublicAddresses, assertSafeMediaUrl, openSafeHttpStream, UnsafeMediaUrlError } from "./audio/urlSafety";
+export {
+	isBlockedIpAddress,
+	parseMediaUrl,
+	resolvePublicAddresses,
+	assertSafeMediaUrl,
+	openSafeHttpStream,
+	UnsafeMediaUrlError,
+} from "./audio/urlSafety";
 
 export type {
 	PlayerAction as PlayerActionMessage,

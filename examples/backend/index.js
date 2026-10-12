@@ -60,6 +60,14 @@ function createPublisherSocketFactory({ gatewayUrl }) {
 		});
 }
 
+function createWebSocketAudioOutputBackend({ gatewayUrl, sessionId }) {
+	const socketFactory = createPublisherSocketFactory({ gatewayUrl });
+	return new WebSocketAudioOutputBackend({
+		socketFactory,
+		sessionId,
+	});
+}
+
 function createAudioOutputBackendFactory(options) {
 	const socketFactory = createPublisherSocketFactory(options);
 	return ({ playerId }) =>
@@ -157,7 +165,7 @@ async function main() {
 			const player = await getOrCreatePlayer(sessionId);
 			return player.play(query, { requestedBy: process.env.REQUESTED_BY ?? "client" });
 		},
-		onControl: (action, body, sessionId) => {
+		onControl: async (action, body, sessionId) => {
 			console.info(`Received control action "${action}" for session ${sessionId}`);
 			const player = manager?.getPlayer(sessionId);
 			if (!player) throw Object.assign(new Error(`No player exists for session ${sessionId}`), { statusCode: 404 });
@@ -188,15 +196,33 @@ async function main() {
 				}
 				case "filter-clear":
 					return player.filter.clearFilters();
+				case "outputs":
+					return player.getAudioOutputs();
+				case "disconnect-output": {
+					if (!body.outputId) throw Object.assign(new Error("outputId is required"), { statusCode: 400 });
+					return player.disconnectOutput(body.outputId);
+				}
+				case "connect-output": {
+					const outputId = body.outputId || `webaudio-${sessionId}-${Date.now().toString(36)}`;
+					const name = body.name || `Web Audio (${outputId})`;
+					const backend = createWebSocketAudioOutputBackend({ gatewayUrl, sessionId });
+					const registration = await player.connect(backend, {
+						id: outputId,
+						name,
+						playerVolume: Boolean(body.playerVolume),
+					});
+					return { id: registration.id, name: registration.name };
+				}
 			}
 		},
-		onGetPlayerState: (sessionId) => {
+		onGetPlayerState: async (sessionId) => {
 			const player = manager?.getPlayer(sessionId);
 			if (!player) return null;
 			const toFilterSummary = (filter) => ({
 				name: filter.name,
 				description: filter.description,
 			});
+			const outputs = await player.getAudioOutputs().catch(() => []);
 			return {
 				currentTrack: serializeTrack(player.currentTrack),
 				tracks: player.upcomingTracks.map(serializeTrack),
@@ -206,6 +232,7 @@ async function main() {
 				volume: player.volume,
 				filters: player.filter.getAvailableFilters().map(toFilterSummary),
 				activeFilters: player.filter.getActiveFilters().map(toFilterSummary),
+				outputs,
 			};
 		},
 		onListenerCount: (sessionId, listenerCount) => playerIdleCleanup?.onListenerCount(sessionId, listenerCount),
@@ -237,7 +264,6 @@ async function main() {
 		let player = manager.getPlayer(sessionId);
 		if (!player) {
 			player = await manager.create(sessionId, {
-				audioOutputBackendFactory: createAudioOutputBackendFactory({ gatewayUrl }),
 				audioProcessing: {
 					enabled: true,
 					inputFormat: "encoded",
@@ -249,6 +275,14 @@ async function main() {
 				crossfade: { enabled: false },
 				userdata: { webAudioGateway: { sessionId } },
 			});
+			// Dynamically register the Web Audio WebSocket PCM output backend
+			const webAudioBackend = createWebSocketAudioOutputBackend({ gatewayUrl, sessionId });
+			const outputRegistration = await player.connect(webAudioBackend, {
+				id: `webaudio-${sessionId}`,
+				name: `Web Audio (${sessionId})`,
+				playerVolume: false,
+			});
+			player.userdata.webAudioGateway.outputRegistration = outputRegistration;
 		}
 		player.userdata ??= {};
 		const webAudioMetadata = player.userdata.webAudioGateway ?? {};
@@ -301,6 +335,7 @@ if (require.main === module) {
 
 module.exports = {
 	createAudioOutputBackendFactory,
+	createWebSocketAudioOutputBackend,
 	createPublisherSocketFactory,
 	createWebAudioGateway,
 	createPlayerIdleCleanup,

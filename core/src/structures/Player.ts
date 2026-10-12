@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import type { Stream } from "stream";
-import type { VoiceConnection } from "@discordjs/voice";
+import type { VoiceConnection, PlayerSubscription } from "@discordjs/voice";
+import { WebAudioConnection, WebAudioConnectionBackend } from "../output/WebAudioConnection";
 import type { PlayerManager } from "./PlayerManager";
 import type {
 	PlayerOptions,
@@ -246,15 +247,50 @@ export class Player extends EventEmitter {
 		options?: { group?: string; selfDeaf?: boolean; selfMute?: boolean; deaf?: boolean; mute?: boolean },
 	): Promise<VoiceConnection>;
 	public connect(
+		connection: WebAudioConnection,
+		options?: Omit<AudioOutputRegistrationOptions, "id"> & { id?: string },
+	): Promise<PlayerAudioOutputRegistration>;
+	public connect(
 		backend: AudioOutputBackend<any>,
 		options?: Omit<AudioOutputRegistrationOptions, "id"> & { id?: string },
 	): Promise<PlayerAudioOutputRegistration>;
 	public async connect(
-		target: VoiceChannel | AudioOutputBackend<any>,
+		target: VoiceChannel | WebAudioConnection | AudioOutputBackend<any>,
 		options?:
 			| { group?: string; selfDeaf?: boolean; selfMute?: boolean; deaf?: boolean; mute?: boolean }
 			| (Omit<AudioOutputRegistrationOptions, "id"> & { id?: string }),
 	): Promise<VoiceConnection | PlayerAudioOutputRegistration> {
+		if (
+			target &&
+			typeof target === "object" &&
+			("isWebAudioConnection" in target ||
+				(typeof (target as any).prepareAudioPacket === "function" &&
+					typeof (target as any).dispatchAudio === "function" &&
+					typeof (target as any).attachSocket === "function"))
+		) {
+			const conn = target as WebAudioConnection;
+			conn.subscribe(this);
+			const backend = new WebAudioConnectionBackend(conn);
+			const outputOptions = (options ?? {}) as Omit<AudioOutputRegistrationOptions, "id"> & { id?: string };
+			const id = outputOptions.id ?? conn.sessionId;
+			const registrationOptions: AudioOutputRegistrationOptions = {
+				id,
+				name: outputOptions.name ?? `WebAudio (${conn.sessionId})`,
+				playerVolume: outputOptions.playerVolume ?? false,
+			};
+			await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackOutputAdd, {
+				backend,
+				options: registrationOptions,
+			});
+			return {
+				id,
+				name: registrationOptions.name!,
+				disconnect: () => {
+					conn.unsubscribe();
+					return this.disconnectOutput(id);
+				},
+			};
+		}
 		if (isAudioOutputBackend(target)) {
 			const outputOptions = (options ?? {}) as Omit<AudioOutputRegistrationOptions, "id"> & { id?: string };
 			const id = outputOptions.id ?? `output-${createPlayerRequestId()}`;
@@ -311,7 +347,7 @@ export class Player extends EventEmitter {
 	}
 
 	public async play(
-		query: string | Track | SearchResult | null,
+		query: string | Track | SearchResult | AudioResource | null,
 		optionsOrRequestedBy?: PlayOptions | string,
 	): Promise<PlayResult | false> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
@@ -349,6 +385,20 @@ export class Player extends EventEmitter {
 		}
 
 		if (options.signal?.aborted) return false;
+
+		// Direct AudioResource playback (native Opus passthrough / shared AudioPlayer dispatcher)
+		if (query && typeof query === "object" && ("playStream" in query || ("readable" in query && "playbackDuration" in query))) {
+			const resource = query as AudioResource;
+			const audioPlayer = this.audioPlayer;
+			if (!audioPlayer) throw new Error(`AudioPlayer is not available for player "${this.playerId}"`);
+			audioPlayer.play(resource);
+			return {
+				track: (resource.metadata as Track) ?? null,
+				query: "resource",
+				voiceConnection: this.connection ?? undefined,
+				player: this,
+			};
+		}
 
 		const generation = ++this.playGeneration;
 		const controller = new AbortController();
@@ -817,8 +867,27 @@ export class Player extends EventEmitter {
 	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> {
 		return this.bus.query(this.playerId, query);
 	}
-	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void {
-		return this.bus.subscribe(this.playerId, type, listener);
+	public subscribe(connection: VoiceConnection | WebAudioConnection | any): PlayerSubscription | undefined;
+	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void;
+	public subscribe(targetOrType: VoiceConnection | WebAudioConnection | PlayerEventType | any, listener?: any): any {
+		if (
+			targetOrType &&
+			typeof targetOrType === "object" &&
+			(typeof targetOrType.prepareAudioPacket === "function" ||
+				typeof targetOrType.dispatchAudio === "function" ||
+				"joinConfig" in targetOrType ||
+				"isWebAudioConnection" in targetOrType ||
+				targetOrType instanceof WebAudioConnection)
+		) {
+			const audioPlayer = this.audioPlayer;
+			if (!audioPlayer) throw new Error(`AudioPlayer is not available for player "${this.playerId}"`);
+			const subscribeMethod = (audioPlayer as any)["subscribe"];
+			if (typeof subscribeMethod !== "function") {
+				throw new TypeError("AudioPlayer does not implement subscribe(connection)");
+			}
+			return subscribeMethod.call(audioPlayer, targetOrType);
+		}
+		return this.bus.subscribe(this.playerId, targetOrType, listener);
 	}
 	public addPlugin(plugin: BasePlugin): void {
 		this.bus.requestRpcSync<{ plugin: BasePlugin }, void>(this.playerId, PLAYER_RPC.pluginAdd, { plugin });

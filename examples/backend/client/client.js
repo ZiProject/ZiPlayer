@@ -41,6 +41,10 @@ const filterSelect = document.querySelector("#filter-select");
 const applyFilterButton = document.querySelector("#apply-filter");
 const clearFiltersButton = document.querySelector("#clear-filters");
 const filterStatusElement = document.querySelector("#filter-status");
+const outputsListElement = document.querySelector("#outputs-list");
+const outputCountElement = document.querySelector("#output-count");
+const addOutputButton = document.querySelector("#add-output-button");
+const outputStatusElement = document.querySelector("#output-status");
 const BYTES_PER_SECOND = WEB_AUDIO_SAMPLE_RATE_HZ * WEB_AUDIO_CHANNELS * WEB_AUDIO_SAMPLE_BYTES;
 const MAX_RECORDING_BYTES = BYTES_PER_SECOND * 60 * 10;
 
@@ -177,10 +181,76 @@ function renderTrackList(element, tracks, emptyMessage) {
 	}
 }
 
+function setOutputStatus(message) {
+	if (outputStatusElement) outputStatusElement.textContent = message;
+}
+
+function renderOutputs(outputs = []) {
+	if (!outputsListElement || !outputCountElement) return;
+	outputCountElement.textContent = String(outputs.length);
+	outputsListElement.replaceChildren();
+	if (!outputs.length) {
+		const empty = document.createElement("li");
+		empty.className = "empty-track";
+		empty.textContent = "No active audio outputs";
+		outputsListElement.append(empty);
+		return;
+	}
+	for (const output of outputs) {
+		const item = document.createElement("li");
+		item.className = "track-card";
+		item.style.gridTemplateColumns = "1fr auto";
+
+		const details = document.createElement("div");
+		details.className = "track-copy";
+		const name = document.createElement("div");
+		name.className = "track-title";
+		name.textContent = `${output.name} (${output.id})`;
+
+		const meta = document.createElement("div");
+		meta.className = "track-subtitle";
+		const badges = [];
+		if (output.isMaster) badges.push("👑 Pacing Master");
+		else badges.push("Secondary Sink");
+		if (output.state) badges.push(`State: ${output.state}`);
+		if (output.droppedChunks) badges.push(`Dropped: ${output.droppedChunks}`);
+		meta.textContent = badges.join(" · ");
+		details.append(name, meta);
+
+		const actions = document.createElement("div");
+		actions.style.display = "flex";
+		actions.style.gap = "0.5rem";
+
+		if (output.id !== "discord") {
+			const disconnectBtn = document.createElement("button");
+			disconnectBtn.type = "button";
+			disconnectBtn.textContent = "Disconnect";
+			disconnectBtn.style.padding = "0.3rem 0.6rem";
+			disconnectBtn.style.fontSize = "0.75rem";
+			disconnectBtn.style.borderRadius = "6px";
+			disconnectBtn.style.border = "1px solid var(--line)";
+			disconnectBtn.style.background = "#2a1525";
+			disconnectBtn.style.color = "#ff85a0";
+			disconnectBtn.style.cursor = "pointer";
+			disconnectBtn.addEventListener("click", () => {
+				setOutputStatus(`Disconnecting ${output.name}…`);
+				sendPlaybackControl("disconnect-output", { outputId: output.id })
+					.then(() => setOutputStatus(`Disconnected output ${output.name}`))
+					.catch((err) => setOutputStatus(`Failed to disconnect: ${err.message}`));
+			});
+			actions.append(disconnectBtn);
+		}
+
+		item.append(details, actions);
+		outputsListElement.append(item);
+	}
+}
+
 function clearPlayerState() {
 	renderCurrentTrack(null);
 	renderTrackList(queueListElement, [], "Queue is empty");
 	renderTrackList(relatedListElement, [], "No related tracks");
+	renderOutputs([]);
 	queueCountElement.textContent = "0 tracks";
 	currentActiveFilters = new Set();
 	filterSelect.replaceChildren(new Option("No player selected", ""));
@@ -200,6 +270,7 @@ function renderPlayerState(state, sessionId) {
 	renderCurrentTrack(state.currentTrack);
 	renderTrackList(queueListElement, state.tracks, "Queue is empty");
 	renderTrackList(relatedListElement, state.related, "No related tracks");
+	renderOutputs(state.outputs ?? []);
 	queueCountElement.textContent = `${state.tracks.length} ${state.tracks.length === 1 ? "track" : "tracks"}`;
 	loopModeSelect.value = state.loopMode;
 	autoplayInput.checked = state.autoPlay;
@@ -537,6 +608,12 @@ clearFiltersButton.addEventListener("click", () => {
 			filterStatusElement.textContent = "Cleared all filters";
 		})
 		.catch(reportControlError);
+});
+addOutputButton?.addEventListener("click", () => {
+	setOutputStatus("Attaching additional Web Audio output…");
+	sendPlaybackControl("connect-output")
+		.then(() => setOutputStatus("Connected new Web Audio output"))
+		.catch((err) => setOutputStatus(`Failed to connect output: ${err.message}`));
 });
 sessionIdInput.addEventListener("change", subscribeToPlayerState);
 void playbackConfig.then(subscribeToPlayerState);

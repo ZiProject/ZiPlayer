@@ -10,12 +10,15 @@ import type {
 	AudioOutputInput,
 	AudioOutputState,
 } from "./AudioOutputBackend";
+import { encodeWebAudioOpusFrame, decodeWebAudioOpusFrame } from "./WebAudioConnection";
 
 export const WEB_AUDIO_PROTOCOL_VERSION = 1;
 export const WEB_AUDIO_SAMPLE_RATE_HZ = 48_000;
 export const WEB_AUDIO_CHANNELS = 2;
 export const WEB_AUDIO_SAMPLE_BYTES = 2;
 export const WEB_AUDIO_MAX_MESSAGE_BYTES = 1024 * 1024;
+
+export { encodeWebAudioOpusFrame, decodeWebAudioOpusFrame };
 
 export interface WebSocketLike {
 	readyState: number;
@@ -35,9 +38,10 @@ export type WebSocketAudioControlMessage =
 			protocolVersion: number;
 			sampleRateHz: number;
 			channels: number;
-			sampleFormat: "s16";
-			endianness: "little";
-			channelLayout: "interleaved";
+			codec?: "opus" | "pcm_s16le";
+			sampleFormat?: "s16";
+			endianness?: "little";
+			channelLayout?: "interleaved";
 	  }
 	| { v: number; type: "audio:frame"; sessionId: string; sequence: number; timestampMs: number }
 	| { v: number; type: "playback:pause"; sessionId: string }
@@ -52,6 +56,7 @@ export interface WebSocketAudioOutputBackendOptions {
 	protocolVersion?: number;
 	maxBufferedBytes?: number;
 	sessionId?: string;
+	codec?: "opus" | "pcm16le";
 	socketFactory?: (context: WebSocketAudioBackendContext) => WebSocketLike | Promise<WebSocketLike>;
 	authorize?: (context: WebSocketAudioBackendContext) => boolean | Promise<boolean>;
 }
@@ -90,7 +95,15 @@ export function webAudioFormatFromPcm(options: {
 	};
 }
 
-export function validateWebAudioOutputFormat(format: AudioFrameFormat): void {
+export function validateWebAudioOutputFormat(format: AudioFrameFormat, codec?: "opus" | "pcm16le"): void {
+	if (codec === "opus") {
+		if (format.kind === "encoded") {
+			if (format.codec && format.codec !== "opus") {
+				throw new TypeError(`WebSocket audio output backend only supports Opus encoded streams; got ${format.codec}`);
+			}
+			return;
+		}
+	}
 	if (format.kind !== "pcm") {
 		throw new TypeError(
 			"WebSocket audio output backend only supports PCM input streams; enable audioProcessing (pcm16le, 48 kHz, stereo) so sources are decoded to PCM",
@@ -225,7 +238,9 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 		assertNotAborted(this.signal, signal);
 		if (this.disposed || this.stopped) throw new Error("WebSocket audio session is stopped or disposed");
 		if (this.started) throw new Error("WebSocket audio session has already started");
-		if (this.format.kind !== "pcm") throw new TypeError("WebSocket audio output backend only supports PCM streams");
+		if (this.format.kind !== "pcm" && this.format.kind !== "encoded") {
+			throw new TypeError("WebSocket audio output backend only supports PCM or Opus streams");
+		}
 		this.started = true;
 		this.stateValue = "buffering";
 		this.emit({ type: "state", state: "buffering" });
@@ -238,18 +253,32 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 			}
 			this.socket = socket;
 			this.listenForTransportClose();
-			this.socket.send(
-				encodeWebAudioControlMessage({
-					type: "audio:config",
-					sessionId: this.resource.sessionId,
-					protocolVersion: this.resource.protocolVersion,
-					sampleRateHz: this.format.sampleRateHz,
-					channels: this.format.channels,
-					sampleFormat: this.format.sampleFormat,
-					endianness: this.format.endianness,
-					channelLayout: this.format.channelLayout,
-				}),
-			);
+			if (this.format.kind === "encoded") {
+				this.socket.send(
+					encodeWebAudioControlMessage({
+						type: "audio:config",
+						sessionId: this.resource.sessionId,
+						protocolVersion: this.resource.protocolVersion,
+						codec: "opus",
+						sampleRateHz: WEB_AUDIO_SAMPLE_RATE_HZ,
+						channels: WEB_AUDIO_CHANNELS,
+					}),
+				);
+			} else {
+				this.socket.send(
+					encodeWebAudioControlMessage({
+						type: "audio:config",
+						sessionId: this.resource.sessionId,
+						protocolVersion: this.resource.protocolVersion,
+						codec: "pcm_s16le",
+						sampleRateHz: this.format.sampleRateHz,
+						channels: this.format.channels,
+						sampleFormat: this.format.sampleFormat,
+						endianness: this.format.endianness,
+						channelLayout: this.format.channelLayout,
+					}),
+				);
+			}
 		} catch (error) {
 			if (!this.disposed && !this.stopped) {
 				this.stateValue = "failed";
@@ -366,8 +395,33 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 	}
 
 	private async consumeInput(signal?: AbortSignal): Promise<void> {
-		const frameBytes = this.calculateFrameBytes();
 		this.resource.socket = this.socket;
+		if (this.format.kind === "encoded") {
+			try {
+				while (true) {
+					assertNotAborted(this.signal, signal);
+					if (!(await this.waitUntilActive())) return;
+					const chunk = await this.readNextChunk();
+					if (chunk === null) break;
+					if (!(await this.waitUntilActive())) return;
+					if (!(await this.sendFrame(chunk, signal))) return;
+				}
+				if (this.stopped || this.disposed || this.transportClosed) return;
+				this.stateValue = "ended";
+				this.emit({ type: "state", state: "ended" });
+			} catch (error) {
+				if (this.disposed || this.stopped || this.transportClosed) return;
+				this.stateValue = "failed";
+				this.emit({ type: "error", error: error instanceof Error ? error : new Error(String(error)) });
+				this.destroyTransferredInput();
+				throw error;
+			} finally {
+				this.resource.socket = null;
+			}
+			return;
+		}
+
+		const frameBytes = this.calculateFrameBytes();
 		let remainder: Buffer = Buffer.alloc(0);
 		try {
 			while (true) {
@@ -476,6 +530,12 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 			return false;
 		}
 		const format = this.format;
+		if (format.kind === "encoded") {
+			const frameDurationMs = 20;
+			socket.send(encodeWebAudioOpusFrame(payload, this.sequence++, Date.now()));
+			this.playbackDeadline = (this.playbackDeadline ?? performance.now()) + frameDurationMs;
+			return true;
+		}
 		if (format.kind !== "pcm") throw new TypeError("WebSocket backend requires PCM stream input");
 		const frameDurationMs = (payload.byteLength / (format.sampleRateHz * this.calculateSampleFrameBytes())) * 1000;
 		socket.send(encodeWebAudioFrame(payload, this.sequence++, Date.now()));
@@ -607,6 +667,7 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 	private readonly protocolVersion: number;
 	private readonly maxBufferedBytes: number;
 	private readonly sessionId?: string;
+	public readonly codec?: "opus" | "pcm16le";
 	private readonly socketFactory: (context: WebSocketAudioBackendContext) => WebSocketLike | Promise<WebSocketLike>;
 	private readonly authorize?: (context: WebSocketAudioBackendContext) => boolean | Promise<boolean>;
 	private disposed = false;
@@ -616,6 +677,14 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 	public constructor(options: WebSocketAudioOutputBackendOptions = {}) {
 		this.protocolVersion = options.protocolVersion ?? WEB_AUDIO_PROTOCOL_VERSION;
 		this.maxBufferedBytes = options.maxBufferedBytes ?? 256 * 1024;
+		this.codec = options.codec ?? "pcm16le";
+		if (this.codec === "opus") {
+			this.capabilities.acceptedProcessOutputs = ["encoded", "pcm16le"];
+			this.capabilities.preferredProcessOutput = "encoded";
+		} else {
+			this.capabilities.acceptedProcessOutputs = ["pcm16le"];
+			this.capabilities.preferredProcessOutput = "pcm16le";
+		}
 		if (
 			options.sessionId !== undefined &&
 			(typeof options.sessionId !== "string" || !options.sessionId || options.sessionId.length > 128)

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodePcmFrame, parseAudioConfig, WebAudioClient } from "../browser/index.js";
+import { decodePcmFrame, decodeOpusFrame, parseAudioConfig, OpusDecoderAdapter, WebAudioClient } from "../browser/index.js";
 
 const config = {
 	v: 1,
@@ -96,5 +96,54 @@ test("WebAudioClient can connect to a gateway that does not require a token", as
 		await client.disconnect();
 		if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
 		else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+	}
+});
+
+test("Opus audio configuration validation", () => {
+	const opusConfig = {
+		v: 1,
+		type: "audio:config",
+		sessionId: "opus-player",
+		protocolVersion: 1,
+		codec: "opus",
+		sampleRateHz: 48_000,
+		channels: 2,
+	};
+	assert.equal(parseAudioConfig(opusConfig, "opus-player").codec, "opus");
+	assert.throws(() => parseAudioConfig({ ...opusConfig, sampleRateHz: 44_100 }), /unsupported/i);
+	assert.throws(() => parseAudioConfig({ ...opusConfig, channels: 1 }), /unsupported/i);
+});
+
+test("Opus frame decoding extracts payload and handles WebAudioOpusFrame magic", () => {
+	const buf = Buffer.alloc(16 + 6);
+	buf.writeUInt16LE(0x4f50, 0); // magic
+	buf.writeUInt16LE(0, 2); // codecId
+	buf.writeUInt32LE(5, 4); // sequence
+	buf.writeUInt32LE(100, 8); // timestampMs
+	buf.writeUInt16LE(20, 12); // durationMs
+	buf.writeUInt16LE(6, 14); // payloadLength
+	buf.set([0xf8, 0xff, 0xfe, 0x01, 0x02, 0x03], 16);
+
+	const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+	const decoded = decodeOpusFrame(arrayBuffer, { codec: "opus" }, 5);
+	assert.equal(decoded.sequence, 5);
+	assert.equal(decoded.timestampMs, 100);
+	assert.equal(decoded.frameDurationMs, 20);
+	assert.equal(decoded.sequenceGap, false);
+	assert.equal(decoded.payload.byteLength, 6);
+	assert.deepEqual(Array.from(decoded.payload), [0xf8, 0xff, 0xfe, 0x01, 0x02, 0x03]);
+});
+
+test("OpusDecoderAdapter decodes Opus frame to interleaved stereo Float32Array", async () => {
+	const adapter = new OpusDecoderAdapter({ sampleRate: 48000, channels: 2 });
+	await adapter.initialize();
+	const packet = new Uint8Array([0xf8, 0xff, 0xfe]);
+	try {
+		const result = adapter.decode(packet);
+		assert.ok(result.samples instanceof Float32Array);
+		assert.equal(result.samplesDecoded, 960);
+		assert.equal(result.samples.length, 960 * 2);
+	} finally {
+		adapter.free();
 	}
 });

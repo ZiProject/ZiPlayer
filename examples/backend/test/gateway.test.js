@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { WebSocket } = require("ws");
-const { encodeWebAudioFrame } = require("ziplayer");
+const { encodeWebAudioFrame, encodeWebAudioOpusFrame } = require("ziplayer");
 const { createWebAudioGateway } = require("../gateway");
 const { createPlayerIdleCleanup } = require("../index");
 
@@ -549,6 +549,117 @@ test("queue, loop, autoplay, and filter controls are validated and routed", asyn
 		assert.equal((await send({ action: "autoplay", enabled: "yes" })).status, 400);
 		assert.equal((await send({ action: "filter", filterName: "", enabled: true })).status, 400);
 	} finally {
+		await gateway.close();
+	}
+});
+
+test("audio output controls and /outputs endpoint query and route correctly", async () => {
+	const controlCalls = [];
+	const outputs = [
+		{ id: "discord", name: "Discord Voice", isMaster: false },
+		{ id: "webaudio-p1", name: "Web Audio (p1)", isMaster: true },
+	];
+	const gateway = createWebAudioGateway({
+		host: "127.0.0.1",
+		port: 0,
+		onControl: (action, body, sessionId) => {
+			controlCalls.push({ action, body, sessionId });
+			if (action === "outputs") return outputs;
+			if (action === "connect-output") return { id: body.outputId ?? "new-out", name: "New Output" };
+			if (action === "disconnect-output") return true;
+			return true;
+		},
+	});
+	try {
+		const address = await gateway.listen();
+		const origin = `http://127.0.0.1:${address.port}`;
+
+		// Test GET /outputs
+		const outputsResponse = await fetch(`${origin}/outputs?sessionId=player-outputs`);
+		assert.equal(outputsResponse.status, 200);
+		const outputsData = await outputsResponse.json();
+		assert.equal(outputsData.sessionId, "player-outputs");
+		assert.deepEqual(outputsData.outputs, outputs);
+
+		// Test POST /control with action "connect-output"
+		const connectResponse = await fetch(`${origin}/control`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ sessionId: "player-outputs", action: "connect-output", outputId: "custom-sink" }),
+		});
+		assert.equal(connectResponse.status, 200);
+		assert.deepEqual(await connectResponse.json(), {
+			sessionId: "player-outputs",
+			action: "connect-output",
+			result: { id: "custom-sink", name: "New Output" },
+		});
+
+		// Test POST /control with action "disconnect-output"
+		const disconnectResponse = await fetch(`${origin}/control`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ sessionId: "player-outputs", action: "disconnect-output", outputId: "custom-sink" }),
+		});
+		assert.equal(disconnectResponse.status, 200);
+		assert.deepEqual(await disconnectResponse.json(), {
+			sessionId: "player-outputs",
+			action: "disconnect-output",
+			result: true,
+		});
+
+		// Test validation: disconnect-output requires outputId
+		const invalidDisconnect = await fetch(`${origin}/control`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ sessionId: "player-outputs", action: "disconnect-output" }),
+		});
+		assert.equal(invalidDisconnect.status, 400);
+	} finally {
+		await gateway.close();
+	}
+});
+
+test("a listener receives Opus audio:config and Opus audio frames", async () => {
+	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0 });
+	let listener;
+	let publisher;
+	try {
+		const address = await gateway.listen();
+		const gatewayUrl = `ws://127.0.0.1:${address.port}`;
+
+		publisher = new WebSocket(`${gatewayUrl}/publish?sessionId=opus-test-session`);
+		await waitForOpen(publisher);
+
+		listener = new WebSocket(`${gatewayUrl}/listen?sessionId=opus-test-session`);
+		await waitForOpen(listener);
+
+		const configPromise = waitForMessage(listener);
+		publisher.send(
+			JSON.stringify({
+				v: 1,
+				type: "audio:config",
+				sessionId: "opus-test-session",
+				protocolVersion: 1,
+				codec: "opus",
+				sampleRateHz: 48_000,
+				channels: 2,
+			}),
+		);
+		const configMsg = await configPromise;
+		assert.equal(configMsg.isBinary, false);
+		const config = JSON.parse(configMsg.data.toString());
+		assert.equal(config.type, "audio:config");
+		assert.equal(config.codec, "opus");
+
+		const framePromise = waitForMessage(listener);
+		const opusPacket = Buffer.from([0xf8, 0xff, 0xfe, 0x01, 0x02, 0x03]); // valid Opus TOC
+		publisher.send(encodeWebAudioOpusFrame(opusPacket, 1, 20), { binary: true });
+		const frameMsg = await framePromise;
+		assert.equal(frameMsg.isBinary, true);
+		assert.ok(frameMsg.data.length >= 16 + opusPacket.length);
+	} finally {
+		listener?.close();
+		publisher?.close();
 		await gateway.close();
 	}
 });

@@ -1,14 +1,15 @@
 # `@ziplayer/client`
 
-Small browser client for ZiPlayer's WebSocket PCM protocol. It validates the publisher configuration and binary frame headers,
-converts little-endian s16 stereo PCM to Float32, and plays it through an AudioWorklet with a bounded jitter buffer.
+Small browser client for ZiPlayer's WebSocket audio protocol. It validates the publisher configuration and binary frame headers,
+supports both uncompressed 48 kHz stereo s16 LE PCM and compressed Opus audio packets (via `opus-decoder` WebAssembly), converts
+audio frames into Float32 samples, and plays them through an AudioWorklet with a bounded jitter buffer.
 
 The package is only the receiving/playback client and event source; it does not expose remote `pause`, `stop`, `seek`, or volume
-methods. Your Node.js application still needs an authenticated WebSocket gateway and a ZiPlayer `WebSocketAudioOutputBackend`
-publisher. Authentication is determined by your gateway; the `token` connect option is optional for gateways that do not require
-it. Add playback controls to your own server API and bind them to the intended ZiPlayer player. The gateway example in
-[`../examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend) shows a complete local setup with
-search, publisher routing, browser playback, queue display, and multi-player controls.
+methods. Your Node.js application still needs an authenticated WebSocket gateway and a ZiPlayer `WebSocketAudioOutputBackend` or
+`WebAudioConnection` publisher. Authentication is determined by your gateway; the `token` connect option is optional for gateways
+that do not require it. Add playback controls to your own server API and bind them to the intended ZiPlayer player. The gateway
+example in [`../examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend) shows a complete local setup
+with search, publisher routing, browser playback, queue display, and multi-player controls.
 
 ## Install and use
 
@@ -63,20 +64,38 @@ active and you want to join that live stream, pass its `sessionId` instead. Call
 
 `WebAudioClient` is an `EventTarget`:
 
-| Event         | `event.detail`                                                                  |
-| ------------- | ------------------------------------------------------------------------------- |
-| `connected`   | `{ sessionId, nextPublisher }`, emitted when the WebSocket opens                |
-| `config`      | Validated 48 kHz stereo s16 LE PCM publisher configuration                      |
-| `pcm`         | `{ sequence, timestampMs, samples, peak, payload, sequenceGap }` for each frame |
-| `statechange` | `{ state, previousState }`                                                      |
-| `sequencegap` | `{ expectedSequence, receivedSequence }` when a frame is lost                   |
-| `control`     | An unrecognized, versioned publisher control message                            |
-| `error`       | `{ error }`                                                                     |
-| `close`       | `{ code, reason }` for a remote WebSocket close                                 |
+| Event         | `event.detail`                                                                         |
+| ------------- | -------------------------------------------------------------------------------------- |
+| `connected`   | `{ sessionId, nextPublisher }`, emitted when the WebSocket opens                       |
+| `config`      | Validated publisher audio configuration (`codec`: `"opus"` or `"pcm16le"`)             |
+| `pcm`         | `{ sequence, timestampMs, samples, peak, payload, sequenceGap, codec }` for each frame |
+| `statechange` | `{ state, previousState }`                                                             |
+| `sequencegap` | `{ expectedSequence, receivedSequence }` when a frame is lost                          |
+| `control`     | An unrecognized, versioned publisher control message                                   |
+| `error`       | `{ error }`                                                                            |
+| `close`       | `{ code, reason }` for a remote WebSocket close                                        |
 
-`payload` is the original s16 PCM frame payload, excluding its 16-byte protocol header. `samples` is interleaved stereo Float32
-data normalized to `[-1, 1]`. The client transfers that Float32 buffer to its AudioWorklet after dispatching the event; copy the
-samples inside the event callback if they must be retained.
+`payload` is the original frame payload (Opus packet or raw PCM), excluding its 16-byte protocol header. `samples` is interleaved
+stereo Float32 data normalized to `[-1, 1]`. The client transfers that Float32 buffer to its AudioWorklet after dispatching the
+event; copy the samples inside the event callback if they must be retained.
+
+### In-Browser Opus Decoding
+
+When the gateway publisher streams Opus (`codec: "opus"`), configure `opusDecoderFactory` using `opus-decoder` (or any compatible
+decoder):
+
+```js
+import { WebAudioClient, OpusDecoderAdapter } from "@ziplayer/client";
+import { OpusDecoder } from "opus-decoder";
+
+const client = new WebAudioClient({
+	opusDecoderFactory: async () => {
+		const decoder = new OpusDecoder({ channels: 2, rate: 48000 });
+		await decoder.ready;
+		return new OpusDecoderAdapter(decoder);
+	},
+});
+```
 
 Options default to a 100 ms startup buffer, a two-second maximum AudioWorklet FIFO, and a five-second WebSocket connect timeout.
 The AudioContext must support 48 kHz output. Browsers require HTTPS/WSS outside localhost. Because browser WebSocket clients

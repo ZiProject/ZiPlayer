@@ -15,7 +15,25 @@ export function parseAudioConfig(message, expectedSessionId) {
 		!config.sessionId ||
 		config.sessionId.length > 128 ||
 		(expectedSessionId && config.sessionId !== expectedSessionId) ||
-		config.protocolVersion !== WEB_AUDIO_PROTOCOL_VERSION ||
+		(config.protocolVersion !== undefined && config.protocolVersion !== WEB_AUDIO_PROTOCOL_VERSION)
+	) {
+		throw new Error("Publisher sent an unsupported or mismatched audio configuration");
+	}
+	if (config.codec === "opus") {
+		if (
+			(config.sampleRateHz !== undefined && config.sampleRateHz !== WEB_AUDIO_SAMPLE_RATE_HZ) ||
+			(config.channels !== undefined && config.channels !== WEB_AUDIO_CHANNELS)
+		) {
+			throw new Error("Publisher sent an unsupported Opus configuration");
+		}
+		return {
+			...config,
+			codec: "opus",
+			sampleRateHz: config.sampleRateHz ?? WEB_AUDIO_SAMPLE_RATE_HZ,
+			channels: config.channels ?? WEB_AUDIO_CHANNELS,
+		};
+	}
+	if (
 		config.sampleRateHz !== WEB_AUDIO_SAMPLE_RATE_HZ ||
 		config.channels !== WEB_AUDIO_CHANNELS ||
 		config.sampleFormat !== "s16" ||
@@ -25,6 +43,94 @@ export function parseAudioConfig(message, expectedSessionId) {
 		throw new Error("Publisher sent an unsupported or mismatched PCM configuration");
 	}
 	return config;
+}
+
+export function decodeOpusFrame(data, config, expectedSequence = null) {
+	if (
+		!(data instanceof ArrayBuffer) ||
+		data.byteLength < WEB_AUDIO_FRAME_HEADER_BYTES ||
+		data.byteLength > WEB_AUDIO_MAX_MESSAGE_BYTES + WEB_AUDIO_FRAME_HEADER_BYTES
+	) {
+		throw new Error("Received a malformed Opus frame");
+	}
+	const view = new DataView(data);
+	const magic = view.getUint16(0, true);
+	let sequence, timestampMs, frameDurationMs;
+	if (magic === 0x4f50) {
+		// WebAudioOpusFrame magic ('OP')
+		sequence = view.getUint32(4, true);
+		timestampMs = view.getUint32(8, true);
+		frameDurationMs = view.getUint16(12, true);
+	} else {
+		// Generic 16-byte header
+		sequence = view.getUint32(0, true);
+		timestampMs = view.getUint32(4, true);
+		frameDurationMs = 20;
+	}
+	const payloadBytes = data.byteLength - WEB_AUDIO_FRAME_HEADER_BYTES;
+	if (payloadBytes === 0) {
+		throw new Error("Received an Opus frame with empty payload");
+	}
+	const payload = new Uint8Array(data, WEB_AUDIO_FRAME_HEADER_BYTES, payloadBytes);
+	return {
+		sequence,
+		timestampMs,
+		frameDurationMs,
+		payload,
+		sequenceGap: expectedSequence !== null && sequence !== expectedSequence,
+	};
+}
+
+export class OpusDecoderAdapter {
+	constructor({ sampleRate = WEB_AUDIO_SAMPLE_RATE_HZ, channels = WEB_AUDIO_CHANNELS, decoder = null } = {}) {
+		this.sampleRate = sampleRate;
+		this.channels = channels;
+		this.decoder = decoder;
+		this.ready = decoder ? Promise.resolve() : null;
+	}
+
+	async initialize() {
+		if (this.ready) return this.ready;
+		this.ready = (async () => {
+			const mod = await import("opus-decoder");
+			const DecoderClass = mod.OpusDecoder ?? mod.default?.OpusDecoder ?? mod.default;
+			if (!DecoderClass) throw new Error("opus-decoder module does not export OpusDecoder");
+			this.decoder = new DecoderClass({
+				sampleRate: this.sampleRate,
+				channels: this.channels,
+			});
+			await this.decoder.ready;
+		})();
+		return this.ready;
+	}
+
+	decode(opusPacketUint8Array) {
+		if (!this.decoder) throw new Error("OpusDecoder is not initialized");
+		const decoded = this.decoder.decodeFrame(opusPacketUint8Array);
+		const left = decoded.channelData[0];
+		const right = decoded.channelData[1] || decoded.channelData[0];
+		const samplesDecoded = decoded.samplesDecoded;
+		const interleaved = new Float32Array(samplesDecoded * 2);
+		let peak = 0;
+		for (let i = 0; i < samplesDecoded; i++) {
+			const l = left[i];
+			const r = right[i];
+			interleaved[i * 2] = l;
+			interleaved[i * 2 + 1] = r;
+			peak = Math.max(peak, Math.abs(l), Math.abs(r));
+		}
+		return { samples: interleaved, samplesDecoded, peak };
+	}
+
+	reset() {
+		this.decoder?.reset?.();
+	}
+
+	free() {
+		this.decoder?.free?.();
+		this.decoder = null;
+		this.ready = null;
+	}
 }
 
 export function decodePcmFrame(data, config, expectedSequence = null) {
@@ -150,6 +256,7 @@ export class WebAudioClient extends EventTarget {
 	constructor({
 		audioContextFactory = (options) => new AudioContext(options),
 		webSocketFactory = (url) => new WebSocket(url),
+		opusDecoderFactory = (options) => new OpusDecoderAdapter(options),
 		startupBufferMs = 100,
 		maxBufferSeconds = 2,
 		connectTimeoutMs = 5000,
@@ -169,12 +276,14 @@ export class WebAudioClient extends EventTarget {
 		}
 		this.audioContextFactory = audioContextFactory;
 		this.webSocketFactory = webSocketFactory;
+		this.opusDecoderFactory = opusDecoderFactory;
 		this.startupBufferMs = startupBufferMs;
 		this.maxBufferSeconds = maxBufferSeconds;
 		this.connectTimeoutMs = connectTimeoutMs;
 		this.socket = null;
 		this.audioContext = null;
 		this.workletNode = null;
+		this.opusDecoder = null;
 		this.sessionId = null;
 		this.config = null;
 		this.expectedSequence = null;
@@ -248,6 +357,7 @@ export class WebAudioClient extends EventTarget {
 			if (this.socket !== socket) return;
 			try {
 				if (typeof event.data === "string") this.receiveControlMessage(event.data);
+				else if (this.config?.codec === "opus") this.receiveOpusFrame(event.data);
 				else this.receivePcmFrame(event.data);
 			} catch (error) {
 				this.reportError(error);
@@ -260,6 +370,8 @@ export class WebAudioClient extends EventTarget {
 			this.config = null;
 			this.expectedSequence = null;
 			this.acceptNextSession = false;
+			this.opusDecoder?.free();
+			this.opusDecoder = null;
 			void this.closeAudioOutput()
 				.catch((error) => this.reportError(error))
 				.finally(() => {
@@ -282,6 +394,8 @@ export class WebAudioClient extends EventTarget {
 		this.expectedSequence = null;
 		this.acceptNextSession = false;
 		if (socket && socket.readyState < 2) socket.close(1000, "Listener disconnected");
+		this.opusDecoder?.free();
+		this.opusDecoder = null;
 		await this.closeAudioOutput();
 		this.setState("disconnected");
 	}
@@ -342,6 +456,16 @@ export class WebAudioClient extends EventTarget {
 			this.config = config;
 			this.expectedSequence = null;
 			this.workletNode?.port.postMessage({ type: "flush" });
+			if (config.codec === "opus") {
+				this.opusDecoder?.free();
+				this.opusDecoder =
+					this.opusDecoderFactory?.({ sampleRate: config.sampleRateHz, channels: config.channels }) ??
+					new OpusDecoderAdapter({ sampleRate: config.sampleRateHz, channels: config.channels });
+				void this.opusDecoder.initialize().catch((error) => this.reportError(error));
+			} else {
+				this.opusDecoder?.free();
+				this.opusDecoder = null;
+			}
 			void this.audioContext?.resume().catch((error) => this.reportError(error));
 			this.setState("playing");
 			dispatchDetail(this, "config", config);
@@ -350,6 +474,7 @@ export class WebAudioClient extends EventTarget {
 		if (message.sessionId !== this.sessionId) throw new Error("Received a control message for another session");
 		switch (message.type) {
 			case "playback:pause":
+				this.opusDecoder?.reset();
 				void this.audioContext?.suspend().catch((error) => this.reportError(error));
 				this.setState("paused");
 				break;
@@ -358,6 +483,7 @@ export class WebAudioClient extends EventTarget {
 				this.setState("playing");
 				break;
 			case "playback:stop":
+				this.opusDecoder?.reset();
 				this.workletNode?.port.postMessage({ type: "flush" });
 				this.setState("waiting");
 				break;
@@ -368,6 +494,29 @@ export class WebAudioClient extends EventTarget {
 			default:
 				dispatchDetail(this, "control", message);
 		}
+	}
+
+	receiveOpusFrame(data) {
+		if (!this.config || !this.workletNode) throw new Error("Received Opus frame before its audio configuration");
+		const frame = decodeOpusFrame(data, this.config, this.expectedSequence);
+		if (frame.sequenceGap) {
+			dispatchDetail(this, "sequencegap", {
+				expectedSequence: this.expectedSequence,
+				receivedSequence: frame.sequence,
+			});
+		}
+		this.expectedSequence = (frame.sequence + 1) >>> 0;
+		if (this.opusDecoder) {
+			try {
+				const { samples, peak } = this.opusDecoder.decode(frame.payload);
+				frame.samples = samples;
+				frame.peak = peak;
+				this.workletNode.port.postMessage({ type: "pcm", samples: frame.samples }, [frame.samples.buffer]);
+			} catch (error) {
+				this.reportError(error);
+			}
+		}
+		dispatchDetail(this, "opus", frame);
 	}
 
 	receivePcmFrame(data) {

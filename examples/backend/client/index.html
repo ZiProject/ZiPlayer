@@ -1193,6 +1193,31 @@
 								aria-live="polite"></div>
 						</div>
 					</details>
+					<details
+						class="utility-panel"
+						id="outputs-panel"
+						aria-label="Audio outputs">
+						<summary>Audio outputs (<span id="output-count">0</span>)</summary>
+						<div class="utility-grid">
+							<ul
+								id="outputs-list"
+								class="full-width"
+								style="list-style: none; padding: 0; margin: 0; display: grid; gap: 0.5rem">
+								<li class="empty-track">No active audio outputs</li>
+							</ul>
+							<button
+								id="add-output-button"
+								class="full-width"
+								type="button">
+								+ Connect secondary Web Audio output
+							</button>
+							<div
+								id="output-status"
+								class="status full-width"
+								role="status"
+								aria-live="polite"></div>
+						</div>
+					</details>
 				</section>
 			</main>
 

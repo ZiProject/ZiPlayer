@@ -239,6 +239,44 @@ await wsOutput.disconnect(); // or player.disconnectOutput("web-sink");
 Outputs can be connected and disconnected mid-track. If no voice subscriber is present on Discord, WebSocket automatically acts as
 the pacing master so audio flows in real time.
 
+### Native Opus Passthrough & Unified `AudioPlayer` Subscribers
+
+For zero-transcode streaming without spawning FFmpeg child processes, ZiPlayer supports native Opus passthrough directly through
+the underlying `@discordjs/voice` `AudioPlayer`. In this architecture, a single `AudioResource` created with `StreamType.Opus` is
+consumed by the `AudioPlayer`, and both Discord Voice and WebSocket outputs subscribe as concurrent audio dispatch targets:
+
+```ts
+import { createOpusAudioResource, WebAudioConnection } from "ziplayer";
+
+// 1. Create a WebAudioConnection adapter targeting your WebSocket gateway publisher
+const webConnection = new WebAudioConnection({
+	sessionId: player.id,
+	socketFactory: ({ sessionId, signal }) => connectPublisherToGateway(sessionId, signal),
+});
+await webConnection.connect();
+
+// 2. Subscribe both Discord Voice and WebAudio to the player (or use player.connect(webConnection))
+voiceConnection.subscribe(player);
+webConnection.subscribe(player);
+
+// 3. Play native Opus packets directly with 0 FFmpeg processes
+const opusResource = createOpusAudioResource(opusPacketReadable);
+await player.play(opusResource);
+```
+
+#### Key Architecture Guarantees:
+
+- **0 FFmpeg Processes**: Sources delivering valid Opus packets (e.g. demuxed Ogg Opus, WebM Opus, or raw packets) use
+  `createOpusAudioResource()`. No FFmpeg process, audio decoder, or software resampler is spawned.
+- **Identical Opus Payloads**: `AudioPlayer._stepPrepare()` reads each 20 ms Opus packet once and distributes the exact same
+  payload to all playable subscribers (`voiceConnection` and `webConnection`) before Discord voice applies encryption and framing.
+- **Independent Non-blocking Fan-out**: `WebAudioConnection` implements the complete duck-typed `@discordjs/voice`
+  `VoiceConnection` contract (`state.status === "ready"`, `prepareAudioPacket`, `dispatchAudio`, `setSpeaking`,
+  `onSubscriptionRemoved`). Frame queuing to WebSocket sockets is fully non-blocking; slow or stalled web clients drop excess
+  packets (`drop-newest` policy) without stalling Discord Voice packet dispatch or blocking the 20 ms audio scheduler.
+- **Dynamic Attachment**: `webConnection` can be subscribed or unsubscribed mid-track without interrupting ongoing Discord Voice
+  playback.
+
 ## Common Mistakes to Avoid
 
 - Do not treat `play()`, `connect()`, `insert()`, or playback controls as synchronous; await them and handle `false` or rejection.

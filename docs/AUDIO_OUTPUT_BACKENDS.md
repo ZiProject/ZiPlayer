@@ -155,21 +155,34 @@ later queue change can retry.
 
 ## Multiple outputs on one player
 
-`MultiAudioOutputBackend` fans one processed stream out to every registered sink; it does not create another DSP pipeline per output. Discord remains the default sink. `player.connect(voiceChannel)` retains its voice-join behavior and ensures the Discord sink is present, while `player.connect(backend, { id, name })` adds a sink and returns a registration handle with `disconnect()`.
+`MultiAudioOutputBackend` fans one processed stream out to every registered sink; it does not create another DSP pipeline per
+output. Discord remains the default sink. `player.connect(voiceChannel)` retains its voice-join behavior and ensures the Discord
+sink is present, while `player.connect(backend, { id, name })` adds a sink and returns a registration handle with `disconnect()`.
 
 ```ts
-const browser = await player.connect(
-  new WebSocketAudioOutputBackend({ socketFactory }),
-  { id: "browser-pcm", name: "Browser PCM" },
-);
+const browser = await player.connect(new WebSocketAudioOutputBackend({ socketFactory }), {
+	id: "browser-pcm",
+	name: "Browser PCM",
+});
 const outputs = await player.getAudioOutputs();
 await browser.disconnect(); // remove only this sink
 // or: await player.disconnectOutput("browser-pcm");
 ```
 
-A PCM-only sink fixes the shared DSP output to s16le PCM at 48 kHz stereo for subsequent tracks. An active encoded track cannot be transcoded from its already-running stream, so adding an incompatible sink rejects with a clear error. The tee selects one pacing master: a ready Discord voice subscriber is preferred; an unavailable/autopaused Discord sink does not hold up a live WebSocket output. Other sinks are bounded by a 192 KiB tee queue by default; chunks that would exceed the bound are dropped and reported by `getAudioOutputs()` as cumulative `droppedChunks`/`droppedBytes`. A failed secondary output is removed from the player and emits `streamError` (not `trackError`, so it does not trigger track recovery/anti-stuck); a pacing-master failure remains a track error. Operations are exposed only when supported by the combined capabilities: because WebSocket does not support seek, combined seek is unsupported. The combined replacement capability is `stop-before-start`, not `atomic`; a configured transition therefore cannot overlap both tracks—ZiPlayer stops the old output before starting the new one, and the new track may fade in from zero. This is not an atomic crossfade.
+A PCM-only sink fixes the shared DSP output to s16le PCM at 48 kHz stereo for subsequent tracks. An active encoded track cannot be
+transcoded from its already-running stream, so adding an incompatible sink rejects with a clear error. The tee selects one pacing
+master: a ready Discord voice subscriber is preferred; an unavailable/autopaused Discord sink does not hold up a live WebSocket
+output. Other sinks are bounded by a 192 KiB tee queue by default; chunks that would exceed the bound are dropped and reported by
+`getAudioOutputs()` as cumulative `droppedChunks`/`droppedBytes`. A failed secondary output is removed from the player and emits
+`streamError` (not `trackError`, so it does not trigger track recovery/anti-stuck); a pacing-master failure remains a track error.
+Operations are exposed only when supported by the combined capabilities: because WebSocket does not support seek, combined seek is
+unsupported. The combined replacement capability is `stop-before-start`, not `atomic`; a configured transition therefore cannot
+overlap both tracks—ZiPlayer stops the old output before starting the new one, and the new track may fade in from zero. This is
+not an atomic crossfade.
 
-The output list reports current registered sinks and their aggregate active-session/drop counters. WebSocket session fan-out to multiple browser subscribers remains the gateway's responsibility; ZiPlayer opens one publisher session per output handle and does not implement gateway routing/authentication.
+The output list reports current registered sinks and their aggregate active-session/drop counters. WebSocket session fan-out to
+multiple browser subscribers remains the gateway's responsibility; ZiPlayer opens one publisher session per output handle and does
+not implement gateway routing/authentication.
 
 ## Processed audio format and failure behavior
 
@@ -182,35 +195,48 @@ configures raw Discord PCM as 48,000 Hz, 2 channels, signed 16-bit little-endian
 Float32 PCM is converted sample-by-sample to s16le at this explicit boundary, including when a sample is split between input
 chunks; it is never passed to the raw PCM decoder as though it were s16le.
 
-The engine supports PCM and Ogg/Opus encoded output. Encoded output is tagged as Ogg/Opus (`StreamType.OggOpus`), not raw `StreamType.Opus`. Pipeline initialization, DSP, decode, and output failures do not switch to the original encoded stream: the source may already have been consumed. The stream error flows through the Discord player error/recovery path, and cancellation destroys
-owned streams rather than trying to replay them. Raw PCM from non-DSP sources must also be explicitly described as 48 kHz stereo
-s16le before it can be sent down Discord's raw path.
+The engine supports PCM and Ogg/Opus encoded output. Encoded output is tagged as Ogg/Opus (`StreamType.OggOpus`), not raw
+`StreamType.Opus`. Pipeline initialization, DSP, decode, and output failures do not switch to the original encoded stream: the
+source may already have been consumed. The stream error flows through the Discord player error/recovery path, and cancellation
+destroys owned streams rather than trying to replay them. Raw PCM from non-DSP sources must also be explicitly described as 48 kHz
+stereo s16le before it can be sent down Discord's raw path.
 
 ## FFmpeg processing engine
 
-`FFmpegAudioProcessingEngine` is the only `AudioProcessingEngine`. Each `process()` call spawns one FFmpeg child process, writes the
-source into its stdin and reads interleaved PCM from its stdout. It does not run codecs in the Node.js process, so decoding never
-blocks the event loop that drives Discord voice frames.
+`FFmpegAudioProcessingEngine` is the only `AudioProcessingEngine`. Each `process()` call spawns one FFmpeg child process, writes
+the source into its stdin and reads interleaved PCM from its stdout. It does not run codecs in the Node.js process, so decoding
+never blocks the event loop that drives Discord voice frames.
 
-- **Backpressure.** The source is only pulled while FFmpeg's stdin has room and FFmpeg only decodes while its stdout is read, so a slow
-  consumer stalls the source instead of buffering the decoded track in memory. `maxBufferBytes` bounds a single emitted chunk (larger
-  reads are split on frame boundaries; it is not an error).
+- **Backpressure.** The source is only pulled while FFmpeg's stdin has room and FFmpeg only decodes while its stdout is read, so a
+  slow consumer stalls the source instead of buffering the decoded track in memory. `maxBufferBytes` bounds a single emitted chunk
+  (larger reads are split on frame boundaries; it is not an error).
 - **Cancellation.** Aborting the signal, ending the iteration early, destroying the processed stream or calling `dispose()` sends
-  `SIGKILL` to FFmpeg and releases the source (Node `Readable`s are destroyed). A source that is stalled inside an `await` cannot be
-  cancelled from outside; the engine terminates itself and the owner of the stream (`PlaybackController`) destroys it.
-- **Errors.** An upstream error, a non-zero FFmpeg exit, and an FFmpeg run that decodes nothing are all thrown; none of them hangs the
-  pipeline or ends as an empty success. FFmpeg can exit 0 without producing audio (for example an MP4 whose `moov` atom is at the end
-  of a non-seekable pipe), so the engine treats "input written, no output" as a failure. Pass a seekable URL to FFmpeg when you have one.
-- **Input detection.** Encoded input is restricted to common audio demuxers (`ffmpegInputFormats`, `null` disables the whitelist) so
-  unknown bytes fail instead of being guessed as a weak-probe format. Raw PCM cannot be probed: it must be declared through
+  `SIGKILL` to FFmpeg and releases the source (Node `Readable`s are destroyed). A source that is stalled inside an `await` cannot
+  be cancelled from outside; the engine terminates itself and the owner of the stream (`PlaybackController`) destroys it.
+- **Errors.** An upstream error, a non-zero FFmpeg exit, and an FFmpeg run that decodes nothing are all thrown; none of them hangs
+  the pipeline or ends as an empty success. FFmpeg can exit 0 without producing audio (for example an MP4 whose `moov` atom is at
+  the end of a non-seekable pipe), so the engine treats "input written, no output" as a failure. Pass a seekable URL to FFmpeg
+  when you have one.
+- **Input detection.** Encoded input is restricted to common audio demuxers (`ffmpegInputFormats`, `null` disables the whitelist)
+  so unknown bytes fail instead of being guessed as a weak-probe format. Raw PCM cannot be probed: it must be declared through
   `AudioProcessingContext.inputFormat`, which `PlaybackController` does for `StreamType.Raw` streams.
 - **Behaviour differences to be aware of.** A mono source is up-mixed to stereo with FFmpeg's equal-power law (-3 dB). `normalize`
-  uses single-pass `loudnorm` presets only (`streaming` -14, `podcast` -16, `broadcast` -23 LUFS); numeric RMS/peak targets are rejected.
-  Seeking, filters and processing each use their own FFmpeg process.
-- **Discord volume.** Raw PCM resources use `inlineVolume` so Discord can change volume without changing the shared PCM sent to WebSocket. Encoded Ogg/Opus resources have no live volume transformer; unity volume is a no-op, but non-unity `setVolume` rejects explicitly rather than silently pretending the request worked. Request PCM processing when live Discord volume or fades are required.
-- **FFmpeg concurrency.** The default process-wide gate is sized from available RAM (roughly 50 MiB per FFmpeg child after reserving 256 MiB for the application, with a two-process minimum and 64-process cap), not CPU count alone. `audioProcessing.maxConcurrentProcesses` sets an engine-local gate; only the explicit `configureFfmpegConcurrency()` function changes the process-wide cap.
-- **Executable resolution.** The order is `audioProcessing.ffmpegPath` → `FFMPEG_PATH` → `ffmpeg-static` → `ffmpeg` on `PATH`. The resolver does not scan the current directory or home directory for a file named `ffmpeg`. A path explicitly configured by the caller is respected and its spawn error is surfaced if invalid.
-- **URL safety.** HTTP(S) inputs are resolved and checked against private, loopback, link-local, CGNAT, multicast, mapped-IPv4, and NAT64 ranges; each redirect is independently parsed and DNS-checked. Direct FFmpeg URL input (`allowFfmpegUrlInput`) is rejected until redirect-safe FFmpeg URL handling can be guaranteed; use the Node-managed safe HTTP input path.
+  uses single-pass `loudnorm` presets only (`streaming` -14, `podcast` -16, `broadcast` -23 LUFS); numeric RMS/peak targets are
+  rejected. Seeking, filters and processing each use their own FFmpeg process.
+- **Discord volume.** Raw PCM resources use `inlineVolume` so Discord can change volume without changing the shared PCM sent to
+  WebSocket. Encoded Ogg/Opus resources have no live volume transformer; unity volume is a no-op, but non-unity `setVolume`
+  rejects explicitly rather than silently pretending the request worked. Request PCM processing when live Discord volume or fades
+  are required.
+- **FFmpeg concurrency.** The default process-wide gate is sized from available RAM (roughly 50 MiB per FFmpeg child after
+  reserving 256 MiB for the application, with a two-process minimum and 64-process cap), not CPU count alone.
+  `audioProcessing.maxConcurrentProcesses` sets an engine-local gate; only the explicit `configureFfmpegConcurrency()` function
+  changes the process-wide cap.
+- **Executable resolution.** The order is `audioProcessing.ffmpegPath` → `FFMPEG_PATH` → `ffmpeg-static` → `ffmpeg` on `PATH`. The
+  resolver does not scan the current directory or home directory for a file named `ffmpeg`. A path explicitly configured by the
+  caller is respected and its spawn error is surfaced if invalid.
+- **URL safety.** HTTP(S) inputs are resolved and checked against private, loopback, link-local, CGNAT, multicast, mapped-IPv4,
+  and NAT64 ranges; each redirect is independently parsed and DNS-checked. Direct FFmpeg URL input (`allowFfmpegUrlInput`) is
+  rejected until redirect-safe FFmpeg URL handling can be guaranteed; use the Node-managed safe HTTP input path.
 
 ## WebSocket PCM backend status
 
@@ -235,6 +261,65 @@ Browser WebSocket APIs cannot set an Authorization header, so the demo accepts l
 short-lived, session-scoped tokens, origin policy, rate limits, and HTTPS/WSS in a deployed service; never expose a long-lived
 shared secret to browsers. This one-way WebSocket transport targets moderate latency tolerance; choose WebRTC when low latency,
 congestion control, or synchronized playback is a primary requirement.
+
+## Native Opus passthrough and WebAudioConnection
+
+For zero-transcode streaming without spawning FFmpeg child processes, ZiPlayer provides `WebAudioConnection` alongside
+`WebSocketAudioOutputBackend`. Instead of converting audio through FFmpeg to PCM, `WebAudioConnection` implements the duck-typed
+connection contract of `@discordjs/voice` `VoiceConnection`.
+
+### Unified `AudioPlayer` Subscriber Model
+
+```text
+       AudioResource (StreamType.Opus) [0 FFmpeg]
+                       │
+              @discordjs/voice AudioPlayer
+             (20ms interval scheduler)
+             ┌─────────┴─────────┐
+             ▼                   ▼
+    VoiceConnection     WebAudioConnection
+   (Discord Voice UDP)  (Non-blocking WebSocket Publisher)
+                                 │
+                                 ▼
+                         WebSocket Gateway
+                                 │
+                                 ▼
+                         Browser Listeners
+                       (@ziplayer/client WASM)
+```
+
+Both outputs subscribe to the same `AudioPlayer`:
+
+```ts
+voiceConnection.subscribe(player);
+webConnection.subscribe(player);
+```
+
+During each 20 ms tick of `AudioPlayer`, `_stepPrepare()` reads one Opus packet from the resource and calls
+`prepareAudioPacket(packet)` on all ready subscribers. `_stepDispatch()` then calls `dispatchAudio()` to transmit the packet.
+
+### Binary Frame Protocol
+
+Binary frames transmitted by `WebAudioConnection` and `WebSocketAudioOutputBackend` use a 16-byte fixed header:
+
+| Offset  | Size | Type     | Description                                           |
+| ------- | ---- | -------- | ----------------------------------------------------- |
+| 0..1    | 2    | Bytes    | Magic `0x5A 0x49` (`'Z'`, `'I'`)                      |
+| 2       | 1    | UInt8    | Protocol version (`0x01`)                             |
+| 3       | 1    | UInt8    | Flags: bit 0 codec (`0 = PCM16LE`, `1 = Opus`)        |
+| 4..7    | 4    | UInt32BE | Monotonic sequence number                             |
+| 8..15   | 8    | UInt64BE | Timestamp in milliseconds (monotonic clock)           |
+| 16..end | N    | Bytes    | Audio payload (raw Opus packet or s16 LE PCM samples) |
+
+### Backpressure and Non-blocking Fan-Out
+
+`WebAudioConnection` ensures that slow web listeners or network spikes on the WebSocket gateway never block Discord Voice
+playback:
+
+- Bounded packet queue with `drop-newest` policy on threshold overflow.
+- `setSpeaking(enabled)` reflects playback state.
+- Real-time statistics via `getStats()` (`packetsPrepared`, `packetsDispatched`, `packetsDropped`, `bufferedPackets`,
+  `connectedSockets`).
 
 ## Verification
 
