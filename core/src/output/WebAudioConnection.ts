@@ -79,7 +79,10 @@ export function encodeWebAudioOpusFrame(packet: Uint8Array | Buffer, sequence: n
  * Decodes a 16-byte protocol binary frame into its header fields and raw payload.
  * Supports Wire Format v1 (Magic 'ZI') and legacy format fallback.
  */
-export function decodeWebAudioOpusFrame(frame: Uint8Array | Buffer): {
+export function decodeWebAudioOpusFrame(
+	frame: Uint8Array | Buffer,
+	options?: { protocolVersion?: number; allowLegacy?: boolean },
+): {
 	version: number;
 	codec: "opus" | "pcm16le";
 	sequence: number;
@@ -112,6 +115,9 @@ export function decodeWebAudioOpusFrame(frame: Uint8Array | Buffer): {
 			payload,
 		};
 	} else {
+		if (options?.protocolVersion === 1 || options?.allowLegacy === false) {
+			throw new Error("Malformed Web audio frame: missing 'ZI' protocol header");
+		}
 		// Legacy format fallback
 		const sequence = view.readUInt32LE(0);
 		const timestampMs = view.readUInt32LE(4);
@@ -138,7 +144,7 @@ export function decodeWebAudioOpusFrame(frame: Uint8Array | Buffer): {
  */
 export class WebAudioConnection extends EventEmitter {
 	public state: WebAudioConnectionState = {
-		status: VoiceConnectionStatus.Ready,
+		status: VoiceConnectionStatus.Disconnected,
 		subscription: undefined,
 	};
 
@@ -157,6 +163,7 @@ export class WebAudioConnection extends EventEmitter {
 
 	private readonly sockets = new Set<WebSocketLike>();
 	private readonly socketCleanups = new Map<WebSocketLike, () => void>();
+	private readonly socketQueues = new Map<WebSocketLike, Array<{ frame: Buffer; sequence: number; size: number }>>();
 
 	private pendingPacket: Buffer | null = null;
 	private sequence = 0;
@@ -164,6 +171,7 @@ export class WebAudioConnection extends EventEmitter {
 	private startTime = 0;
 	private speaking = false;
 	private destroyed = false;
+	private manuallyDisconnected = false;
 
 	// Metrics
 	private dispatchedPackets = 0;
@@ -193,6 +201,35 @@ export class WebAudioConnection extends EventEmitter {
 		return this.state.status === VoiceConnectionStatus.Ready && this.sockets.size > 0;
 	}
 
+	private setState(status: VoiceConnectionStatus): void {
+		const oldStatus = this.state.status;
+		if (oldStatus === status) return;
+		this.state.status = status;
+		this.emit("stateChange", status, oldStatus);
+	}
+
+	private updateState(): void {
+		if (this.destroyed) {
+			this.setState(VoiceConnectionStatus.Destroyed);
+			return;
+		}
+		if (this.manuallyDisconnected) {
+			this.setState(VoiceConnectionStatus.Disconnected);
+			return;
+		}
+		const hasOpen = Array.from(this.sockets).some((s) => s.readyState === 1);
+		if (hasOpen) {
+			this.setState(VoiceConnectionStatus.Ready);
+		} else {
+			const hasConnecting = Array.from(this.sockets).some((s) => s.readyState === 0);
+			if (hasConnecting) {
+				this.setState(VoiceConnectionStatus.Connecting);
+			} else {
+				this.setState(VoiceConnectionStatus.Disconnected);
+			}
+		}
+	}
+
 	/**
 	 * Attach a WebSocket client or publisher socket.
 	 * When attached, Opus frames dispatched by the AudioPlayer are relayed non-blockingly.
@@ -204,7 +241,21 @@ export class WebAudioConnection extends EventEmitter {
 		}
 		if (this.sockets.has(socket)) return;
 		this.sockets.add(socket);
+		this.socketQueues.set(socket, []);
 
+		let configSent = false;
+		const sendConfigOnce = () => {
+			if (this.destroyed || configSent || socket.readyState !== 1) return;
+			configSent = true;
+			this.sendConfigToSocket(socket);
+		};
+
+		const onOpen = () => {
+			if (this.destroyed) return;
+			sendConfigOnce();
+			this.manuallyDisconnected = false;
+			this.updateState();
+		};
 		const onClose = () => this.detachSocket(socket);
 		const onError = (error: any) => {
 			this.debugLogger?.(`[WebAudioConnection] Socket error (${this.sessionId}): ${error?.message ?? error}`);
@@ -212,16 +263,21 @@ export class WebAudioConnection extends EventEmitter {
 			this.detachSocket(socket);
 		};
 
+		socket.addEventListener?.("open", onOpen);
 		socket.addEventListener?.("close", onClose);
 		socket.addEventListener?.("error", onError);
 
 		this.socketCleanups.set(socket, () => {
+			socket.removeEventListener?.("open", onOpen);
 			socket.removeEventListener?.("close", onClose);
 			socket.removeEventListener?.("error", onError);
 		});
 
-		// Send initial audio:config if the socket is already OPEN (readyState === 1)
-		this.sendConfigToSocket(socket);
+		if (socket.readyState === 1) {
+			sendConfigOnce();
+		}
+		this.manuallyDisconnected = false;
+		this.updateState();
 		this.emit("socketAttach", socket);
 	}
 
@@ -231,12 +287,24 @@ export class WebAudioConnection extends EventEmitter {
 	public detachSocket(socket: WebSocketLike): void {
 		if (!this.sockets.has(socket)) return;
 		this.sockets.delete(socket);
+		this.socketQueues.delete(socket);
 		const cleanup = this.socketCleanups.get(socket);
 		if (cleanup) {
 			cleanup();
 			this.socketCleanups.delete(socket);
 		}
+		this.updateState();
 		this.emit("socketDetach", socket);
+	}
+
+	/**
+	 * Reconnects the connection after disconnect, restoring readiness if sinks are available.
+	 */
+	public reconnect(): boolean {
+		if (this.destroyed) return false;
+		this.manuallyDisconnected = false;
+		this.updateState();
+		return true;
 	}
 
 	/**
@@ -252,8 +320,11 @@ export class WebAudioConnection extends EventEmitter {
 		const targetPlayer: AudioPlayer =
 			"audioPlayer" in player && player.audioPlayer ? (player.audioPlayer as AudioPlayer) : (player as AudioPlayer);
 
+		this.manuallyDisconnected = false;
+
 		// If this connection is already subscribed to this player, return existing
 		if (this.state.subscription && this.state.subscription.player === targetPlayer) {
+			this.updateState();
 			return this.state.subscription;
 		}
 
@@ -268,10 +339,9 @@ export class WebAudioConnection extends EventEmitter {
 
 		const subscription: PlayerSubscription = subscribeMethod.call(targetPlayer, this);
 		this.state.subscription = subscription;
-		this.state.status = VoiceConnectionStatus.Ready;
+		this.updateState();
 		this.startTime = Date.now();
 		this.reset();
-		this.emit("stateChange", this.state.status);
 		return subscription;
 	}
 
@@ -331,12 +401,16 @@ export class WebAudioConnection extends EventEmitter {
 		if (!packet) return;
 		this.pendingPacket = null;
 
+		const durationMs = getOpusPacketDurationMs(packet);
+		if (durationMs <= 0 || packet.length === 0) {
+			this.debugLogger?.(`[WebAudioConnection] Dropped malformed Opus packet (length: ${packet.length})`);
+			return;
+		}
+
 		const seq = this.sequence;
 		this.sequence = (this.sequence + 1) >>> 0;
 		const timestampUs = this.mediaTimestampUs;
 
-		// Determine duration from packet TOC or default 20ms
-		const durationMs = getOpusPacketDurationMs(packet) || 20;
 		const durationUs = BigInt(Math.round(durationMs * 1000));
 		this.mediaTimestampUs += durationUs;
 
@@ -348,42 +422,95 @@ export class WebAudioConnection extends EventEmitter {
 				continue;
 			}
 
-			// Backpressure check
-			const buffered = socket.bufferedAmount ?? 0;
-			if (buffered + packet.length + WEB_AUDIO_FRAME_HEADER_BYTES > this.maxBufferedBytes) {
-				this.droppedPackets++;
-				this.droppedBytes += packet.length;
-				this.debugLogger?.(
-					`[WebAudioConnection] Dropped packet ${seq} on socket (buffered: ${buffered} bytes, max: ${this.maxBufferedBytes})`,
-				);
-				this.onDropCallback?.({
-					socket,
-					droppedPackets: this.droppedPackets,
-					droppedBytes: this.droppedBytes,
-					reason: "maxBufferedBytes exceeded",
-				});
-				this.emit("drop", { socket, sequence: seq, bytes: packet.length });
-
-				if (this.dropPolicy === "disconnect") {
-					try {
-						socket.close(1013, "Listener is too slow");
-					} catch {}
-					this.detachSocket(socket);
-				}
-				continue;
-			}
-
 			if (!encodedFrame) {
 				encodedFrame = encodeWebAudioOpusFrame(packet, seq, timestampUs);
 			}
 
-			try {
-				socket.send(encodedFrame);
-				this.dispatchedPackets++;
-				this.dispatchedBytes += packet.length;
-			} catch (err: any) {
-				this.debugLogger?.(`[WebAudioConnection] Error sending frame to socket: ${err?.message}`);
-				this.detachSocket(socket);
+			const queue = this.socketQueues.get(socket) ?? [];
+
+			// First, drain any previously queued packets if socket buffer has capacity
+			while (queue.length > 0) {
+				const next = queue[0];
+				const buffered = socket.bufferedAmount ?? 0;
+				if (buffered + next.frame.length > this.maxBufferedBytes) {
+					break;
+				}
+				queue.shift();
+				try {
+					socket.send(next.frame);
+					this.dispatchedPackets++;
+					this.dispatchedBytes += next.size;
+				} catch (err: any) {
+					this.debugLogger?.(`[WebAudioConnection] Error sending queued frame: ${err?.message}`);
+					this.detachSocket(socket);
+					break;
+				}
+			}
+
+			if (!this.sockets.has(socket)) continue;
+
+			const currentBuffered = socket.bufferedAmount ?? 0;
+			const fitsInBuffer = queue.length === 0 && currentBuffered + encodedFrame.length <= this.maxBufferedBytes;
+
+			if (fitsInBuffer) {
+				try {
+					socket.send(encodedFrame);
+					this.dispatchedPackets++;
+					this.dispatchedBytes += packet.length;
+				} catch (err: any) {
+					this.debugLogger?.(`[WebAudioConnection] Error sending frame to socket: ${err?.message}`);
+					this.detachSocket(socket);
+				}
+			} else {
+				// Socket is congested or has queued frames
+				if (queue.length >= this.maxQueuedPackets) {
+					if (this.dropPolicy === "drop-oldest" && queue.length > 0) {
+						const dropped = queue.shift()!;
+						this.droppedPackets++;
+						this.droppedBytes += dropped.size;
+						this.debugLogger?.(
+							`[WebAudioConnection] Dropped oldest queued packet ${dropped.sequence} (queue size: ${this.maxQueuedPackets})`,
+						);
+						this.onDropCallback?.({
+							socket,
+							droppedPackets: this.droppedPackets,
+							droppedBytes: this.droppedBytes,
+							reason: "maxQueuedPackets exceeded (drop-oldest)",
+						});
+						this.emit("drop", { socket, sequence: dropped.sequence, bytes: dropped.size });
+						queue.push({ frame: encodedFrame, sequence: seq, size: packet.length });
+					} else if (this.dropPolicy === "disconnect") {
+						this.droppedPackets++;
+						this.droppedBytes += packet.length;
+						this.onDropCallback?.({
+							socket,
+							droppedPackets: this.droppedPackets,
+							droppedBytes: this.droppedBytes,
+							reason: "backpressure limit exceeded (disconnect)",
+						});
+						this.emit("drop", { socket, sequence: seq, bytes: packet.length });
+						try {
+							socket.close(1013, "Listener is too slow");
+						} catch {}
+						this.detachSocket(socket);
+					} else {
+						// drop-newest
+						this.droppedPackets++;
+						this.droppedBytes += packet.length;
+						this.debugLogger?.(
+							`[WebAudioConnection] Dropped newest packet ${seq} (buffered: ${currentBuffered}, queue: ${queue.length})`,
+						);
+						this.onDropCallback?.({
+							socket,
+							droppedPackets: this.droppedPackets,
+							droppedBytes: this.droppedBytes,
+							reason: "maxBufferedBytes or maxQueuedPackets exceeded (drop-newest)",
+						});
+						this.emit("drop", { socket, sequence: seq, bytes: packet.length });
+					}
+				} else {
+					queue.push({ frame: encodedFrame, sequence: seq, size: packet.length });
+				}
 			}
 		}
 
@@ -410,9 +537,9 @@ export class WebAudioConnection extends EventEmitter {
 	 */
 	public disconnect(): boolean {
 		if (this.state.status === VoiceConnectionStatus.Destroyed) return false;
-		this.state.status = VoiceConnectionStatus.Disconnected;
+		this.manuallyDisconnected = true;
+		this.setState(VoiceConnectionStatus.Disconnected);
 		this.setSpeaking(false);
-		this.emit("stateChange", this.state.status);
 		return true;
 	}
 
@@ -433,6 +560,7 @@ export class WebAudioConnection extends EventEmitter {
 		}
 		this.sockets.clear();
 		this.socketCleanups.clear();
+		this.socketQueues.clear();
 		this.pendingPacket = null;
 		this.removeAllListeners();
 	}
@@ -477,9 +605,9 @@ export class WebAudioConnectionBackend implements AudioOutputBackend<WebAudioCon
 		resume: true,
 		stop: true,
 		seek: "unsupported",
-		replacement: "atomic",
+		replacement: "unsupported",
 		ownership: "both",
-		volume: "backend",
+		volume: "unsupported",
 		backpressure: "bounded",
 		maxBufferedBytes: DEFAULT_MAX_BUFFERED_BYTES,
 		acceptedProcessOutputs: ["encoded", "pcm16le"],
@@ -554,7 +682,9 @@ export class WebAudioConnectionBackend implements AudioOutputBackend<WebAudioCon
 			replace: () => {
 				throw new AudioOutputUnsupportedOperationError("replace");
 			},
-			setVolume: () => {},
+			setVolume: () => {
+				throw new AudioOutputUnsupportedOperationError("setVolume");
+			},
 			onEvent: (listener) => {
 				listeners.add(listener);
 				return () => listeners.delete(listener);

@@ -3,7 +3,7 @@
 // Run `npm run build:core` before starting the loopback-only example.
 require("dotenv").config();
 const { WebSocket } = require("ws");
-const { PlayerManager, WebSocketAudioOutputBackend } = require("ziplayer");
+const { PlayerManager, WebAudioConnection, WebSocketAudioOutputBackend } = require("ziplayer");
 const { createWebAudioGateway } = require("./gateway");
 const pluginPackage = require("@ziplayer/plugin");
 
@@ -205,8 +205,12 @@ async function main() {
 				case "connect-output": {
 					const outputId = body.outputId || `webaudio-${sessionId}-${Date.now().toString(36)}`;
 					const name = body.name || `Web Audio (${outputId})`;
-					const backend = createWebSocketAudioOutputBackend({ gatewayUrl, sessionId });
-					const registration = await player.connect(backend, {
+					const socketFactory = createPublisherSocketFactory({ gatewayUrl });
+					const socket = await socketFactory({ sessionId });
+					const webConn = new WebAudioConnection({ sessionId });
+					webConn.attachSocket(socket);
+					webConn.subscribe(player);
+					const registration = await player.connect(webConn, {
 						id: outputId,
 						name,
 						playerVolume: Boolean(body.playerVolume),
@@ -264,25 +268,23 @@ async function main() {
 		let player = manager.getPlayer(sessionId);
 		if (!player) {
 			player = await manager.create(sessionId, {
-				audioProcessing: {
-					enabled: true,
-					inputFormat: "encoded",
-					outputFormat: "pcm16le",
-					sampleRate: SAMPLE_RATE_HZ,
-					channels: CHANNELS,
-				},
 				preload: { enabled: false },
 				crossfade: { enabled: false },
 				userdata: { webAudioGateway: { sessionId } },
 			});
-			// Dynamically register the Web Audio WebSocket PCM output backend
-			const webAudioBackend = createWebSocketAudioOutputBackend({ gatewayUrl, sessionId });
-			const outputRegistration = await player.connect(webAudioBackend, {
+			// Subscribe WebAudioConnection directly to the AudioPlayer with native Opus passthrough
+			const socketFactory = createPublisherSocketFactory({ gatewayUrl });
+			const socket = await socketFactory({ sessionId });
+			const webConn = new WebAudioConnection({ sessionId });
+			webConn.attachSocket(socket);
+			webConn.subscribe(player);
+			const outputRegistration = await player.connect(webConn, {
 				id: `webaudio-${sessionId}`,
 				name: `Web Audio (${sessionId})`,
 				playerVolume: false,
 			});
 			player.userdata.webAudioGateway.outputRegistration = outputRegistration;
+			player.userdata.webAudioGateway.connection = webConn;
 		}
 		player.userdata ??= {};
 		const webAudioMetadata = player.userdata.webAudioGateway ?? {};

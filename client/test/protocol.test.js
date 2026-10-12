@@ -27,6 +27,8 @@ function frame(sequence, values = [16384, -16384]) {
 	return packet.buffer.slice(packet.byteOffset, packet.byteOffset + packet.byteLength);
 }
 
+const legacyConfig = { ...config, protocolVersion: 0 };
+
 test("audio configuration validation enforces the supported wire format", () => {
 	assert.equal(parseAudioConfig(config, "player-1"), config);
 	assert.throws(() => parseAudioConfig({ ...config, sampleRateHz: 44_100 }), /unsupported|mismatched/i);
@@ -34,7 +36,7 @@ test("audio configuration validation enforces the supported wire format", () => 
 });
 
 test("PCM frame decoding converts interleaved s16 and reports sequence gaps", () => {
-	const decoded = decodePcmFrame(frame(4), config, 3);
+	const decoded = decodePcmFrame(frame(4), legacyConfig, 3);
 	assert.equal(decoded.sequence, 4);
 	assert.equal(decoded.timestampMs, 1234);
 	assert.equal(decoded.sequenceGap, true);
@@ -48,10 +50,10 @@ test("PCM frame decoding converts interleaved s16 and reports sequence gaps", ()
 test("PCM frame decoder rejects invalid headers and unaligned payloads", () => {
 	const invalidHeader = new Uint8Array(frame(0));
 	new DataView(invalidHeader.buffer).setUint16(8, 44_100, true);
-	assert.throws(() => decodePcmFrame(invalidHeader.buffer, config), /invalid PCM/i);
+	assert.throws(() => decodePcmFrame(invalidHeader.buffer, legacyConfig), /invalid PCM/i);
 
 	const validFrame = new Uint8Array(frame(0));
-	assert.throws(() => decodePcmFrame(validFrame.slice(0, validFrame.length - 1).buffer, config), /invalid PCM/i);
+	assert.throws(() => decodePcmFrame(validFrame.slice(0, validFrame.length - 1).buffer, legacyConfig), /invalid PCM/i);
 });
 
 test("WebAudioClient can connect to a gateway that does not require a token", async () => {
@@ -189,4 +191,129 @@ test("Wire Format v1 PCM frame decoding parses magic 'ZI', sequence BE, and time
 	assert.equal(decoded.timestampUs, 140_000n);
 	assert.equal(decoded.sequenceGap, false);
 	assert.equal(decoded.samples.length, 2);
+});
+
+test("WebAudioClient buffers Opus packets received before WASM decoder initialization completes", async () => {
+	const originalAudioWorkletNode = globalThis.AudioWorkletNode;
+	const postedWorkletMessages = [];
+	class FakeAudioWorkletNode {
+		port = {
+			postMessage(msg) {
+				postedWorkletMessages.push(msg);
+			},
+		};
+		connect() {}
+		disconnect() {}
+	}
+	globalThis.AudioWorkletNode = FakeAudioWorkletNode;
+
+	let resolveInit;
+	const initPromise = new Promise((resolve) => {
+		resolveInit = resolve;
+	});
+
+	let decodeCalls = 0;
+	class MockOpusDecoder {
+		async initialize() {
+			await initPromise;
+		}
+		decode(payload) {
+			decodeCalls++;
+			return {
+				samples: new Float32Array(960 * 2),
+				peak: 0.5,
+			};
+		}
+		reset() {}
+		free() {}
+	}
+
+	const client = new WebAudioClient({
+		audioContextFactory: () => ({
+			sampleRate: 48_000,
+			state: "running",
+			destination: {},
+			audioWorklet: { async addModule() {} },
+			async resume() {},
+			async close() {
+				this.state = "closed";
+			},
+		}),
+		opusDecoderFactory: () => new MockOpusDecoder(),
+	});
+
+	try {
+		await client.createAudioOutput();
+
+		// Receive audio:config with opus
+		client.receiveControlMessage(
+			JSON.stringify({
+				v: 1,
+				type: "audio:config",
+				sessionId: "async-session",
+				protocolVersion: 1,
+				codec: "opus",
+				sampleRateHz: 48_000,
+				channels: 2,
+			}),
+		);
+
+		// Immediately receive an Opus frame before WASM initializes
+		const payload = [0xf8, 0xff, 0xfe, 0x01];
+		const buf = Buffer.alloc(16 + payload.length);
+		buf[0] = 0x5a; // 'Z'
+		buf[1] = 0x49; // 'I'
+		buf[2] = 0x01; // Version 1
+		buf[3] = 0x01; // Opus flag
+		buf.writeUInt32BE(0, 4);
+		buf.writeBigUInt64BE(0n, 8);
+		buf.set(payload, 16);
+		const arrayBuf = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+
+		let pcmEventFired = false;
+		client.addEventListener("pcm", () => {
+			pcmEventFired = true;
+		});
+
+		// Send frame immediately - must NOT throw or drop
+		assert.doesNotThrow(() => {
+			client.receiveOpusFrame(arrayBuf);
+		});
+
+		// Before WASM is ready, decoder.decode() has NOT been called yet
+		assert.equal(decodeCalls, 0);
+		assert.equal(pcmEventFired, false);
+
+		// Now complete WASM decoder initialization
+		resolveInit();
+		await new Promise((resolve) => queueMicrotask(resolve));
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		// After initialization finishes, buffered packet was drained and decoded
+		assert.equal(decodeCalls, 1);
+		assert.equal(pcmEventFired, true);
+		assert.ok(postedWorkletMessages.some((msg) => msg.type === "pcm"));
+	} finally {
+		await client.disconnect();
+		if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+		else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+	}
+});
+
+test("Decoder strictly enforces Wire Format v1 when negotiated and does not downgrade to legacy", () => {
+	const legacyPcmFrame = frame(1);
+	// v1 PCM config
+	assert.throws(() => decodePcmFrame(legacyPcmFrame, config), /missing 'ZI'/i);
+
+	// v1 Opus config
+	const opusV1Config = { codec: "opus", protocolVersion: 1 };
+	const legacyOpusBuf = Buffer.alloc(16 + 4);
+	legacyOpusBuf.writeUInt16LE(0x4f50, 0);
+	legacyOpusBuf.set([0xf8, 0xff, 0xfe, 0x01], 16);
+	const legacyOpusArray = legacyOpusBuf.buffer.slice(
+		legacyOpusBuf.byteOffset,
+		legacyOpusBuf.byteOffset + legacyOpusBuf.byteLength,
+	);
+
+	assert.throws(() => decodeOpusFrame(legacyOpusArray, opusV1Config), /missing 'ZI'/i);
 });

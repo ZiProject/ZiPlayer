@@ -21,15 +21,22 @@ const {
 	WEB_AUDIO_PROTOCOL_VERSION_V1,
 	WEB_AUDIO_FLAG_CODEC_OPUS,
 	WEB_AUDIO_FLAG_CODEC_PCM,
+	WebAudioConnectionBackend,
+	WebSocketAudioOutputBackend,
+	AudioOutputUnsupportedOperationError,
 } = require("../core/dist");
 const { VoiceConnectionStatus, createAudioPlayer, StreamType } = require("@discordjs/voice");
 
-function createFakeSocket(initialBufferedAmount = 0) {
+function createFakeSocket(initialBufferedAmount = 0, initialReadyState = 1) {
 	const listeners = new Map();
 	return {
-		readyState: 1,
+		readyState: initialReadyState,
 		bufferedAmount: initialBufferedAmount,
 		sent: [],
+		open() {
+			this.readyState = 1;
+			for (const listener of listeners.get("open") ?? []) listener({});
+		},
 		close(code = 1000, reason = "") {
 			this.readyState = 3;
 			this.closed = true;
@@ -442,4 +449,350 @@ test("WebM Opus demuxer extracts valid Opus packets from WebM stream without FFm
 	assert.deepEqual(packets[1], opusPacket2);
 	assert.equal(getOpusPacketDurationMs(packets[0]), 20);
 	assert.equal(validateOpusPacketDuration(packets[0], 20), true);
+});
+
+test("WebAudioConnection sends audio:config when CONNECTING socket transitions to OPEN", async () => {
+	const webConn = new WebAudioConnection({ sessionId: "connecting-sess" });
+	const socket = createFakeSocket(0, 0); // readyState = 0 (CONNECTING)
+
+	webConn.attachSocket(socket);
+
+	// Config should NOT be sent while CONNECTING
+	assert.equal(socket.sent.length, 0, "No messages should be sent before socket opens");
+	assert.equal(webConn.isReady, false);
+	assert.equal(webConn.state.status, VoiceConnectionStatus.Connecting);
+
+	// Now socket opens
+	socket.open();
+
+	assert.equal(socket.sent.length, 1, "audio:config must be sent once socket opens");
+	const configMsg = JSON.parse(socket.sent[0].data);
+	assert.equal(configMsg.type, "audio:config");
+	assert.equal(configMsg.sessionId, "connecting-sess");
+	assert.equal(webConn.isReady, true);
+	assert.equal(webConn.state.status, VoiceConnectionStatus.Ready);
+
+	// Triggering open event again should NOT re-send config
+	socket.open();
+	assert.equal(socket.sent.length, 1, "audio:config must be sent exactly once");
+
+	webConn.destroy();
+});
+
+test("WebAudioConnection handles race conditions when socket closes or destroys before OPEN", () => {
+	const webConn = new WebAudioConnection({ sessionId: "race-sess" });
+	const socket1 = createFakeSocket(0, 0);
+	webConn.attachSocket(socket1);
+	socket1.close();
+	// Should detach cleanly and never send
+	socket1.open();
+	assert.equal(socket1.sent.length, 0);
+
+	const webConn2 = new WebAudioConnection({ sessionId: "destroy-sess" });
+	const socket2 = createFakeSocket(0, 0);
+	webConn2.attachSocket(socket2);
+	webConn2.destroy();
+	socket2.open();
+	assert.equal(socket2.sent.length, 0);
+});
+
+test("WebAudioConnection reflects correct state and avoids consuming audio without sinks", async () => {
+	const { player, audioPlayer, controller } = createPlayerWithAudioPlayer("no-sink-player");
+	const webConn = new WebAudioConnection({ sessionId: "no-sink-sess" });
+
+	// Initially, connection has no sockets -> Disconnected
+	assert.equal(webConn.state.status, VoiceConnectionStatus.Disconnected);
+	assert.equal(webConn.isReady, false);
+	assert.equal(webConn.isAvailableForPacing(), false);
+
+	// Subscribe to player without sinks
+	webConn.subscribe(player);
+	assert.equal(webConn.state.status, VoiceConnectionStatus.Disconnected);
+
+	// AudioPlayer recognizes it is NOT playable because connection is not Ready
+	assert.equal(audioPlayer.playable.length, 0, "AudioPlayer must not be playable without ready sinks");
+
+	const packets = Array.from({ length: 20 }, (_, i) => Buffer.from([0xf8, 0xff, 0xfe, i]));
+	const packetStream = Readable.from(packets, { objectMode: true });
+	const resource = createOpusAudioResource(packetStream);
+	await player.play(resource);
+
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	// AudioPlayer did not consume packets
+	assert.equal(webConn.getStats().sequence, 0);
+
+	// Now attach an OPEN socket
+	const socket = createFakeSocket();
+	webConn.attachSocket(socket);
+
+	assert.equal(webConn.state.status, VoiceConnectionStatus.Ready);
+	assert.equal(webConn.isReady, true);
+	assert.ok(audioPlayer.playable.length > 0, "AudioPlayer becomes playable once sink attaches");
+
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.ok(webConn.getStats().sequence > 0, "AudioPlayer consumed packets once sink attached");
+	const prevSequence = webConn.getStats().sequence;
+
+	// Detach socket -> state transitions to Disconnected
+	webConn.detachSocket(socket);
+	assert.equal(webConn.state.status, VoiceConnectionStatus.Disconnected);
+	assert.equal(audioPlayer.playable.length, 0, "AudioPlayer stops pacing when last sink detaches");
+
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	assert.equal(webConn.getStats().sequence, prevSequence, "No further packets consumed after sink detaches");
+
+	// Reconnect idempotency: re-attach socket restores Ready
+	const socket2 = createFakeSocket();
+	webConn.attachSocket(socket2);
+	assert.equal(webConn.state.status, VoiceConnectionStatus.Ready);
+	assert.ok(audioPlayer.playable.length > 0);
+
+	// Disconnect method sets Disconnected
+	webConn.disconnect();
+	assert.equal(webConn.state.status, VoiceConnectionStatus.Disconnected);
+	assert.equal(audioPlayer.playable.length, 0);
+
+	// Calling reconnect() restores Ready since socket2 is active
+	webConn.reconnect();
+	assert.equal(webConn.state.status, VoiceConnectionStatus.Ready);
+	assert.ok(audioPlayer.playable.length > 0);
+
+	// Subscribing again with the same player is idempotent and preserves Ready
+	webConn.subscribe(player);
+	assert.equal(webConn.state.status, VoiceConnectionStatus.Ready);
+
+	webConn.destroy();
+	player.destroy();
+	controller.detach("no-sink-player");
+});
+
+test("createOpusAudioResource enforces packet boundaries and rejects invalid Opus duration", async () => {
+	// 1. Rejects byte streams (non-objectMode Readable)
+	const byteStream = new Readable({
+		read() {
+			this.push(Buffer.from([0xf8, 0xff, 0xfe]));
+			this.push(null);
+		},
+	});
+	assert.equal(byteStream.readableObjectMode, false);
+	assert.throws(() => createOpusAudioResource(byteStream), /object-mode Readable/i);
+
+	// 2. Rejects non-20ms packet in objectMode stream when validateDuration is enabled (default)
+	const non20msPacket = Buffer.from([0x00, 0x01]); // 10ms SILK packet
+	const badStream = Readable.from([non20msPacket], { objectMode: true });
+	const resource = createOpusAudioResource(badStream);
+
+	const readErrors = [];
+	resource.playStream.on("error", (err) => readErrors.push(err));
+	resource.playStream.read();
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.ok(readErrors.length > 0, "Resource should emit error on invalid duration");
+	assert.match(readErrors[0].message, /Incompatible Opus packet duration/i);
+});
+
+test("WebAudioConnection drops malformed Opus packets without corrupting timestamps", () => {
+	const webConn = new WebAudioConnection({ sessionId: "malformed-test" });
+	const socket = createFakeSocket();
+	webConn.attachSocket(socket);
+
+	// Empty buffer
+	webConn.prepareAudioPacket(Buffer.alloc(0));
+	webConn.dispatchAudio();
+
+	// Invalid c=3 Opus packet with frameCount=0
+	const malformed = Buffer.from([0x03, 0x00]);
+	assert.equal(getOpusPacketDurationMs(malformed), 0);
+	webConn.prepareAudioPacket(malformed);
+	webConn.dispatchAudio();
+
+	const stats = webConn.getStats();
+	assert.equal(stats.sequence, 0, "Malformed packets should not increment sequence");
+	assert.equal(stats.dispatchedPackets, 0, "Malformed packets should not be dispatched");
+
+	webConn.destroy();
+});
+
+test("WebAudioConnection drop-oldest policy drops oldest queued packet when queue limit is reached", () => {
+	const webConn = new WebAudioConnection({
+		sessionId: "drop-oldest-sess",
+		maxBufferedBytes: 10, // tiny limit so packets must queue
+		maxQueuedPackets: 2,
+		dropPolicy: "drop-oldest",
+	});
+	const socket = createFakeSocket(500); // saturated buffer
+	webConn.attachSocket(socket);
+
+	const droppedSeq = [];
+	webConn.on("drop", ({ sequence }) => droppedSeq.push(sequence));
+
+	// Packet 0 -> enters queue (queue: [0])
+	webConn.prepareAudioPacket(Buffer.from([0xf8, 0xff, 0xfe, 0x00]));
+	webConn.dispatchAudio();
+
+	// Packet 1 -> enters queue (queue: [0, 1])
+	webConn.prepareAudioPacket(Buffer.from([0xf8, 0xff, 0xfe, 0x01]));
+	webConn.dispatchAudio();
+
+	assert.equal(droppedSeq.length, 0, "No drops while queue is within limit");
+
+	// Packet 2 -> queue is full (length 2 >= max 2), drop oldest (packet 0)!
+	webConn.prepareAudioPacket(Buffer.from([0xf8, 0xff, 0xfe, 0x02]));
+	webConn.dispatchAudio();
+
+	assert.equal(droppedSeq.length, 1);
+	assert.equal(droppedSeq[0], 0, "Oldest packet (0) must be dropped");
+
+	// Packet 3 -> drop oldest (packet 1)!
+	webConn.prepareAudioPacket(Buffer.from([0xf8, 0xff, 0xfe, 0x03]));
+	webConn.dispatchAudio();
+
+	assert.equal(droppedSeq.length, 2);
+	assert.equal(droppedSeq[1], 1, "Oldest packet (1) must be dropped");
+
+	webConn.destroy();
+});
+
+test("WebAudioConnectionBackend capabilities accurately reflect unsupported replacement and volume", () => {
+	const webConn = new WebAudioConnection({ sessionId: "backend-cap-sess" });
+	const backend = new WebAudioConnectionBackend(webConn);
+
+	assert.equal(backend.capabilities.replacement, "unsupported");
+	assert.equal(backend.capabilities.volume, "unsupported");
+
+	const handle = backend.createSession({
+		stream: new Readable({ read() {} }),
+		format: { kind: "encoded", codec: "opus" },
+		ownership: "borrow",
+	});
+
+	assert.throws(() => handle.replace({}), AudioOutputUnsupportedOperationError);
+	assert.throws(() => handle.setVolume(0.5), AudioOutputUnsupportedOperationError);
+
+	handle.dispose();
+	backend.dispose();
+});
+
+test("WebSocketAudioOutputBackend demuxes Ogg Opus container input before sending Opus frames", async () => {
+	const socket = createFakeSocket();
+	const backend = new WebSocketAudioOutputBackend({
+		codec: "opus",
+		socketFactory: () => socket,
+	});
+
+	// Build an Ogg Opus stream with 2 packets
+	function createOggPage(headerType, granulePosition, serialNumber, pageSeq, segments) {
+		const segmentTable = [];
+		const body = [];
+		for (const seg of segments) {
+			let remaining = seg.length;
+			while (remaining >= 255) {
+				segmentTable.push(255);
+				remaining -= 255;
+			}
+			segmentTable.push(remaining);
+			body.push(seg);
+		}
+		const header = Buffer.alloc(27 + segmentTable.length);
+		header.write("OggS", 0);
+		header.writeUInt8(0, 4);
+		header.writeUInt8(headerType, 5);
+		header.writeBigInt64LE(BigInt(granulePosition), 6);
+		header.writeUInt32BE(serialNumber, 14);
+		header.writeUInt32LE(pageSeq, 18);
+		header.writeUInt32LE(0, 22);
+		header.writeUInt8(segmentTable.length, 26);
+		Buffer.from(segmentTable).copy(header, 27);
+		return Buffer.concat([header, ...body]);
+	}
+
+	const serial = 0x12345678;
+	const opusHead = Buffer.concat([Buffer.from("OpusHead"), Buffer.alloc(11)]);
+	const opusTags = Buffer.concat([Buffer.from("OpusTags"), Buffer.alloc(8)]);
+	const opusPacket1 = Buffer.from([0xf8, 0xff, 0xfe, 0xaa]);
+	const opusPacket2 = Buffer.from([0xf8, 0xff, 0xfe, 0xbb]);
+
+	const page1 = createOggPage(2, 0, serial, 0, [opusHead]);
+	const page2 = createOggPage(0, 0, serial, 1, [opusTags]);
+	const page3 = createOggPage(0, 960, serial, 2, [opusPacket1, opusPacket2]);
+
+	const oggStream = Readable.from([page1, page2, page3]); // Byte stream, container ogg
+
+	const handle = backend.createSession({
+		stream: oggStream,
+		format: { kind: "encoded", codec: "opus", container: "ogg" },
+		ownership: "borrow",
+	});
+
+	await handle.start();
+	await handle.completion;
+
+	const binaryFrames = socket.sent.filter((msg) => typeof msg.data !== "string");
+	assert.equal(binaryFrames.length, 2, "Backend should demux Ogg and emit 2 discrete Opus frames");
+
+	const decoded1 = decodeWebAudioOpusFrame(binaryFrames[0].data);
+	const decoded2 = decodeWebAudioOpusFrame(binaryFrames[1].data);
+	assert.deepEqual(decoded1.payload, opusPacket1);
+	assert.deepEqual(decoded2.payload, opusPacket2);
+
+	await handle.dispose();
+	backend.dispose();
+});
+
+test("Unified Architecture: Single Opus stream -> AudioResource + AudioPlayer -> voiceConnection.subscribe(player) & webConnection.subscribe(player)", async () => {
+	const { player, controller } = createPlayerWithAudioPlayer("unified-opus-player");
+
+	// 1. Discord VoiceConnection subscribes to player
+	const voiceConnection = createFakeVoiceConnection();
+	const voiceSub = voiceConnection.subscribe(player);
+	assert.ok(voiceSub, "voiceConnection.subscribe(player) returns a valid PlayerSubscription");
+
+	// 2. WebAudioConnection subscribes to player
+	const webSocket = createFakeSocket();
+	const webConnection = new WebAudioConnection({ sessionId: "unified-web-sess" });
+	webConnection.attachSocket(webSocket);
+	const webSub = webConnection.subscribe(player);
+	assert.ok(webSub, "webConnection.subscribe(player) returns a valid PlayerSubscription");
+
+	// 3. Create a single Opus packet stream (one source)
+	const rawOpusPackets = [
+		Buffer.from([0xf8, 0xff, 0xfe, 0x01]),
+		Buffer.from([0xf8, 0xff, 0xfe, 0x02]),
+		Buffer.from([0xf8, 0xff, 0xfe, 0x03]),
+	];
+	const opusStream = Readable.from(rawOpusPackets, { objectMode: true });
+	const resource = createOpusAudioResource(opusStream, {
+		metadata: { title: "Single Opus Stream" },
+	});
+
+	// 4. Play through AudioPlayer
+	await player.play(resource);
+
+	// Wait for 20ms scheduler cycles
+	await new Promise((resolve) => setTimeout(resolve, 100));
+
+	// 5. Discord Voice received Opus packets directly
+	assert.ok(voiceConnection.dispatchedPackets.length > 0, "Discord Voice received dispatched Opus packets");
+
+	// 6. WebSocket Gateway received same Opus packets wrapped in Wire Format v1 frame
+	const binaryFrames = webSocket.sent.filter((msg) => typeof msg.data !== "string");
+	assert.ok(binaryFrames.length > 0, "WebSocket Gateway received Opus binary frames");
+
+	// 7. Verify byte-for-byte Opus payload parity across Discord Voice and WebAudio
+	for (let i = 0; i < Math.min(voiceConnection.dispatchedPackets.length, binaryFrames.length); i++) {
+		const decoded = decodeWebAudioOpusFrame(binaryFrames[i].data);
+		assert.equal(decoded.codec, "opus");
+		assert.deepEqual(decoded.payload, voiceConnection.dispatchedPackets[i], "Both outputs received identical Opus payload");
+	}
+
+	// 8. Verify the source packets reached both Discord Voice and WebAudio
+	const discordHex = voiceConnection.dispatchedPackets.map((b) => b.toString("hex"));
+	const webHex = binaryFrames.map((f) => decodeWebAudioOpusFrame(f.data).payload.toString("hex"));
+	for (const raw of rawOpusPackets) {
+		assert.ok(discordHex.includes(raw.toString("hex")), `Discord Voice dispatched track packet ${raw.toString("hex")}`);
+		assert.ok(webHex.includes(raw.toString("hex")), `WebAudio dispatched track packet ${raw.toString("hex")}`);
+	}
+
+	webConnection.destroy();
+	player.destroy();
+	controller.detach("unified-opus-player");
 });

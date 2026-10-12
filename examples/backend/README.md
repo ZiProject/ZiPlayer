@@ -1,13 +1,13 @@
 # ZiPlayer Web Audio quick start
 
 Hear a ZiPlayer stream in your browser without setting up a Discord bot. This runnable local demo starts ZiPlayer and its source
-plugins, routes processed 48 kHz stereo PCM through a loopback-only WebSocket gateway, and serves the browser player.
+plugins, routes native Opus packets through a loopback-only WebSocket gateway, and serves the browser player.
 
 ## Requirements
 
 - Node.js 20.3 or newer and npm.
 - Internet access to install packages and resolve online media.
-- A modern browser with AudioWorklet support (for example, current Chrome, Edge, Firefox, or Safari).
+- A modern browser with AudioWorklet and WebAssembly support (for example, current Chrome, Edge, Firefox, or Safari).
 
 No Discord bot or Discord token is required for this browser example.
 
@@ -42,7 +42,7 @@ audio stream before playback starts, so its first frames are not missed. Click *
 browser audio resources. Press **Ctrl+C** in the terminal to stop the server.
 
 The browser's first play/search click also unlocks audio playback in browsers that require a user gesture. If the browser reports
-that it connected but PCM is silent, check the terminal for source/plugin errors and try a different query.
+that it connected but audio is silent, check the terminal for source/plugin errors and try a different query.
 
 The example starts a default ZiPlayer whose ID is `PLAYER_ID` (default `web-audio-demo`). To add another independent player, enter
 a different player ID in the browser and use **Search and play**. The gateway creates or reuses exactly one `PlayerManager` player
@@ -55,7 +55,7 @@ Pause, resume, stop, skip, seek, volume, loop mode, autoplay, and filter request
 the matching `PlayerManager` instance. The page subscribes to `/player-events?sessionId=...`, a Server-Sent Events stream that
 sends the initial player state and pushes updates when tracks, queue entries, playback controls, volume, or filters change. The
 JSON `/player-state` endpoint remains available for one-off reads; the page does not poll it. The reusable `@ziplayer/client`
-package remains an audio receiver and event source, not a remote player-control API. Volume is applied to outgoing PCM; seeking
+package remains an audio receiver and event source, not a remote player-control API. Volume is applied to outgoing audio; seeking
 requires a current track and a position within its duration. A control that cannot be applied returns an error rather than a
 successful-looking response. When the last browser listener disconnects, that player's instance is destroyed after 100 seconds;
 reconnecting a listener during that grace period cancels cleanup.
@@ -74,35 +74,35 @@ npm start --prefix examples/backend -- "https://www.youtube.com/watch?v=..."
 
 ## What is running?
 
-The example registers YouTube, SoundCloud, Spotify, attachments, and TTS source plugins with `PlayerManager`. It uses the regular
+The example registers YouTube, SoundCloud, Spotify, attachments, and TTS source plugins with `PlayerManager`. It uses the unified
 ZiPlayer playback pipeline with concurrent multi-output support:
 
-- Instead of locking the player to a single output backend at creation time, the player starts with standard playback capabilities
-  and dynamically registers a `WebSocketAudioOutputBackend` via `player.connect(backend)`.
-- If a Discord voice channel connection is also established via `player.connect(channel)`, both Discord Voice and Web Audio PCM
-  stream concurrently from the exact same DSP pipeline without duplicate FFmpeg processes.
-- The pacing sink automatically adapts: while Discord Voice is actively connected, it acts as pacing master; when only Web Audio
-  is active, Web Audio paces the stream in real time.
+- Instead of transcoding to PCM on the server, the single `@discordjs/voice` `AudioPlayer` reads native Opus packets directly and
+  fans them out to registered sinks (`webConnection.subscribe(player)` and `voiceConnection.subscribe(player)`).
+- If a Discord voice channel connection is also established, both Discord Voice and Web Audio stream concurrently from the exact
+  same Opus packet stream with 0 FFmpeg transcoding processes.
+- The pacing sink automatically adapts: while Discord Voice is actively connected, it paces playback; when only Web Audio is
+  active, Web Audio paces the stream in real time.
 - The web page allows viewing active outputs (`/outputs` or in the player panel), disconnecting outputs
-  (`player.disconnectOutput(id)`), and dynamically connecting secondary outputs mid-stream. The gateway forwards audio to browser
-  listeners; the browser's reusable `@ziplayer/client` validates and plays it through an AudioWorklet. The page's session fields
-  are available for manual connections if you want to listen to an already-running player.
+  (`player.disconnectOutput(id)`), and dynamically connecting secondary outputs mid-stream. The gateway forwards Opus frames to
+  browser listeners; the browser's reusable `@ziplayer/client` decodes Opus in WebAssembly to Float32 PCM directly in an
+  AudioWorklet.
+- The page's session fields are available for manual connections if you want to listen to an already-running player.
 
 Run the gateway handoff test from the repository root with `npm test --prefix examples/backend`.
 
-While connected, choose **Start WAV recording** to record the exact PCM stream while it continues playing. **Download current
-WAV** saves a snapshot without stopping the recording; **Stop & download WAV** ends the capture and downloads it. Recordings are
-stereo 48 kHz s16 PCM in a WAV container and are capped at 10 minutes per capture to limit browser memory use. This saves the
-audio received by the browser; it does not download the provider's original MP3/FLAC file.
+While connected, choose **Start WAV recording** to record audio while it continues playing. **Download current WAV** saves a
+snapshot without stopping the recording; **Stop & download WAV** ends the capture and downloads it. Recordings are decoded stereo
+48 kHz s16 PCM in a WAV container and are capped at 10 minutes per capture to limit browser memory use.
 
 ## Troubleshooting
 
 The `/listen` WebSocket request stays pending while connected; that is normal for a live stream. After the JSON `audio:config`
-message, binary PCM frames should follow continuously. The page reports the PCM frame count, whether the PCM has a non-zero
-signal, and the browser `AudioContext` state. If no PCM arrives within five seconds, check the server terminal for the
-`ZiPlayer stream/output error` or `No PCM frames received` diagnostic. If frames arrive but the PCM is silent, try another track
-and check the source stream. The search form opens `/listen-next` before sending its playback request, which prevents the
-publisher from sending its first frames before the browser is subscribed.
+message, binary Opus frames should follow continuously. The page reports the audio frame count, whether the decoded audio has a
+non-zero signal, and the browser `AudioContext` state. If no frames arrive within five seconds, check the server terminal for the
+`ZiPlayer stream/output error` diagnostic. If frames arrive but the audio is silent, try another track and check the source
+stream. The search form opens `/listen-next` before sending its playback request, which prevents the publisher from sending its
+first frames before the browser is subscribed.
 
 Configuration:
 

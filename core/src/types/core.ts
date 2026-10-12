@@ -193,7 +193,9 @@ export interface PlayerOptions {
 	};
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
 	audioProcessing?: AudioProcessingOptions;
-	/** Creates an output backend owned by this player. Discord Voice is used when omitted. */
+	/**
+	 * @deprecated Use `voiceConnection.subscribe(player)` and `webConnection.subscribe(player)` with dynamic `player.connect(webConnection)` instead.
+	 */
 	audioOutputBackendFactory?: AudioOutputBackendFactory<AudioResource>;
 	maxStreamStore?: number;
 }

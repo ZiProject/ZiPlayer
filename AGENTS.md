@@ -17,15 +17,20 @@ Read the root [`README.md`](README.md) for public setup and player workflows. Fo
 
 - Normal applications should use `PlayerManager`, `Player`, plugins, and documented player options, not private Bus/controller
   internals.
-- Discord Voice remains the default output. `audioOutputBackendFactory` provides the initial output; additional outputs are registered and removed dynamically with `player.connect(backend)`, `disconnectOutput(id)`, or the returned handle.
-- A player fans one processed stream out to registered sinks. Registering a WebSocket PCM sink negotiates PCM s16 LE at 48 kHz stereo for subsequent tracks; joining an active encoded track is rejected rather than silently ignored.
-- WebSocket output requires an application-owned gateway. The browser client is a separate package;
-  it does not replace gateway authentication or routing.
+- Discord Voice and WebAudio outputs subscribe directly to the shared `@discordjs/voice` `AudioPlayer`:
+  `voiceConnection.subscribe(player)` and `webConnection.subscribe(player)`. `player.connect(webConnection)` or
+  `webConnection.subscribe(player)` dynamically attaches WebAudio output.
+- The pipeline fans a single source stream out to registered sinks as native Opus packets (0 FFmpeg transcoding processes when
+  sources provide Opus). The old server-to-web PCM streaming and `audioOutputBackendFactory` are deprecated/eliminated in favor of
+  unified Opus packet subscription.
+- WebSocket output relays Opus binary frames (Wire Format v1 with Magic 'ZI' and 16-byte header) through an application gateway.
+  The `@ziplayer/client` browser receiver decodes Opus frames in WebAssembly to Float32 PCM and plays via AudioWorklet.
 - The current player stack supports queue orchestration, smart preloading, crossfade/transition flow, loudness normalization,
   anti-stuck recovery, filter chains, and browser/WebSocket publishing in addition to standard voice playback.
-- The DSP pipeline (`FFmpegAudioProcessingEngine`) runs FFmpeg as a child process and emits PCM. `audioProcessing.inputFormat` stays
-  `"encoded"`; a PCM stream (for example the output of a seek) is declared per stream through `AudioProcessingContext.inputFormat`
-  because FFmpeg cannot probe raw PCM and would guess it as noise. Downstream output must follow the PCM transport contract.
+- The DSP pipeline (`FFmpegAudioProcessingEngine`) runs FFmpeg as a child process and emits PCM. `audioProcessing.inputFormat`
+  stays `"encoded"`; a PCM stream (for example the output of a seek) is declared per stream through
+  `AudioProcessingContext.inputFormat` because FFmpeg cannot probe raw PCM and would guess it as noise. Downstream output must
+  follow the PCM transport contract.
 - Keep public documentation and the package `AGENTS.md` guides aligned with changes to exported APIs and expected workflows.
 
 ## Validation

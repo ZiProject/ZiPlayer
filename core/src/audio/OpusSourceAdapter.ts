@@ -1,4 +1,4 @@
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { createAudioResource, StreamType, type AudioResource } from "@discordjs/voice";
 import prism from "prism-media";
 
@@ -75,15 +75,18 @@ export function getOpusPacketDurationMs(packet: Uint8Array | Buffer): number {
 			frameCount = 2;
 			break;
 		case 3:
-			if (packet.length < 2) return frameDurationMs;
+			if (packet.length < 2) return 0;
 			frameCount = packet[1] & 0x3f;
+			if (frameCount === 0 || frameCount > 48) return 0;
 			break;
 		default:
 			frameCount = 1;
 			break;
 	}
 
-	return frameDurationMs * frameCount;
+	const totalDurationMs = frameDurationMs * frameCount;
+	if (totalDurationMs <= 0 || totalDurationMs > 120) return 0;
+	return totalDurationMs;
 }
 
 /**
@@ -91,6 +94,7 @@ export function getOpusPacketDurationMs(packet: Uint8Array | Buffer): number {
  */
 export function validateOpusPacketDuration(packet: Uint8Array | Buffer, expectedDurationMs = 20): boolean {
 	const duration = getOpusPacketDurationMs(packet);
+	if (duration <= 0) return false;
 	return Math.abs(duration - expectedDurationMs) < 0.001;
 }
 
@@ -113,6 +117,8 @@ export function createOpusAudioResource(
 	options: CreateOpusAudioResourceOptions = {},
 ): AudioResource {
 	let stream: Readable;
+	const validateDuration = options.validateDuration ?? true;
+	const expectedDurationMs = options.expectedDurationMs ?? 20;
 
 	if (Array.isArray(source) || (typeof (source as any)?.[Symbol.iterator] === "function" && !(source instanceof Readable))) {
 		const packets = Array.from(source as Iterable<Buffer>);
@@ -125,9 +131,13 @@ export function createOpusAudioResource(
 					return;
 				}
 				const packet = packets[index++];
-				if (options.validateDuration && !validateOpusPacketDuration(packet, options.expectedDurationMs ?? 20)) {
+				if (!packet || !(packet instanceof Uint8Array || Buffer.isBuffer(packet)) || packet.length === 0) {
+					this.destroy(new Error("Invalid Opus packet: packet must be a non-empty Buffer or Uint8Array"));
+					return;
+				}
+				if (validateDuration && !validateOpusPacketDuration(packet, expectedDurationMs)) {
 					const actual = getOpusPacketDurationMs(packet);
-					this.destroy(new Error(`Incompatible Opus packet duration: expected 20ms, got ${actual}ms`));
+					this.destroy(new Error(`Incompatible Opus packet duration: expected ${expectedDurationMs}ms, got ${actual}ms`));
 					return;
 				}
 				this.push(packet);
@@ -135,21 +145,28 @@ export function createOpusAudioResource(
 		});
 	} else if (source instanceof Readable) {
 		if (!source.readableObjectMode) {
-			// If not object mode, wrap to emit individual packets if already parsed, or ensure object mode
-			const originalStream = source;
-			stream = new Readable({
+			throw new TypeError(
+				"Opus stream must be an object-mode Readable emitting discrete Opus packets. Raw byte streams do not guarantee packet boundaries; use demuxOggOpusToPackets() or demuxWebmOpusToPackets() to demux container streams first.",
+			);
+		}
+		if (validateDuration) {
+			const validator = new Transform({
 				objectMode: true,
-				read() {
-					const chunk = originalStream.read();
-					if (chunk !== null) {
-						this.push(chunk);
+				transform(chunk, _encoding, callback) {
+					if (!chunk || !(chunk instanceof Uint8Array || Buffer.isBuffer(chunk)) || chunk.length === 0) {
+						callback(new Error("Invalid Opus packet: packet must be a non-empty Buffer or Uint8Array"));
+						return;
 					}
+					if (!validateOpusPacketDuration(chunk, expectedDurationMs)) {
+						const actual = getOpusPacketDurationMs(chunk);
+						callback(new Error(`Incompatible Opus packet duration: expected ${expectedDurationMs}ms, got ${actual}ms`));
+						return;
+					}
+					callback(null, chunk);
 				},
 			});
-			originalStream.on("readable", () => stream.emit("readable"));
-			originalStream.once("end", () => stream.push(null));
-			originalStream.once("close", () => stream.destroy());
-			originalStream.on("error", (err) => stream.destroy(err));
+			source.on("error", (err) => validator.destroy(err));
+			stream = source.pipe(validator);
 		} else {
 			stream = source;
 		}

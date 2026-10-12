@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import { performance } from "node:perf_hooks";
 import { AudioOutputUnsupportedOperationError, createAudioAbortError } from "./AudioOutputBackend";
 import type {
@@ -11,6 +12,7 @@ import type {
 	AudioOutputState,
 } from "./AudioOutputBackend";
 import { encodeWebAudioOpusFrame, decodeWebAudioOpusFrame } from "./WebAudioConnection";
+import { getOpusPacketDurationMs, demuxOggOpusToPackets, demuxWebmOpusToPackets } from "../audio/OpusSourceAdapter";
 
 export const WEB_AUDIO_PROTOCOL_VERSION = 1;
 export const WEB_AUDIO_SAMPLE_RATE_HZ = 48_000;
@@ -174,7 +176,10 @@ export function encodeWebAudioFrame(
 	return new Uint8Array(output.buffer, output.byteOffset, output.byteLength);
 }
 
-export function decodeWebAudioFrame(frame: Uint8Array): {
+export function decodeWebAudioFrame(
+	frame: Uint8Array,
+	options?: { protocolVersion?: number; allowLegacy?: boolean },
+): {
 	version: number;
 	sequence: number;
 	timestampMs: number;
@@ -198,6 +203,9 @@ export function decodeWebAudioFrame(frame: Uint8Array): {
 			payload: new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength),
 		};
 	} else {
+		if (options?.protocolVersion === 1 || options?.allowLegacy === false) {
+			throw new Error("Malformed Web audio frame: missing 'ZI' protocol header");
+		}
 		// Legacy format fallback
 		const sequence = view.readUInt32LE(0);
 		const timestampMs = view.readUInt32LE(4);
@@ -248,6 +256,7 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 	public readonly ready: Promise<void>;
 	public readonly input: AudioOutputInput;
 	public readonly ownership: "transfer" | "borrow";
+	private readonly effectiveStream: Readable;
 
 	public constructor(
 		backend: WebSocketAudioOutputBackend,
@@ -262,6 +271,16 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 		this.ownership = input.ownership;
 		this.signal = context.signal;
 		this.ready = Promise.resolve();
+
+		this.effectiveStream = input.stream;
+		if (this.format.kind === "encoded") {
+			if (this.format.container === "webm") {
+				this.effectiveStream = demuxWebmOpusToPackets(input.stream);
+			} else if (this.format.container === "ogg" || this.format.container === "ogg/opus" || !input.stream.readableObjectMode) {
+				this.effectiveStream = demuxOggOpusToPackets(input.stream);
+			}
+		}
+
 		if (this.signal) {
 			const abort = () => {
 				if (!this.disposed) void this.dispose();
@@ -431,6 +450,9 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 	}
 
 	private destroyTransferredInput(): void {
+		if (this.effectiveStream !== this.input.stream && !this.effectiveStream.destroyed) {
+			this.effectiveStream.destroy();
+		}
 		if (this.input.ownership === "transfer" && !this.input.stream.destroyed) {
 			this.input.stream.destroy();
 		}
@@ -580,7 +602,8 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 		}
 		const format = this.format;
 		if (format.kind === "encoded") {
-			const frameDurationMs = 20;
+			const durationMs = getOpusPacketDurationMs(payload);
+			const frameDurationMs = durationMs > 0 ? durationMs : 20;
 			const timestampUs = this.mediaTimestampUs;
 			this.mediaTimestampUs += BigInt(Math.round(frameDurationMs * 1000));
 			const seq = this.sequence;
@@ -654,7 +677,7 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 	}
 
 	private readNextChunk(size?: number): Promise<Buffer | null> {
-		const stream = this.input.stream;
+		const stream = this.effectiveStream;
 		const read = (): Buffer | null | undefined => {
 			const chunk = (size ? (stream.read(size) ?? stream.read()) : stream.read()) as Buffer | Uint8Array | string | null;
 			if (chunk !== null) return Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -772,7 +795,7 @@ export class WebSocketAudioOutputBackend implements AudioOutputBackend<WebSocket
 
 	public createSession(input: AudioOutputInput, context: AudioOutputContext = {}): WebSocketAudioOutputHandleContract {
 		if (this.disposed) throw new Error("WebSocket audio backend is disposed");
-		validateWebAudioOutputFormat(input.format);
+		validateWebAudioOutputFormat(input.format, this.codec);
 		if (input.ownership !== "transfer" && input.ownership !== "borrow") {
 			throw new TypeError(`Unsupported WebSocket audio ownership mode: ${String(input.ownership)}`);
 		}

@@ -4,6 +4,7 @@ export const WEB_AUDIO_CHANNELS = 2;
 export const WEB_AUDIO_SAMPLE_BYTES = 2;
 export const WEB_AUDIO_FRAME_HEADER_BYTES = 16;
 export const WEB_AUDIO_MAX_MESSAGE_BYTES = 1024 * 1024;
+export const MAX_PENDING_OPUS_FRAMES = 100;
 
 export function parseAudioConfig(message, expectedSessionId) {
 	const config = typeof message === "string" ? JSON.parse(message) : message;
@@ -15,7 +16,9 @@ export function parseAudioConfig(message, expectedSessionId) {
 		!config.sessionId ||
 		config.sessionId.length > 128 ||
 		(expectedSessionId && config.sessionId !== expectedSessionId) ||
-		(config.protocolVersion !== undefined && config.protocolVersion !== WEB_AUDIO_PROTOCOL_VERSION)
+		(config.protocolVersion !== undefined &&
+			config.protocolVersion !== WEB_AUDIO_PROTOCOL_VERSION &&
+			config.protocolVersion !== 0)
 	) {
 		throw new Error("Publisher sent an unsupported or mismatched audio configuration");
 	}
@@ -67,6 +70,9 @@ export function decodeOpusFrame(data, config, expectedSequence = null) {
 		timestampMs = Number(timestampUs / 1000n);
 		frameDurationMs = 20;
 	} else {
+		if (config?.protocolVersion === 1 || config?.allowLegacy === false) {
+			throw new Error("Received a malformed Opus frame: missing 'ZI' protocol header");
+		}
 		// Legacy format fallback
 		const magic = view.getUint16(0, true);
 		if (magic === 0x4f50) {
@@ -169,6 +175,9 @@ export function decodePcmFrame(data, config, expectedSequence = null) {
 		timestampUs = view.getBigUint64(8, false); // Big-Endian
 		timestampMs = Number(timestampUs / 1000n);
 	} else {
+		if (config?.protocolVersion === 1 || config?.allowLegacy === false) {
+			throw new Error("Received an invalid PCM frame header or payload: missing 'ZI' protocol header");
+		}
 		// Legacy format fallback
 		sequence = view.getUint32(0, true);
 		timestampMs = view.getUint32(4, true);
@@ -315,6 +324,8 @@ export class WebAudioClient extends EventTarget {
 		this.audioContext = null;
 		this.workletNode = null;
 		this.opusDecoder = null;
+		this.opusDecoderReady = false;
+		this.pendingOpusFrames = [];
 		this.sessionId = null;
 		this.config = null;
 		this.expectedSequence = null;
@@ -403,6 +414,8 @@ export class WebAudioClient extends EventTarget {
 			this.acceptNextSession = false;
 			this.opusDecoder?.free();
 			this.opusDecoder = null;
+			this.opusDecoderReady = false;
+			this.pendingOpusFrames = [];
 			void this.closeAudioOutput()
 				.catch((error) => this.reportError(error))
 				.finally(() => {
@@ -427,6 +440,8 @@ export class WebAudioClient extends EventTarget {
 		if (socket && socket.readyState < 2) socket.close(1000, "Listener disconnected");
 		this.opusDecoder?.free();
 		this.opusDecoder = null;
+		this.opusDecoderReady = false;
+		this.pendingOpusFrames = [];
 		await this.closeAudioOutput();
 		this.setState("disconnected");
 	}
@@ -487,13 +502,25 @@ export class WebAudioClient extends EventTarget {
 			this.config = config;
 			this.expectedSequence = null;
 			this.workletNode?.port.postMessage({ type: "flush" });
+			this.pendingOpusFrames = [];
 			if (config.codec === "opus") {
 				this.opusDecoder?.free();
+				this.opusDecoderReady = false;
 				this.opusDecoder =
 					this.opusDecoderFactory?.({ sampleRate: config.sampleRateHz, channels: config.channels }) ??
 					new OpusDecoderAdapter({ sampleRate: config.sampleRateHz, channels: config.channels });
-				void this.opusDecoder.initialize().catch((error) => this.reportError(error));
+				void this.opusDecoder
+					.initialize()
+					.then(() => {
+						this.opusDecoderReady = true;
+						this.drainOpusQueue();
+					})
+					.catch((error) => {
+						this.pendingOpusFrames = [];
+						this.reportError(error);
+					});
 			} else {
+				this.opusDecoderReady = false;
 				this.opusDecoder?.free();
 				this.opusDecoder = null;
 			}
@@ -514,6 +541,7 @@ export class WebAudioClient extends EventTarget {
 				this.setState("playing");
 				break;
 			case "playback:stop":
+				this.pendingOpusFrames = [];
 				this.opusDecoder?.reset();
 				this.workletNode?.port.postMessage({ type: "flush" });
 				this.setState("waiting");
@@ -537,12 +565,27 @@ export class WebAudioClient extends EventTarget {
 			});
 		}
 		this.expectedSequence = (frame.sequence + 1) >>> 0;
+		if (!this.opusDecoder) {
+			dispatchDetail(this, "opus", frame);
+			return;
+		}
+		if (!this.opusDecoderReady) {
+			if (this.pendingOpusFrames.length >= MAX_PENDING_OPUS_FRAMES) {
+				this.pendingOpusFrames.shift();
+			}
+			this.pendingOpusFrames.push(frame);
+			return;
+		}
+		this.processOpusFrame(frame);
+	}
+
+	processOpusFrame(frame) {
 		if (this.opusDecoder) {
 			try {
 				const { samples, peak } = this.opusDecoder.decode(frame.payload);
 				frame.samples = samples;
 				frame.peak = peak;
-				this.workletNode.port.postMessage({ type: "pcm", samples: frame.samples }, [frame.samples.buffer]);
+				this.workletNode?.port.postMessage({ type: "pcm", samples: frame.samples }, [frame.samples.buffer]);
 			} catch (error) {
 				this.reportError(error);
 			}
@@ -550,6 +593,15 @@ export class WebAudioClient extends EventTarget {
 		dispatchDetail(this, "opus", frame);
 		if (frame.samples) {
 			dispatchDetail(this, "pcm", { ...frame, codec: "opus" });
+		}
+	}
+
+	drainOpusQueue() {
+		while (this.pendingOpusFrames.length > 0 && this.opusDecoderReady) {
+			const frame = this.pendingOpusFrames.shift();
+			if (frame) {
+				this.processOpusFrame(frame);
+			}
 		}
 	}
 

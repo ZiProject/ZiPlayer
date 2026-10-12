@@ -22,6 +22,9 @@ export interface PlaybackControllerOptions {
 	audioPlayer?: AudioPlayer;
 	stuckTimeoutMs?: number;
 	audioProcessing?: import("../audio/AudioProcessingEngine").AudioProcessingOptions;
+	/**
+	 * @deprecated Use `voiceConnection.subscribe(player)` and `webConnection.subscribe(player)` with dynamic `player.connect(webConnection)` instead.
+	 */
 	audioOutputBackendFactory?: import("../output/AudioOutputBackend").AudioOutputBackendFactory<AudioResource>;
 }
 

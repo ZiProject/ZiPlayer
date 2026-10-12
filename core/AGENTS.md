@@ -176,64 +176,57 @@ The first event argument is the affected `Player`, which is useful when one mana
 - The canonical option definitions are `PlayerManagerOptions` and `PlayerOptions` in [`src/types/core.ts`](src/types/core.ts).
   Prefer those definitions over guessing option names or defaults.
 
-### Browser audio output
+### Unified Browser and Discord Audio Output (Native Opus Passthrough)
 
-Use the public `WebSocketAudioOutputBackend` when a player must publish PCM to a WebSocket gateway rather than Discord Voice. The
-backend accepts only 48 kHz, stereo, interleaved s16 little-endian PCM. Configure `audioProcessing` to produce that exact format
-and provide a socket factory that resolves only after its publisher WebSocket is connected.
+ZiPlayer streams directly to Discord Voice and WebAudio outputs through a single shared `@discordjs/voice` `AudioPlayer` with
+native Opus passthrough (0 FFmpeg child processes when tracks provide Opus). Both connections subscribe to the same player:
 
 ```ts
-import { WebSocketAudioOutputBackend } from "ziplayer";
+import { PlayerManager, WebAudioConnection, createOpusAudioResource } from "ziplayer";
 
-const player = await manager.create("web-player", {
-	audioProcessing: {
-		enabled: true,
-		inputFormat: "encoded",
-		outputFormat: "pcm16le",
-		sampleRate: 48_000,
-		channels: 2,
-	},
-	audioOutputBackendFactory: ({ playerId }) =>
-		new WebSocketAudioOutputBackend({
-			sessionId: playerId,
-			socketFactory: ({ sessionId }) => connectPublisherToYourGateway(sessionId),
-		}),
-});
+const manager = new PlayerManager({ autoCleanup: true });
+const player = await manager.create(guildId);
+
+// 1. Discord Voice output
+const voiceConnection = await player.connect(voiceChannel);
+// voiceConnection.subscribe(player) is handled automatically
+
+// 2. WebAudio / WebSocket Gateway output
+const webConnection = new WebAudioConnection({ sessionId: player.id });
+const publisherSocket = await connectPublisherToYourGateway(player.id);
+webConnection.attachSocket(publisherSocket);
+webConnection.subscribe(player); // or await player.connect(webConnection);
+
+// 3. Play Opus resource
+const resource = createOpusAudioResource(opusPacketStream);
+await player.play(resource);
 ```
 
-The stable `sessionId: playerId` lets gateway subscribers follow different per-track publisher sockets belonging to the same
-player. Do not reuse one session ID for unrelated players. ZiPlayer provides the publisher backend and PCM protocol only: an
-application still owns its gateway, authentication/authorization, listener routing, and web server. Use
-[`@ziplayer/client`](https://github.com/ZiProject/ZiPlayer/tree/main/client/README.md) for browser-side configuration/frame
-validation and AudioWorklet playback, or see
-[`examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend/README.md) for a runnable search-and-play
-application. Never expose publisher credentials or a long-lived shared gateway secret in browser code.
+The pipeline fans out identical Opus packets every 20ms:
+
+- Discord Voice encrypts and transmits via Discord Voice protocol over UDP.
+- WebAudio packages Opus packets with Wire Format v1 (`ZI` magic, 16-byte header) over WebSocket to the application gateway.
+- Browser listeners with [`@ziplayer/client`](https://github.com/ZiProject/ZiPlayer/tree/main/client/README.md) decode Opus in
+  WebAssembly to Float32 PCM directly in an `AudioWorklet`.
+
+No server-side PCM transcoding is performed, eliminating server CPU load and bandwidth overhead.
 
 ### Publishing to Multiple Outputs Concurrently
 
-A single player can stream to Discord Voice and WebSocket PCM simultaneously through a shared DSP pipeline. Connect additional
-outputs dynamically with `player.connect(backend, options)`:
+Both Discord Voice and WebAudio connections can be attached and removed dynamically mid-playback:
 
 ```ts
-import { WebSocketAudioOutputBackend } from "ziplayer";
+// Attach WebAudio connection dynamically
+const webOutput = await player.connect(webConnection, {
+	id: "web-sink",
+	name: "Web Listeners",
+});
 
-// Normal Discord Voice join
-await player.connect(voiceChannel);
-
-// Attach a WebSocket PCM sink to the live pipeline
-const wsOutput = await player.connect(
-	new WebSocketAudioOutputBackend({
-		sessionId: player.id,
-		socketFactory: ({ sessionId }) => connectPublisherToGateway(sessionId),
-	}),
-	{ id: "web-sink", name: "Web Listeners" },
-);
-
-// Inspect active outputs and metrics
+// Inspect active outputs
 const outputs = await player.getAudioOutputs();
 
-// Disconnect only the WebSocket sink without affecting voice playback
-await wsOutput.disconnect(); // or player.disconnectOutput("web-sink");
+// Disconnect only the web output without affecting Discord voice playback
+await webOutput.disconnect(); // or player.disconnectOutput("web-sink");
 ```
 
 Outputs can be connected and disconnected mid-track. If no voice subscriber is present on Discord, WebSocket automatically acts as
@@ -248,12 +241,12 @@ consumed by the `AudioPlayer`, and both Discord Voice and WebSocket outputs subs
 ```ts
 import { createOpusAudioResource, WebAudioConnection } from "ziplayer";
 
-// 1. Create a WebAudioConnection adapter targeting your WebSocket gateway publisher
+// 1. Create a WebAudioConnection adapter and attach your WebSocket publisher socket
 const webConnection = new WebAudioConnection({
 	sessionId: player.id,
-	socketFactory: ({ sessionId, signal }) => connectPublisherToGateway(sessionId, signal),
 });
-await webConnection.connect();
+const publisherSocket = connectPublisherToGateway(player.id);
+webConnection.attachSocket(publisherSocket);
 
 // 2. Subscribe both Discord Voice and WebAudio to the player (or use player.connect(webConnection))
 voiceConnection.subscribe(player);

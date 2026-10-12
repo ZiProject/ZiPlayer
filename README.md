@@ -177,67 +177,58 @@ factory-only WebSocket setup can still set `audioProcessing.enabled` explicitly.
 
 - 48 kHz
 - stereo
-- interleaved
-- little-endian
-- signed 16-bit samples (`pcm16le`) or float32 PCM when explicitly configured
+
+### Unified Browser and Discord Audio Output (Native Opus Passthrough)
+
+ZiPlayer streams directly to Discord Voice and WebAudio outputs through a single shared `@discordjs/voice` `AudioPlayer` with
+native Opus passthrough (0 FFmpeg child processes when tracks provide Opus). Both connections subscribe to the same player:
 
 ```ts
-import { PlayerManager, WebSocketAudioOutputBackend } from "ziplayer";
+import { PlayerManager, WebAudioConnection, createOpusAudioResource } from "ziplayer";
 
 const manager = new PlayerManager({ autoCleanup: true });
+const player = await manager.create(guildId);
 
-const player = await manager.create("web-player", {
-	audioProcessing: {
-		enabled: true,
-		inputFormat: "encoded",
-		outputFormat: "pcm16le",
-		sampleRate: 48_000,
-		channels: 2,
-		maxBufferBytes: 64 * 1024,
-	},
-	audioOutputBackendFactory: ({ playerId }) =>
-		new WebSocketAudioOutputBackend({
-			sessionId: playerId,
-			socketFactory: ({ sessionId, signal }) => connectPublisherSocket({ sessionId, signal, gatewayUrl, token }),
-		}),
-});
+// 1. Discord Voice output
+const voiceConnection = await player.connect(voiceChannel);
+// voiceConnection.subscribe(player) is handled automatically
 
-await player.play("https://example.com/audio.mp3", "user-1");
+// 2. WebAudio / WebSocket Gateway output
+const webConnection = new WebAudioConnection({ sessionId: player.id });
+const publisherSocket = connectPublisherSocket({ sessionId: player.id, gatewayUrl, token });
+webConnection.attachSocket(publisherSocket);
+webConnection.subscribe(player); // or await player.connect(webConnection);
+
+// 3. Play Opus resource
+const resource = createOpusAudioResource(opusPacketStream);
+await player.play(resource);
 ```
 
 For a full runnable example, see the backend sample in `examples/backend` and the client receiver package in `client`.
 
 ### Add/remove a browser output while preserving Discord Voice
 
-`player.connect(voiceChannel)` keeps its existing meaning. Passing an output backend instead registers an additional sink, and
-returns a handle that can remove just that sink. The initial factory/Discord output remains registered; use `getAudioOutputs()` to
-list registered outputs.
+Both Discord Voice and WebAudio connections can be attached and removed dynamically mid-playback:
 
 ```ts
-import { PlayerManager, WebSocketAudioOutputBackend } from "ziplayer";
-
-const manager = new PlayerManager({ autoCleanup: true });
-const player = await manager.create(guildId); // Discord Voice remains the default output
-const browserOutput = await player.connect(
-	new WebSocketAudioOutputBackend({
-		sessionId: guildId,
-		socketFactory: ({ sessionId, signal }) => connectPublisherSocket({ sessionId, signal, gatewayUrl, token }),
-	}),
-	{ id: "browser-pcm", name: "Browser PCM" },
-);
+// Attach WebAudio connection dynamically
+const webOutput = await player.connect(webConnection, {
+	id: "browser-opus",
+	name: "Browser WebAudio",
+});
 
 await player.play("https://example.com/audio.mp3", "user-1");
-console.log(await player.getAudioOutputs()); // includes Discord and browser-pcm
-await browserOutput.disconnect(); // Discord playback continues
+console.log(await player.getAudioOutputs()); // includes Discord and browser-opus
+await webOutput.disconnect(); // Discord playback continues
 ```
 
-A WebSocket sink requires PCM s16le at 48 kHz stereo. If it is registered before the next track is created, ZiPlayer negotiates
-that shared format for the track. Joining an already-running encoded track is rejected explicitly; connect it before playback or
-wait until the next track. Player volume controls Discord and other compatible initial outputs; browser PCM is unchanged by player
-volume so each browser can set its own playback level. When a PCM sink is active, the combined replacement capability is
-stop-before-start rather than atomic. Transitions cannot overlap the old and new tracks; the old track stops before the new track
-starts, which may fade in from zero rather than provide a true crossfade. Non-unity live volume for encoded Ogg/Opus resources
-without an inline volume transformer is rejected explicitly; select PCM processing to enable live Discord volume adjustment.
+The pipeline fans out identical Opus packets every 20ms:
+
+- Discord Voice encrypts and transmits via Discord Voice protocol over UDP.
+- WebAudio packages Opus packets with Wire Format v1 (`ZI` magic, 16-byte header) over WebSocket to the application gateway.
+- Browser listeners with [`@ziplayer/client`](client) decode Opus in WebAssembly to Float32 PCM directly in an `AudioWorklet`.
+
+No server-side PCM transcoding is performed, eliminating server CPU load and bandwidth overhead.
 
 ### Native Opus passthrough with unified subscribers (0 FFmpeg)
 
@@ -247,12 +238,12 @@ without spawning FFmpeg child processes. Both Discord Voice and WebSocket gatewa
 ```ts
 import { createOpusAudioResource, WebAudioConnection } from "ziplayer";
 
-// 1. Initialize web audio connection to your gateway
+// 1. Initialize web audio connection and attach publisher socket
 const webConnection = new WebAudioConnection({
 	sessionId: player.id,
-	socketFactory: ({ sessionId, signal }) => connectPublisherSocket({ sessionId, signal }),
 });
-await webConnection.connect();
+const publisherSocket = connectPublisherSocket({ sessionId: player.id });
+webConnection.attachSocket(publisherSocket);
 
 // 2. Subscribe both connections to the same AudioPlayer
 voiceConnection.subscribe(player);

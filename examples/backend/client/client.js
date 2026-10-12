@@ -356,8 +356,8 @@ function armPcmWatchdog() {
 		if (!audioClient.config) return;
 		const message =
 			receivedPcmFrames === 0 ?
-				"Connected, but no PCM frames arrived. Check the server terminal for stream/decode errors."
-			:	"No PCM received in the last 5s. The source may have stalled or ended.";
+				"Connected, but no audio frames arrived. Check the server terminal for stream/decode errors."
+			:	"No audio received in the last 5s. The source may have stalled or ended.";
 		setStatus(message);
 	}, 5000);
 }
@@ -401,14 +401,28 @@ function downloadWav() {
 
 function onPcm({ detail }) {
 	receivedPcmFrames++;
-	receivedPcmBytes += detail.payload.byteLength;
+	const sampleBytes = detail.samples ? detail.samples.length * 2 : (detail.payload?.byteLength ?? 0);
+	receivedPcmBytes += sampleBytes;
 	armPcmWatchdog();
 	if (recordingActive) {
-		const remainingBytes = MAX_RECORDING_BYTES - recordedBytes;
-		const capturedBytes = Math.min(detail.payload.byteLength, remainingBytes - (remainingBytes % 4));
-		if (capturedBytes > 0) {
-			recordedChunks.push(detail.payload.slice(0, capturedBytes));
-			recordedBytes += capturedBytes;
+		let pcmChunk;
+		if (detail.samples) {
+			const int16 = new Int16Array(detail.samples.length);
+			for (let i = 0; i < detail.samples.length; i++) {
+				const s = Math.max(-1, Math.min(1, detail.samples[i]));
+				int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+			}
+			pcmChunk = new Uint8Array(int16.buffer);
+		} else if (detail.payload) {
+			pcmChunk = new Uint8Array(detail.payload);
+		}
+		if (pcmChunk) {
+			const remainingBytes = MAX_RECORDING_BYTES - recordedBytes;
+			const capturedBytes = Math.min(pcmChunk.byteLength, remainingBytes - (remainingBytes % 4));
+			if (capturedBytes > 0) {
+				recordedChunks.push(pcmChunk.slice(0, capturedBytes));
+				recordedBytes += capturedBytes;
+			}
 		}
 		if (recordedBytes >= MAX_RECORDING_BYTES) {
 			recordingActive = false;
@@ -417,7 +431,8 @@ function onPcm({ detail }) {
 			updateRecordingControls();
 		}
 	}
-	const signalStatus = detail.peak < 0.0001 ? "PCM is silent" : "PCM has signal";
+	const formatLabel = detail.codec === "opus" ? "Opus (WASM)" : "PCM";
+	const signalStatus = detail.peak < 0.0001 ? "Audio is silent" : `${formatLabel} playing`;
 	setStatus(
 		`${signalStatus} · ${receivedPcmFrames} frames · ${(receivedPcmBytes / BYTES_PER_SECOND).toFixed(1)}s · AudioContext ${audioClient.state}`,
 	);
