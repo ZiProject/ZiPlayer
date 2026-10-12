@@ -209,6 +209,36 @@ validation and AudioWorklet playback, or see
 [`examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend/README.md) for a runnable search-and-play
 application. Never expose publisher credentials or a long-lived shared gateway secret in browser code.
 
+### Publishing to Multiple Outputs Concurrently
+
+A single player can stream to Discord Voice and WebSocket PCM simultaneously through a shared DSP pipeline. Connect additional
+outputs dynamically with `player.connect(backend, options)`:
+
+```ts
+import { WebSocketAudioOutputBackend } from "ziplayer";
+
+// Normal Discord Voice join
+await player.connect(voiceChannel);
+
+// Attach a WebSocket PCM sink to the live pipeline
+const wsOutput = await player.connect(
+	new WebSocketAudioOutputBackend({
+		sessionId: player.id,
+		socketFactory: ({ sessionId }) => connectPublisherToGateway(sessionId),
+	}),
+	{ id: "web-sink", name: "Web Listeners" },
+);
+
+// Inspect active outputs and metrics
+const outputs = await player.getAudioOutputs();
+
+// Disconnect only the WebSocket sink without affecting voice playback
+await wsOutput.disconnect(); // or player.disconnectOutput("web-sink");
+```
+
+Outputs can be connected and disconnected mid-track. If no voice subscriber is present on Discord, WebSocket automatically acts as
+the pacing master so audio flows in real time.
+
 ## Common Mistakes to Avoid
 
 - Do not treat `play()`, `connect()`, `insert()`, or playback controls as synchronous; await them and handle `false` or rejection.

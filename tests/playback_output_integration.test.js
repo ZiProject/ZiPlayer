@@ -184,27 +184,36 @@ test("player.connect(backend) attaches a WebSocket sink mid-track and removes on
 	await controller.play(playerId, resource);
 	await sleep(350);
 
-	const registration = await player.connect(
-		new WebSocketAudioOutputBackend({ socketFactory: createSocket }),
-		{ id: "late-browser", name: "Late browser" },
-	);
+	const registration = await player.connect(new WebSocketAudioOutputBackend({ socketFactory: createSocket }), {
+		id: "late-browser",
+		name: "Late browser",
+	});
 	assert.deepEqual(
 		(await player.getAudioOutputs()).map((output) => output.id),
 		["default", "late-browser"],
 	);
-	await sleep(450);
 	const lateSocket = sockets[1];
 	const binaryCount = (socket) => socket.sent.filter((message) => typeof message.data !== "string").length;
+	const deadline = Date.now() + 2000;
+	while (Date.now() < deadline && binaryCount(lateSocket) === 0) {
+		await sleep(25);
+	}
 	const lateFramesBeforeDisconnect = binaryCount(lateSocket);
 	assert.ok(lateFramesBeforeDisconnect > 0, "late sink should receive PCM from its attach point");
 	const primaryFramesBeforeDisconnect = binaryCount(sockets[0]);
-	assert.ok(primaryFramesBeforeDisconnect > lateFramesBeforeDisconnect, "primary sink should have received the earlier part of the track");
+	assert.ok(
+		primaryFramesBeforeDisconnect > lateFramesBeforeDisconnect,
+		"primary sink should have received the earlier part of the track",
+	);
 
 	assert.equal(await registration.disconnect(), true);
 	const lateFramesAfterDisconnect = binaryCount(lateSocket);
 	await sleep(120);
 	assert.equal(binaryCount(lateSocket), lateFramesAfterDisconnect, "removed sink must stop receiving frames");
-	assert.ok(binaryCount(sockets[0]) > primaryFramesBeforeDisconnect, "primary playback must continue after removing the late sink");
+	assert.ok(
+		binaryCount(sockets[0]) > primaryFramesBeforeDisconnect,
+		"primary playback must continue after removing the late sink",
+	);
 	assert.equal(streamErrors(events).length, 0);
 	controller.detach(playerId);
 	player.removeAllListeners();

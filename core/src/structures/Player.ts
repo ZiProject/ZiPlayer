@@ -49,7 +49,9 @@ export interface PlayerAudioOutputRegistration {
 function isAudioOutputBackend(value: unknown): value is AudioOutputBackend<any> {
 	if (!value || typeof value !== "object") return false;
 	const candidate = value as AudioOutputBackend<any>;
-	return typeof candidate.createSession === "function" && typeof candidate.initialize === "function" && Boolean(candidate.capabilities);
+	return (
+		typeof candidate.createSession === "function" && typeof candidate.initialize === "function" && Boolean(candidate.capabilities)
+	);
 }
 
 export function assertVoiceChannel(channel: VoiceChannel): asserts channel is VoiceChannel {
@@ -261,7 +263,10 @@ export class Player extends EventEmitter {
 				name: outputOptions.name ?? id,
 				playerVolume: outputOptions.playerVolume ?? false,
 			};
-			await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackOutputAdd, { backend: target, options: registrationOptions });
+			await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackOutputAdd, {
+				backend: target,
+				options: registrationOptions,
+			});
 			return {
 				id,
 				name: registrationOptions.name!,
@@ -281,12 +286,16 @@ export class Player extends EventEmitter {
 						deaf: (options as any).deaf ?? (options as any).selfDeaf,
 						mute: (options as any).mute ?? (options as any).selfMute,
 					}
-				: undefined,
+				:	undefined,
 		} as const;
 		const reply = await (this.bus.request(this.playerId, request as any) as Promise<{ connection: VoiceConnection }>);
 		// Legacy custom factories used to join voice without activating their AudioPlayer as an output.
 		// Ensure Voice is now a peer sink in the shared pipeline, no-op when it is already registered.
-		await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackEnsureDiscord, {});
+		try {
+			await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackEnsureDiscord, {});
+		} catch (error: any) {
+			if (error?.reason !== "unhandled") throw error;
+		}
 		return reply.connection;
 	}
 	public async getAudioOutputs(): Promise<AudioOutputInfo[]> {

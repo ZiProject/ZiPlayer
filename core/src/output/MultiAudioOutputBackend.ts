@@ -87,18 +87,40 @@ class AudioStreamTee {
 		private readonly secondaryQueueBytes = DEFAULT_SECONDARY_QUEUE_BYTES,
 	) {}
 
+	private readonly progressListeners = new Set<() => void>();
+
+	public hasEnded(): boolean {
+		return this.closed || this.ended;
+	}
+
 	public addBranch(id: string, maxQueuedBytes = this.secondaryQueueBytes): TeeBranch {
 		if (this.closed || this.ended) throw new Error("Cannot attach an output to an ended audio stream");
 		if (this.branches.has(id)) throw new Error(`Audio output branch already exists: ${id}`);
 		const queueLimit = Math.max(4, Math.min(this.secondaryQueueBytes, Math.floor(maxQueuedBytes)));
+		const stream = new PassThrough({ highWaterMark: queueLimit });
+		stream.setMaxListeners(0);
+		const origRead = stream._read.bind(stream);
+		stream._read = (size) => {
+			this.start();
+			const result = origRead(size);
+			this.notifyProgress();
+			return result;
+		};
 		const branch: TeeBranch = {
 			id,
-			stream: new PassThrough({ highWaterMark: queueLimit }),
+			stream,
 			active: true,
 			maxQueuedBytes: queueLimit,
 			droppedChunks: 0,
 			droppedBytes: 0,
 		};
+		stream.once("close", () => {
+			branch.active = false;
+			this.notifyProgress();
+			if (this.branches.size > 0 && [...this.branches.values()].every((b) => !b.active || b.stream.destroyed)) {
+				this.close();
+			}
+		});
 		this.branches.set(id, branch);
 		this.notifyMasterChanged();
 		return branch;
@@ -111,6 +133,7 @@ class AudioStreamTee {
 		this.branches.delete(id);
 		if (!branch.stream.destroyed) branch.stream.destroy();
 		this.notifyMasterChanged();
+		this.notifyProgress();
 		if (this.branches.size === 0 && this.started && !this.closed && !this.ended) this.destroySource();
 	}
 
@@ -123,22 +146,27 @@ class AudioStreamTee {
 		for (const listener of [...this.masterChangedListeners]) listener();
 	}
 
+	private notifyProgress(): void {
+		for (const listener of [...this.progressListeners]) listener();
+	}
+
 	public start(): void {
 		if (this.started || this.closed || this.ended) return;
 		this.started = true;
 		void this.pump();
 	}
 
-	public close(): void {
+	public close(error?: Error): void {
 		if (this.closed) return;
 		this.closed = true;
 		this.destroySource();
 		for (const branch of this.branches.values()) {
 			branch.active = false;
-			if (!branch.stream.destroyed) branch.stream.destroy();
+			if (!branch.stream.destroyed) branch.stream.destroy(error);
 		}
 		this.branches.clear();
 		this.notifyMasterChanged();
+		this.notifyProgress();
 	}
 
 	private destroySource(): void {
@@ -147,6 +175,10 @@ class AudioStreamTee {
 
 	private async waitForMasterAvailability(): Promise<string | undefined> {
 		while (!this.closed && !this.ended) {
+			if (this.branches.size > 0 && [...this.branches.values()].every((b) => !b.active || b.stream.destroyed)) {
+				this.close();
+				return undefined;
+			}
 			const master = this.selectMaster();
 			if (master) return master;
 			await new Promise<void>((resolve) => {
@@ -165,21 +197,21 @@ class AudioStreamTee {
 	}
 
 	private async waitForMasterProgress(branch: TeeBranch): Promise<void> {
-		while (!this.closed && !this.ended && branch.active && branch.stream.writableNeedDrain) {
+		while (!this.closed && !this.ended && branch.active && branch.stream.readableLength >= branch.maxQueuedBytes) {
 			if (this.selectMaster() !== branch.id) return;
 			await new Promise<void>((resolve) => {
 				let settled = false;
 				const finish = () => {
 					if (settled) return;
 					settled = true;
-					branch.stream.off("drain", finish);
-					branch.stream.off("close", finish);
+					this.progressListeners.delete(finish);
 					this.masterChangedListeners.delete(finish);
 					resolve();
 				};
-				branch.stream.once("drain", finish);
-				branch.stream.once("close", finish);
+				this.progressListeners.add(finish);
 				this.masterChangedListeners.add(finish);
+				branch.stream.once("close", finish);
+				if (this.closed || this.ended || !branch.active || branch.stream.readableLength < branch.maxQueuedBytes) finish();
 			});
 		}
 	}
@@ -188,6 +220,10 @@ class AudioStreamTee {
 		try {
 			for await (const value of this.source) {
 				if (this.closed) break;
+				if (this.branches.size > 0 && [...this.branches.values()].every((b) => !b.active || b.stream.destroyed)) {
+					this.close();
+					break;
+				}
 				const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
 				// If no real-time sink is available, hold this chunk and stop pulling from the source
 				// until a voice subscription returns or another output becomes available.
@@ -196,12 +232,15 @@ class AudioStreamTee {
 				for (const branch of [...this.branches.values()]) {
 					if (!branch.active || branch.stream.destroyed) continue;
 					const isMaster = branch.id === masterId;
-					if (!isMaster && branch.stream.readableLength + branch.stream.writableLength + chunk.length > branch.maxQueuedBytes) {
+					if (!isMaster && branch.stream.readableLength + chunk.length > branch.maxQueuedBytes) {
 						branch.droppedChunks++;
 						branch.droppedBytes += chunk.length;
 						continue;
 					}
-					if (!branch.stream.write(chunk) && isMaster) await this.waitForMasterProgress(branch);
+					branch.stream.write(chunk);
+					if (isMaster && branch.stream.readableLength >= branch.maxQueuedBytes) {
+						await this.waitForMasterProgress(branch);
+					}
 					if (this.closed) break;
 				}
 			}
@@ -210,10 +249,11 @@ class AudioStreamTee {
 				if (branch.active && !branch.stream.destroyed) branch.stream.end();
 			}
 		} catch (error) {
-			if (!this.closed) this.onSourceError(normalizeError(error));
+			const err = normalizeError(error);
 			for (const branch of this.branches.values()) {
-				if (branch.active && !branch.stream.destroyed) branch.stream.destroy(normalizeError(error));
+				if (branch.active && !branch.stream.destroyed) branch.stream.destroy(err);
 			}
+			if (!this.closed) this.onSourceError(err);
 		} finally {
 			this.ended = true;
 			this.notifyMasterChanged();
@@ -232,10 +272,7 @@ export class MultiAudioOutputBackend implements AudioOutputBackend<AudioResource
 	private disposed = false;
 	private disposePromise?: Promise<void>;
 
-	public constructor(
-		initialBackend: AudioOutputBackend<any>,
-		initial: AudioOutputRegistrationOptions,
-	) {
+	public constructor(initialBackend: AudioOutputBackend<any>, initial: AudioOutputRegistrationOptions) {
 		this.validateRegistration(initial);
 		this.validateBackend(initialBackend);
 		this.outputs.set(initial.id, {
@@ -277,22 +314,24 @@ export class MultiAudioOutputBackend implements AudioOutputBackend<AudioResource
 		const preferenceRecord =
 			records.find((record) => acceptedOutputs(record.backend).length < PROCESS_OUTPUTS.length) ?? records[0];
 		const preferredCandidate = preferenceRecord.backend.capabilities.preferredProcessOutput;
-		const preferred = preferredCandidate && accepted.includes(preferredCandidate)
-			? preferredCandidate
-			: accepted[0];
+		const preferred = preferredCandidate && accepted.includes(preferredCandidate) ? preferredCandidate : accepted[0];
 		return {
 			pause: records.every((record) => record.backend.capabilities.pause),
 			resume: records.every((record) => record.backend.capabilities.resume),
 			stop: records.every((record) => record.backend.capabilities.stop),
-			seek: records.some((record) => record.backend.capabilities.seek === "unsupported")
-				? "unsupported"
-				: records.some((record) => record.backend.capabilities.seek === "replace") ? "replace" : "native",
-			replacement: records.some((record) => record.backend.capabilities.replacement === "unsupported")
-				? "unsupported"
-				: records.some((record) => record.backend.capabilities.replacement === "stop-before-start")
-					? "stop-before-start" : "atomic",
+			seek:
+				records.some((record) => record.backend.capabilities.seek === "unsupported") ? "unsupported"
+				: records.some((record) => record.backend.capabilities.seek === "replace") ? "replace"
+				: "native",
+			replacement:
+				records.some((record) => record.backend.capabilities.replacement === "unsupported") ? "unsupported"
+				: records.some((record) => record.backend.capabilities.replacement === "stop-before-start") ? "stop-before-start"
+				: "atomic",
 			ownership: "transfer",
-			volume: records.some((record) => record.playerVolume && record.backend.capabilities.volume === "backend") ? "backend" : "unsupported",
+			volume:
+				records.some((record) => record.playerVolume && record.backend.capabilities.volume === "backend") ? "backend" : (
+					"unsupported"
+				),
 			backpressure: this.selectMasterRecord()?.backend.capabilities.backpressure === "source" ? "source" : "bounded",
 			maxBufferedBytes: boundedCaps.length ? Math.min(...boundedCaps) : DEFAULT_SECONDARY_QUEUE_BYTES,
 			acceptedProcessOutputs: accepted,
@@ -320,7 +359,9 @@ export class MultiAudioOutputBackend implements AudioOutputBackend<AudioResource
 		if (signal?.aborted) throw createAudioAbortError();
 		const records = [...this.outputs.values()];
 		const results = await Promise.allSettled(records.map((record) => record.backend.initialize(signal)));
-		const failures = results.flatMap((result, index) => result.status === "rejected" ? [{ record: records[index], reason: result.reason }] : []);
+		const failures = results.flatMap((result, index) =>
+			result.status === "rejected" ? [{ record: records[index], reason: result.reason }] : [],
+		);
 		for (const failure of failures) {
 			// Initializing a secondary output must not take down a healthy sink. Remove failed
 			// outputs before track creation so format negotiation and pacing are recomputed.
@@ -328,7 +369,11 @@ export class MultiAudioOutputBackend implements AudioOutputBackend<AudioResource
 		}
 		if (signal?.aborted) throw createAudioAbortError();
 		if (this.outputs.size === 0) {
-			throw new AggregateError(failures.map((failure) => failure.reason), "Every registered audio output failed to initialize");
+			if (failures.length === 1) throw failures[0].reason;
+			throw new AggregateError(
+				failures.map((failure) => failure.reason),
+				"Every registered audio output failed to initialize",
+			);
 		}
 	}
 
@@ -349,11 +394,15 @@ export class MultiAudioOutputBackend implements AudioOutputBackend<AudioResource
 			}
 		}
 		let handle: MultiAudioOutputHandle | undefined;
-		const tee = new AudioStreamTee(input.stream, () => this.selectMasterRecord(handle?.getSinkIds())?.id, (error) => {
-			for (const activeHandle of this.handles) {
-				if (activeHandle.hasTee(tee)) activeHandle.reportTeeError(error);
-			}
-		});
+		const tee = new AudioStreamTee(
+			input.stream,
+			() => this.selectMasterRecord(handle?.getSinkIds())?.id,
+			(error) => {
+				for (const activeHandle of this.handles) {
+					if (activeHandle.hasTee(tee)) activeHandle.reportTeeError(error);
+				}
+			},
+		);
 		handle = new MultiAudioOutputHandle(this, input, context, tee);
 		try {
 			for (const record of this.outputs.values()) handle.attachSink(record);
@@ -431,7 +480,9 @@ export class MultiAudioOutputBackend implements AudioOutputBackend<AudioResource
 				id: record.id,
 				name: record.name,
 				state: snapshots.find((snapshot) => snapshot.state === "playing")?.state ?? snapshots[0]?.state ?? "ready",
-				activeSessions: snapshots.filter((snapshot) => snapshot.state === "playing" || snapshot.state === "buffering" || snapshot.state === "paused").length,
+				activeSessions: snapshots.filter(
+					(snapshot) => snapshot.state === "playing" || snapshot.state === "buffering" || snapshot.state === "paused",
+				).length,
 				droppedChunks: record.droppedChunks + snapshots.reduce((total, snapshot) => total + snapshot.droppedChunks, 0),
 				droppedBytes: record.droppedBytes + snapshots.reduce((total, snapshot) => total + snapshot.droppedBytes, 0),
 				capabilities: record.backend.capabilities,
@@ -473,10 +524,28 @@ export class MultiAudioOutputBackend implements AudioOutputBackend<AudioResource
 		this.handles.delete(handle);
 	}
 
+	public getSessionHandle(resource: AudioResource): AudioOutputHandle<AudioResource> {
+		for (const handle of this.handles) {
+			if (handle.resource === resource) return handle;
+		}
+		const discord = this.outputs.get("discord")?.backend;
+		if (discord && typeof (discord as any).getSessionHandle === "function") {
+			return (discord as any).getSessionHandle(resource);
+		}
+		for (const record of this.outputs.values()) {
+			if (typeof (record.backend as any).getSessionHandle === "function") {
+				return (record.backend as any).getSessionHandle(resource);
+			}
+		}
+		throw new Error("No output handle is registered for the requested resource");
+	}
+
 	public resolveResource(sinks: ReadonlyMap<string, AudioOutputHandle<any>>, metadata: unknown): AudioResource {
 		const voice = sinks.get("discord")?.resource;
 		if (voice && isAudioResource(voice)) return voice;
 		for (const sink of sinks.values()) if (isAudioResource(sink.resource)) return sink.resource;
+		const defaultSink = sinks.get("default") ?? sinks.values().next().value;
+		if (defaultSink?.resource != null) return defaultSink.resource;
 		return createAudioResource(Readable.from([]), { metadata, inputType: StreamType.Arbitrary });
 	}
 
@@ -499,7 +568,12 @@ export class MultiAudioOutputBackend implements AudioOutputBackend<AudioResource
 	}
 
 	private validateBackend(backend: AudioOutputBackend<any>): void {
-		if (!backend || typeof backend.createSession !== "function" || typeof backend.initialize !== "function" || !backend.capabilities) {
+		if (
+			!backend ||
+			typeof backend.createSession !== "function" ||
+			typeof backend.initialize !== "function" ||
+			!backend.capabilities
+		) {
 			throw new TypeError("Audio output backend must implement createSession(), initialize(), and capabilities");
 		}
 		if (backend.capabilities.ownership !== "transfer" && backend.capabilities.ownership !== "both") {
@@ -528,6 +602,7 @@ class MultiAudioOutputHandle implements AudioOutputHandle<AudioResource> {
 	private starting = false;
 	private disposed = false;
 	private failed = false;
+	private failureError?: Error;
 	private readonly startPromises = new Map<string, Promise<void>>();
 	private detachSignal?: () => void;
 	public resource!: AudioResource;
@@ -563,7 +638,7 @@ class MultiAudioOutputHandle implements AudioOutputHandle<AudioResource> {
 	}
 
 	public getSinkIds(): Iterable<string> {
-		return this.startedSinkIds.values();
+		return this.startedSinkIds.size > 0 ? this.startedSinkIds.values() : this.sinks.keys();
 	}
 
 	public get state(): AudioOutputState {
@@ -591,8 +666,9 @@ class MultiAudioOutputHandle implements AudioOutputHandle<AudioResource> {
 	public reportTeeError(error: Error): void {
 		if (this.disposed || this.failed) return;
 		this.failed = true;
+		this.failureError = error;
 		this.stateValue = "failed";
-		this.tee.close();
+		this.tee.close(error);
 		this.emit({ type: "error", error });
 	}
 
@@ -607,10 +683,19 @@ class MultiAudioOutputHandle implements AudioOutputHandle<AudioResource> {
 	}
 
 	public attachSink(record: OutputRecord): void | Promise<void> {
-		if (this.disposed || this.stateValue === "ended" || this.stateValue === "stopped" || this.stateValue === "failed") return;
+		if (
+			this.disposed ||
+			this.stateValue === "ended" ||
+			this.stateValue === "stopped" ||
+			this.stateValue === "failed" ||
+			this.tee.hasEnded()
+		)
+			return;
 		if (this.sinks.has(record.id)) return;
 		if (!formatAccepted(record.backend, this.format)) {
-			throw new TypeError(`Cannot attach output "${record.id}" to an active ${processOutputForFormat(this.format)} track; connect it before the next track`);
+			throw new TypeError(
+				`Cannot attach output "${record.id}" to an active ${processOutputForFormat(this.format)} track; connect it before the next track`,
+			);
 		}
 		const configuredLimit = record.backend.capabilities.maxBufferedBytes;
 		const branchLimit = configuredLimit == null ? DEFAULT_SECONDARY_QUEUE_BYTES : configuredLimit;
@@ -692,17 +777,27 @@ class MultiAudioOutputHandle implements AudioOutputHandle<AudioResource> {
 		this.starting = true;
 		this.stateValue = "buffering";
 		this.emit({ type: "state", state: "buffering" });
+		for (const [id, sinkHandle] of this.sinks) {
+			if (Boolean((sinkHandle as any).backend?.player)) {
+				try {
+					sinkHandle.start(signal ?? this.context.signal);
+					this.startedSinkIds.add(id);
+				} catch {}
+			}
+		}
 		const start = async () => {
 			try {
-				await Promise.all([...this.sinks.keys()].map(async (id) => {
-					try {
-						await this.startSink(id, signal);
-					} catch (error) {
-						if (this.owner.isPacingOutput(id, this.sinks.keys())) throw error;
-						this.emit({ type: "sinkError", sinkId: id, error: normalizeError(error) });
-						await this.owner.removeBackend(id);
-					}
-				}));
+				await Promise.all(
+					[...this.sinks.keys()].map(async (id) => {
+						try {
+							await this.startSink(id, signal);
+						} catch (error) {
+							if (this.owner.isPacingOutput(id, this.sinks.keys())) throw error;
+							this.emit({ type: "sinkError", sinkId: id, error: normalizeError(error) });
+							await this.owner.removeBackend(id);
+						}
+					}),
+				);
 				if (this.disposed || signal?.aborted || this.context.signal?.aborted) throw createAudioAbortError();
 				this.started = true;
 				this.tee.start();
@@ -730,8 +825,10 @@ class MultiAudioOutputHandle implements AudioOutputHandle<AudioResource> {
 			await record.backend.initialize(signal ?? this.context.signal);
 			await handle.ready;
 			if (!this.started && !this.starting) return;
-			await handle.start(signal ?? this.context.signal);
-			this.startedSinkIds.add(id);
+			if (!this.startedSinkIds.has(id)) {
+				await handle.start(signal ?? this.context.signal);
+				this.startedSinkIds.add(id);
+			}
 			this.notifyPacingChanged();
 		});
 		this.startPromises.set(id, operation);
@@ -770,8 +867,14 @@ class MultiAudioOutputHandle implements AudioOutputHandle<AudioResource> {
 		if (this.disposed || this.stateValue === "stopped" || this.stateValue === "ended") return false;
 		this.stateValue = "stopped";
 		this.tee.close();
-		const results = await Promise.allSettled([...this.sinks.values()].map((handle) => Promise.resolve(handle.stop(signal))));
+		const sinkEntries = [...this.sinks.entries()];
+		const results = await Promise.allSettled(sinkEntries.map(([, handle]) => Promise.resolve(handle.stop(signal))));
 		this.emit({ type: "state", state: "stopped" });
+		const master = this.owner.selectMasterRecord(this.getSinkIds());
+		const masterIndex = master ? sinkEntries.findIndex(([id]) => id === master.id) : 0;
+		if (masterIndex !== -1 && results[masterIndex]?.status === "rejected") {
+			throw (results[masterIndex] as PromiseRejectedResult).reason;
+		}
 		return results.some((result) => result.status === "fulfilled" && result.value);
 	}
 
@@ -812,7 +915,7 @@ class MultiAudioOutputHandle implements AudioOutputHandle<AudioResource> {
 		this.disposed = true;
 		this.detachSignal?.();
 		this.detachSignal = undefined;
-		this.tee.close();
+		this.tee.close(this.failureError);
 		for (const detach of this.sinkDetachers.values()) detach();
 		this.sinkDetachers.clear();
 		const handles = [...this.sinks.values()];
@@ -820,15 +923,19 @@ class MultiAudioOutputHandle implements AudioOutputHandle<AudioResource> {
 		this.sinks.clear();
 		this.startedSinkIds.clear();
 		this.branches.clear();
-		await Promise.allSettled(handles.map((handle) => Promise.resolve(handle.dispose())));
+		const disposeResults = await Promise.allSettled(handles.map((handle) => Promise.resolve(handle.dispose())));
+		const failed = disposeResults.find((r): r is PromiseRejectedResult => r.status === "rejected");
 		this.listeners.clear();
 		this.owner.forgetHandle(this);
-		if (this.resource?.playStream && !this.resource.playStream.destroyed) this.resource.playStream.destroy();
+		if (this.resource?.playStream && !this.resource.playStream.destroyed) {
+			this.resource.playStream.destroy(this.failureError);
+		}
+		if (failed) throw failed.reason;
 	}
 
 	private areAllSinksFinished(): boolean {
-		return this.sinks.size > 0 && [...this.sinks.values()].every((handle) =>
-			["ended", "stopped", "failed"].includes(handle.state),
+		return (
+			this.sinks.size > 0 && [...this.sinks.values()].every((handle) => ["ended", "stopped", "failed"].includes(handle.state))
 		);
 	}
 
@@ -858,8 +965,9 @@ class MultiAudioOutputHandle implements AudioOutputHandle<AudioResource> {
 		if (event.type === "error") {
 			if (this.owner.isPacingOutput(record.id, this.getSinkIds())) {
 				this.failed = true;
+				this.failureError = event.error;
 				this.stateValue = "failed";
-				this.tee.close();
+				this.tee.close(event.error);
 				this.emit({ type: "error", error: event.error });
 			} else {
 				this.emit({ type: "sinkError", sinkId: record.id, error: event.error });
@@ -892,5 +1000,7 @@ class MultiAudioOutputHandle implements AudioOutputHandle<AudioResource> {
 }
 
 function isAudioResource(value: unknown): value is AudioResource {
-	return Boolean(value && typeof value === "object" && "playbackDuration" in value && "metadata" in value && "playStream" in value);
+	return Boolean(
+		value && typeof value === "object" && "playbackDuration" in value && "metadata" in value && "playStream" in value,
+	);
 }

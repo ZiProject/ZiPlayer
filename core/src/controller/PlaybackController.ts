@@ -9,7 +9,11 @@ import type {
 } from "../output/AudioOutputBackend";
 import { AudioOutputUnsupportedOperationError } from "../output/AudioOutputBackend";
 import { audioFrameFormatFromDiscordStreamType, DiscordVoiceOutputBackend } from "../output/DiscordVoiceOutputBackend";
-import { MultiAudioOutputBackend, type AudioOutputInfo, type AudioOutputRegistrationOptions } from "../output/MultiAudioOutputBackend";
+import {
+	MultiAudioOutputBackend,
+	type AudioOutputInfo,
+	type AudioOutputRegistrationOptions,
+} from "../output/MultiAudioOutputBackend";
 import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
@@ -100,8 +104,9 @@ export class PlaybackController {
 			if (!slot) return false;
 			return slot.outputBackend.removeBackend(id);
 		});
-		bus.registerRpc<void, AudioOutputInfo[]>(CONTROLLER_RPC.playbackOutputList, (_req, ctx) =>
-			at(ctx.playerId)?.outputBackend.listOutputs() ?? [],
+		bus.registerRpc<void, AudioOutputInfo[]>(
+			CONTROLLER_RPC.playbackOutputList,
+			(_req, ctx) => at(ctx.playerId)?.outputBackend.listOutputs() ?? [],
 		);
 		bus.registerRpc<void, AudioOutputInfo>(CONTROLLER_RPC.playbackEnsureDiscord, async (_req, ctx) => {
 			const slot = at(ctx.playerId);
@@ -174,7 +179,7 @@ export class PlaybackController {
 		const initialBackend =
 			options.audioOutputBackendFactory ?
 				options.audioOutputBackendFactory({ playerId })
-			: new DiscordVoiceOutputBackend(options.audioPlayer!);
+			:	new DiscordVoiceOutputBackend(options.audioPlayer!);
 		const outputBackend = new MultiAudioOutputBackend(initialBackend, {
 			id: options.audioOutputBackendFactory ? "default" : "discord",
 			name: options.audioOutputBackendFactory ? "Initial output" : "Discord Voice",
@@ -448,14 +453,27 @@ export class PlaybackController {
 		signal?: AbortSignal,
 	): Promise<void> {
 		if (!resource) return;
-		const handle = slot.handles.get(resource);
+		let handle = slot.handles.get(resource);
+		if (!handle && typeof (slot.outputBackend as any).getSessionHandle === "function") {
+			try {
+				handle = (slot.outputBackend as any).getSessionHandle(resource);
+				if (handle) this.registerOutputHandle(slot, handle);
+			} catch {}
+		}
 		const target = this.requestVolumeTarget(slot.playerId, track);
 		const value = target * Math.max(0, Number.isFinite(gain) ? gain : 1);
 		if (slot.outputBackend.capabilities.volume === "unsupported") {
 			if (value === 1) return;
 			throw new AudioOutputUnsupportedOperationError("volume control");
 		}
-		if (!handle) throw new Error("No output handle is registered for the requested resource");
+		if (!handle) {
+			if ((resource as any)?.volume && typeof (resource as any).volume.setVolume === "function") {
+				(resource as any).volume.setVolume(value);
+				slot.volumeValues.set(resource, value);
+				return;
+			}
+			throw new Error("No output handle is registered for the requested resource");
+		}
 		await handle.setVolume(value, signal ?? slot.lifecycleAbort.signal);
 		slot.volumeValues.set(resource, value);
 	}
@@ -609,7 +627,7 @@ export class PlaybackController {
 			const outputFormat: AudioFrameFormat =
 				effectiveProcessingOptions.outputFormat === "encoded" ?
 					{ kind: "encoded", codec: "opus", container: "ogg" }
-				: {
+				:	{
 						kind: "pcm",
 						sampleFormat,
 						endianness: "little",
@@ -785,8 +803,17 @@ export class PlaybackController {
 		const slot = this.slots.get(playerId);
 		if (!slot) return;
 		if (session && !session.isActive()) return;
-		const handle = slot.handles.get(resource);
+		let handle = slot.handles.get(resource);
+		if (!handle && typeof (slot.outputBackend as any).getSessionHandle === "function") {
+			try {
+				handle = (slot.outputBackend as any).getSessionHandle(resource);
+				if (handle) this.registerOutputHandle(slot, handle);
+			} catch {}
+		}
 		if (!handle) throw new Error("No output handle is registered for the requested resource");
+		if (slot.audioPlayer && slot.outputBackend.hasOutputId("discord") && slot.outputBackend.listOutputs().length === 1) {
+			return this.playDiscordCompatibility(slot, resource, handle, session, from, to);
+		}
 		return this.playWithBackend(slot, resource, handle, session, from, to, signal);
 	}
 
@@ -889,7 +916,10 @@ export class PlaybackController {
 		slot.activeResource = resource;
 		slot.activeHandle = handle;
 		try {
-			handle.start(session?.signal);
+			const startPromise = handle.start(session?.signal);
+			if (startPromise && typeof (startPromise as any).catch === "function") {
+				void (startPromise as Promise<void>).catch(() => undefined);
+			}
 			slot.outputState = handle.state;
 			this.retirePendingSession(slot.playerId);
 		} catch (error) {
@@ -1073,11 +1103,24 @@ export class PlaybackController {
 		}
 	}
 	private async setResourceVolume(slot: PlaybackSlot, resource: AudioResource, value: number): Promise<void> {
-		const handle = slot.handles.get(resource);
+		let handle = slot.handles.get(resource);
+		if (!handle && typeof (slot.outputBackend as any).getSessionHandle === "function") {
+			try {
+				handle = (slot.outputBackend as any).getSessionHandle(resource);
+				if (handle) this.registerOutputHandle(slot, handle);
+			} catch {}
+		}
 		if (slot.outputBackend.capabilities.volume === "unsupported") {
 			throw new AudioOutputUnsupportedOperationError("volume control");
 		}
-		if (!handle) throw new Error("No output handle is registered for the requested resource");
+		if (!handle) {
+			if ((resource as any)?.volume && typeof (resource as any).volume.setVolume === "function") {
+				(resource as any).volume.setVolume(value);
+				slot.volumeValues.set(resource, value);
+				return;
+			}
+			throw new Error("No output handle is registered for the requested resource");
+		}
 		await handle.setVolume(value, slot.lifecycleAbort.signal);
 		slot.volumeValues.set(resource, value);
 	}

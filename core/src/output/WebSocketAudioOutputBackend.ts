@@ -373,7 +373,7 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 			while (true) {
 				assertNotAborted(this.signal, signal);
 				if (!(await this.waitUntilActive())) return;
-				const chunk = await this.readNextChunk();
+				const chunk = await this.readNextChunk(frameBytes * 2);
 				if (chunk === null) break;
 				if (!(await this.waitUntilActive())) return;
 				const nextChunk: Buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -529,10 +529,10 @@ class WebSocketAudioOutputHandle implements WebSocketAudioOutputHandleContract {
 		this.activityWaiters.clear();
 	}
 
-	private readNextChunk(): Promise<Buffer | null> {
+	private readNextChunk(size?: number): Promise<Buffer | null> {
 		const stream = this.input.stream;
 		const read = (): Buffer | null | undefined => {
-			const chunk = stream.read() as Buffer | Uint8Array | string | null;
+			const chunk = (size ? (stream.read(size) ?? stream.read()) : stream.read()) as Buffer | Uint8Array | string | null;
 			if (chunk !== null) return Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
 			if (stream.readableEnded || stream.destroyed || this.stopped || this.disposed) return null;
 			return undefined;

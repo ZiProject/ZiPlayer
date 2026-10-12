@@ -31,7 +31,7 @@ const DISCORD_CAPABILITIES: AudioOutputCapabilities = {
 	backpressure: "source",
 	maxBufferedBytes: null,
 	acceptedProcessOutputs: ["encoded", "pcm16le", "pcmFloat32"],
-	preferredProcessOutput: "encoded",
+	preferredProcessOutput: "pcm16le",
 };
 
 function isAbortError(signal?: AbortSignal): boolean {
@@ -402,6 +402,11 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 				metadata: context.metadata,
 				inlineVolume,
 				...(inputType === undefined ? {} : { inputType }),
+			});
+			outputStream.on("error", (err) => {
+				if (resource.playStream && !resource.playStream.destroyed) {
+					resource.playStream.destroy(err);
+				}
 			});
 			const handle = new DiscordVoiceOutputHandle(this, resource, input.format, input, context.signal);
 			this.handles.set(resource, handle);
