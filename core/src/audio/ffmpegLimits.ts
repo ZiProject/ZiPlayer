@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
 
 export const ALLOWED_SAMPLE_RATES = [8_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000] as const;
 export const GAIN_DB_MIN = -60;
@@ -18,7 +17,10 @@ export const KILL_GRACE_MS = 2_000;
 
 export function defaultFfmpegConcurrency(): number {
 	const cpus = typeof os.availableParallelism === "function" ? os.availableParallelism() : os.cpus().length || 2;
-	return Math.max(2, cpus);
+	// Keep roughly 256 MiB for the application and budget ~50 MiB for each single-threaded FFmpeg
+	// child. CPU count alone is not a useful cap for network-bound streams on one-vCPU hosts.
+	const memoryBudget = Math.floor((os.totalmem() - 256 * 1024 * 1024) / (50 * 1024 * 1024));
+	return Math.max(2, Math.min(64, memoryBudget > 0 ? memoryBudget : cpus * 2));
 }
 
 type Waiter = {
@@ -29,10 +31,15 @@ type Waiter = {
 	onAbort?: () => void;
 };
 
-class FfmpegProcessGate {
+export class FfmpegProcessGate {
 	public running = 0;
 	public queued = 0;
-	public max = defaultFfmpegConcurrency();
+	public max: number;
+
+	public constructor(max = defaultFfmpegConcurrency()) {
+		if (!Number.isInteger(max) || max <= 0) throw new TypeError("maxConcurrentProcesses must be a positive integer");
+		this.max = max;
+	}
 	private readonly waiters: Waiter[] = [];
 
 	public configure(max: number | null | undefined): void {
@@ -50,7 +57,7 @@ class FfmpegProcessGate {
 	}
 
 	public acquire(signal?: AbortSignal, limit?: number): Promise<() => void> {
-		const effectiveLimit = limit ?? this.max;
+		const effectiveLimit = Math.min(limit ?? this.max, this.max);
 		if (signal?.aborted) return Promise.reject(abortError());
 		if (this.running < effectiveLimit && this.waiters.length === 0) {
 			this.running++;
@@ -113,53 +120,34 @@ export function getFfmpegProcessStats(): { running: number; queued: number; max:
 	return gate.stats();
 }
 
-export function acquireFfmpegSlot(signal?: AbortSignal, limit?: number): Promise<() => void> {
-	return gate.acquire(signal, limit);
+export function acquireFfmpegSlot(signal?: AbortSignal, _limit?: number): Promise<() => void> {
+	// Per-engine limits are enforced by an engine-owned FfmpegProcessGate. Never let a per-engine
+	// option lower the process-wide gate for unrelated players.
+	return gate.acquire(signal);
 }
 
 export function resolveFfmpegExecutable(explicit?: string | null, bundledPath?: string | null): string {
-	const executableNames = process.platform === "win32" ? ["ffmpeg.exe", "ffmpeg"] : ["ffmpeg"];
-	for (const candidate of [explicit, process.env.FFMPEG_PATH, process.env.ffmpegPath, bundledPath]) {
-		if (!candidate || typeof candidate !== "string") continue;
+	const isUsableFile = (candidate: string): boolean => {
+		try {
+			const stats = fs.statSync(candidate);
+			if (!stats.isFile()) return false;
+			if (process.platform !== "win32") fs.accessSync(candidate, fs.constants.X_OK);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	const candidates = [explicit, process.env.FFMPEG_PATH, bundledPath];
+	for (const candidate of candidates) {
+		if (!candidate || typeof candidate !== "string" || !candidate.trim()) continue;
 		const trimmed = candidate.trim();
-		if (!trimmed) continue;
+		// A bare executable name intentionally resolves through PATH; never inspect cwd or HOME.
 		if (trimmed === "ffmpeg" || trimmed === "ffmpeg.exe") return trimmed;
-		if (fs.existsSync(trimmed)) return trimmed;
+		if (isUsableFile(trimmed)) return trimmed;
+		// Respect an explicit path (or environment override) by allowing spawn to report its error.
+		if (candidate === explicit || candidate === process.env.FFMPEG_PATH) return trimmed;
 	}
-
-	const searchRoots = [
-		process.cwd(),
-		__dirname,
-		path.resolve(__dirname, ".."),
-		path.resolve(__dirname, "..", ".."),
-		path.resolve(process.cwd(), "core"),
-		path.resolve(process.cwd(), ".."),
-		process.env.HOME,
-		process.env.USERPROFILE,
-	].filter((value): value is string => Boolean(value));
-	const seen = new Set<string>();
-	for (const root of searchRoots) {
-		if (!root || seen.has(root)) continue;
-		seen.add(root);
-		for (const name of executableNames) {
-			const direct = path.join(root, name);
-			if (fs.existsSync(direct)) return direct;
-		}
-		for (const subpath of [
-			path.join("node_modules", "ffmpeg-static"),
-			path.join("core", "node_modules", "ffmpeg-static"),
-			path.join("node_modules", ".bin"),
-			path.join("core", "node_modules", ".bin"),
-		]) {
-			const base = path.join(root, subpath);
-			if (!fs.existsSync(base)) continue;
-			for (const name of executableNames) {
-				const candidate = path.join(base, name);
-				if (fs.existsSync(candidate)) return candidate;
-			}
-		}
-	}
-	return "ffmpeg";
+	return process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
 }
 
 export function sanitizeFfmpegLog(text: string): string {

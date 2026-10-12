@@ -3,7 +3,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { Readable } = require("node:stream");
 
-const { Bus, PlaybackController, WebSocketAudioOutputBackend, decodeWebAudioFrame } = require("../core/dist");
+const { Bus, Player, PlaybackController, WebSocketAudioOutputBackend, decodeWebAudioFrame } = require("../core/dist");
 const { StreamType } = require("@discordjs/voice");
 const { makeWav, wavSource, analyzePcm16 } = require("./helpers/wav");
 
@@ -155,6 +155,59 @@ test("replacing a playing track tears down the old pipeline and plays the new on
 	assert.ok(Math.abs(tail.frequency - 880) < 15, `new track frequency=${tail.frequency}`);
 	assert.equal(streamErrors(events).length, 0);
 	controller.detach("it-replace");
+});
+
+test("player.connect(backend) attaches a WebSocket sink mid-track and removes only that sink", async () => {
+	const playerId = "it-dynamic-output";
+	const bus = new Bus();
+	const events = [];
+	const originalEvent = bus.event.bind(bus);
+	bus.event = (id, event) => {
+		events.push(event);
+		return originalEvent(id, event);
+	};
+	const controller = new PlaybackController(bus);
+	const sockets = [];
+	const createSocket = () => {
+		const socket = fakeSocket();
+		sockets.push(socket);
+		return socket;
+	};
+	controller.attach(playerId, {
+		audioProcessing: { enabled: true },
+		stuckTimeoutMs: 1000,
+		audioOutputBackendFactory: () => new WebSocketAudioOutputBackend({ socketFactory: createSocket }),
+	});
+	const player = new Player(playerId, bus);
+	const source = Readable.from(wavSource({ seconds: 3, channels: 2 }));
+	const resource = controller.createResource(playerId, source, track("dynamic"), StreamType.Arbitrary);
+	await controller.play(playerId, resource);
+	await sleep(350);
+
+	const registration = await player.connect(
+		new WebSocketAudioOutputBackend({ socketFactory: createSocket }),
+		{ id: "late-browser", name: "Late browser" },
+	);
+	assert.deepEqual(
+		(await player.getAudioOutputs()).map((output) => output.id),
+		["default", "late-browser"],
+	);
+	await sleep(450);
+	const lateSocket = sockets[1];
+	const binaryCount = (socket) => socket.sent.filter((message) => typeof message.data !== "string").length;
+	const lateFramesBeforeDisconnect = binaryCount(lateSocket);
+	assert.ok(lateFramesBeforeDisconnect > 0, "late sink should receive PCM from its attach point");
+	const primaryFramesBeforeDisconnect = binaryCount(sockets[0]);
+	assert.ok(primaryFramesBeforeDisconnect > lateFramesBeforeDisconnect, "primary sink should have received the earlier part of the track");
+
+	assert.equal(await registration.disconnect(), true);
+	const lateFramesAfterDisconnect = binaryCount(lateSocket);
+	await sleep(120);
+	assert.equal(binaryCount(lateSocket), lateFramesAfterDisconnect, "removed sink must stop receiving frames");
+	assert.ok(binaryCount(sockets[0]) > primaryFramesBeforeDisconnect, "primary playback must continue after removing the late sink");
+	assert.equal(streamErrors(events).length, 0);
+	controller.detach(playerId);
+	player.removeAllListeners();
 });
 
 test("web output rejects a non-48kHz-stereo DSP format with a clear error and releases the source", async () => {

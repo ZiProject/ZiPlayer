@@ -305,6 +305,6 @@ test("PlaybackController reports runtime DSP failure instead of mixing in encode
 test("processed raw PCM uses the Discord raw stream contract", () => {
 	assert.equal(resolveOutputStreamType({ enabled: true, outputFormat: "pcm16le" }, StreamType.Opus), StreamType.Raw);
 	assert.equal(resolveOutputStreamType({ enabled: true, outputFormat: "pcmFloat32" }, StreamType.WebmOpus), StreamType.Raw);
-	assert.equal(resolveOutputStreamType({ enabled: true, outputFormat: "encoded" }, StreamType.Opus), StreamType.Opus);
+	assert.equal(resolveOutputStreamType({ enabled: true, outputFormat: "encoded" }, StreamType.Opus), StreamType.OggOpus);
 	assert.equal(resolveOutputStreamType({ enabled: false, outputFormat: "pcm16le" }, StreamType.OggOpus), StreamType.OggOpus);
 });

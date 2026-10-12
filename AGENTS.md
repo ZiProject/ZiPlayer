@@ -17,8 +17,9 @@ Read the root [`README.md`](README.md) for public setup and player workflows. Fo
 
 - Normal applications should use `PlayerManager`, `Player`, plugins, and documented player options, not private Bus/controller
   internals.
-- Discord Voice remains the default output. Custom output is selected per player through `audioOutputBackendFactory`.
-- WebSocket output requires 48 kHz stereo s16 LE PCM and an application-owned gateway. The browser client is a separate package;
+- Discord Voice remains the default output. `audioOutputBackendFactory` provides the initial output; additional outputs are registered and removed dynamically with `player.connect(backend)`, `disconnectOutput(id)`, or the returned handle.
+- A player fans one processed stream out to registered sinks. Registering a WebSocket PCM sink negotiates PCM s16 LE at 48 kHz stereo for subsequent tracks; joining an active encoded track is rejected rather than silently ignored.
+- WebSocket output requires an application-owned gateway. The browser client is a separate package;
   it does not replace gateway authentication or routing.
 - The current player stack supports queue orchestration, smart preloading, crossfade/transition flow, loudness normalization,
   anti-stuck recovery, filter chains, and browser/WebSocket publishing in addition to standard voice playback.

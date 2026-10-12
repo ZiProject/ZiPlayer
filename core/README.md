@@ -473,3 +473,16 @@ ownership, and teardown lifecycle, see [**AGENTS.md**](./AGENTS.md).
 ## 📄 License
 
 MIT © [ZiProject](https://github.com/ZiProject)
+
+
+## Dynamic multiple outputs
+
+`Player.connect(voiceChannel)` continues to join Discord Voice. To add a second output, pass an `AudioOutputBackend` instead:
+
+```ts
+const output = await player.connect(backend, { id: "web", name: "Web PCM" });
+console.log(await player.getAudioOutputs());
+await output.disconnect(); // Discord continues
+```
+
+Use `player.disconnectOutput(id)` to remove a registered output by ID. All outputs share one per-track DSP pipeline. A WebSocket PCM output requires 48 kHz stereo s16le and therefore fixes the DSP format for subsequent tracks; it cannot join a currently active encoded track. With this sink registered, combined replacement is stop-before-start, so a configured transition cannot perform an atomic crossfade: the old track stops before the new one starts, which may fade in from zero.

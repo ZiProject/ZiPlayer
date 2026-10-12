@@ -153,6 +153,24 @@ generation failure is reported as `streamError`, then the normal queue-end/autop
 as a successful result. Queue and track-start RPC failures remain observable and restore the queue-wait/transition guards so a
 later queue change can retry.
 
+## Multiple outputs on one player
+
+`MultiAudioOutputBackend` fans one processed stream out to every registered sink; it does not create another DSP pipeline per output. Discord remains the default sink. `player.connect(voiceChannel)` retains its voice-join behavior and ensures the Discord sink is present, while `player.connect(backend, { id, name })` adds a sink and returns a registration handle with `disconnect()`.
+
+```ts
+const browser = await player.connect(
+  new WebSocketAudioOutputBackend({ socketFactory }),
+  { id: "browser-pcm", name: "Browser PCM" },
+);
+const outputs = await player.getAudioOutputs();
+await browser.disconnect(); // remove only this sink
+// or: await player.disconnectOutput("browser-pcm");
+```
+
+A PCM-only sink fixes the shared DSP output to s16le PCM at 48 kHz stereo for subsequent tracks. An active encoded track cannot be transcoded from its already-running stream, so adding an incompatible sink rejects with a clear error. The tee selects one pacing master: a ready Discord voice subscriber is preferred; an unavailable/autopaused Discord sink does not hold up a live WebSocket output. Other sinks are bounded by a 192 KiB tee queue by default; chunks that would exceed the bound are dropped and reported by `getAudioOutputs()` as cumulative `droppedChunks`/`droppedBytes`. A failed secondary output is removed from the player and emits `streamError` (not `trackError`, so it does not trigger track recovery/anti-stuck); a pacing-master failure remains a track error. Operations are exposed only when supported by the combined capabilities: because WebSocket does not support seek, combined seek is unsupported. The combined replacement capability is `stop-before-start`, not `atomic`; a configured transition therefore cannot overlap both tracks—ZiPlayer stops the old output before starting the new one, and the new track may fade in from zero. This is not an atomic crossfade.
+
+The output list reports current registered sinks and their aggregate active-session/drop counters. WebSocket session fan-out to multiple browser subscribers remains the gateway's responsibility; ZiPlayer opens one publisher session per output handle and does not implement gateway routing/authentication.
+
 ## Processed audio format and failure behavior
 
 `AudioProcessingEngine` only transforms audio and does not import `@discordjs/voice`. Its output format is explicit. PCM output is
@@ -164,9 +182,7 @@ configures raw Discord PCM as 48,000 Hz, 2 channels, signed 16-bit little-endian
 Float32 PCM is converted sample-by-sample to s16le at this explicit boundary, including when a sample is split between input
 chunks; it is never passed to the raw PCM decoder as though it were s16le.
 
-The current audio engine cannot create encoded output, so requesting `outputFormat: "encoded"` while processing is enabled is an
-explicit error. Pipeline initialization, DSP, decode, and output failures do not switch to the original encoded stream: the source
-may already have been consumed. The stream error flows through the Discord player error/recovery path, and cancellation destroys
+The engine supports PCM and Ogg/Opus encoded output. Encoded output is tagged as Ogg/Opus (`StreamType.OggOpus`), not raw `StreamType.Opus`. Pipeline initialization, DSP, decode, and output failures do not switch to the original encoded stream: the source may already have been consumed. The stream error flows through the Discord player error/recovery path, and cancellation destroys
 owned streams rather than trying to replay them. Raw PCM from non-DSP sources must also be explicitly described as 48 kHz stereo
 s16le before it can be sent down Discord's raw path.
 
@@ -191,8 +207,10 @@ blocks the event loop that drives Discord voice frames.
 - **Behaviour differences to be aware of.** A mono source is up-mixed to stereo with FFmpeg's equal-power law (-3 dB). `normalize`
   uses single-pass `loudnorm` presets only (`streaming` -14, `podcast` -16, `broadcast` -23 LUFS); numeric RMS/peak targets are rejected.
   Seeking, filters and processing each use their own FFmpeg process.
-- **Discord inline volume.** `DiscordVoiceOutputBackend` always creates resources with `inlineVolume: true`, so even without DSP
-  `@discordjs/voice` already decodes through FFmpeg and re-encodes Opus; the DSP path replaces that decode step rather than adding one.
+- **Discord volume.** Raw PCM resources use `inlineVolume` so Discord can change volume without changing the shared PCM sent to WebSocket. Encoded Ogg/Opus resources have no live volume transformer; unity volume is a no-op, but non-unity `setVolume` rejects explicitly rather than silently pretending the request worked. Request PCM processing when live Discord volume or fades are required.
+- **FFmpeg concurrency.** The default process-wide gate is sized from available RAM (roughly 50 MiB per FFmpeg child after reserving 256 MiB for the application, with a two-process minimum and 64-process cap), not CPU count alone. `audioProcessing.maxConcurrentProcesses` sets an engine-local gate; only the explicit `configureFfmpegConcurrency()` function changes the process-wide cap.
+- **Executable resolution.** The order is `audioProcessing.ffmpegPath` → `FFMPEG_PATH` → `ffmpeg-static` → `ffmpeg` on `PATH`. The resolver does not scan the current directory or home directory for a file named `ffmpeg`. A path explicitly configured by the caller is respected and its spawn error is surfaced if invalid.
+- **URL safety.** HTTP(S) inputs are resolved and checked against private, loopback, link-local, CGNAT, multicast, mapped-IPv4, and NAT64 ranges; each redirect is independently parsed and DNS-checked. Direct FFmpeg URL input (`allowFfmpegUrlInput`) is rejected until redirect-safe FFmpeg URL handling can be guaranteed; use the Node-managed safe HTTP input path.
 
 ## WebSocket PCM backend status
 

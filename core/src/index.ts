@@ -1,6 +1,7 @@
 import { PlayerManager, getGlobalManager } from "./structures/PlayerManager";
 
 export { Player, assertVoiceChannel } from "./structures/Player";
+export type { PlayerAudioOutputRegistration } from "./structures/Player";
 export { PlayerManager } from "./structures/PlayerManager";
 export { Bus } from "./structures/Bus";
 export {
@@ -27,6 +28,8 @@ export { PlayerAction } from "./structures/PlayerAction";
 export { PlaybackOrchestrator, createPlaybackOrchestrator } from "./structures/PlaybackOrchestrator";
 export { createSharedControllers } from "./structures/PlayerManager";
 export { PlaybackSession } from "./structures/PlaybackSession";
+export { MultiAudioOutputBackend } from "./output/MultiAudioOutputBackend";
+export type { AudioOutputInfo, AudioOutputRegistrationOptions } from "./output/MultiAudioOutputBackend";
 export {
 	DiscordVoiceOutputBackend,
 	audioFrameFormatFromDiscordStreamType,
@@ -103,6 +106,9 @@ export type {
 	AudioProcessingContext,
 	AudioProcessingFormat,
 } from "./audio/AudioProcessingEngine";
+export { resolveAudioProcessingOptions, getFfmpegProcessStats, configureFfmpegConcurrency } from "./audio/AudioProcessingEngine";
+export { resolveFfmpegExecutable } from "./audio/ffmpegLimits";
+export { isBlockedIpAddress, parseMediaUrl, resolvePublicAddresses, assertSafeMediaUrl, openSafeHttpStream, UnsafeMediaUrlError } from "./audio/urlSafety";
 
 export type {
 	PlayerAction as PlayerActionMessage,

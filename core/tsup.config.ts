@@ -9,8 +9,7 @@ export default defineConfig({
 	clean: true,
 	target: "es2022",
 	platform: "node",
-	external: ["@discordjs/voice", "@snazzah/davey", "libsodium-wrappers", "lru-cache", "opusscript"],
-	noExternal: ["ffmpeg-static"],
+	external: ["@discordjs/voice", "@snazzah/davey", "libsodium-wrappers", "lru-cache", "opusscript", "ffmpeg-static"],
 	bundle: true,
 	minify: false,
 });

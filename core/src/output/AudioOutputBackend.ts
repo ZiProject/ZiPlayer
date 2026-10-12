@@ -41,7 +41,10 @@ export interface AudioOutputCapabilities {
 
 export type AudioOutputState = "ready" | "buffering" | "playing" | "paused" | "stopped" | "ended" | "failed";
 
-export type AudioOutputEvent = { type: "state"; state: AudioOutputState } | { type: "error"; error: Error };
+export type AudioOutputEvent =
+	| { type: "state"; state: AudioOutputState }
+	| { type: "error"; error: Error }
+	| { type: "sinkError"; sinkId: string; error: Error };
 
 export interface AudioOutputContext {
 	signal?: AbortSignal;
@@ -75,6 +78,10 @@ export interface AudioOutputHandle<TResource = unknown> {
 
 export interface AudioOutputBackend<TResource = unknown> {
 	readonly capabilities: AudioOutputCapabilities;
+	/** False while a real-time subscription is unavailable; such a sink must not pace the shared source. */
+	isAvailableForPacing?(): boolean;
+	/** Notify a multiplexing backend when source-pacing availability changes. */
+	onPacingChange?(listener: () => void): () => void;
 	readonly ready: Promise<void>;
 	initialize(signal?: AbortSignal): Promise<void>;
 	createSession(input: AudioOutputInput, context?: AudioOutputContext): AudioOutputHandle<TResource>;

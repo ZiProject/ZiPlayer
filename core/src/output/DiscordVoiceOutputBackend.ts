@@ -5,6 +5,7 @@ import {
 	AudioResource,
 	createAudioResource,
 	StreamType,
+	VoiceConnectionStatus,
 } from "@discordjs/voice";
 import { Readable } from "stream";
 import type {
@@ -98,7 +99,7 @@ export function resolveOutputStreamType(
 	if (options.enabled === false) return fallback;
 	const outputFormat = options.outputFormat ?? "encoded";
 	if (outputFormat === "pcm16le" || outputFormat === "pcmFloat32") return StreamType.Raw;
-	if (outputFormat === "encoded") return StreamType.Opus;
+	if (outputFormat === "encoded") return StreamType.OggOpus;
 	throw new TypeError(`Invalid audio processing output format: ${String(outputFormat)}`);
 }
 
@@ -306,6 +307,7 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 	private readonly handles = new Map<AudioResource, DiscordVoiceOutputHandle>();
 	private activeHandle: DiscordVoiceOutputHandle | null = null;
 	private disposed = false;
+	private readonly pacingListeners = new Set<() => void>();
 	private readonly onPlayerStateChange = (oldState: AudioPlayerState, newState: AudioPlayerState) => {
 		const handle = this.activeHandle;
 		if (!handle) return;
@@ -322,12 +324,14 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 					handle.observeState("paused");
 					break;
 			}
+			for (const listener of [...this.pacingListeners]) listener();
 			return;
 		}
 		if (isCurrentResource(oldState, handle.resource)) {
 			this.activeHandle = null;
 			handle.markEnded();
 		}
+		for (const listener of [...this.pacingListeners]) listener();
 	};
 	private readonly onPlayerError = (error: Error & { resource?: AudioResource }) => {
 		const handle = error.resource ? this.handles.get(error.resource) : this.activeHandle;
@@ -337,6 +341,25 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 	public constructor(public readonly player: AudioPlayer) {
 		player.on("stateChange", this.onPlayerStateChange);
 		player.on("error", this.onPlayerError);
+	}
+
+	public isAvailableForPacing(): boolean {
+		const subscribers = (this.player as unknown as { subscribers?: Set<any> | any[] }).subscribers;
+		if (subscribers instanceof Set || Array.isArray(subscribers)) {
+			for (const subscription of subscribers) {
+				const connection = subscription?.connection ?? subscription;
+				const status = connection?.state?.status;
+				if (status === VoiceConnectionStatus.Ready || status === "ready") return true;
+			}
+			return false;
+		}
+		// Older @discordjs/voice versions do not expose subscribers; avoid treating an autopaused player as a clock.
+		return this.player.state.status !== AudioPlayerStatus.AutoPaused;
+	}
+
+	public onPacingChange(listener: () => void): () => void {
+		this.pacingListeners.add(listener);
+		return () => this.pacingListeners.delete(listener);
 	}
 
 	public async initialize(signal?: AbortSignal): Promise<void> {
@@ -437,7 +460,12 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 	}
 
 	public setVolume(resource: AudioResource, value: number): void {
-		if (!resource.volume) return;
+		if (!resource.volume) {
+			if (value === 1) return;
+			throw new AudioOutputUnsupportedOperationError(
+				"volume for this encoded resource (choose PCM processing to enable live Discord volume control)",
+			);
+		}
 		resource.volume.setVolume(value);
 	}
 
@@ -500,6 +528,7 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 		this.activeHandle = null;
 		this.player.off("stateChange", this.onPlayerStateChange);
 		this.player.off("error", this.onPlayerError);
+		this.pacingListeners.clear();
 	}
 
 	private handleFor(resource: AudioResource): DiscordVoiceOutputHandle {

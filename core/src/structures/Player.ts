@@ -34,9 +34,23 @@ import { PlayerAction } from "./PlayerAction";
 import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
+import type { AudioOutputBackend } from "../output/AudioOutputBackend";
+import type { AudioOutputInfo, AudioOutputRegistrationOptions } from "../output/MultiAudioOutputBackend";
 import type { PlaybackSession } from "./PlaybackSession";
 import { BUS_EVENT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
 import type { PlayerQueue } from "../controller/QueueController";
+
+export interface PlayerAudioOutputRegistration {
+	readonly id: string;
+	readonly name: string;
+	disconnect(): Promise<boolean>;
+}
+
+function isAudioOutputBackend(value: unknown): value is AudioOutputBackend<any> {
+	if (!value || typeof value !== "object") return false;
+	const candidate = value as AudioOutputBackend<any>;
+	return typeof candidate.createSession === "function" && typeof candidate.initialize === "function" && Boolean(candidate.capabilities);
+}
 
 export function assertVoiceChannel(channel: VoiceChannel): asserts channel is VoiceChannel {
 	if (
@@ -225,10 +239,36 @@ export class Player extends EventEmitter {
 	public createRelatedTracks(track?: Track | null): Promise<Track[]> {
 		return this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackCreateRelatedTracks, { track });
 	}
-	public async connect(
+	public connect(
 		channel: VoiceChannel,
 		options?: { group?: string; selfDeaf?: boolean; selfMute?: boolean; deaf?: boolean; mute?: boolean },
-	): Promise<VoiceConnection> {
+	): Promise<VoiceConnection>;
+	public connect(
+		backend: AudioOutputBackend<any>,
+		options?: Omit<AudioOutputRegistrationOptions, "id"> & { id?: string },
+	): Promise<PlayerAudioOutputRegistration>;
+	public async connect(
+		target: VoiceChannel | AudioOutputBackend<any>,
+		options?:
+			| { group?: string; selfDeaf?: boolean; selfMute?: boolean; deaf?: boolean; mute?: boolean }
+			| (Omit<AudioOutputRegistrationOptions, "id"> & { id?: string }),
+	): Promise<VoiceConnection | PlayerAudioOutputRegistration> {
+		if (isAudioOutputBackend(target)) {
+			const outputOptions = (options ?? {}) as Omit<AudioOutputRegistrationOptions, "id"> & { id?: string };
+			const id = outputOptions.id ?? `output-${createPlayerRequestId()}`;
+			const registrationOptions: AudioOutputRegistrationOptions = {
+				id,
+				name: outputOptions.name ?? id,
+				playerVolume: outputOptions.playerVolume ?? false,
+			};
+			await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackOutputAdd, { backend: target, options: registrationOptions });
+			return {
+				id,
+				name: registrationOptions.name!,
+				disconnect: () => this.disconnectOutput(id),
+			};
+		}
+		const channel = target as VoiceChannel;
 		assertVoiceChannel(channel);
 		const request = {
 			type: BUS_REQUEST.connectionConnect,
@@ -237,21 +277,30 @@ export class Player extends EventEmitter {
 			options:
 				options ?
 					{
-						group: options.group,
-						deaf: options.deaf ?? options.selfDeaf,
-						mute: options.mute ?? options.selfMute,
+						group: (options as any).group,
+						deaf: (options as any).deaf ?? (options as any).selfDeaf,
+						mute: (options as any).mute ?? (options as any).selfMute,
 					}
-				:	undefined,
+				: undefined,
 		} as const;
-		return (this.bus.request(this.playerId, request as any) as Promise<{ connection: VoiceConnection }>).then(
-			(e) => e.connection,
-		);
+		const reply = await (this.bus.request(this.playerId, request as any) as Promise<{ connection: VoiceConnection }>);
+		// Legacy custom factories used to join voice without activating their AudioPlayer as an output.
+		// Ensure Voice is now a peer sink in the shared pipeline, no-op when it is already registered.
+		await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackEnsureDiscord, {});
+		return reply.connection;
+	}
+	public async getAudioOutputs(): Promise<AudioOutputInfo[]> {
+		return this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackOutputList, {});
+	}
+	public async disconnectOutput(id: string): Promise<boolean> {
+		return this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackOutputRemove, { id });
 	}
 	public async disconnect(): Promise<void> {
 		return this.bus
 			.request(this.playerId, { type: BUS_REQUEST.connectionDisconnect, requestId: createPlayerRequestId() })
 			.then(() => undefined);
 	}
+
 	public async play(
 		query: string | Track | SearchResult | null,
 		optionsOrRequestedBy?: PlayOptions | string,

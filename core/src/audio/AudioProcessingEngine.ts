@@ -25,7 +25,7 @@ export interface AudioProcessingHint {
 	filterString?: string;
 	seekMs?: number;
 	inputUrl?: string;
-	/** When true, ignore piped bytes and load `inputUrl` (Node fetch, or FFmpeg if `allowFfmpegUrlInput`). */
+	/** When true, ignore piped bytes and load `inputUrl` through the SSRF-checked Node HTTP stream. */
 	useInputUrl?: boolean;
 }
 
@@ -69,11 +69,11 @@ export interface AudioProcessingOptions {
 	stallTimeoutMs?: number | null;
 	/** FFmpeg `-threads` (default 1). */
 	ffmpegThreads?: number;
-	/** Process-wide cap on concurrent FFmpeg children. Default: max(2, CPU count). */
+	/** Per-engine cap on concurrent FFmpeg children. Default is based on a memory budget; a process-wide safety gate also applies. */
 	maxConcurrentProcesses?: number;
 	/**
-	 * When true, FFmpeg may open `AudioProcessingContext.inputUrl` itself (still SSRF-checked).
-	 * Default false: Node fetches the URL (SSRF-guarded) and writes `pipe:0`.
+	 * Deprecated and unsupported. Setting true throws because FFmpeg's own redirect handling cannot
+	 * guarantee redirect-by-redirect SSRF validation. Use `useInputUrl` with the guarded Node stream.
 	 */
 	allowFfmpegUrlInput?: boolean;
 }
@@ -90,9 +90,9 @@ export interface AudioProcessingContext {
 	inputFormat?: AudioFrameFormat;
 	/** Extra FFmpeg `-af` fragment from `player.filter` (already allowlisted). Combined into one graph. */
 	filterString?: string;
-	/** Output-side seek in milliseconds (`-ss` after `-i` unless a seekable FFmpeg URL is explicitly allowed). */
+	/** Output-side seek in milliseconds (`-ss` after `-i`). */
 	seekMs?: number;
-	/** Optional http(s) source. Used only when `useInputUrl` or `allowFfmpegUrlInput` is true. */
+	/** Optional http(s) source. Used only when `useInputUrl` is true; redirects are individually validated. */
 	inputUrl?: string;
 	useInputUrl?: boolean;
 	/** Extra linear volume (player volume) baked into the FFmpeg graph for encoded Discord output. */

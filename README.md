@@ -18,7 +18,8 @@ used by the runtime, not the normal application integration surface.
 - FFmpeg filter pipeline with safe filter validation and early failure handling
 - Preload, crossfade, smart transition, and anti-stuck recovery flow
 - Loudness normalization and volume shaping for smoother transitions
-- Custom and browser audio output through `audioOutputBackendFactory`
+- Custom and browser audio output through `audioOutputBackendFactory` or dynamic `player.connect(backend)`
+- One shared DSP pipeline can feed Discord Voice and WebSocket PCM at the same time
 - WebSocket PCM publishing for browser clients using a strict 48 kHz stereo s16 LE contract
 - FFmpeg-backed DSP pipeline (gain, high/low-pass, loudness presets, resample/remix) that decodes common containers to PCM in a child process
 
@@ -164,9 +165,8 @@ WebSocket and route PCM to the browser client. The browser package is `@ziplayer
 side.
 
 The runtime audio DSP runs FFmpeg as a child process (the bundled `ffmpeg-static`, `FFMPEG_PATH`, `audioProcessing.ffmpegPath`, or
-`ffmpeg` on `PATH`) and emits PCM. `audioProcessing.inputFormat` must be `"encoded"`: whether a stream is raw PCM is a property of
-that stream, not of the configuration, so PCM produced by a seek is declared automatically. A Web/WebSocket output backend needs
-`audioProcessing.enabled` because it only accepts PCM. The downstream raw PCM output contract is:
+`ffmpeg` on `PATH`) and emits the negotiated PCM or Ogg/Opus format. `audioProcessing.inputFormat` must be `"encoded"`: whether a stream is raw PCM is a property of
+that stream, not of the configuration, so PCM produced by a seek is declared automatically. A WebSocket sink added with `player.connect(backend)` makes subsequent tracks use one shared DSP pipeline in PCM mode automatically; an already-running encoded/Opus track rejects a PCM-only sink instead of silently attaching an unusable output. A legacy factory-only WebSocket setup can still set `audioProcessing.enabled` explicitly. The downstream raw PCM output contract is:
 
 - 48 kHz
 - stereo
@@ -199,6 +199,31 @@ await player.play("https://example.com/audio.mp3", "user-1");
 ```
 
 For a full runnable example, see the backend sample in `examples/backend` and the client receiver package in `client`.
+
+### Add/remove a browser output while preserving Discord Voice
+
+`player.connect(voiceChannel)` keeps its existing meaning. Passing an output backend instead registers an additional sink, and returns a handle that can remove just that sink. The initial factory/Discord output remains registered; use `getAudioOutputs()` to list registered outputs.
+
+```ts
+import { PlayerManager, WebSocketAudioOutputBackend } from "ziplayer";
+
+const manager = new PlayerManager({ autoCleanup: true });
+const player = await manager.create(guildId); // Discord Voice remains the default output
+const browserOutput = await player.connect(
+  new WebSocketAudioOutputBackend({
+    sessionId: guildId,
+    socketFactory: ({ sessionId, signal }) =>
+      connectPublisherSocket({ sessionId, signal, gatewayUrl, token }),
+  }),
+  { id: "browser-pcm", name: "Browser PCM" },
+);
+
+await player.play("https://example.com/audio.mp3", "user-1");
+console.log(await player.getAudioOutputs()); // includes Discord and browser-pcm
+await browserOutput.disconnect(); // Discord playback continues
+```
+
+A WebSocket sink requires PCM s16le at 48 kHz stereo. If it is registered before the next track is created, ZiPlayer negotiates that shared format for the track. Joining an already-running encoded track is rejected explicitly; connect it before playback or wait until the next track. Player volume controls Discord and other compatible initial outputs; browser PCM is unchanged by player volume so each browser can set its own playback level. When a PCM sink is active, the combined replacement capability is stop-before-start rather than atomic. Transitions cannot overlap the old and new tracks; the old track stops before the new track starts, which may fade in from zero rather than provide a true crossfade. Non-unity live volume for encoded Ogg/Opus resources without an inline volume transformer is rejected explicitly; select PCM processing to enable live Discord volume adjustment.
 
 ---
 
@@ -253,7 +278,7 @@ const player = await manager.create(guildId, {
 
 - Create one `PlayerManager` per bot process; reuse it across commands.
 - Call `await player.connect(voiceChannel)` before playback unless the voice channel is passed as part of the play call.
-- Keep `audioOutputBackendFactory` custom backends explicit and return a connected output backend instance.
+- `audioOutputBackendFactory` remains the initial-output compatibility API; additional outputs can be registered with `player.connect(backend)` and removed with the returned handle or `player.disconnectOutput(id)`.
 - Prefer `PlayerManager`/`Player` exports over bus/controller internals for application code.
 - Treat raw PCM as a transport/output contract; do not set `audioProcessing.inputFormat` to a PCM format.
 - `audioProcessing.normalize` accepts `true` or the presets `streaming` (-14 LUFS), `podcast` (-16), `broadcast` (-23); numeric targets are not supported.

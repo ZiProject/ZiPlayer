@@ -24,11 +24,13 @@ import {
 	KILL_GRACE_MS,
 	MAX_BUFFER_BYTES_CAP,
 	acquireFfmpegSlot,
-	configureFfmpegConcurrency,
+	FfmpegProcessGate,
+	defaultFfmpegConcurrency,
 	resolveFfmpegExecutable,
 	sanitizeFfmpegLog,
 } from "./ffmpegLimits";
-import { assertSafeMediaUrl, openSafeHttpStream } from "./urlSafety";
+import { openSafeHttpStream } from "./urlSafety";
+import ffmpegStaticPath from "ffmpeg-static";
 
 type Source = AsyncIterable<Uint8Array> | Iterable<Uint8Array> | Readable;
 
@@ -61,7 +63,6 @@ export const DEFAULT_FFMPEG_INPUT_FORMATS: readonly string[] = [
 ];
 
 const PIPE_PROTOCOLS = "pipe,crypto";
-const URL_PROTOCOLS = "pipe,http,https,tcp,tls,crypto";
 
 function isFiniteNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value);
@@ -178,8 +179,11 @@ export function resolveAudioProcessingOptions(...layers: AudioProcessingOptions[
 	if (resolved.ffmpegThreads != null && (!Number.isInteger(resolved.ffmpegThreads) || resolved.ffmpegThreads < 1 || resolved.ffmpegThreads > 8)) {
 		throw new TypeError("Audio processing ffmpegThreads must be an integer from 1 to 8");
 	}
-	if (resolved.maxConcurrentProcesses != null) {
-		configureFfmpegConcurrency(resolved.maxConcurrentProcesses);
+	if (resolved.maxConcurrentProcesses != null && (!Number.isInteger(resolved.maxConcurrentProcesses) || resolved.maxConcurrentProcesses <= 0)) {
+		throw new TypeError("maxConcurrentProcesses must be a positive integer");
+	}
+	if (resolved.allowFfmpegUrlInput) {
+		throw new TypeError("allowFfmpegUrlInput is disabled: FFmpeg cannot safely enforce redirect-by-redirect URL validation; use safe Node HTTP input instead");
 	}
 	return resolved;
 }
@@ -291,12 +295,6 @@ function waitForDrain(stream: NodeJS.WritableStream): Promise<void> {
 	});
 }
 
-function emptySource(): AsyncIterable<Uint8Array> {
-	return {
-		async *[Symbol.asyncIterator]() {},
-	};
-}
-
 interface ActiveProcess {
 	proc: ChildProcess;
 	exited: Promise<void>;
@@ -311,6 +309,7 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 	public constructor(
 		options: ResolvedOptions,
 		private readonly context: AudioProcessingContext = {},
+		private readonly acquireProcessSlot: (signal?: AbortSignal) => Promise<() => void> = (signal) => acquireFfmpegSlot(signal),
 	) {
 		validateInputFormat(context.inputFormat);
 		if (options.normalize && filterGraphContainsLoudnorm(context.filterString)) {
@@ -340,6 +339,7 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 		const maxInputBytes = options.maxInputBytes === null ? null : (options.maxInputBytes ?? DEFAULT_MAX_INPUT_BYTES);
 		const maxDurationMs = options.maxDurationMs === null ? null : options.maxDurationMs;
 		const threads = options.ffmpegThreads ?? DEFAULT_FFMPEG_THREADS;
+		const acquireProcessSlot = this.acquireProcessSlot;
 
 		return (async function* (): AsyncGenerator<Uint8Array> {
 			if (effectiveSignal?.aborted) {
@@ -349,55 +349,58 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 
 			let releaseSlot: () => void = () => undefined;
 			try {
-				releaseSlot = await acquireFfmpegSlot(effectiveSignal, options.maxConcurrentProcesses);
+				releaseSlot = await acquireProcessSlot(effectiveSignal);
 			} catch (error) {
 				if (input instanceof Readable && !input.destroyed) input.destroy();
 				throw error;
 			}
+			let slotReleased = false;
+			const releaseSlotOnce = () => {
+				if (slotReleased) return;
+				slotReleased = true;
+				releaseSlot();
+			};
 
-			const useFfmpegUrl = Boolean(options.allowFfmpegUrlInput && context.inputUrl);
-			const useNodeUrl = Boolean(!useFfmpegUrl && context.inputUrl && context.useInputUrl);
 			let fetched: Readable | null = null;
 			let source: Source = input;
-			if (useFfmpegUrl) {
-				await assertSafeMediaUrl(context.inputUrl!);
-				if (input instanceof Readable && !input.destroyed) input.destroy();
-				source = emptySource();
-			} else if (useNodeUrl) {
-				if (input instanceof Readable && !input.destroyed) input.destroy();
-				fetched = await openSafeHttpStream(context.inputUrl!, effectiveSignal);
-				source = fetched;
-			}
+			let proc: ChildProcess;
+			try {
+				const useNodeUrl = Boolean(context.inputUrl && context.useInputUrl);
+				if (useNodeUrl) {
+					if (input instanceof Readable && !input.destroyed) input.destroy();
+					fetched = await openSafeHttpStream(context.inputUrl!, effectiveSignal);
+					source = fetched;
+				}
 
-			const ffmpegInput = useFfmpegUrl ? context.inputUrl! : "pipe:0";
-			const protocolWhitelist = useFfmpegUrl ? URL_PROTOCOLS : PIPE_PROTOCOLS;
-			const args = [
-				"-hide_banner",
-				"-loglevel",
-				"error",
-				"-threads",
-				String(threads),
-				"-protocol_whitelist",
-				protocolWhitelist,
-			];
-			if (useFfmpegUrl) args.push("-nostdin");
-			args.push(...buildInputArgs(options, inputFormat));
-			if (typeof context.seekMs === "number" && context.seekMs > 0 && useFfmpegUrl) {
-				args.push("-ss", (context.seekMs / 1000).toFixed(3));
-			}
-			args.push("-i", ffmpegInput, "-vn");
-			if (typeof context.seekMs === "number" && context.seekMs > 0 && !useFfmpegUrl) {
-				args.push("-ss", (context.seekMs / 1000).toFixed(3));
-			}
-			if (maxDurationMs != null) args.push("-t", (maxDurationMs / 1000).toFixed(3));
-			const filterChain = buildFilterChain(options, context);
-			if (filterChain) args.push("-af", filterChain);
-			args.push(...buildOutputArgs(options));
+				const args = [
+					"-hide_banner",
+					"-loglevel",
+					"error",
+					"-threads",
+					String(threads),
+					"-protocol_whitelist",
+					PIPE_PROTOCOLS,
+				];
+				args.push(...buildInputArgs(options, inputFormat));
+				args.push("-i", "pipe:0", "-vn");
+				if (typeof context.seekMs === "number" && context.seekMs > 0) {
+					args.push("-ss", (context.seekMs / 1000).toFixed(3));
+				}
+				if (maxDurationMs != null) args.push("-t", (maxDurationMs / 1000).toFixed(3));
+				const filterChain = buildFilterChain(options, context);
+				if (filterChain) args.push("-af", filterChain);
+				args.push(...buildOutputArgs(options));
 
-			const executable = resolveFfmpegExecutable(options.ffmpegPath);
-			debug?.(`audio processing: ${executable} ${args.join(" ")}`);
-			const stdio: ("pipe" | "ignore")[] = useFfmpegUrl ? ["ignore", "pipe", "pipe"] : ["pipe", "pipe", "pipe"];
-			const proc = spawn(executable, args, { stdio, windowsHide: true });
+				const executable = resolveFfmpegExecutable(options.ffmpegPath, ffmpegStaticPath);
+				debug?.(`audio processing: ${executable} ${args.join(" ")}`);
+				const stdio: ("pipe" | "ignore")[] = ["pipe", "pipe", "pipe"];
+				proc = spawn(executable, args, { stdio, windowsHide: true });
+			} catch (error) {
+				if (fetched && !fetched.destroyed) fetched.destroy();
+				else if (input instanceof Readable && !input.destroyed) input.destroy();
+				releaseSlotOnce();
+				throw error;
+			}
 			const stdin = proc.stdin;
 			const stdout = proc.stdout!;
 
@@ -472,7 +475,7 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 				stallTimer.unref?.();
 			}
 
-			if (!useFfmpegUrl && stdin) {
+			if (stdin) {
 				void (async () => {
 					try {
 						while (true) {
@@ -497,8 +500,6 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 						kill();
 					}
 				})();
-			} else {
-				void iterator.return?.().catch(() => {});
 			}
 
 			const failMessage = (prefix: string, detail?: string) =>
@@ -536,7 +537,7 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 				if (stallError) throw stallError;
 				if (upstreamError) throw upstreamError;
 				if (spawnError) throw spawnError;
-				if (bytesOut === 0 && (bytesIn > 0 || useFfmpegUrl)) {
+				if (bytesOut === 0 && bytesIn > 0) {
 					throw new Error(failMessage("FFmpeg produced no audio", stderrTail));
 				}
 				if (exitCode !== 0) {
@@ -551,7 +552,7 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 				releaseInput();
 				await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, KILL_GRACE_MS).unref())]);
 				active.delete(entry);
-				releaseSlot();
+				releaseSlotOnce();
 			}
 		})();
 	}
@@ -577,17 +578,34 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 
 export class FFmpegAudioProcessingEngine implements AudioProcessingEngine {
 	private readonly defaults: AudioProcessingOptions;
+	private readonly processGate: FfmpegProcessGate;
 
 	public constructor(defaults: AudioProcessingOptions = {}) {
 		resolveAudioProcessingOptions({ enabled: true, outputFormat: "pcm16le", inputFormat: "encoded" }, defaults);
 		this.defaults = { ...defaults };
+		this.processGate = new FfmpegProcessGate(defaults.maxConcurrentProcesses ?? defaultFfmpegConcurrency());
 	}
 
 	public async createPipeline(
 		options: AudioProcessingOptions,
 		context: AudioProcessingContext = {},
 	): Promise<AudioProcessingPipeline> {
-		return new FFmpegAudioProcessingPipeline(resolveAudioProcessingOptions(this.defaults, options), context);
+		const resolved = resolveAudioProcessingOptions(this.defaults, options);
+		if (options.maxConcurrentProcesses != null) this.processGate.configure(options.maxConcurrentProcesses);
+		const acquireProcessSlot = async (signal?: AbortSignal) => {
+			const releaseLocal = await this.processGate.acquire(signal);
+			try {
+				const releaseGlobal = await acquireFfmpegSlot(signal);
+				return () => {
+					releaseGlobal();
+					releaseLocal();
+				};
+			} catch (error) {
+				releaseLocal();
+				throw error;
+			}
+		};
+		return new FFmpegAudioProcessingPipeline(resolved, context, acquireProcessSlot);
 	}
 }
 
