@@ -78,6 +78,7 @@ export {
 	demuxWebmOpusToPackets,
 	getOpusPacketDurationMs,
 	validateOpusPacketDuration,
+	validateOpusPacketFraming,
 } from "./audio/OpusSourceAdapter";
 export type { CreateOpusAudioResourceOptions } from "./audio/OpusSourceAdapter";
 export type {

@@ -191,6 +191,9 @@ export function decodeWebAudioFrame(
 	if (view[0] === 0x5a && view[1] === 0x49) {
 		// Wire format v1
 		const version = view[2];
+		if (version !== 1) throw new Error(`Unsupported audio frame protocol version: ${version}`);
+		const flags = view[3];
+		if (flags !== 0x01 && flags !== 0x00) throw new Error(`Invalid audio frame flags: 0x${flags.toString(16)}`);
 		const sequence = view.readUInt32BE(4);
 		const timestampUs = view.readBigUInt64BE(8);
 		const timestampMs = Number(timestampUs / 1000n);

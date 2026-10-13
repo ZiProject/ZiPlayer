@@ -36,16 +36,19 @@ export function parseAudioConfig(message, expectedSessionId) {
 			channels: config.channels ?? WEB_AUDIO_CHANNELS,
 		};
 	}
-	if (
-		config.sampleRateHz !== WEB_AUDIO_SAMPLE_RATE_HZ ||
-		config.channels !== WEB_AUDIO_CHANNELS ||
-		config.sampleFormat !== "s16" ||
-		config.endianness !== "little" ||
-		config.channelLayout !== "interleaved"
-	) {
-		throw new Error("Publisher sent an unsupported or mismatched PCM configuration");
+	if (config.codec === "pcm16le" || config.codec === "pcm_s16le" || config.codec === undefined) {
+		if (
+			config.sampleRateHz !== WEB_AUDIO_SAMPLE_RATE_HZ ||
+			config.channels !== WEB_AUDIO_CHANNELS ||
+			config.sampleFormat !== "s16" ||
+			config.endianness !== "little" ||
+			config.channelLayout !== "interleaved"
+		) {
+			throw new Error("Publisher sent an unsupported or mismatched PCM configuration");
+		}
+		return config;
 	}
-	return config;
+	throw new Error(`Publisher sent an unsupported audio configuration: codec "${config.codec}"`);
 }
 
 export function decodeOpusFrame(data, config, expectedSequence = null) {
@@ -64,7 +67,7 @@ export function decodeOpusFrame(data, config, expectedSequence = null) {
 		const version = view.getUint8(2);
 		const flags = view.getUint8(3);
 		if (version !== 1) throw new Error(`Unsupported audio frame protocol version: ${version}`);
-		if ((flags & 0x01) !== 1) throw new Error("Expected Opus frame flag in audio header");
+		if (flags !== 0x01) throw new Error("Expected Opus frame flag in audio header");
 		sequence = view.getUint32(4, false); // Big-Endian
 		timestampUs = view.getBigUint64(8, false); // Big-Endian
 		timestampMs = Number(timestampUs / 1000n);
@@ -170,7 +173,7 @@ export function decodePcmFrame(data, config, expectedSequence = null) {
 		const version = view.getUint8(2);
 		const flags = view.getUint8(3);
 		if (version !== 1) throw new Error(`Unsupported audio frame protocol version: ${version}`);
-		if ((flags & 0x01) !== 0) throw new Error("Expected PCM frame flag in audio header");
+		if (flags !== 0x00) throw new Error("Expected PCM frame flag in audio header");
 		sequence = view.getUint32(4, false); // Big-Endian
 		timestampUs = view.getBigUint64(8, false); // Big-Endian
 		timestampMs = Number(timestampUs / 1000n);

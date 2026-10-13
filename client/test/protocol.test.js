@@ -317,3 +317,51 @@ test("Decoder strictly enforces Wire Format v1 when negotiated and does not down
 
 	assert.throws(() => decodeOpusFrame(legacyOpusArray, opusV1Config), /missing 'ZI'/i);
 });
+
+test("Decoder strictly enforces flags and protocol version in Wire Format v1", () => {
+	const validPayload = Buffer.from([0xf8, 0xff, 0xfe, 0x01]);
+	const header = Buffer.alloc(16);
+	header[0] = 0x5a;
+	header[1] = 0x49;
+	header[2] = 1; // version 1
+	header[3] = 0x01; // Opus flag
+	header.writeUInt32BE(0, 4);
+	header.writeBigUInt64BE(0n, 8);
+
+	// Reserved bits in Opus frame (0x03, 0x81, 0xfe) must be rejected
+	for (const badFlags of [0x00, 0x03, 0x81, 0xfe]) {
+		const badBuf = Buffer.concat([header, validPayload]);
+		badBuf[3] = badFlags;
+		const arrayBuf = badBuf.buffer.slice(badBuf.byteOffset, badBuf.byteOffset + badBuf.byteLength);
+		assert.throws(() => decodeOpusFrame(arrayBuf, { codec: "opus" }), /Expected Opus frame flag/i);
+	}
+
+	// Unsupported version in Opus frame (version != 1) must be rejected
+	const badVersionBuf = Buffer.concat([header, validPayload]);
+	badVersionBuf[2] = 2;
+	const badVersionArray = badVersionBuf.buffer.slice(
+		badVersionBuf.byteOffset,
+		badVersionBuf.byteOffset + badVersionBuf.byteLength,
+	);
+	assert.throws(() => decodeOpusFrame(badVersionArray, { codec: "opus" }), /Unsupported audio frame protocol version/i);
+
+	// PCM frame flags must be strictly 0x00; reserved bits (0x01, 0x02, 0x80) must be rejected
+	const pcmPayload = Buffer.alloc(4); // 1 sample frame
+	const pcmHeader = Buffer.alloc(16);
+	pcmHeader[0] = 0x5a;
+	pcmHeader[1] = 0x49;
+	pcmHeader[2] = 1;
+	pcmHeader[3] = 0x00; // PCM flag
+	for (const badFlags of [0x01, 0x02, 0x80, 0xff]) {
+		const badPcmBuf = Buffer.concat([pcmHeader, pcmPayload]);
+		badPcmBuf[3] = badFlags;
+		const arrayBuf = badPcmBuf.buffer.slice(badPcmBuf.byteOffset, badPcmBuf.byteOffset + badPcmBuf.byteLength);
+		assert.throws(() => decodePcmFrame(arrayBuf, { sampleRateHz: 48000, channels: 2 }), /Expected PCM frame flag/i);
+	}
+});
+
+test("parseAudioConfig rejects unsupported or unknown codecs instead of interpreting as PCM", () => {
+	for (const badCodec of ["aac", "vorbis", "flac", "mp3", "unknown"]) {
+		assert.throws(() => parseAudioConfig({ ...config, codec: badCodec }), /unsupported audio configuration/i);
+	}
+});

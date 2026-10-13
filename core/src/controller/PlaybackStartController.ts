@@ -37,6 +37,51 @@ export class PlaybackStartController {
 		// No module-level registration to release; kept for a uniform per-player lifecycle API.
 	}
 
+	public async startResource(resource: AudioResource, track: Track, parentContext: PlayerMessageContext): Promise<boolean> {
+		if (parentContext.signal.aborted) return false;
+		await this.stopPlayback(parentContext.signal, true);
+
+		this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.trackResetRecovery, {});
+
+		const session = this.sessionController.replace(this.playerId, track, { destroyPrevious: true });
+		const context = this.childContext(parentContext, session.sessionId, session.signal);
+		await this.setCurrentThroughBus(track, context);
+		this.bus.event(this.playerId, { type: BUS_EVENT.trackLoading, session: session.snapshot() });
+
+		try {
+			if (context.signal.aborted || !this.isCurrentSession(session, context)) return false;
+			this.bus.event(this.playerId, { type: BUS_EVENT.trackLoaded, session: session.snapshot() });
+
+			const currentMode = this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode);
+			if (currentMode === PlaybackMode.REMOTE && this.bus.hasRpc(PLAYER_RPC.playbackExitRemote)) {
+				await this.bus.requestRpc(this.playerId, PLAYER_RPC.playbackExitRemote, undefined);
+			}
+
+			session.setResource(resource);
+			await this.bus.requestRpc(
+				this.playerId,
+				CONTROLLER_RPC.playbackPlay,
+				{ resource, session, from: null, to: track },
+				{ signal: context.signal },
+			);
+			if (context.signal.aborted || !this.isCurrentSession(session, context)) return false;
+			session.markPlaying(0);
+			this.consecutiveFailures = 0;
+			this.bus.event(this.playerId, { type: BUS_EVENT.trackStarted, session: session.snapshot(), track });
+			return true;
+		} catch (error) {
+			const normalized = error instanceof Error ? error : new Error(String(error));
+			if (!context.signal.aborted && this.isCurrentSession(session, context)) {
+				this.bus.event(this.playerId, {
+					type: BUS_EVENT.trackError,
+					session: session.snapshot(),
+					error: normalized,
+				});
+			}
+			throw error;
+		}
+	}
+
 	public async start(track: Track, parentContext: PlayerMessageContext, from: Track | null = null): Promise<void> {
 		if (parentContext.signal.aborted) return;
 		const hasPreload =

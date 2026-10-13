@@ -55,7 +55,7 @@ function isAudioConfig(message, sessionId) {
 		message.v !== PROTOCOL_VERSION ||
 		message.type !== "audio:config" ||
 		message.sessionId !== sessionId ||
-		(message.protocolVersion !== PROTOCOL_VERSION && message.protocolVersion !== undefined)
+		(message.protocolVersion !== PROTOCOL_VERSION && message.protocolVersion !== 0 && message.protocolVersion !== undefined)
 	) {
 		return false;
 	}
@@ -65,13 +65,16 @@ function isAudioConfig(message, sessionId) {
 			(message.channels === undefined || message.channels === CHANNELS)
 		);
 	}
-	return (
-		message.sampleRateHz === SAMPLE_RATE_HZ &&
-		message.channels === CHANNELS &&
-		message.sampleFormat === "s16" &&
-		message.endianness === "little" &&
-		message.channelLayout === "interleaved"
-	);
+	if (message.codec === "pcm16le" || message.codec === "pcm_s16le" || message.codec === undefined) {
+		return (
+			message.sampleRateHz === SAMPLE_RATE_HZ &&
+			message.channels === CHANNELS &&
+			message.sampleFormat === "s16" &&
+			message.endianness === "little" &&
+			message.channelLayout === "interleaved"
+		);
+	}
+	return false;
 }
 
 function isAudioFrame(data, sessionConfig) {
@@ -79,27 +82,33 @@ function isAudioFrame(data, sessionConfig) {
 	const payloadLength = data.length - FRAME_HEADER_BYTES;
 	if (payloadLength === 0) return false;
 
+	const isPcmSession =
+		sessionConfig?.codec === "pcm16le" || sessionConfig?.codec === "pcm_s16le" || sessionConfig?.codec === undefined;
+
 	// Wire Format v1: Magic 'ZI' (0x5A, 0x49)
 	if (data[0] === 0x5a && data[1] === 0x49) {
 		const version = data[2];
 		if (version !== 1) return false;
 		const flags = data[3];
-		const isOpus = (flags & 0x01) === 1;
-		const reserved = flags & 0xfe;
-		if (reserved !== 0) return false;
+		if (flags !== 0x01 && flags !== 0x00) return false;
 
 		if (sessionConfig?.codec === "opus") {
-			return isOpus;
+			return flags === 0x01;
 		}
-		if (sessionConfig?.codec === "pcm16le" || sessionConfig?.codec === "pcm_s16le" || !sessionConfig?.codec) {
-			if (isOpus) return false;
+		if (isPcmSession) {
+			if (flags !== 0x00) return false;
 			const bytesPerSampleFrame = CHANNELS * SAMPLE_BYTES;
 			return payloadLength % bytesPerSampleFrame === 0;
 		}
-		return true;
+		return false;
 	}
 
-	// Backward-compatible fallback for legacy format:
+	// Reject non-v1 frames unless the session explicitly declared legacy protocol (protocolVersion: 0)
+	if (sessionConfig?.protocolVersion !== 0) {
+		return false;
+	}
+
+	// Backward-compatible fallback for explicit legacy format:
 	if (sessionConfig?.codec === "opus") {
 		const magic = data.readUInt16LE(0);
 		const sampleRate = data.readUInt16LE(8);
@@ -111,10 +120,16 @@ function isAudioFrame(data, sessionConfig) {
 		);
 	}
 
-	const bytesPerSampleFrame = CHANNELS * SAMPLE_BYTES;
-	if (payloadLength % bytesPerSampleFrame !== 0) return false;
+	if (isPcmSession) {
+		const bytesPerSampleFrame = CHANNELS * SAMPLE_BYTES;
+		if (payloadLength % bytesPerSampleFrame !== 0) return false;
 
-	return data.readUInt16LE(8) === SAMPLE_RATE_HZ && data.readUInt16LE(10) === CHANNELS && data.readUInt16LE(12) === SAMPLE_BYTES;
+		return (
+			data.readUInt16LE(8) === SAMPLE_RATE_HZ && data.readUInt16LE(10) === CHANNELS && data.readUInt16LE(12) === SAMPLE_BYTES
+		);
+	}
+
+	return false;
 }
 
 function relayToListeners(session, data, isBinary) {

@@ -15,6 +15,7 @@ const {
 	demuxWebmOpusToPackets,
 	getOpusPacketDurationMs,
 	validateOpusPacketDuration,
+	validateOpusPacketFraming,
 	PlaybackController,
 	WEB_AUDIO_MAGIC_0,
 	WEB_AUDIO_MAGIC_1,
@@ -608,6 +609,84 @@ test("WebAudioConnection drops malformed Opus packets without corrupting timesta
 	const stats = webConn.getStats();
 	assert.equal(stats.sequence, 0, "Malformed packets should not increment sequence");
 	assert.equal(stats.dispatchedPackets, 0, "Malformed packets should not be dispatched");
+
+	webConn.destroy();
+});
+
+test("RFC 6716 Opus packet framing validator rejects malformed packets across all framing codes", () => {
+	// Empty or non-buffer
+	assert.equal(validateOpusPacketFraming(null), false);
+	assert.equal(validateOpusPacketFraming(Buffer.alloc(0)), false);
+
+	// Code 0: 1 frame (or 0 payload bytes for DTX)
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xf8, 0x01])), true);
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xf8])), true);
+
+	// Code 1: 2 equal-sized frames
+	// Valid: TOC (code 1, e.g. 0xf9) + even number of bytes
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xf9, 0x01, 0x02])), true);
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xf9, 0x01, 0x02, 0x03, 0x04])), true);
+	// Invalid: odd number of bytes (frames cannot be equal size)
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xf9, 0x01])), false);
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xf9, 0x01, 0x02, 0x03])), false);
+
+	// Code 2: 2 different-sized frames
+	// Header byte: len1. Valid: len1 fits within payload
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xfa, 2, 0xaa, 0xbb, 0xcc])), true);
+	// Invalid: len1 exceeds payload
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xfa, 5, 0xaa, 0xbb])), false);
+
+	// Code 3: arbitrary frames
+	// Invalid: frame count 0 (byte 1 = 0)
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xfb, 0x00])), false);
+	// Invalid: frame count > 48 (byte 1 = 49)
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xfb, 49, 0xaa])), false);
+
+	// Code 3 CBR: M frames, payload % M === 0
+	// 2 frames, 4 payload bytes -> 4 % 2 === 0 -> true
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xfb, 2, 0x01, 0x02, 0x03, 0x04])), true);
+	// 2 frames, 3 payload bytes -> 3 % 2 !== 0 -> false
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xfb, 2, 0x01, 0x02, 0x03])), false);
+
+	// Code 3 with padding:
+	// TOC (c=3) + byte 1 (p=1, M=2: 0x42) + padding len 2 + 2 padding bytes + 4 payload bytes
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xfb, 0x42, 2, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04])), true);
+	// Invalid padding length exceeding buffer
+	assert.equal(validateOpusPacketFraming(Buffer.from([0xfb, 0x42, 250, 0x00])), false);
+});
+
+test("WebAudioConnection enforces 20ms duration boundary and RFC 6716 framing, rejecting non-20ms and malformed packets", () => {
+	const webConn = new WebAudioConnection({ sessionId: "boundary-test" });
+	const socket = createFakeSocket();
+	webConn.attachSocket(socket);
+
+	// 1. Non-20ms Opus packets must be dropped (10ms, 40ms, 60ms)
+	const packet10ms = Buffer.from([0x00, 0x01]); // Config 0 = 10ms SILK
+	assert.equal(getOpusPacketDurationMs(packet10ms), 10);
+	webConn.prepareAudioPacket(packet10ms);
+	webConn.dispatchAudio();
+
+	const packet40ms = Buffer.from([0x10, 0x01]); // Config 2 = 40ms SILK
+	assert.equal(getOpusPacketDurationMs(packet40ms), 40);
+	webConn.prepareAudioPacket(packet40ms);
+	webConn.dispatchAudio();
+
+	// 2. Corrupted framing packets must be dropped
+	const oddCode1 = Buffer.from([0xf9, 0x01]); // Code 1 with odd payload
+	webConn.prepareAudioPacket(oddCode1);
+	webConn.dispatchAudio();
+
+	assert.equal(webConn.getStats().sequence, 0, "Non-20ms and malformed packets must not increment sequence");
+	assert.equal(webConn.getStats().dispatchedPackets, 0, "Non-20ms and malformed packets must not be dispatched");
+
+	// 3. Valid 20ms Opus packet must be dispatched normally
+	const valid20ms = Buffer.from([0xf8, 0xff, 0xfe, 0x01]); // Config 31 = 20ms CELT
+	assert.equal(getOpusPacketDurationMs(valid20ms), 20);
+	webConn.prepareAudioPacket(valid20ms);
+	webConn.dispatchAudio();
+
+	assert.equal(webConn.getStats().sequence, 1, "Valid 20ms packet must increment sequence");
+	assert.equal(webConn.getStats().dispatchedPackets, 1, "Valid 20ms packet must be dispatched");
 
 	webConn.destroy();
 });

@@ -148,6 +148,7 @@ export const CONTROLLER_RPC = {
 	playbackPrepareAutoplay: "playback.prepareAutoplay",
 	playbackCreateRelatedTracks: "playback.createRelatedTracks",
 	playbackStart: "playback.start",
+	playbackStartResource: "playback.startResource",
 	playbackReportFilterError: "playback.reportFilterError",
 	playbackSessionRetirePending: "playback.session.retirePending",
 	preloadHas: "preload.has",

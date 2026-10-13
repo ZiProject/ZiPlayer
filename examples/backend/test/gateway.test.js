@@ -723,3 +723,163 @@ test("gateway relays consecutive Opus frames across sequences 0..10 without fals
 		await gateway.close();
 	}
 });
+
+test("gateway rejects audio:config with unsupported codec", async () => {
+	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0 });
+	let publisher;
+	try {
+		const address = await gateway.listen();
+		const gatewayUrl = `ws://127.0.0.1:${address.port}`;
+		publisher = new WebSocket(`${gatewayUrl}/publish?sessionId=unsupported-codec-session`);
+		await waitForOpen(publisher);
+
+		const closePromise = new Promise((resolve) =>
+			publisher.once("close", (code, reason) => resolve({ code, reason: reason.toString() })),
+		);
+		publisher.send(
+			JSON.stringify({
+				v: 1,
+				type: "audio:config",
+				sessionId: "unsupported-codec-session",
+				protocolVersion: 1,
+				codec: "aac",
+				sampleRateHz: 48_000,
+				channels: 2,
+			}),
+		);
+		const { code, reason } = await closePromise;
+		assert.equal(code, 1008);
+		assert.match(reason, /Unsupported audio configuration/i);
+	} finally {
+		publisher?.close();
+		await gateway.close();
+	}
+});
+
+test("gateway rejects legacy frames in v1 session", async () => {
+	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0 });
+	let publisher;
+	try {
+		const address = await gateway.listen();
+		const gatewayUrl = `ws://127.0.0.1:${address.port}`;
+		publisher = new WebSocket(`${gatewayUrl}/publish?sessionId=v1-legacy-reject-session`);
+		await waitForOpen(publisher);
+
+		publisher.send(
+			JSON.stringify({
+				v: 1,
+				type: "audio:config",
+				sessionId: "v1-legacy-reject-session",
+				protocolVersion: 1,
+				codec: "opus",
+				sampleRateHz: 48_000,
+				channels: 2,
+			}),
+		);
+
+		const closePromise = new Promise((resolve) =>
+			publisher.once("close", (code, reason) => resolve({ code, reason: reason.toString() })),
+		);
+
+		const legacyOpusHeader = Buffer.alloc(16);
+		legacyOpusHeader.writeUInt16LE(0x4f50, 0); // "OP"
+		legacyOpusHeader.writeUInt16LE(48000, 8);
+		legacyOpusHeader.writeUInt16LE(2, 10);
+		const legacyFrame = Buffer.concat([legacyOpusHeader, Buffer.from([0xf8, 0xff, 0xfe, 0x01])]);
+
+		publisher.send(legacyFrame, { binary: true });
+		const { code, reason } = await closePromise;
+		assert.equal(code, 1003);
+		assert.match(reason, /Invalid or unexpected audio frame/i);
+	} finally {
+		publisher?.close();
+		await gateway.close();
+	}
+});
+
+test("gateway accepts legacy frames when session explicitly declares protocolVersion: 0", async () => {
+	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0 });
+	let listener;
+	let publisher;
+	try {
+		const address = await gateway.listen();
+		const gatewayUrl = `ws://127.0.0.1:${address.port}`;
+		publisher = new WebSocket(`${gatewayUrl}/publish?sessionId=legacy-v0-session`);
+		await waitForOpen(publisher);
+
+		listener = new WebSocket(`${gatewayUrl}/listen?sessionId=legacy-v0-session`);
+		await waitForOpen(listener);
+
+		const configPromise = waitForMessage(listener);
+		publisher.send(
+			JSON.stringify({
+				v: 1,
+				type: "audio:config",
+				sessionId: "legacy-v0-session",
+				protocolVersion: 0,
+				codec: "opus",
+				sampleRateHz: 48_000,
+				channels: 2,
+			}),
+		);
+		await configPromise;
+
+		const legacyOpusHeader = Buffer.alloc(16);
+		legacyOpusHeader.writeUInt16LE(0x4f50, 0);
+		legacyOpusHeader.writeUInt16LE(48000, 8);
+		legacyOpusHeader.writeUInt16LE(2, 10);
+		const legacyPayload = Buffer.from([0xf8, 0xff, 0xfe, 0x01]);
+		const legacyFrame = Buffer.concat([legacyOpusHeader, legacyPayload]);
+
+		const framePromise = waitForMessage(listener);
+		publisher.send(legacyFrame, { binary: true });
+		const received = await framePromise;
+		assert.equal(received.isBinary, true);
+		assert.deepEqual(Buffer.from(received.data), legacyFrame);
+	} finally {
+		listener?.close();
+		publisher?.close();
+		await gateway.close();
+	}
+});
+
+test("gateway rejects v1 frames with reserved flags or mismatched codec flags", async () => {
+	const gateway = createWebAudioGateway({ host: "127.0.0.1", port: 0 });
+	let publisher;
+	try {
+		const address = await gateway.listen();
+		const gatewayUrl = `ws://127.0.0.1:${address.port}`;
+		publisher = new WebSocket(`${gatewayUrl}/publish?sessionId=flags-reject-session`);
+		await waitForOpen(publisher);
+
+		publisher.send(
+			JSON.stringify({
+				v: 1,
+				type: "audio:config",
+				sessionId: "flags-reject-session",
+				protocolVersion: 1,
+				codec: "opus",
+				sampleRateHz: 48_000,
+				channels: 2,
+			}),
+		);
+
+		const closePromise = new Promise((resolve) =>
+			publisher.once("close", (code, reason) => resolve({ code, reason: reason.toString() })),
+		);
+
+		const badFlagsFrame = Buffer.alloc(16 + 4);
+		badFlagsFrame[0] = 0x5a; // 'Z'
+		badFlagsFrame[1] = 0x49; // 'I'
+		badFlagsFrame[2] = 0x01; // version 1
+		badFlagsFrame[3] = 0x03; // flags: invalid (reserved bit set)
+
+		publisher.send(badFlagsFrame, { binary: true });
+		const { code, reason } = await closePromise;
+		assert.equal(code, 1003);
+		assert.match(reason, /Invalid or unexpected audio frame/i);
+	} finally {
+		publisher?.close();
+		await gateway.close();
+	}
+});

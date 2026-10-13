@@ -1,3 +1,4 @@
+import type { AudioResource } from "@discordjs/voice";
 import type { Bus, PlayerAction } from "./Bus";
 import { PlaybackSession } from "./PlaybackSession";
 import { PlaybackSessionController } from "../controller/PlaybackSessionController";
@@ -73,6 +74,22 @@ export class PlaybackOrchestrator {
 			({ track, context, from }, ctx) => {
 				const state = this.states.get(ctx.playerId);
 				return state ? state.start.start(track, context, from) : Promise.resolve();
+			},
+		);
+		bus.registerRpc<{ resource: AudioResource; track: Track }, Promise<boolean>>(
+			CONTROLLER_RPC.playbackStartResource,
+			({ resource, track }, ctx) => {
+				const state = this.states.get(ctx.playerId);
+				if (!state || state.disposed) return Promise.resolve(false);
+				const context: PlayerMessageContext = {
+					playerId: ctx.playerId,
+					requestId: ctx.requestId,
+					source: "PlaybackStartController:startResource",
+					signal: ctx.signal,
+					timestamp: ctx.timestamp,
+					priority: 10,
+				};
+				return state.start.startResource(resource, track, context);
 			},
 		);
 		bus.registerRpc<{ session: PlaybackSession; context: PlayerMessageContext }, Promise<Track | null>>(

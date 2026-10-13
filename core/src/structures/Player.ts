@@ -386,20 +386,6 @@ export class Player extends EventEmitter {
 
 		if (options.signal?.aborted) return false;
 
-		// Direct AudioResource playback (native Opus passthrough / shared AudioPlayer dispatcher)
-		if (query && typeof query === "object" && ("playStream" in query || ("readable" in query && "playbackDuration" in query))) {
-			const resource = query as AudioResource;
-			const audioPlayer = this.audioPlayer;
-			if (!audioPlayer) throw new Error(`AudioPlayer is not available for player "${this.playerId}"`);
-			audioPlayer.play(resource);
-			return {
-				track: (resource.metadata as Track) ?? null,
-				query: "resource",
-				voiceConnection: this.connection ?? undefined,
-				player: this,
-			};
-		}
-
 		const generation = ++this.playGeneration;
 		const controller = new AbortController();
 		this.playAbortController?.abort();
@@ -414,10 +400,67 @@ export class Player extends EventEmitter {
 				options.requestedBy?.username ??
 				(options.requestedBy ? String(options.requestedBy) : undefined));
 
+		const isResource =
+			query && typeof query === "object" && ("playStream" in query || ("readable" in query && "playbackDuration" in query));
+
 		const operation = this.playOperation
 			.catch(() => false as const)
 			.then(async () => {
 				if (generation !== this.playGeneration || combinedSignal.aborted) return false;
+
+				if (isResource) {
+					const resource = query as AudioResource;
+					const meta = resource.metadata;
+					const track: Track =
+						meta && typeof meta === "object" && typeof (meta as any).title === "string" ?
+							(meta as Track)
+						:	{
+								id: (meta as any)?.id ?? `resource-${Date.now()}`,
+								title: (meta as any)?.title ?? "Direct Audio Resource",
+								url: (meta as any)?.url ?? "",
+								duration:
+									Number.isFinite((meta as any)?.duration) ? (meta as any).duration : ((resource as any).playbackDuration ?? 0),
+								requestedBy: (meta as any)?.requestedBy ?? reqBy ?? "resource",
+								source: (meta as any)?.source ?? "resource",
+								metadata: (meta as any) ?? {},
+							};
+					resource.metadata = track;
+
+					if (this.bus.hasRpc(CONTROLLER_RPC.playbackStartResource)) {
+						const started = await this.bus.requestRpc<{ resource: AudioResource; track: Track }, boolean>(
+							this.playerId,
+							CONTROLLER_RPC.playbackStartResource,
+							{ resource, track },
+							{ signal: combinedSignal },
+						);
+						if (generation !== this.playGeneration || combinedSignal.aborted || !started) return false;
+					} else if (this.bus.hasRpc(CONTROLLER_RPC.playbackPlay)) {
+						if (this.bus.hasRpc(PLAYER_RPC.queueSetCurrent)) {
+							this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueSetCurrent, { track });
+						}
+						await this.bus.requestRpc(
+							this.playerId,
+							CONTROLLER_RPC.playbackPlay,
+							{ resource, to: track },
+							{ signal: combinedSignal },
+						);
+						if (generation !== this.playGeneration || combinedSignal.aborted) return false;
+					} else {
+						const audioPlayer = this.audioPlayer;
+						if (!audioPlayer) throw new Error(`AudioPlayer is not available for player "${this.playerId}"`);
+						audioPlayer.play(resource);
+					}
+
+					const playResult: PlayResult = {
+						track,
+						query: "resource",
+						requestedBy: options.requestedBy,
+						voiceConnection: this.connection ?? undefined,
+						player: this,
+					};
+					return playResult;
+				}
+
 				const rpcResult = await this.bus.requestRpc<
 					{ query: string | Track | SearchResult | null; requestedBy?: string; plugin?: string | string[] },
 					{ ok: boolean; track: Track | null } | boolean

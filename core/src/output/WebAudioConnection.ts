@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { VoiceConnectionStatus, type AudioPlayer, type PlayerSubscription } from "@discordjs/voice";
 import { WEB_AUDIO_MAX_MESSAGE_BYTES, type WebSocketLike } from "./WebSocketAudioOutputBackend";
-import { getOpusPacketDurationMs } from "../audio/OpusSourceAdapter";
+import { getOpusPacketDurationMs, validateOpusPacketDuration, validateOpusPacketFraming } from "../audio/OpusSourceAdapter";
 import type {
 	AudioOutputBackend,
 	AudioOutputCapabilities,
@@ -98,8 +98,14 @@ export function decodeWebAudioOpusFrame(
 	const view = Buffer.isBuffer(frame) ? frame : Buffer.from(frame);
 	if (view[0] === WEB_AUDIO_MAGIC_0 && view[1] === WEB_AUDIO_MAGIC_1) {
 		const version = view[2];
+		if (version !== 1) {
+			throw new Error(`Unsupported audio frame protocol version: ${version}`);
+		}
 		const flags = view[3];
-		const codec = (flags & 0x01) === 1 ? "opus" : "pcm16le";
+		if (flags !== WEB_AUDIO_FLAG_CODEC_OPUS && flags !== WEB_AUDIO_FLAG_CODEC_PCM) {
+			throw new Error(`Invalid audio frame flags: 0x${flags.toString(16)}`);
+		}
+		const codec = flags === WEB_AUDIO_FLAG_CODEC_OPUS ? "opus" : "pcm16le";
 		const sequence = view.readUInt32BE(4);
 		const timestampUs = view.readBigUInt64BE(8);
 		const timestampMs = Number(timestampUs / 1000n);
@@ -401,12 +407,12 @@ export class WebAudioConnection extends EventEmitter {
 		if (!packet) return;
 		this.pendingPacket = null;
 
-		const durationMs = getOpusPacketDurationMs(packet);
-		if (durationMs <= 0 || packet.length === 0) {
-			this.debugLogger?.(`[WebAudioConnection] Dropped malformed Opus packet (length: ${packet.length})`);
+		if (packet.length === 0 || !validateOpusPacketFraming(packet) || !validateOpusPacketDuration(packet, 20)) {
+			this.debugLogger?.(`[WebAudioConnection] Dropped invalid or non-20ms Opus packet (length: ${packet.length})`);
 			return;
 		}
 
+		const durationMs = 20;
 		const seq = this.sequence;
 		this.sequence = (this.sequence + 1) >>> 0;
 		const timestampUs = this.mediaTimestampUs;
