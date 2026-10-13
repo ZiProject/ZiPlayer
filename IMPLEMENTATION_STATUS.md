@@ -2,42 +2,42 @@
 
 ## Implemented
 
-- Added `MultiAudioOutputBackend`, which fans one per-track processed stream out to multiple output handles; it does not create a second DSP/FFmpeg pipeline for each sink.
-- Preserved `player.connect(voiceChannel)` and the `audioOutputBackendFactory` entry point. Added `player.connect(backend, { id?, name?, playerVolume? })`, returning a registration handle with `disconnect()`, plus `player.disconnectOutput(id)` and `player.getAudioOutputs()`.
-- Allows sinks to join or leave during a live PCM track. A newly joined sink begins at the current stream position. A PCM-only WebSocket sink rejects an active encoded track because the existing stream cannot be transcoded retroactively.
-- For subsequent tracks, an active WebSocket PCM sink selects s16le PCM, 48 kHz, stereo if those settings were not explicitly set. Explicit conflicting settings fail with an explanatory error.
-- Selects a live pacing master. A ready Discord voice subscriber is preferred; an unavailable/autopaused Discord sink does not pace the stream ahead of a live secondary output. Secondary queues are bounded, excess whole chunks are dropped, and drop counters are reported by `getAudioOutputs()`.
-- Propagates pause/resume/stop to all registered sinks; combines capabilities across sinks. A secondary sink error removes that sink and emits `streamError` rather than `trackError`; a pacing-master failure remains a track failure.
-- Player volume defaults to the initial output/Discord sink. Dynamically registered outputs default to `playerVolume: false`, so browser PCM remains unchanged unless explicitly opted in.
-- Corrected encoded output metadata to identify Ogg/Opus; fixed FFmpeg executable selection order and separated per-engine limits from the process-wide gate; rejected unsafe direct FFmpeg URL mode and added redirect-by-redirect URL validation with DNS address pinning.
+- Native Opus playback is the preferred path for discrete Opus packets: a single `AudioResource` feeds the shared Discord `AudioPlayer`, and WebSocket listeners receive the same packets through `WebAudioConnection` subscriptions. The subscriber does not add a second stream reader or DSP/FFmpeg process.
+- `Player.connect(webConnection)` registers and removes that subscription; stopping one track updates speaking state without disconnecting the reusable connection. A new track can reuse the same connection.
+- `MultiAudioOutputBackend` remains available for stream-consuming outputs and processing workflows. It fans one per-track processed stream to registered handles with bounded secondary queues, pacing selection, drop metrics, and coordinated controls.
+- Preserved `player.connect(voiceChannel)`, `audioOutputBackendFactory`, `player.connect(backend, { id?, name?, playerVolume? })`, `player.disconnectOutput(id)`, and `player.getAudioOutputs()`. Explicit stream backends can still join or leave during a live PCM track, with late joiners starting at the current position.
+- PCM/WebSocket conversion remains available when a stream-consuming WebSocket backend is explicitly used. Such a PCM-only sink cannot consume an already-running encoded track; subsequent tracks may negotiate s16le PCM, 48 kHz stereo, unless explicitly conflicting settings are provided.
+- Native Opus resource creation and Ogg/WebM demuxing validate packet framing and duration without spawning FFmpeg. Source ownership is explicit (`transfer` by default, or `borrow`); closing either side of a validator/demuxer pipe releases the opposite side appropriately.
+- Legacy browser frames remain supported only for an explicitly negotiated `protocolVersion: 0`; missing versions normalize to v1. Opus framing validation enforces the 1,275-byte per-frame maximum for all framing codes.
+- Player volume defaults to the initial output/Discord sink. Dynamically registered stream outputs default to `playerVolume: false`.
+- The wider stream-processing implementation also retains its FFmpeg input protections: executable selection, per-engine concurrency limits, redirect-by-redirect URL validation with DNS address pinning, and rejection of unsafe direct FFmpeg URL input.
 
 ## Design decisions and trade-offs
 
-- **Late joining:** live PCM sinks can join at the current point. They are not backfilled. A sink that joins an encoded-only track and only accepts PCM is rejected; it may join the next track after PCM negotiation.
-- **Format negotiation:** while any PCM-only WebSocket sink is registered, subsequent tracks share one s16le 48 kHz stereo DSP stream. Omitted settings are selected automatically; explicitly conflicting settings are rejected rather than silently rewritten.
+- **Native subscriber vs. stream sink:** `WebAudioConnection` uses the shared `AudioPlayer` subscriber path for native Opus. `MultiAudioOutputBackend` and `WebSocketAudioOutputBackend` remain for stream inputs and PCM/DSP workflows; they are a separate, explicit path rather than a duplicate reader for `Player.connect(webConnection)`.
+- **Late joining and format negotiation:** stream-consuming sinks begin at the current position and are not backfilled. PCM-only sinks cannot join an already-running encoded track; subsequent tracks can negotiate s16le 48 kHz stereo. Explicit conflicting settings are rejected.
 - **Volume:** `Player.volume` goes to outputs registered with `playerVolume: true`. This is enabled for the initial/Discord output and disabled by default for dynamic outputs.
 - **Transitions:** a Discord + WebSocket combination reports `replacement: "stop-before-start"`, not `"atomic"`; seek is unsupported in the combined capability set. Transition logic cannot overlap old and new tracks in this configuration: the old output stops before the new one starts, and the new track may fade in from zero. This is not a true atomic crossfade.
 - **Unsafe URL mode:** `allowFfmpegUrlInput` now fails validation; callers should use the safe Node HTTP input path so redirects and resolved addresses are checked.
 
 ## Verification performed
 
-All tests below ran in a temporary CommonJS transpile harness because dependencies could not be installed in this environment. `@discordjs/voice` was stubbed for the harness; system FFmpeg was available on `PATH`. This validates targeted behavior but is **not** a substitute for the normal package build or a real Discord voice connection.
+The repository's available native core build and targeted tests were run with installed dependencies. Browser protocol tests were also run directly. These validate local behavior but are **not** a substitute for a real Discord voice connection or deployment environment.
 
 | Check | Result | Scope / limitation |
 |---|---:|---|
-| TypeScript source transpile/parse | 66 files, 0 syntax diagnostics | Syntax-only; not a full type check |
-| `tests/multi_audio_output_backend.test.js` | 9/9 passed | Fake output handles; includes late join/removal, pacing handoff, capabilities, controls, error isolation, bounded queue/drop counts |
-| `tests/audio_output_safety_regressions.test.js` | 5/5 passed | URL safety, executable priority, concurrency isolation, encoded stream type |
-| `tests/playback_output_integration.test.js` | 6/6 passed | Five fixture playback cases used system FFmpeg; fake WebSocket sockets and stubbed `@discordjs/voice` |
-| **Targeted total** | **20/20 passed** | Isolated harness only |
+| `npm run build:core` | Passed | CJS, ESM, and declaration build |
+| `npm test` | 279 passed, 3 failed, 2 skipped | Latest run; two output-timing assertions failed in existing stress/integration tests, and partial-metadata normalization currently fails because its implementation edit is blocked by an editor-mapped file |
+| `node --test client/test/protocol.test.js` | 14/14 passed | Browser protocol negotiation and frame parsing |
+| `node --test --test-name-pattern="validator and demuxer close" tests/stream_and_metadata_regressions.test.js` | 1/1 passed | Upstream source close propagates to validator and Ogg/WebM demuxer |
+| WebSocket stop/replay, source ownership, replacement, and Opus frame-size regressions | Passed in the preceding full run | Resource and query playback; transfer/borrow lifecycle |
+| Partial `AudioResource` metadata normalization | Regression test added; implementation pending | Current `Player.ts` is open with a Windows user-mapped section, so the OS rejects writes to that file. The test reproduces missing `Track.id`; close the editor's mapped file to allow the surgical fix and rerun. |
 | CPU / peak RAM / end-to-end latency benchmark | Not measured | No performance claim is made |
 
 ## Not verified yet
 
-- Normal `npm install`, `npm run build` for CJS/ESM, and a complete `tsc` type-check (installation timed out; dependencies such as `@discordjs/voice`, `ffmpeg-static`, and `lru-cache` were unavailable).
-- Full existing test suite under the project's real installed dependencies.
 - Real Discord Voice/UDP subscription readiness and AutoPaused behavior; real gateway routing to multiple browser subscribers.
 - Windows runtime, true crossfade/transition behavior, real YouTube sources, and 100-track replacement stress testing for process leaks and RAM stability.
-- CPU, peak RAM, and fixture-based latency comparison between PCM+Raw Discord, WebSocket PCM, and Ogg/Opus passthrough.
+- CPU, peak RAM, and fixture-based latency comparison between PCM+Raw Discord, WebSocket PCM, and native Ogg/Opus passthrough.
 
 Do not treat this implementation as production-verified until the outstanding checks above are run with the project's real dependencies and deployment environment.

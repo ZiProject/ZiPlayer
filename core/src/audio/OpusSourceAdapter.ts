@@ -205,7 +205,13 @@ function pipeWithOwnership(source: Readable, destination: Transform, ownership: 
 	const onSourceError = (error: Error) => destination.destroy(error);
 	const cleanup = () => {
 		source.off("error", onSourceError);
+		source.off("close", onSourceClose);
 		destination.off("close", onDestinationClose);
+	};
+	const onSourceClose = () => {
+		source.unpipe(destination);
+		cleanup();
+		if (!destination.destroyed) destination.destroy();
 	};
 	const onDestinationClose = () => {
 		source.unpipe(destination);
@@ -213,6 +219,7 @@ function pipeWithOwnership(source: Readable, destination: Transform, ownership: 
 		cleanup();
 	};
 	source.on("error", onSourceError);
+	source.once("close", onSourceClose);
 	destination.once("close", onDestinationClose);
 	source.pipe(destination);
 	return destination;
