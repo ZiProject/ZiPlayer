@@ -30,7 +30,7 @@ function frame(sequence, values = [16384, -16384]) {
 const legacyConfig = { ...config, protocolVersion: 0 };
 
 test("audio configuration validation enforces the supported wire format", () => {
-	assert.equal(parseAudioConfig(config, "player-1"), config);
+	assert.deepEqual(parseAudioConfig(config, "player-1"), config);
 	assert.throws(() => parseAudioConfig({ ...config, sampleRateHz: 44_100 }), /unsupported|mismatched/i);
 	assert.throws(() => parseAudioConfig(config, "another-player"), /unsupported|mismatched/i);
 });
@@ -116,6 +116,33 @@ test("Opus audio configuration validation", () => {
 	assert.throws(() => parseAudioConfig({ ...opusConfig, channels: 1 }), /unsupported/i);
 });
 
+test("audio config defaults omitted protocolVersion to v1 and only enables legacy frames for explicit v0", () => {
+	const omittedVersion = { ...config };
+	delete omittedVersion.protocolVersion;
+	const normalized = parseAudioConfig(omittedVersion);
+	assert.equal(normalized.protocolVersion, 1);
+	assert.throws(() => decodePcmFrame(frame(1), normalized), /missing 'ZI'/i);
+
+	const omittedOpusVersion = {
+		v: 1,
+		type: "audio:config",
+		sessionId: "opus-player",
+		codec: "opus",
+	};
+	assert.equal(parseAudioConfig(omittedOpusVersion).protocolVersion, 1);
+	const legacyFrame = Buffer.alloc(20);
+	legacyFrame.writeUInt32LE(3, 0);
+	legacyFrame.writeUInt32LE(100, 4);
+	legacyFrame.writeUInt16LE(20, 12);
+	legacyFrame.set([0xf8, 0xff, 0xfe, 0x01], 16);
+	const legacyArrayBuffer = legacyFrame.buffer.slice(
+		legacyFrame.byteOffset,
+		legacyFrame.byteOffset + legacyFrame.byteLength,
+	);
+	assert.throws(() => decodeOpusFrame(legacyArrayBuffer, parseAudioConfig(omittedOpusVersion)), /missing 'ZI'/i);
+	assert.equal(decodeOpusFrame(legacyArrayBuffer, { codec: "opus", protocolVersion: 0 }).sequence, 3);
+});
+
 test("Opus frame decoding extracts payload and handles WebAudioOpusFrame magic", () => {
 	const buf = Buffer.alloc(16 + 6);
 	buf.writeUInt16LE(0x4f50, 0); // magic
@@ -127,7 +154,7 @@ test("Opus frame decoding extracts payload and handles WebAudioOpusFrame magic",
 	buf.set([0xf8, 0xff, 0xfe, 0x01, 0x02, 0x03], 16);
 
 	const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-	const decoded = decodeOpusFrame(arrayBuffer, { codec: "opus" }, 5);
+	const decoded = decodeOpusFrame(arrayBuffer, { codec: "opus", protocolVersion: 0 }, 5);
 	assert.equal(decoded.sequence, 5);
 	assert.equal(decoded.timestampMs, 100);
 	assert.equal(decoded.frameDurationMs, 20);

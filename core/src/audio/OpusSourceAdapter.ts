@@ -13,17 +13,18 @@ export function validateOpusPacketFraming(packet: Uint8Array | Buffer): boolean 
 	if (!packet || packet.length < 1) return false;
 	const toc = packet[0];
 	const c = toc & 0x03;
+	const maxFrameLength = 1275;
 
 	switch (c) {
 		case 0: {
 			// Code 0: 1 frame. The rest of the packet is the frame payload.
-			return true;
+			return packet.length - 1 <= maxFrameLength;
 		}
 		case 1: {
 			// Code 1: 2 frames of equal compressed size.
 			// The remaining bytes must be evenly divisible by 2.
 			const payloadLength = packet.length - 1;
-			return payloadLength % 2 === 0;
+			return payloadLength % 2 === 0 && payloadLength / 2 <= maxFrameLength;
 		}
 		case 2: {
 			// Code 2: 2 frames of different compressed sizes.
@@ -39,7 +40,8 @@ export function validateOpusPacketFraming(packet: Uint8Array | Buffer): boolean 
 				const b2 = packet[offset++];
 				len1 = b2 * 4 + b1;
 			}
-			return offset + len1 <= packet.length;
+			const len2 = packet.length - offset - len1;
+			return len1 <= maxFrameLength && len2 >= 0 && len2 <= maxFrameLength;
 		}
 		case 3: {
 			// Code 3: Arbitrary number of frames.
@@ -66,7 +68,7 @@ export function validateOpusPacketFraming(packet: Uint8Array | Buffer): boolean 
 
 			if (!isVbr) {
 				// CBR: All frameCount frames have equal size
-				return availablePayload % frameCount === 0;
+				return availablePayload % frameCount === 0 && availablePayload / frameCount <= maxFrameLength;
 			}
 
 			// VBR: First frameCount - 1 frames have their lengths encoded
@@ -82,9 +84,11 @@ export function validateOpusPacketFraming(packet: Uint8Array | Buffer): boolean 
 					const b2 = packet[offset++];
 					frameLen = b2 * 4 + b1;
 				}
+				if (frameLen > maxFrameLength) return false;
 				sumLengths += frameLen;
 			}
-			return sumLengths <= packet.length - offset - paddingLen;
+			const lastFrameLength = packet.length - offset - paddingLen - sumLengths;
+			return lastFrameLength >= 0 && lastFrameLength <= maxFrameLength;
 		}
 		default:
 			return false;
@@ -193,14 +197,32 @@ export interface CreateOpusAudioResourceOptions {
 	silencePaddingFrames?: number;
 	validateDuration?: boolean;
 	expectedDurationMs?: number;
+	/** Whether destroying the resulting resource also destroys the source; defaults to transfer. */
+	ownership?: "transfer" | "borrow";
+}
+
+function pipeWithOwnership(source: Readable, destination: Transform, ownership: "transfer" | "borrow"): Readable {
+	const onSourceError = (error: Error) => destination.destroy(error);
+	const cleanup = () => {
+		source.off("error", onSourceError);
+		destination.off("close", onDestinationClose);
+	};
+	const onDestinationClose = () => {
+		source.unpipe(destination);
+		if (ownership === "transfer" && !source.destroyed) source.destroy();
+		cleanup();
+	};
+	source.on("error", onSourceError);
+	destination.once("close", onDestinationClose);
+	source.pipe(destination);
+	return destination;
 }
 
 /**
  * Creates an AudioResource with StreamType.Opus from an object-mode Readable or Buffer array.
  *
- * Guarantees zero FFmpeg subprocesses and zero transformers:
- * The Opus packets flow directly:
- * Readable<Buffer> -> AudioResource(StreamType.Opus) -> AudioPlayer -> subscribers
+ * Does not spawn FFmpeg. When validation is enabled, packets pass through an in-process validator.
+ * Destroying the resource destroys the source by default; set ownership to "borrow" to retain it.
  */
 export function createOpusAudioResource(
 	source: Readable | Buffer[] | Iterable<Buffer>,
@@ -209,6 +231,7 @@ export function createOpusAudioResource(
 	let stream: Readable;
 	const validateDuration = options.validateDuration ?? true;
 	const expectedDurationMs = options.expectedDurationMs ?? 20;
+	const ownership = options.ownership ?? "transfer";
 
 	if (Array.isArray(source) || (typeof (source as any)?.[Symbol.iterator] === "function" && !(source instanceof Readable))) {
 		const packets = Array.from(source as Iterable<Buffer>);
@@ -239,27 +262,26 @@ export function createOpusAudioResource(
 				"Opus stream must be an object-mode Readable emitting discrete Opus packets. Raw byte streams do not guarantee packet boundaries; use demuxOggOpusToPackets() or demuxWebmOpusToPackets() to demux container streams first.",
 			);
 		}
-		if (validateDuration) {
-			const validator = new Transform({
-				objectMode: true,
-				transform(chunk, _encoding, callback) {
-					if (!chunk || !(chunk instanceof Uint8Array || Buffer.isBuffer(chunk)) || chunk.length === 0) {
-						callback(new Error("Invalid Opus packet: packet must be a non-empty Buffer or Uint8Array"));
-						return;
-					}
-					if (!validateOpusPacketDuration(chunk, expectedDurationMs)) {
-						const actual = getOpusPacketDurationMs(chunk);
-						callback(new Error(`Incompatible Opus packet duration: expected ${expectedDurationMs}ms, got ${actual}ms`));
-						return;
-					}
+		const validator = new Transform({
+			objectMode: true,
+			transform(chunk, _encoding, callback) {
+				if (!validateDuration) {
 					callback(null, chunk);
-				},
-			});
-			source.on("error", (err) => validator.destroy(err));
-			stream = source.pipe(validator);
-		} else {
-			stream = source;
-		}
+					return;
+				}
+				if (!chunk || !(chunk instanceof Uint8Array || Buffer.isBuffer(chunk)) || chunk.length === 0) {
+					callback(new Error("Invalid Opus packet: packet must be a non-empty Buffer or Uint8Array"));
+					return;
+				}
+				if (!validateOpusPacketDuration(chunk, expectedDurationMs)) {
+					const actual = getOpusPacketDurationMs(chunk);
+					callback(new Error(`Incompatible Opus packet duration: expected ${expectedDurationMs}ms, got ${actual}ms`));
+					return;
+				}
+				callback(null, chunk);
+			},
+		});
+		stream = pipeWithOwnership(source, validator, ownership);
 	} else {
 		throw new TypeError("source must be a Readable stream or an iterable of Buffer packets");
 	}
@@ -275,14 +297,12 @@ export function createOpusAudioResource(
  * Demuxes an Ogg Opus stream into raw Opus packets using prism-media's in-process demuxer.
  * Zero FFmpeg processes spawned.
  */
-export function demuxOggOpusToPackets(stream: Readable): Readable {
+export function demuxOggOpusToPackets(stream: Readable, options: { ownership?: "transfer" | "borrow" } = {}): Readable {
 	const demuxer = new prism.opus.OggDemuxer();
-	stream.on("error", (err) => demuxer.destroy(err));
-	return stream.pipe(demuxer);
+	return pipeWithOwnership(stream, demuxer, options.ownership ?? "transfer");
 }
 
-export function demuxWebmOpusToPackets(stream: Readable): Readable {
+export function demuxWebmOpusToPackets(stream: Readable, options: { ownership?: "transfer" | "borrow" } = {}): Readable {
 	const demuxer = new prism.opus.WebmDemuxer();
-	stream.on("error", (err) => demuxer.destroy(err));
-	return stream.pipe(demuxer);
+	return pipeWithOwnership(stream, demuxer, options.ownership ?? "transfer");
 }

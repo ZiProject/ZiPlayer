@@ -22,6 +22,7 @@ export function parseAudioConfig(message, expectedSessionId) {
 	) {
 		throw new Error("Publisher sent an unsupported or mismatched audio configuration");
 	}
+	const protocolVersion = config.protocolVersion ?? WEB_AUDIO_PROTOCOL_VERSION;
 	if (config.codec === "opus") {
 		if (
 			(config.sampleRateHz !== undefined && config.sampleRateHz !== WEB_AUDIO_SAMPLE_RATE_HZ) ||
@@ -31,6 +32,7 @@ export function parseAudioConfig(message, expectedSessionId) {
 		}
 		return {
 			...config,
+			protocolVersion,
 			codec: "opus",
 			sampleRateHz: config.sampleRateHz ?? WEB_AUDIO_SAMPLE_RATE_HZ,
 			channels: config.channels ?? WEB_AUDIO_CHANNELS,
@@ -46,7 +48,7 @@ export function parseAudioConfig(message, expectedSessionId) {
 		) {
 			throw new Error("Publisher sent an unsupported or mismatched PCM configuration");
 		}
-		return config;
+		return { ...config, protocolVersion };
 	}
 	throw new Error(`Publisher sent an unsupported audio configuration: codec "${config.codec}"`);
 }
@@ -73,7 +75,7 @@ export function decodeOpusFrame(data, config, expectedSequence = null) {
 		timestampMs = Number(timestampUs / 1000n);
 		frameDurationMs = 20;
 	} else {
-		if (config?.protocolVersion === 1 || config?.allowLegacy === false) {
+		if (config?.protocolVersion !== 0 || config?.allowLegacy === false) {
 			throw new Error("Received a malformed Opus frame: missing 'ZI' protocol header");
 		}
 		// Legacy format fallback
@@ -178,7 +180,7 @@ export function decodePcmFrame(data, config, expectedSequence = null) {
 		timestampUs = view.getBigUint64(8, false); // Big-Endian
 		timestampMs = Number(timestampUs / 1000n);
 	} else {
-		if (config?.protocolVersion === 1 || config?.allowLegacy === false) {
+		if (config?.protocolVersion !== 0 || config?.allowLegacy === false) {
 			throw new Error("Received an invalid PCM frame header or payload: missing 'ZI' protocol header");
 		}
 		// Legacy format fallback

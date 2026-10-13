@@ -25,6 +25,7 @@ const {
 	WebAudioConnectionBackend,
 	WebSocketAudioOutputBackend,
 	AudioOutputUnsupportedOperationError,
+	PLAYER_RPC,
 } = require("../core/dist");
 const { VoiceConnectionStatus, createAudioPlayer, StreamType } = require("@discordjs/voice");
 
@@ -116,6 +117,130 @@ test("RFC 6716 Opus TOC duration parser detects standard frame durations", () =>
 	assert.equal(getOpusPacketDurationMs(Buffer.from([0x10, 0x01])), 40);
 	// Config 3 (SILK NB 60ms)
 	assert.equal(getOpusPacketDurationMs(Buffer.from([0x18, 0x01])), 60);
+});
+
+test("Player stop preserves the same WebAudio subscriber for the next resource playback", async () => {
+	const { player, audioPlayer, controller } = createPlayerWithAudioPlayer("web-stop-resource");
+	const webConn = new WebAudioConnection({ sessionId: "web-stop-resource-session" });
+	const socket = createFakeSocket();
+	webConn.attachSocket(socket);
+	await player.connect(webConn);
+
+	const playResource = (title) =>
+		createOpusAudioResource(
+			Array.from({ length: 6 }, (_, index) => Buffer.from([0xf8, 0xff, 0xfe, index])),
+			{ metadata: { title } },
+		);
+
+	await player.play(playResource("before-stop"));
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	const firstFrameCount = socket.sent.filter((message) => typeof message.data !== "string").length;
+	assert.ok(firstFrameCount > 0, "WebAudio should receive the first track");
+
+	await player.stop();
+	assert.equal(webConn.state.subscription?.player, audioPlayer);
+	assert.equal(webConn.isReady, true, "stopping a track must not disconnect the shared connection");
+
+	await player.play(playResource("after-stop"));
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	const framesAfterReplay = socket.sent.filter((message) => typeof message.data !== "string").length;
+	assert.ok(framesAfterReplay > firstFrameCount, "WebAudio should receive the next track after stop");
+
+	player.destroy();
+	controller.detach("web-stop-resource");
+});
+
+test("Player stop preserves the same WebAudio subscriber for the next query playback", async () => {
+	const { player, audioPlayer, bus, controller } = createPlayerWithAudioPlayer("web-stop-query");
+	const webConn = new WebAudioConnection({ sessionId: "web-stop-query-session" });
+	const socket = createFakeSocket();
+	webConn.attachSocket(socket);
+	await player.connect(webConn);
+
+	const createResource = (title) =>
+		createOpusAudioResource(
+			Array.from({ length: 6 }, (_, index) => Buffer.from([0xf8, 0xff, 0xfe, index])),
+			{ metadata: { title } },
+		);
+	bus.registerRpc(PLAYER_RPC.play, async ({ query }) => {
+		const resource = createResource(String(query));
+		audioPlayer.play(resource);
+		return { ok: true, track: resource.metadata };
+	});
+
+	await player.play("query-before-stop");
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	const firstFrameCount = socket.sent.filter((message) => typeof message.data !== "string").length;
+	assert.ok(firstFrameCount > 0, "WebAudio should receive the first query track");
+
+	await player.stop();
+	assert.equal(webConn.state.subscription?.player, audioPlayer);
+	assert.equal(webConn.isReady, true, "stopping a track must not disconnect the shared connection");
+
+	await player.play("query-after-stop");
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	const framesAfterReplay = socket.sent.filter((message) => typeof message.data !== "string").length;
+	assert.ok(framesAfterReplay > firstFrameCount, "WebAudio should receive the next query track after stop");
+
+	player.destroy();
+	controller.detach("web-stop-query");
+});
+
+test("destroying an Opus resource cancels owned sources but preserves borrowed sources", async () => {
+	const ownedSource = new Readable({ objectMode: true, read() {} });
+	const ownedResource = createOpusAudioResource(ownedSource);
+	ownedResource.playStream.on("error", () => {});
+	const ownedClosed = new Promise((resolve) => ownedResource.playStream.once("close", resolve));
+	ownedResource.playStream.destroy();
+	await ownedClosed;
+	assert.equal(ownedSource.destroyed, true);
+
+	const borrowedSource = new Readable({ objectMode: true, read() {} });
+	const borrowedResource = createOpusAudioResource(borrowedSource, { ownership: "borrow" });
+	borrowedResource.playStream.on("error", () => {});
+	const borrowedClosed = new Promise((resolve) => borrowedResource.playStream.once("close", resolve));
+	borrowedResource.playStream.destroy();
+	await borrowedClosed;
+	assert.equal(borrowedSource.destroyed, false);
+	borrowedSource.destroy();
+});
+
+test("validator and demuxer failures or cancellation destroy owned live sources", async () => {
+	const invalidSource = new Readable({ objectMode: true, read() {} });
+	const invalidResource = createOpusAudioResource(invalidSource);
+	invalidResource.playStream.on("error", () => {});
+	const invalidClosed = new Promise((resolve) => invalidResource.playStream.once("close", resolve));
+	invalidSource.push(Buffer.from([0x00, 0x01]));
+	await invalidClosed;
+	assert.equal(invalidSource.destroyed, true);
+
+	for (const demux of [demuxOggOpusToPackets, demuxWebmOpusToPackets]) {
+		const source = new Readable({ read() {} });
+		const demuxed = demux(source);
+		demuxed.on("error", () => {});
+		const demuxedClosed = new Promise((resolve) => demuxed.once("close", resolve));
+		demuxed.destroy();
+		await demuxedClosed;
+		assert.equal(source.destroyed, true);
+	}
+});
+
+test("replacing an Opus track destroys its owned upstream source", async () => {
+	const { player, controller } = createPlayerWithAudioPlayer("opus-source-replacement");
+	const source = new Readable({ objectMode: true, read() {} });
+	const firstResource = createOpusAudioResource(source);
+	firstResource.playStream.on("error", () => {});
+	const nextResource = createOpusAudioResource(
+		Array.from({ length: 3 }, () => Buffer.from(OPUS_SILENCE_PACKET)),
+	);
+
+	await player.play(firstResource);
+	await player.play(nextResource);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(source.destroyed, true);
+
+	player.destroy();
+	controller.detach("opus-source-replacement");
 });
 
 test("Native Opus passthrough spawns 0 FFmpeg child processes", async () => {
@@ -653,6 +778,18 @@ test("RFC 6716 Opus packet framing validator rejects malformed packets across al
 	assert.equal(validateOpusPacketFraming(Buffer.from([0xfb, 0x42, 2, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04])), true);
 	// Invalid padding length exceeding buffer
 	assert.equal(validateOpusPacketFraming(Buffer.from([0xfb, 0x42, 250, 0x00])), false);
+
+	// Each individual frame is limited to 1275 bytes, including inferred final frames.
+	assert.equal(validateOpusPacketFraming(Buffer.concat([Buffer.from([0xf8]), Buffer.alloc(1276)])), false);
+	assert.equal(validateOpusPacketFraming(Buffer.concat([Buffer.from([0xf9]), Buffer.alloc(2552)])), false);
+	assert.equal(
+		validateOpusPacketFraming(Buffer.concat([Buffer.from([0xfa, 255, 255]), Buffer.alloc(1275), Buffer.alloc(1276)])),
+		false,
+	);
+	assert.equal(
+		validateOpusPacketFraming(Buffer.concat([Buffer.from([0xfb, 0x82, 1]), Buffer.alloc(1), Buffer.alloc(1276)])),
+		false,
+	);
 });
 
 test("WebAudioConnection enforces 20ms duration boundary and RFC 6716 framing, rejecting non-20ms and malformed packets", () => {
@@ -731,22 +868,29 @@ test("WebAudioConnection drop-oldest policy drops oldest queued packet when queu
 	webConn.destroy();
 });
 
-test("WebAudioConnectionBackend capabilities accurately reflect unsupported replacement and volume", () => {
+test("WebAudioConnectionBackend capabilities accurately reflect unsupported replacement and volume", async () => {
 	const webConn = new WebAudioConnection({ sessionId: "backend-cap-sess" });
+	webConn.attachSocket(createFakeSocket());
 	const backend = new WebAudioConnectionBackend(webConn);
 
 	assert.equal(backend.capabilities.replacement, "unsupported");
 	assert.equal(backend.capabilities.volume, "unsupported");
 
 	const handle = backend.createSession({
-		stream: new Readable({ read() {} }),
+		stream: Readable.from([]),
 		format: { kind: "encoded", codec: "opus" },
 		ownership: "borrow",
 	});
 
 	assert.throws(() => handle.replace({}), AudioOutputUnsupportedOperationError);
 	assert.throws(() => handle.setVolume(0.5), AudioOutputUnsupportedOperationError);
-
+	await handle.start();
+	await handle.stop();
+	assert.equal(webConn.isReady, true, "stopping a track must preserve the WebAudio connection");
+	assert.equal(webConn.isSpeaking, false);
+	webConn.disconnect();
+	await handle.start();
+	assert.equal(webConn.isReady, true, "starting a track should reconnect a disconnected WebAudio connection");
 	handle.dispose();
 	backend.dispose();
 });

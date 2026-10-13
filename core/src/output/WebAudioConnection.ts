@@ -602,8 +602,8 @@ export class WebAudioConnection extends EventEmitter {
 }
 
 /**
- * Adapts a WebAudioConnection into an AudioOutputBackend so it can be managed
- * via MultiAudioOutputBackend, Player.connect(connection), and standard output APIs.
+ * Adapts a WebAudioConnection into a stream-consuming AudioOutputBackend for explicit
+ * MultiAudioOutputBackend registration. Player.connect(connection) uses the AudioPlayer subscription path.
  */
 export class WebAudioConnectionBackend implements AudioOutputBackend<WebAudioConnection> {
 	public readonly capabilities: AudioOutputCapabilities = {
@@ -667,6 +667,8 @@ export class WebAudioConnectionBackend implements AudioOutputBackend<WebAudioCon
 				return 0;
 			},
 			start: () => {
+				conn.reconnect();
+				conn.setSpeaking(true);
 				emit({ type: "state", state: "playing" });
 			},
 			pause: () => {
@@ -680,7 +682,7 @@ export class WebAudioConnectionBackend implements AudioOutputBackend<WebAudioCon
 				return true;
 			},
 			stop: () => {
-				conn.disconnect();
+				conn.setSpeaking(false);
 				emit({ type: "state", state: "stopped" });
 				return true;
 			},

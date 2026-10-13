@@ -1,7 +1,7 @@
 import { EventEmitter } from "events";
 import type { Stream } from "stream";
 import type { VoiceConnection, PlayerSubscription } from "@discordjs/voice";
-import { WebAudioConnection, WebAudioConnectionBackend } from "../output/WebAudioConnection";
+import { WebAudioConnection } from "../output/WebAudioConnection";
 import type { PlayerManager } from "./PlayerManager";
 import type {
 	PlayerOptions,
@@ -35,7 +35,7 @@ import { PlayerAction } from "./PlayerAction";
 import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
-import type { AudioOutputBackend } from "../output/AudioOutputBackend";
+import type { AudioOutputBackend, AudioOutputCapabilities } from "../output/AudioOutputBackend";
 import type { AudioOutputInfo, AudioOutputRegistrationOptions } from "../output/MultiAudioOutputBackend";
 import type { PlaybackSession } from "./PlaybackSession";
 import { BUS_EVENT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
@@ -46,6 +46,20 @@ export interface PlayerAudioOutputRegistration {
 	readonly name: string;
 	disconnect(): Promise<boolean>;
 }
+
+const WEB_AUDIO_SUBSCRIPTION_CAPABILITIES: AudioOutputCapabilities = {
+	pause: true,
+	resume: true,
+	stop: true,
+	seek: "unsupported",
+	replacement: "unsupported",
+	ownership: "borrow",
+	volume: "unsupported",
+	backpressure: "bounded",
+	maxBufferedBytes: 256 * 1024,
+	acceptedProcessOutputs: ["encoded"],
+	preferredProcessOutput: "encoded",
+};
 
 function isAudioOutputBackend(value: unknown): value is AudioOutputBackend<any> {
 	if (!value || typeof value !== "object") return false;
@@ -79,6 +93,7 @@ export class Player extends EventEmitter {
 	private playOperation: Promise<boolean> = Promise.resolve(false);
 	private playGeneration = 0;
 	private playAbortController: AbortController | null = null;
+	private readonly webAudioOutputs = new Map<string, { connection: WebAudioConnection; name: string }>();
 
 	public constructor(playerId: string, bus: Bus, options: PlayerOptions = {}, manager?: PlayerManager) {
 		super();
@@ -269,26 +284,19 @@ export class Player extends EventEmitter {
 					typeof (target as any).attachSocket === "function"))
 		) {
 			const conn = target as WebAudioConnection;
-			conn.subscribe(this);
-			const backend = new WebAudioConnectionBackend(conn);
 			const outputOptions = (options ?? {}) as Omit<AudioOutputRegistrationOptions, "id"> & { id?: string };
 			const id = outputOptions.id ?? conn.sessionId;
-			const registrationOptions: AudioOutputRegistrationOptions = {
-				id,
-				name: outputOptions.name ?? `WebAudio (${conn.sessionId})`,
-				playerVolume: outputOptions.playerVolume ?? false,
-			};
-			await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackOutputAdd, {
-				backend,
-				options: registrationOptions,
-			});
+			const name = outputOptions.name ?? `WebAudio (${conn.sessionId})`;
+			if ((await this.getAudioOutputs()).some((output) => output.id === id)) {
+				throw new Error(`Audio output id already exists: ${id}`);
+			}
+			// WebAudio receives AudioPlayer packets directly; it must not create a second tee sink.
+			if (!conn.subscribe(this)) throw new Error(`WebAudio connection "${conn.sessionId}" cannot subscribe to this player`);
+			this.webAudioOutputs.set(id, { connection: conn, name });
 			return {
 				id,
-				name: registrationOptions.name!,
-				disconnect: () => {
-					conn.unsubscribe();
-					return this.disconnectOutput(id);
-				},
+				name,
+				disconnect: () => this.disconnectOutput(id),
 			};
 		}
 		if (isAudioOutputBackend(target)) {
@@ -335,9 +343,31 @@ export class Player extends EventEmitter {
 		return reply.connection;
 	}
 	public async getAudioOutputs(): Promise<AudioOutputInfo[]> {
-		return this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackOutputList, {});
+		const outputs = [
+			...(await this.bus.requestRpc<void, AudioOutputInfo[]>(this.playerId, CONTROLLER_RPC.playbackOutputList, undefined)),
+		];
+		for (const [id, { connection, name }] of this.webAudioOutputs) {
+			const stats = connection.getStats();
+			outputs.push({
+				id,
+				name,
+				state: connection.isSpeaking ? "playing" : connection.isReady ? "ready" : "stopped",
+				activeSessions: connection.isSpeaking ? 1 : 0,
+				droppedChunks: stats.droppedPackets,
+				droppedBytes: stats.droppedBytes,
+				capabilities: WEB_AUDIO_SUBSCRIPTION_CAPABILITIES,
+			});
+		}
+		return outputs;
 	}
 	public async disconnectOutput(id: string): Promise<boolean> {
+		const webOutput = this.webAudioOutputs.get(id);
+		if (webOutput) {
+			this.webAudioOutputs.delete(id);
+			webOutput.connection.unsubscribe();
+			webOutput.connection.destroy();
+			return true;
+		}
 		return this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackOutputRemove, { id });
 	}
 	public async disconnect(): Promise<void> {
@@ -964,6 +994,11 @@ export class Player extends EventEmitter {
 		this.destroyed = true;
 		this.invalidatePlay();
 		this.actionExecutor.dispose();
+		for (const { connection } of this.webAudioOutputs.values()) {
+			connection.unsubscribe();
+			connection.destroy();
+		}
+		this.webAudioOutputs.clear();
 	}
 	/**
 	 * Destroys the player.
