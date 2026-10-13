@@ -211,7 +211,9 @@ function pipeWithOwnership(source: Readable, destination: Transform, ownership: 
 	const onSourceClose = () => {
 		source.unpipe(destination);
 		cleanup();
-		if (!destination.destroyed) destination.destroy();
+		if (!source.readableEnded && !destination.destroyed) {
+			destination.destroy(new Error("Source closed before end"));
+		}
 	};
 	const onDestinationClose = () => {
 		source.unpipe(destination);
@@ -226,13 +228,13 @@ function pipeWithOwnership(source: Readable, destination: Transform, ownership: 
 }
 
 /**
- * Creates an AudioResource with StreamType.Opus from an object-mode Readable or Buffer array.
+ * Creates an AudioResource with StreamType.Opus from an object-mode Readable or packet iterable.
  *
  * Does not spawn FFmpeg. When validation is enabled, packets pass through an in-process validator.
  * Destroying the resource destroys the source by default; set ownership to "borrow" to retain it.
  */
 export function createOpusAudioResource(
-	source: Readable | Buffer[] | Iterable<Buffer>,
+	source: Readable | Uint8Array[] | Iterable<Uint8Array>,
 	options: CreateOpusAudioResourceOptions = {},
 ): AudioResource {
 	let stream: Readable;
@@ -241,30 +243,52 @@ export function createOpusAudioResource(
 	const ownership = options.ownership ?? "transfer";
 
 	if (Array.isArray(source) || (typeof (source as any)?.[Symbol.iterator] === "function" && !(source instanceof Readable))) {
-		const packets = Array.from(source as Iterable<Buffer>);
-		let index = 0;
+		const iterator = (source as Iterable<Uint8Array>)[Symbol.iterator]();
+		let iteratorDone = false;
 		stream = new Readable({
 			objectMode: true,
 			read() {
-				if (index >= packets.length) {
-					this.push(null);
-					return;
+				try {
+					const result = iterator.next();
+					if (result.done) {
+						iteratorDone = true;
+						this.push(null);
+						return;
+					}
+					const packet = result.value;
+					if (!(packet instanceof Uint8Array) || packet.length === 0) {
+						this.destroy(new Error("Invalid Opus packet: packet must be a non-empty Buffer or Uint8Array"));
+						return;
+					}
+					if (!validateOpusPacketFraming(packet)) {
+						this.destroy(new Error("Invalid Opus packet framing"));
+						return;
+					}
+					if (validateDuration && !validateOpusPacketDuration(packet, expectedDurationMs)) {
+						const actual = getOpusPacketDurationMs(packet);
+						this.destroy(new Error(`Incompatible Opus packet duration: expected ${expectedDurationMs}ms, got ${actual}ms`));
+						return;
+					}
+					this.push(Buffer.isBuffer(packet) ? packet : Buffer.from(packet));
+				} catch (error) {
+					this.destroy(error instanceof Error ? error : new Error(String(error)));
 				}
-				const packet = packets[index++];
-				if (!packet || !(packet instanceof Uint8Array || Buffer.isBuffer(packet)) || packet.length === 0) {
-					this.destroy(new Error("Invalid Opus packet: packet must be a non-empty Buffer or Uint8Array"));
-					return;
+			},
+			destroy(error, callback) {
+				let cleanupError = error;
+				if (ownership === "transfer" && !iteratorDone && typeof iterator.return === "function") {
+					try {
+						iterator.return();
+					} catch (iteratorError) {
+						cleanupError ??= iteratorError instanceof Error ? iteratorError : new Error(String(iteratorError));
+					}
 				}
-				if (validateDuration && !validateOpusPacketDuration(packet, expectedDurationMs)) {
-					const actual = getOpusPacketDurationMs(packet);
-					this.destroy(new Error(`Incompatible Opus packet duration: expected ${expectedDurationMs}ms, got ${actual}ms`));
-					return;
-				}
-				this.push(packet);
+				callback(cleanupError);
 			},
 		});
 	} else if (source instanceof Readable) {
 		if (!source.readableObjectMode) {
+			if (ownership === "transfer" && !source.destroyed) source.destroy();
 			throw new TypeError(
 				"Opus stream must be an object-mode Readable emitting discrete Opus packets. Raw byte streams do not guarantee packet boundaries; use demuxOggOpusToPackets() or demuxWebmOpusToPackets() to demux container streams first.",
 			);
@@ -272,25 +296,26 @@ export function createOpusAudioResource(
 		const validator = new Transform({
 			objectMode: true,
 			transform(chunk, _encoding, callback) {
-				if (!validateDuration) {
-					callback(null, chunk);
-					return;
-				}
-				if (!chunk || !(chunk instanceof Uint8Array || Buffer.isBuffer(chunk)) || chunk.length === 0) {
+				if (!(chunk instanceof Uint8Array) || chunk.length === 0) {
 					callback(new Error("Invalid Opus packet: packet must be a non-empty Buffer or Uint8Array"));
 					return;
 				}
-				if (!validateOpusPacketDuration(chunk, expectedDurationMs)) {
-					const actual = getOpusPacketDurationMs(chunk);
+				const packet = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+				if (!validateOpusPacketFraming(packet)) {
+					callback(new Error("Invalid Opus packet framing"));
+					return;
+				}
+				if (validateDuration && !validateOpusPacketDuration(packet, expectedDurationMs)) {
+					const actual = getOpusPacketDurationMs(packet);
 					callback(new Error(`Incompatible Opus packet duration: expected ${expectedDurationMs}ms, got ${actual}ms`));
 					return;
 				}
-				callback(null, chunk);
+				callback(null, packet);
 			},
 		});
 		stream = pipeWithOwnership(source, validator, ownership);
 	} else {
-		throw new TypeError("source must be a Readable stream or an iterable of Buffer packets");
+		throw new TypeError("source must be a Readable stream or an iterable of Uint8Array packets");
 	}
 
 	return createAudioResource(stream, {
