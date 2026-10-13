@@ -80,6 +80,34 @@ export function assertVoiceChannel(channel: VoiceChannel): asserts channel is Vo
 	}
 }
 
+function normalizeTrackMetadata(resource: AudioResource, metadata: unknown, requestedBy?: string): Track {
+	const raw = metadata && typeof metadata === "object" ? (metadata as Record<string, any>) : {};
+	const fallbackId = `resource-${Date.now()}`;
+	const id = typeof raw.id === "string" && raw.id.trim() ? raw.id : fallbackId;
+	const title = typeof raw.title === "string" && raw.title.trim() ? raw.title : "Direct Audio Resource";
+	const url = typeof raw.url === "string" ? raw.url : "";
+	const rawDuration = Number(raw.duration);
+	const duration = Number.isFinite(rawDuration) ? rawDuration : Number((resource as any)?.playbackDuration ?? 0);
+	const normalizedRequestedBy =
+		typeof raw.requestedBy === "string" && raw.requestedBy.trim()
+			? raw.requestedBy
+			: typeof requestedBy === "string" && requestedBy.trim()
+				? requestedBy
+				: "resource";
+	const source = typeof raw.source === "string" && raw.source.trim() ? raw.source : "resource";
+
+	return {
+		...raw,
+		id,
+		title,
+		url,
+		duration: Number.isFinite(duration) ? duration : 0,
+		requestedBy: normalizedRequestedBy,
+		source,
+		metadata: { ...raw },
+	};
+}
+
 export class Player extends EventEmitter {
 	public readonly bus: Bus;
 	public readonly actionExecutor: PlayerAction;
@@ -440,20 +468,7 @@ export class Player extends EventEmitter {
 
 				if (isResource) {
 					const resource = query as AudioResource;
-					const meta = resource.metadata;
-					const track: Track =
-						meta && typeof meta === "object" && typeof (meta as any).title === "string" ?
-							(meta as Track)
-						:	{
-								id: (meta as any)?.id ?? `resource-${Date.now()}`,
-								title: (meta as any)?.title ?? "Direct Audio Resource",
-								url: (meta as any)?.url ?? "",
-								duration:
-									Number.isFinite((meta as any)?.duration) ? (meta as any).duration : ((resource as any).playbackDuration ?? 0),
-								requestedBy: (meta as any)?.requestedBy ?? reqBy ?? "resource",
-								source: (meta as any)?.source ?? "resource",
-								metadata: (meta as any) ?? {},
-							};
+					const track = normalizeTrackMetadata(resource, resource.metadata, reqBy);
 					resource.metadata = track;
 
 					if (this.bus.hasRpc(CONTROLLER_RPC.playbackStartResource)) {
