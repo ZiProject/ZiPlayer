@@ -12,6 +12,14 @@ export interface ConnectionControllerOptions {
 	debug?: (message: string) => void;
 	readyTimeoutMs?: number;
 }
+export interface WebAudioSubscriberInfo {
+	id: string;
+	name: string;
+	state: "playing" | "ready" | "stopped";
+	activeSessions: number;
+	droppedChunks: number;
+	droppedBytes: number;
+}
 export interface LifecycleControllerOptions {
 	bus: Bus;
 	options: Pick<PlayerOptions, "leaveOnEnd" | "leaveOnEmpty" | "pauseOnEmpty" | "leaveTimeout">;

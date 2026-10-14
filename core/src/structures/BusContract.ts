@@ -192,6 +192,9 @@ export type ControllerRpcKey = keyof typeof CONTROLLER_RPC;
 export const PLAYER_RPC = {
 	play: "play",
 	volumeSet: "volume.set",
+	connectionWebAudioRegister: "connection.webAudio.register",
+	connectionWebAudioDisconnect: "connection.webAudio.disconnect",
+	connectionWebAudioClear: "connection.webAudio.clear",
 	search: "search",
 	searchCacheGet: "search.cache.get",
 	searchCacheSet: "search.cache.set",
@@ -346,6 +349,8 @@ export const PLAYER_QUERY = {
 	audioPlayer: "audioPlayer",
 	connection: "connection",
 	connectionState: "connection.state",
+	hasOutput: "connection.hasOutput",
+	webAudioSubscribers: "connection.webAudioSubscribers",
 	ttsHasPlayer: "tts.hasPlayer",
 	streamStats: "stream.stats",
 	streamState: "stream.state",

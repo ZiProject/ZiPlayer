@@ -15,6 +15,8 @@ import type {
 	SaveOptions,
 	SaveVideoOptions,
 } from ".";
+import type { WebAudioConnection } from "../output/WebAudioConnection";
+import type { WebAudioSubscriberInfo } from "./controller";
 
 export type { Bus } from "../structures/Bus";
 import type { BasePlugin } from "../plugins/BasePlugin";
@@ -276,6 +278,12 @@ export interface PlayerRpcMap {
 		response: { ok: boolean; track: Track | null } | boolean;
 	};
 	"volume.set": { request: { value: number }; response: number };
+	"connection.webAudio.register": {
+		request: { id: string; name: string; connection: WebAudioConnection };
+		response: void;
+	};
+	"connection.webAudio.disconnect": { request: { id: string }; response: boolean };
+	"connection.webAudio.clear": { request: undefined; response: void };
 	search: { request: { query: string; requestedBy?: string; plugin?: string | string[] }; response: SearchResult };
 	"search.cache.get": { request: { query: string }; response: SearchResult | null };
 	"search.cache.set": { request: { query: string; result: SearchResult }; response: void };
@@ -367,6 +375,8 @@ export interface PlayerQueryMap {
 	audioPlayer: import("@discordjs/voice").AudioPlayer | null;
 	connection: import("@discordjs/voice").VoiceConnection | null;
 	"connection.state": import("@discordjs/voice").VoiceConnectionStatus | undefined;
+	"connection.hasOutput": boolean;
+	"connection.webAudioSubscribers": WebAudioSubscriberInfo[];
 	"tts.hasPlayer": boolean;
 	"stream.stats": {
 		active: number;

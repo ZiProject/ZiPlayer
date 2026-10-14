@@ -65,11 +65,9 @@ function normalizeTrackMetadata(resource: AudioResource, metadata: unknown, requ
 	const rawDuration = Number(raw.duration);
 	const duration = Number.isFinite(rawDuration) ? rawDuration : Number((resource as any)?.playbackDuration ?? 0);
 	const normalizedRequestedBy =
-		typeof raw.requestedBy === "string" && raw.requestedBy.trim()
-			? raw.requestedBy
-			: typeof requestedBy === "string" && requestedBy.trim()
-				? requestedBy
-				: "resource";
+		typeof raw.requestedBy === "string" && raw.requestedBy.trim() ? raw.requestedBy
+		: typeof requestedBy === "string" && requestedBy.trim() ? requestedBy
+		: "resource";
 	const source = typeof raw.source === "string" && raw.source.trim() ? raw.source : "resource";
 
 	return {
@@ -97,7 +95,6 @@ export class Player extends EventEmitter {
 	private playOperation: Promise<boolean> = Promise.resolve(false);
 	private playGeneration = 0;
 	private playAbortController: AbortController | null = null;
-	private readonly webAudioOutputs = new Map<string, { connection: WebAudioConnection; name: string }>();
 
 	public constructor(playerId: string, bus: Bus, options: PlayerOptions = {}, manager?: PlayerManager) {
 		super();
@@ -148,6 +145,9 @@ export class Player extends EventEmitter {
 	}
 	public get connection(): VoiceConnection | null {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.connection) ?? null;
+	}
+	public get hasOutput(): boolean {
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.hasOutput) ?? false;
 	}
 	public get playbackMode(): PlaybackMode {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode) ?? PlaybackMode.NATIVE;
@@ -265,13 +265,18 @@ export class Player extends EventEmitter {
 		channel: VoiceChannel,
 		options?: { group?: string; selfDeaf?: boolean; selfMute?: boolean; deaf?: boolean; mute?: boolean },
 	): Promise<VoiceConnection>;
-	public connect(
-		connection: WebAudioConnection,
-		options?: { id?: string; name?: string },
-	): Promise<PlayerWebAudioRegistration>;
+	public connect(connection: WebAudioConnection, options?: { id?: string; name?: string }): Promise<PlayerWebAudioRegistration>;
 	public async connect(
 		target: VoiceChannel | WebAudioConnection,
-		options?: { group?: string; selfDeaf?: boolean; selfMute?: boolean; deaf?: boolean; mute?: boolean; id?: string; name?: string },
+		options?: {
+			group?: string;
+			selfDeaf?: boolean;
+			selfMute?: boolean;
+			deaf?: boolean;
+			mute?: boolean;
+			id?: string;
+			name?: string;
+		},
 	): Promise<VoiceConnection | PlayerWebAudioRegistration> {
 		if (
 			target &&
@@ -284,11 +289,7 @@ export class Player extends EventEmitter {
 			const conn = target as WebAudioConnection;
 			const id = options?.id ?? conn.sessionId;
 			const name = options?.name ?? `WebAudio (${conn.sessionId})`;
-			if (this.webAudioOutputs.has(id)) {
-				throw new Error(`Audio output id already exists: ${id}`);
-			}
-			if (!conn.subscribe(this)) throw new Error(`WebAudio connection "${conn.sessionId}" cannot subscribe to this player`);
-			this.webAudioOutputs.set(id, { connection: conn, name });
+			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.connectionWebAudioRegister, { id, name, connection: conn });
 			return {
 				id,
 				name,
@@ -314,25 +315,10 @@ export class Player extends EventEmitter {
 		return reply.connection;
 	}
 	public async disconnectWebAudio(id: string): Promise<boolean> {
-		const output = this.webAudioOutputs.get(id);
-		if (!output) return false;
-		this.webAudioOutputs.delete(id);
-		output.connection.unsubscribe();
-		output.connection.destroy();
-		return true;
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.connectionWebAudioDisconnect, { id });
 	}
 	public getWebAudioSubscribers() {
-		return [...this.webAudioOutputs].map(([id, { connection, name }]) => {
-			const stats = connection.getStats();
-			return {
-				id,
-				name,
-				state: connection.isSpeaking ? "playing" : connection.isReady ? "ready" : "stopped",
-				activeSessions: connection.isSpeaking ? 1 : 0,
-				droppedChunks: stats.droppedPackets,
-				droppedBytes: stats.droppedBytes,
-			};
-		});
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.webAudioSubscribers) ?? [];
 	}
 	public async disconnect(): Promise<void> {
 		return this.bus
@@ -945,11 +931,9 @@ export class Player extends EventEmitter {
 		this.destroyed = true;
 		this.invalidatePlay();
 		this.actionExecutor.dispose();
-		for (const { connection } of this.webAudioOutputs.values()) {
-			connection.unsubscribe();
-			connection.destroy();
+		if (this.bus.hasRpc(PLAYER_RPC.connectionWebAudioClear)) {
+			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.connectionWebAudioClear, undefined);
 		}
-		this.webAudioOutputs.clear();
 	}
 	/**
 	 * Destroys the player.

@@ -606,3 +606,5 @@ The source `Readable` is wrapped in an inline-volume Discord `AudioResource` and
 `@discordjs/voice` `AudioPlayer`. The player applies volume and fans out Opus packets directly to the Discord Voice and
 `WebAudioConnection` subscribers. Remove a browser subscriber by its registration handle or with
 `player.disconnectWebAudio(id)`. Generic stream-output backends and output factories are not part of the player API.
+The shared `ConnectionController` owns each player's voice and WebAudio connection state; `Player` delegates WebAudio
+registration, lookup, and teardown through the Bus.

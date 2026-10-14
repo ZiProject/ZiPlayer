@@ -15,6 +15,7 @@ const {
 	validateOpusPacketDuration,
 	validateOpusPacketFraming,
 	PlaybackController,
+	ConnectionController,
 	WEB_AUDIO_MAGIC_0,
 	WEB_AUDIO_MAGIC_1,
 	WEB_AUDIO_PROTOCOL_VERSION_V1,
@@ -90,12 +91,14 @@ function createFakeVoiceConnection() {
 function createPlayerWithAudioPlayer(playerId, bus = new Bus()) {
 	const audioPlayer = createAudioPlayer();
 	const controller = new PlaybackController(bus);
+	const connectionController = new ConnectionController(bus);
 	controller.attach(playerId, {
 		audioPlayer,
 		stuckTimeoutMs: 1000,
 	});
+	connectionController.attach(playerId, { audioPlayer });
 	const player = new Player(playerId, bus);
-	return { player, audioPlayer, controller, bus };
+	return { player, audioPlayer, controller, connectionController, bus };
 }
 
 // 20ms fullband stereo Opus silence frame (TOC 0xf8 = Config 31)
@@ -114,7 +117,7 @@ test("RFC 6716 Opus TOC duration parser detects standard frame durations", () =>
 });
 
 test("Player stop preserves the same WebAudio subscriber for the next resource playback", async () => {
-	const { player, audioPlayer, controller } = createPlayerWithAudioPlayer("web-stop-resource");
+	const { player, audioPlayer, controller, connectionController } = createPlayerWithAudioPlayer("web-stop-resource");
 	const webConn = new WebAudioConnection({ sessionId: "web-stop-resource-session" });
 	const socket = createFakeSocket();
 	webConn.attachSocket(socket);
@@ -142,10 +145,11 @@ test("Player stop preserves the same WebAudio subscriber for the next resource p
 
 	player.destroy();
 	controller.detach("web-stop-resource");
+	await connectionController.detach("web-stop-resource");
 });
 
 test("Player stop preserves the same WebAudio subscriber for the next query playback", async () => {
-	const { player, audioPlayer, bus, controller } = createPlayerWithAudioPlayer("web-stop-query");
+	const { player, audioPlayer, bus, controller, connectionController } = createPlayerWithAudioPlayer("web-stop-query");
 	const webConn = new WebAudioConnection({ sessionId: "web-stop-query-session" });
 	const socket = createFakeSocket();
 	webConn.attachSocket(socket);
@@ -178,6 +182,7 @@ test("Player stop preserves the same WebAudio subscriber for the next query play
 
 	player.destroy();
 	controller.detach("web-stop-query");
+	await connectionController.detach("web-stop-query");
 });
 
 test("destroying an Opus resource cancels owned sources but preserves borrowed sources", async () => {
@@ -220,13 +225,11 @@ test("validator and demuxer failures or cancellation destroy owned live sources"
 });
 
 test("replacing an Opus track destroys its owned upstream source", async () => {
-	const { player, controller } = createPlayerWithAudioPlayer("opus-source-replacement");
+	const { player, controller, connectionController } = createPlayerWithAudioPlayer("opus-source-replacement");
 	const source = new Readable({ objectMode: true, read() {} });
 	const firstResource = createOpusAudioResource(source);
 	firstResource.playStream.on("error", () => {});
-	const nextResource = createOpusAudioResource(
-		Array.from({ length: 3 }, () => Buffer.from(OPUS_SILENCE_PACKET)),
-	);
+	const nextResource = createOpusAudioResource(Array.from({ length: 3 }, () => Buffer.from(OPUS_SILENCE_PACKET)));
 
 	await player.play(firstResource);
 	await player.play(nextResource);
@@ -235,6 +238,7 @@ test("replacing an Opus track destroys its owned upstream source", async () => {
 
 	player.destroy();
 	controller.detach("opus-source-replacement");
+	await connectionController.detach("opus-source-replacement");
 });
 
 test("Native Opus passthrough spawns 0 FFmpeg child processes", async () => {
@@ -260,7 +264,7 @@ test("Native Opus passthrough spawns 0 FFmpeg child processes", async () => {
 		assert.equal(resource.edges.length, 0, "Resource edges length must be 0 (no transformers)");
 		assert.equal(resource.encoder, undefined, "Resource encoder must be undefined");
 
-		const { player, controller } = createPlayerWithAudioPlayer("passthrough-player");
+		const { player, controller, connectionController } = createPlayerWithAudioPlayer("passthrough-player");
 		const webConn = new WebAudioConnection({ sessionId: "test-sess-1" });
 		const socket = createFakeSocket();
 		webConn.attachSocket(socket);
@@ -276,13 +280,14 @@ test("Native Opus passthrough spawns 0 FFmpeg child processes", async () => {
 		webConn.destroy();
 		player.destroy();
 		controller.detach("passthrough-player");
+		await connectionController.detach("passthrough-player");
 	} finally {
 		childProcess.spawn = originalSpawn;
 	}
 });
 
 test("Unified AudioPlayer dispatch fans out identical Opus packets to Discord and WebAudio", async () => {
-	const { player, controller } = createPlayerWithAudioPlayer("dual-player");
+	const { player, controller, connectionController } = createPlayerWithAudioPlayer("dual-player");
 
 	const voiceConn = createFakeVoiceConnection();
 	const webConn = new WebAudioConnection({ sessionId: "dual-sess" });
@@ -328,10 +333,11 @@ test("Unified AudioPlayer dispatch fans out identical Opus packets to Discord an
 	webConn.destroy();
 	player.destroy();
 	controller.detach("dual-player");
+	await connectionController.detach("dual-player");
 });
 
 test("Slow WebSocket subscriber drops packets without blocking or stalling Discord Voice", async () => {
-	const { player, controller } = createPlayerWithAudioPlayer("backpressure-player");
+	const { player, controller, connectionController } = createPlayerWithAudioPlayer("backpressure-player");
 
 	const voiceConn = createFakeVoiceConnection();
 	let droppedNotifications = 0;
@@ -370,10 +376,11 @@ test("Slow WebSocket subscriber drops packets without blocking or stalling Disco
 	webConn.destroy();
 	player.destroy();
 	controller.detach("backpressure-player");
+	await connectionController.detach("backpressure-player");
 });
 
 test("Player.connect(webConnection) attaches WebAudio output dynamically during playback", async () => {
-	const { player, controller } = createPlayerWithAudioPlayer("dynamic-web-player");
+	const { player, controller, connectionController } = createPlayerWithAudioPlayer("dynamic-web-player");
 
 	const packets = Array.from({ length: 20 }, (_, i) => Buffer.from([0xf8, 0xff, 0xfe, i]));
 	const packetStream = Readable.from(packets, { objectMode: true });
@@ -388,6 +395,8 @@ test("Player.connect(webConnection) attaches WebAudio output dynamically during 
 
 	const registration = await player.connect(webConn, { name: "Dynamic Web Audio" });
 	assert.equal(typeof registration.disconnect, "function");
+	assert.equal(player.connection, null, "WebAudio output is not a Discord VoiceConnection");
+	assert.equal(player.hasOutput, true, "Player reports its active WebAudio output");
 
 	await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -398,10 +407,12 @@ test("Player.connect(webConnection) attaches WebAudio output dynamically during 
 	assert.ok(outputs.some((o) => o.name === "Dynamic Web Audio"));
 
 	await registration.disconnect();
+	assert.equal(player.hasOutput, false, "Player reports no active output after disconnect");
 	assert.equal(webConn.getStats().status, VoiceConnectionStatus.Destroyed);
 
 	player.destroy();
 	controller.detach("dynamic-web-player");
+	await connectionController.detach("dynamic-web-player");
 });
 
 test("Wire Format v1 Opus framing enforces Magic 'ZI', Version 1, Flags, Sequence BE, and microsecond timestamps", () => {
@@ -602,7 +613,7 @@ test("WebAudioConnection handles race conditions when socket closes or destroys 
 });
 
 test("WebAudioConnection reflects correct state and avoids consuming audio without sinks", async () => {
-	const { player, audioPlayer, controller } = createPlayerWithAudioPlayer("no-sink-player");
+	const { player, audioPlayer, controller, connectionController } = createPlayerWithAudioPlayer("no-sink-player");
 	const webConn = new WebAudioConnection({ sessionId: "no-sink-sess" });
 
 	// Initially, connection has no sockets -> Disconnected
@@ -669,6 +680,7 @@ test("WebAudioConnection reflects correct state and avoids consuming audio witho
 	webConn.destroy();
 	player.destroy();
 	controller.detach("no-sink-player");
+	await connectionController.detach("no-sink-player");
 });
 
 test("createOpusAudioResource enforces packet boundaries and rejects invalid Opus duration", async () => {
@@ -848,7 +860,7 @@ test("WebAudioConnection drop-oldest policy drops oldest queued packet when queu
 });
 
 test("Unified Architecture: Single Opus stream -> AudioResource + AudioPlayer -> voiceConnection.subscribe(player) & webConnection.subscribe(player)", async () => {
-	const { player, controller } = createPlayerWithAudioPlayer("unified-opus-player");
+	const { player, controller, connectionController } = createPlayerWithAudioPlayer("unified-opus-player");
 
 	// 1. Discord VoiceConnection subscribes to player
 	const voiceConnection = createFakeVoiceConnection();
@@ -904,4 +916,5 @@ test("Unified Architecture: Single Opus stream -> AudioResource + AudioPlayer ->
 	webConnection.destroy();
 	player.destroy();
 	controller.detach("unified-opus-player");
+	await connectionController.detach("unified-opus-player");
 });
