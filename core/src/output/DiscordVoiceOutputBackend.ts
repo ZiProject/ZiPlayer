@@ -30,8 +30,6 @@ const DISCORD_CAPABILITIES: AudioOutputCapabilities = {
 	volume: "backend",
 	backpressure: "source",
 	maxBufferedBytes: null,
-	acceptedProcessOutputs: ["encoded", "pcm16le", "pcmFloat32"],
-	preferredProcessOutput: "pcm16le",
 };
 
 function isAbortError(signal?: AbortSignal): boolean {
@@ -47,21 +45,6 @@ function isCurrentResource(state: AudioPlayerState, resource: AudioResource): bo
 }
 
 function discordStreamType(format: AudioFrameFormat): StreamType | undefined {
-	if (format.kind === "pcm") {
-		if (
-			format.sampleRateHz !== 48_000 ||
-			format.channels !== 2 ||
-			format.channelLayout !== "interleaved" ||
-			format.endianness !== "little"
-		) {
-			throw new TypeError("Discord raw PCM requires interleaved 48 kHz stereo little-endian samples");
-		}
-		if (format.sampleFormat !== "s16" && format.sampleFormat !== "f32") {
-			throw new TypeError(`Unsupported Discord PCM sample format: ${format.sampleFormat}`);
-		}
-		return StreamType.Raw;
-	}
-
 	if (format.codec === "opus" && format.container === "ogg") return StreamType.OggOpus;
 	if (format.codec === "opus" && format.container === "webm") return StreamType.WebmOpus;
 	if (format.codec === "opus") return StreamType.Opus;
@@ -78,54 +61,10 @@ export function audioFrameFormatFromDiscordStreamType(streamType?: StreamType): 
 		case StreamType.WebmOpus:
 			return { kind: "encoded", codec: "opus", container: "webm" };
 		case StreamType.Raw:
-			return {
-				kind: "pcm",
-				sampleFormat: "s16",
-				endianness: "little",
-				sampleRateHz: 48_000,
-				channels: 2,
-				channelLayout: "interleaved",
-				chunkAlignmentBytes: 4,
-			};
+			throw new TypeError("Raw audio input is unsupported; provide encoded audio");
 		default:
 			return { kind: "encoded" };
 	}
-}
-
-export function resolveOutputStreamType(
-	options: { enabled?: boolean; outputFormat?: "encoded" | "pcm16le" | "pcmFloat32" },
-	fallback: StreamType = StreamType.Arbitrary,
-): StreamType {
-	if (options.enabled === false) return fallback;
-	const outputFormat = options.outputFormat ?? "encoded";
-	if (outputFormat === "pcm16le" || outputFormat === "pcmFloat32") return StreamType.Raw;
-	if (outputFormat === "encoded") return StreamType.OggOpus;
-	throw new TypeError(`Invalid audio processing output format: ${String(outputFormat)}`);
-}
-
-export function convertFloat32PcmToS16Le(input: Readable): Readable {
-	return Readable.from(
-		(async function* () {
-			let remainder = Buffer.alloc(0);
-			for await (const chunk of input) {
-				const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-				const data = remainder.length ? Buffer.concat([remainder, bytes]) : bytes;
-				const alignedLength = data.length - (data.length % 4);
-				if (alignedLength > 0) {
-					const output = Buffer.allocUnsafe((alignedLength / 4) * 2);
-					for (let inputOffset = 0, outputOffset = 0; inputOffset < alignedLength; inputOffset += 4, outputOffset += 2) {
-						const rawSample = data.readFloatLE(inputOffset);
-						const sample = Number.isFinite(rawSample) ? Math.max(-1, Math.min(1, rawSample)) : 0;
-						output.writeInt16LE(Math.round(sample * 32767), outputOffset);
-					}
-					yield output;
-				}
-				remainder = data.subarray(alignedLength);
-			}
-			if (remainder.length !== 0) throw new Error("Float32 PCM stream ended with an incomplete sample");
-		})(),
-		{ objectMode: false },
-	);
 }
 
 class DiscordVoiceOutputHandle implements AudioOutputHandle<AudioResource> {
@@ -390,17 +329,13 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 				"Discord voice output requires transferred stream ownership because AudioPlayer destroys replaced resources",
 			);
 		}
-		let outputStream = input.stream;
 		try {
-			if (input.format.kind === "pcm" && input.format.sampleFormat === "f32") {
-				outputStream = convertFloat32PcmToS16Le(input.stream);
-			}
-			// inlineVolume forces @discordjs/voice to decode Opus to PCM and re-encode with opusscript.
-			// Encoded Ogg/Opus from the DSP engine is packet-forwarded; player volume is baked into FFmpeg.
-			const inlineVolume = input.format.kind === "pcm";
+			const outputStream = input.stream;
+			// Apply player volume inside the shared AudioResource before AudioPlayer emits Opus
+			// packets to Discord and any WebAudioConnection subscribers.
 			const resource = createAudioResource(outputStream, {
 				metadata: context.metadata,
-				inlineVolume,
+				inlineVolume: true,
 				...(inputType === undefined ? {} : { inputType }),
 			});
 			outputStream.on("error", (err) => {
@@ -412,7 +347,6 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 			this.handles.set(resource, handle);
 			return handle;
 		} catch (error) {
-			if (outputStream !== input.stream && !outputStream.destroyed) outputStream.destroy();
 			this.discardTransferredInput(input);
 			throw error;
 		}
@@ -425,14 +359,14 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 		format?: AudioFrameFormat,
 		signal?: AbortSignal,
 	): AudioResource {
-		const inferredInputType = inputType ?? (stream as Readable & { inputType?: StreamType }).inputType;
-		const inputFormat = format ?? audioFrameFormatFromDiscordStreamType(inferredInputType);
-		const discordInputType = format ? discordStreamType(format) : inferredInputType;
-		const input: AudioOutputInput = { stream, format: inputFormat, ownership: "transfer" };
 		try {
+			const inferredInputType = inputType ?? (stream as Readable & { inputType?: StreamType }).inputType;
+			const inputFormat = format ?? audioFrameFormatFromDiscordStreamType(inferredInputType);
+			const discordInputType = format ? discordStreamType(format) : inferredInputType;
+			const input: AudioOutputInput = { stream, format: inputFormat, ownership: "transfer" };
 			return this.createSessionWithInputType(input, { metadata, signal }, discordInputType).resource;
 		} catch (error) {
-			this.discardTransferredInput(input);
+			if (!stream.destroyed) stream.destroy();
 			throw error;
 		}
 	}
@@ -467,9 +401,7 @@ export class DiscordVoiceOutputBackend implements AudioOutputBackend<AudioResour
 	public setVolume(resource: AudioResource, value: number): void {
 		if (!resource.volume) {
 			if (value === 1) return;
-			throw new AudioOutputUnsupportedOperationError(
-				"volume for this encoded resource (choose PCM processing to enable live Discord volume control)",
-			);
+			throw new AudioOutputUnsupportedOperationError("volume for this resource (create it with inline volume enabled)");
 		}
 		resource.volume.setVolume(value);
 	}

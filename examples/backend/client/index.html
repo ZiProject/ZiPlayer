@@ -1294,7 +1294,7 @@
 					<label
 						class="visually-hidden"
 						for="volume"
-						>Volume</label
+						>Browser listener volume</label
 					>
 					<input
 						id="volume"
@@ -1307,6 +1307,16 @@
 				</div>
 			</footer>
 		</div>
+		<script type="importmap">
+			{
+				"imports": {
+					"opus-decoder": "/vendor/opus-decoder/index.js",
+					"@wasm-audio-decoders/common": "/vendor/@wasm-audio-decoders/common/index.js",
+					"@eshaz/web-worker": "/vendor/@eshaz/web-worker/browser.js",
+					"simple-yenc": "/vendor/simple-yenc/dist/esm.js"
+				}
+			}
+		</script>
 		<script
 			src="/client.js"
 			type="module"></script>

@@ -1,7 +1,6 @@
 export const WEB_AUDIO_PROTOCOL_VERSION = 1;
 export const WEB_AUDIO_SAMPLE_RATE_HZ = 48_000;
 export const WEB_AUDIO_CHANNELS = 2;
-export const WEB_AUDIO_SAMPLE_BYTES = 2;
 export const WEB_AUDIO_FRAME_HEADER_BYTES = 16;
 export const WEB_AUDIO_MAX_MESSAGE_BYTES = 1024 * 1024;
 export const MAX_PENDING_OPUS_FRAMES = 100;
@@ -37,18 +36,6 @@ export function parseAudioConfig(message, expectedSessionId) {
 			sampleRateHz: config.sampleRateHz ?? WEB_AUDIO_SAMPLE_RATE_HZ,
 			channels: config.channels ?? WEB_AUDIO_CHANNELS,
 		};
-	}
-	if (config.codec === "pcm16le" || config.codec === "pcm_s16le" || config.codec === undefined) {
-		if (
-			config.sampleRateHz !== WEB_AUDIO_SAMPLE_RATE_HZ ||
-			config.channels !== WEB_AUDIO_CHANNELS ||
-			config.sampleFormat !== "s16" ||
-			config.endianness !== "little" ||
-			config.channelLayout !== "interleaved"
-		) {
-			throw new Error("Publisher sent an unsupported or mismatched PCM configuration");
-		}
-		return { ...config, protocolVersion };
 	}
 	throw new Error(`Publisher sent an unsupported audio configuration: codec "${config.codec}"`);
 }
@@ -156,69 +143,6 @@ export class OpusDecoderAdapter {
 		this.decoder = null;
 		this.ready = null;
 	}
-}
-
-export function decodePcmFrame(data, config, expectedSequence = null) {
-	if (
-		!(data instanceof ArrayBuffer) ||
-		data.byteLength < WEB_AUDIO_FRAME_HEADER_BYTES ||
-		data.byteLength > WEB_AUDIO_MAX_MESSAGE_BYTES + WEB_AUDIO_FRAME_HEADER_BYTES
-	) {
-		throw new Error("Received a malformed PCM frame");
-	}
-	const view = new DataView(data);
-	const payloadBytes = data.byteLength - WEB_AUDIO_FRAME_HEADER_BYTES;
-	let sequence, timestampMs, timestampUs;
-
-	if (view.getUint8(0) === 0x5a && view.getUint8(1) === 0x49) {
-		// Wire Format v1: Magic 'ZI'
-		const version = view.getUint8(2);
-		const flags = view.getUint8(3);
-		if (version !== 1) throw new Error(`Unsupported audio frame protocol version: ${version}`);
-		if (flags !== 0x00) throw new Error("Expected PCM frame flag in audio header");
-		sequence = view.getUint32(4, false); // Big-Endian
-		timestampUs = view.getBigUint64(8, false); // Big-Endian
-		timestampMs = Number(timestampUs / 1000n);
-	} else {
-		if (config?.protocolVersion !== 0 || config?.allowLegacy === false) {
-			throw new Error("Received an invalid PCM frame header or payload: missing 'ZI' protocol header");
-		}
-		// Legacy format fallback
-		sequence = view.getUint32(0, true);
-		timestampMs = view.getUint32(4, true);
-		timestampUs = BigInt(timestampMs) * 1000n;
-		const sampleRateHz = view.getUint16(8, true);
-		const channels = view.getUint16(10, true);
-		const sampleBytes = view.getUint16(12, true);
-		if (sampleRateHz !== config.sampleRateHz || channels !== config.channels || sampleBytes !== WEB_AUDIO_SAMPLE_BYTES) {
-			throw new Error("Received an invalid PCM frame header or payload");
-		}
-	}
-
-	const channels = config.channels ?? WEB_AUDIO_CHANNELS;
-	const sampleBytes = WEB_AUDIO_SAMPLE_BYTES;
-	if (payloadBytes === 0 || payloadBytes % (channels * sampleBytes) !== 0) {
-		throw new Error("Received an invalid PCM frame header or payload");
-	}
-
-	const sampleCount = payloadBytes / sampleBytes;
-	const samples = new Float32Array(sampleCount);
-	let peak = 0;
-	for (let index = 0; index < sampleCount; index++) {
-		const value = view.getInt16(WEB_AUDIO_FRAME_HEADER_BYTES + index * sampleBytes, true);
-		const normalized = value < 0 ? value / 32768 : value / 32767;
-		samples[index] = normalized;
-		peak = Math.max(peak, Math.abs(normalized));
-	}
-	return {
-		sequence,
-		timestampMs,
-		timestampUs,
-		samples,
-		peak,
-		payload: new Uint8Array(data, WEB_AUDIO_FRAME_HEADER_BYTES, payloadBytes),
-		sequenceGap: expectedSequence !== null && sequence !== expectedSequence,
-	};
 }
 
 function createWorkletSource() {
@@ -330,6 +254,7 @@ export class WebAudioClient extends EventTarget {
 		this.workletNode = null;
 		this.opusDecoder = null;
 		this.opusDecoderReady = false;
+		this.opusDecoderGeneration = 0;
 		this.pendingOpusFrames = [];
 		this.sessionId = null;
 		this.config = null;
@@ -404,8 +329,7 @@ export class WebAudioClient extends EventTarget {
 			if (this.socket !== socket) return;
 			try {
 				if (typeof event.data === "string") this.receiveControlMessage(event.data);
-				else if (this.config?.codec === "opus") this.receiveOpusFrame(event.data);
-				else this.receivePcmFrame(event.data);
+				else this.receiveOpusFrame(event.data);
 			} catch (error) {
 				this.reportError(error);
 				socket.close(1002, "Invalid audio protocol message");
@@ -417,6 +341,7 @@ export class WebAudioClient extends EventTarget {
 			this.config = null;
 			this.expectedSequence = null;
 			this.acceptNextSession = false;
+			this.opusDecoderGeneration++;
 			this.opusDecoder?.free();
 			this.opusDecoder = null;
 			this.opusDecoderReady = false;
@@ -442,6 +367,7 @@ export class WebAudioClient extends EventTarget {
 		this.config = null;
 		this.expectedSequence = null;
 		this.acceptNextSession = false;
+		this.opusDecoderGeneration++;
 		if (socket && socket.readyState < 2) socket.close(1000, "Listener disconnected");
 		this.opusDecoder?.free();
 		this.opusDecoder = null;
@@ -508,27 +434,34 @@ export class WebAudioClient extends EventTarget {
 			this.expectedSequence = null;
 			this.workletNode?.port.postMessage({ type: "flush" });
 			this.pendingOpusFrames = [];
-			if (config.codec === "opus") {
-				this.opusDecoder?.free();
-				this.opusDecoderReady = false;
-				this.opusDecoder =
-					this.opusDecoderFactory?.({ sampleRate: config.sampleRateHz, channels: config.channels }) ??
-					new OpusDecoderAdapter({ sampleRate: config.sampleRateHz, channels: config.channels });
-				void this.opusDecoder
-					.initialize()
-					.then(() => {
+			const generation = ++this.opusDecoderGeneration;
+			this.opusDecoder?.free();
+			this.opusDecoder = null;
+			this.opusDecoderReady = false;
+			void Promise.resolve()
+				.then(
+					() =>
+						this.opusDecoderFactory?.({ sampleRate: config.sampleRateHz, channels: config.channels }) ??
+						new OpusDecoderAdapter({ sampleRate: config.sampleRateHz, channels: config.channels }),
+				)
+				.then((decoder) => {
+					if (generation !== this.opusDecoderGeneration) {
+						decoder.free();
+						return;
+					}
+					this.opusDecoder = decoder;
+					return decoder.initialize().then(() => {
+						if (generation !== this.opusDecoderGeneration) return;
 						this.opusDecoderReady = true;
 						this.drainOpusQueue();
-					})
-					.catch((error) => {
-						this.pendingOpusFrames = [];
-						this.reportError(error);
 					});
-			} else {
-				this.opusDecoderReady = false;
-				this.opusDecoder?.free();
-				this.opusDecoder = null;
-			}
+				})
+				.catch((error) => {
+					if (generation !== this.opusDecoderGeneration) return;
+					this.pendingOpusFrames = [];
+					this.setState("waiting");
+					this.reportError(error);
+				});
 			void this.audioContext?.resume().catch((error) => this.reportError(error));
 			this.setState("playing");
 			dispatchDetail(this, "config", config);
@@ -571,6 +504,11 @@ export class WebAudioClient extends EventTarget {
 		}
 		this.expectedSequence = (frame.sequence + 1) >>> 0;
 		if (!this.opusDecoder) {
+			if (this.pendingOpusFrames.length >= MAX_PENDING_OPUS_FRAMES) {
+				this.pendingOpusFrames.shift();
+			}
+			this.pendingOpusFrames.push(frame);
+			return;
 			dispatchDetail(this, "opus", frame);
 			return;
 		}
@@ -590,7 +528,6 @@ export class WebAudioClient extends EventTarget {
 				const { samples, peak } = this.opusDecoder.decode(frame.payload);
 				frame.samples = samples;
 				frame.peak = peak;
-				this.workletNode?.port.postMessage({ type: "pcm", samples: frame.samples }, [frame.samples.buffer]);
 			} catch (error) {
 				this.reportError(error);
 			}
@@ -598,6 +535,7 @@ export class WebAudioClient extends EventTarget {
 		dispatchDetail(this, "opus", frame);
 		if (frame.samples) {
 			dispatchDetail(this, "pcm", { ...frame, codec: "opus" });
+			this.workletNode?.port.postMessage({ type: "pcm", samples: frame.samples }, [frame.samples.buffer]);
 		}
 	}
 
@@ -608,20 +546,6 @@ export class WebAudioClient extends EventTarget {
 				this.processOpusFrame(frame);
 			}
 		}
-	}
-
-	receivePcmFrame(data) {
-		if (!this.config || !this.workletNode) throw new Error("Received PCM before its audio configuration");
-		const frame = decodePcmFrame(data, this.config, this.expectedSequence);
-		if (frame.sequenceGap) {
-			dispatchDetail(this, "sequencegap", {
-				expectedSequence: this.expectedSequence,
-				receivedSequence: frame.sequence,
-			});
-		}
-		this.expectedSequence = (frame.sequence + 1) >>> 0;
-		dispatchDetail(this, "pcm", frame);
-		this.workletNode.port.postMessage({ type: "pcm", samples: frame.samples }, [frame.samples.buffer]);
 	}
 
 	setState(state) {

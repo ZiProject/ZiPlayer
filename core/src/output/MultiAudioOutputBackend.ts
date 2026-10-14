@@ -13,8 +13,6 @@ import type {
 import { AudioOutputUnsupportedOperationError, createAudioAbortError } from "./AudioOutputBackend";
 
 const DEFAULT_SECONDARY_QUEUE_BYTES = 192 * 1024;
-const PROCESS_OUTPUTS = ["pcm16le", "pcmFloat32", "encoded"] as const;
-type ProcessOutput = (typeof PROCESS_OUTPUTS)[number];
 
 export interface AudioOutputRegistrationOptions {
 	id: string;
@@ -54,19 +52,6 @@ interface TeeBranch {
 
 function normalizeError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
-}
-
-function processOutputForFormat(format: AudioFrameFormat): ProcessOutput {
-	if (format.kind === "encoded") return "encoded";
-	return format.sampleFormat === "f32" ? "pcmFloat32" : "pcm16le";
-}
-
-function acceptedOutputs(backend: AudioOutputBackend<any>): readonly ProcessOutput[] {
-	return backend.capabilities.acceptedProcessOutputs ?? PROCESS_OUTPUTS;
-}
-
-function formatAccepted(backend: AudioOutputBackend<any>, format: AudioFrameFormat): boolean {
-	return acceptedOutputs(backend).includes(processOutputForFormat(format));
 }
 
 /**
@@ -263,7 +248,7 @@ class AudioStreamTee {
 
 /**
  * Owns multiple sinks while exposing a single AudioOutputBackend to PlaybackController.
- * The encoded/PCM source is produced once and fanned out; it never creates another DSP process.
+ * The encoded source is produced once and fanned out; it never creates another DSP process.
  */
 export class MultiAudioOutputBackend implements AudioOutputBackend<AudioResource> {
 	public readonly ready = Promise.resolve();
@@ -299,22 +284,12 @@ export class MultiAudioOutputBackend implements AudioOutputBackend<AudioResource
 				volume: "unsupported",
 				backpressure: "bounded",
 				maxBufferedBytes: DEFAULT_SECONDARY_QUEUE_BYTES,
-				acceptedProcessOutputs: [],
-				preferredProcessOutput: "pcm16le",
 			};
 		}
-		const allAccepted = records.map((record) => acceptedOutputs(record.backend));
-		const accepted = PROCESS_OUTPUTS.filter((format) => allAccepted.every((list) => list.includes(format)));
 		const boundedCaps = records
 			.map((record) => record.backend.capabilities)
 			.filter((caps) => caps.backpressure === "bounded" && caps.maxBufferedBytes != null)
 			.map((caps) => caps.maxBufferedBytes as number);
-		// The narrowest sink determines the output when present (e.g. WebSocket requires PCM).
-		// Otherwise preserve the initial backend's preference for backwards compatibility.
-		const preferenceRecord =
-			records.find((record) => acceptedOutputs(record.backend).length < PROCESS_OUTPUTS.length) ?? records[0];
-		const preferredCandidate = preferenceRecord.backend.capabilities.preferredProcessOutput;
-		const preferred = preferredCandidate && accepted.includes(preferredCandidate) ? preferredCandidate : accepted[0];
 		return {
 			pause: records.every((record) => record.backend.capabilities.pause),
 			resume: records.every((record) => record.backend.capabilities.resume),
@@ -334,16 +309,7 @@ export class MultiAudioOutputBackend implements AudioOutputBackend<AudioResource
 				),
 			backpressure: this.selectMasterRecord()?.backend.capabilities.backpressure === "source" ? "source" : "bounded",
 			maxBufferedBytes: boundedCaps.length ? Math.min(...boundedCaps) : DEFAULT_SECONDARY_QUEUE_BYTES,
-			acceptedProcessOutputs: accepted,
-			preferredProcessOutput: preferred,
 		};
-	}
-
-	public get requiresPcmProcessing(): boolean {
-		return [...this.outputs.values()].some((record) => {
-			const accepted = acceptedOutputs(record.backend);
-			return !accepted.includes("encoded") && accepted.includes("pcm16le");
-		});
 	}
 
 	public get hasOutput(): boolean {
@@ -386,12 +352,6 @@ export class MultiAudioOutputBackend implements AudioOutputBackend<AudioResource
 		if (!this.outputs.size) {
 			if (!input.stream.destroyed) input.stream.destroy();
 			throw new Error("No audio output is registered for this player");
-		}
-		for (const record of this.outputs.values()) {
-			if (!formatAccepted(record.backend, input.format)) {
-				if (!input.stream.destroyed) input.stream.destroy();
-				throw new TypeError(`Output "${record.id}" does not accept ${processOutputForFormat(input.format)} audio`);
-			}
 		}
 		let handle: MultiAudioOutputHandle | undefined;
 		const tee = new AudioStreamTee(
@@ -692,11 +652,6 @@ class MultiAudioOutputHandle implements AudioOutputHandle<AudioResource> {
 		)
 			return;
 		if (this.sinks.has(record.id)) return;
-		if (!formatAccepted(record.backend, this.format)) {
-			throw new TypeError(
-				`Cannot attach output "${record.id}" to an active ${processOutputForFormat(this.format)} track; connect it before the next track`,
-			);
-		}
 		const configuredLimit = record.backend.capabilities.maxBufferedBytes;
 		const branchLimit = configuredLimit == null ? DEFAULT_SECONDARY_QUEUE_BYTES : configuredLimit;
 		const branch = this.tee.addBranch(record.id, branchLimit);

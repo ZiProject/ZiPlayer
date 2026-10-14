@@ -1,7 +1,8 @@
 "use strict";
 
-// Relays PCM to browser clients; the example intentionally binds to loopback only.
+// Relays audio frames to browser clients; the example intentionally binds to loopback only.
 const { createServer } = require("node:http");
+const { existsSync, readFileSync } = require("node:fs");
 const { readFile } = require("node:fs/promises");
 const { isIP } = require("node:net");
 const path = require("node:path");
@@ -10,7 +11,6 @@ const { WebSocket, WebSocketServer } = require("ws");
 const PROTOCOL_VERSION = 1;
 const SAMPLE_RATE_HZ = 48_000;
 const CHANNELS = 2;
-const SAMPLE_BYTES = 2;
 const FRAME_HEADER_BYTES = 16;
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_LISTENER_BUFFER_BYTES = 256 * 1024;
@@ -18,11 +18,60 @@ const MAX_QUERY_LENGTH = 500;
 const WS_OPEN = 1;
 const RESERVED_SESSION_ID = "__ziplayer_search__";
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+function resolvePackageRoot(packageName, searchPaths) {
+	let directory = path.dirname(require.resolve(packageName, { paths: searchPaths }));
+	while (true) {
+		const manifestPath = path.join(directory, "package.json");
+		if (existsSync(manifestPath)) {
+			const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+			if (manifest.name === packageName) return directory;
+		}
+		const parent = path.dirname(directory);
+		if (parent === directory) break;
+		directory = parent;
+	}
+	throw new Error(`Unable to locate the package root for ${packageName}`);
+}
+
+const opusDecoderRoot = resolvePackageRoot("opus-decoder", [__dirname]);
+const commonDecoderRoot = resolvePackageRoot("@wasm-audio-decoders/common", [opusDecoderRoot, __dirname]);
+const VENDOR_PACKAGE_ROOTS = new Map([
+	["opus-decoder", opusDecoderRoot],
+	["@wasm-audio-decoders/common", commonDecoderRoot],
+	["@eshaz/web-worker", resolvePackageRoot("@eshaz/web-worker", [commonDecoderRoot, __dirname])],
+	["simple-yenc", resolvePackageRoot("simple-yenc", [commonDecoderRoot, __dirname])],
+]);
 const STATIC_FILES = new Map([
 	["/", ["client/index.html", "text/html; charset=utf-8"]],
 	["/client.js", ["client/client.js", "text/javascript; charset=utf-8"]],
 	["/web-audio-client.js", ["../../client/browser/index.js", "text/javascript; charset=utf-8"]],
 ]);
+
+function resolveVendorFile(pathname) {
+	if (!pathname.startsWith("/vendor/")) return undefined;
+	const segments = pathname.slice("/vendor/".length).split("/");
+	if (segments.some((segment) => !segment || segment === "." || segment === ".." || segment.includes("\\"))) return undefined;
+	const scoped = segments[0].startsWith("@");
+	const packageName = scoped ? `${segments[0]}/${segments[1] ?? ""}` : segments[0];
+	const packageRoot = VENDOR_PACKAGE_ROOTS.get(packageName);
+	const relativeSegments = segments.slice(scoped ? 2 : 1);
+	if (!packageRoot || relativeSegments.length === 0 || !relativeSegments.every((segment) => /^[A-Za-z0-9._-]+$/.test(segment))) {
+		return undefined;
+	}
+	const filePath = path.resolve(packageRoot, ...relativeSegments);
+	const relativePath = path.relative(packageRoot, filePath);
+	if (
+		!relativePath ||
+		relativePath === ".." ||
+		relativePath.startsWith(`..${path.sep}`) ||
+		path.isAbsolute(relativePath) ||
+		path.extname(filePath) !== ".js"
+	) {
+		return undefined;
+	}
+	return [filePath, "text/javascript; charset=utf-8"];
+}
 
 function sendHttpError(socket, status, message) {
 	socket.end(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\n\r\n`);
@@ -59,22 +108,11 @@ function isAudioConfig(message, sessionId) {
 	) {
 		return false;
 	}
-	if (message.codec === "opus") {
-		return (
-			(message.sampleRateHz === undefined || message.sampleRateHz === SAMPLE_RATE_HZ) &&
-			(message.channels === undefined || message.channels === CHANNELS)
-		);
-	}
-	if (message.codec === "pcm16le" || message.codec === "pcm_s16le" || message.codec === undefined) {
-		return (
-			message.sampleRateHz === SAMPLE_RATE_HZ &&
-			message.channels === CHANNELS &&
-			message.sampleFormat === "s16" &&
-			message.endianness === "little" &&
-			message.channelLayout === "interleaved"
-		);
-	}
-	return false;
+	return (
+		message.codec === "opus" &&
+		(message.sampleRateHz === undefined || message.sampleRateHz === SAMPLE_RATE_HZ) &&
+		(message.channels === undefined || message.channels === CHANNELS)
+	);
 }
 
 function isAudioFrame(data, sessionConfig) {
@@ -82,25 +120,13 @@ function isAudioFrame(data, sessionConfig) {
 	const payloadLength = data.length - FRAME_HEADER_BYTES;
 	if (payloadLength === 0) return false;
 
-	const isPcmSession =
-		sessionConfig?.codec === "pcm16le" || sessionConfig?.codec === "pcm_s16le" || sessionConfig?.codec === undefined;
+	if (sessionConfig?.codec !== "opus") return false;
 
 	// Wire Format v1: Magic 'ZI' (0x5A, 0x49)
 	if (data[0] === 0x5a && data[1] === 0x49) {
 		const version = data[2];
 		if (version !== 1) return false;
-		const flags = data[3];
-		if (flags !== 0x01 && flags !== 0x00) return false;
-
-		if (sessionConfig?.codec === "opus") {
-			return flags === 0x01;
-		}
-		if (isPcmSession) {
-			if (flags !== 0x00) return false;
-			const bytesPerSampleFrame = CHANNELS * SAMPLE_BYTES;
-			return payloadLength % bytesPerSampleFrame === 0;
-		}
-		return false;
+		return data[3] === 0x01;
 	}
 
 	// Reject non-v1 frames unless the session explicitly declared legacy protocol (protocolVersion: 0)
@@ -109,27 +135,14 @@ function isAudioFrame(data, sessionConfig) {
 	}
 
 	// Backward-compatible fallback for explicit legacy format:
-	if (sessionConfig?.codec === "opus") {
-		const magic = data.readUInt16LE(0);
-		const sampleRate = data.readUInt16LE(8);
-		const channels = data.readUInt16LE(10);
-		return (
-			(magic === 0x4f50 || magic === 1 || magic === 0) &&
-			(sampleRate === 0 || sampleRate === SAMPLE_RATE_HZ) &&
-			(channels === 0 || channels === CHANNELS)
-		);
-	}
-
-	if (isPcmSession) {
-		const bytesPerSampleFrame = CHANNELS * SAMPLE_BYTES;
-		if (payloadLength % bytesPerSampleFrame !== 0) return false;
-
-		return (
-			data.readUInt16LE(8) === SAMPLE_RATE_HZ && data.readUInt16LE(10) === CHANNELS && data.readUInt16LE(12) === SAMPLE_BYTES
-		);
-	}
-
-	return false;
+	const magic = data.readUInt16LE(0);
+	const sampleRate = data.readUInt16LE(8);
+	const channels = data.readUInt16LE(10);
+	return (
+		(magic === 0x4f50 || magic === 1 || magic === 0) &&
+		(sampleRate === 0 || sampleRate === SAMPLE_RATE_HZ) &&
+		(channels === 0 || channels === CHANNELS)
+	);
 }
 
 function relayToListeners(session, data, isBinary) {
@@ -275,11 +288,11 @@ function attachPublisher(session, socket, sessions, onListenerCount) {
 			frameCount++;
 			frameBytes += data.length - FRAME_HEADER_BYTES;
 			if (frameCount === 1) {
-				console.info(`First PCM frame from ${session.sessionId}: ${data.length - FRAME_HEADER_BYTES} bytes`);
+				console.info(`First Opus frame from ${session.sessionId}: ${data.length - FRAME_HEADER_BYTES} bytes`);
 			}
 			if (Date.now() - lastStatsAt >= 5000) {
 				console.info(
-					`PCM stream ${session.sessionId}: ${frameCount} frames, ${frameBytes} audio bytes, ${session.listeners.size} listener(s)`,
+					`Opus stream ${session.sessionId}: ${frameCount} frames, ${frameBytes} payload bytes, ${session.listeners.size} listener(s)`,
 				);
 				lastStatsAt = Date.now();
 			}
@@ -308,12 +321,10 @@ function attachPublisher(session, socket, sessions, onListenerCount) {
 			statsTimer ??= setInterval(() => {
 				if (session.publisher !== socket) return;
 				if (frameCount === 0) {
-					console.warn(
-						`No PCM frames received for ${session.sessionId} after audio:config; check the ZiPlayer stream/decode errors`,
-					);
+					console.warn(`No Opus frames received for ${session.sessionId} after audio:config; check ZiPlayer output errors`);
 				} else {
 					console.info(
-						`PCM stream ${session.sessionId}: ${frameCount} frames, ${frameBytes} audio bytes, ${session.listeners.size} listener(s)`,
+						`Opus stream ${session.sessionId}: ${frameCount} frames, ${frameBytes} payload bytes, ${session.listeners.size} listener(s)`,
 					);
 				}
 			}, 5000);
@@ -665,13 +676,14 @@ function createWebAudioGateway({
 			})();
 			return;
 		}
-		const file = request.method === "GET" ? STATIC_FILES.get(pathname) : undefined;
+		const file = request.method === "GET" ? (STATIC_FILES.get(pathname) ?? resolveVendorFile(pathname)) : undefined;
 		if (!file) {
 			response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
 			response.end("Not found");
 			return;
 		}
-		void readFile(path.join(__dirname, file[0]))
+		const filePath = path.isAbsolute(file[0]) ? file[0] : path.join(__dirname, file[0]);
+		void readFile(filePath)
 			.then((content) => {
 				response.writeHead(200, {
 					"content-type": file[1],

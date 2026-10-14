@@ -7,13 +7,12 @@ export {
 	resolveAudioProcessingOptions,
 	buildFilterChain,
 	describeOutputFormat,
-	selectProcessOutputFormat,
 	DEFAULT_FFMPEG_INPUT_FORMATS,
 } from "./FFmpegAudioProcessingEngine";
 
-/** Player-level input is always an encoded container. PCM is declared per stream on `AudioProcessingContext`. */
+/** Audio processing accepts encoded media containers. */
 export type AudioProcessingInputFormat = "encoded";
-export type AudioProcessingOutputFormat = "pcm16le" | "pcmFloat32" | "encoded";
+export type AudioProcessingOutputFormat = "encoded";
 /** @deprecated Use `AudioProcessingOutputFormat`. Player input is always `"encoded"`. */
 export type AudioProcessingFormat = AudioProcessingOutputFormat;
 
@@ -31,8 +30,9 @@ export interface AudioProcessingHint {
 
 export interface AudioProcessingOptions {
 	enabled?: boolean;
-	/** Public API: encoded containers only. Per-stream PCM is `AudioProcessingContext.inputFormat`. */
+	/** Audio processing always emits Opus in an Ogg container. */
 	inputFormat?: AudioProcessingInputFormat;
+	/** Only `"encoded"` is supported; processing emits Opus in an Ogg container. */
 	outputFormat?: AudioProcessingOutputFormat;
 	sampleRate?: number;
 	channels?: number;
@@ -47,15 +47,11 @@ export interface AudioProcessingOptions {
 	 */
 	normalize?: boolean | "streaming" | "podcast" | "broadcast";
 	resampleRate?: number;
-	/** Upper bound for a single emitted chunk. Larger FFmpeg reads are split on PCM frame boundaries. */
+	/** Upper bound for a single emitted chunk. */
 	maxBufferBytes?: number;
 	/** Explicit FFmpeg executable. Falls back to `FFMPEG_PATH`, `ffmpeg-static`, then `ffmpeg` on PATH. */
 	ffmpegPath?: string | null;
-	/**
-	 * FFmpeg demuxers allowed for encoded input. Defaults to common audio containers so that unrecognised bytes
-	 * fail loudly instead of being guessed as a weak-probe format (FFmpeg decodes raw PCM as loud ADPCM noise).
-	 * Pass `null` to disable the whitelist.
-	 */
+	/** FFmpeg demuxers allowed for encoded input. Pass `null` to disable the whitelist. */
 	ffmpegInputFormats?: readonly string[] | null;
 	/** libopus bitrate for `outputFormat: "encoded"` (default `"128k"`). */
 	encodedBitrate?: string | number;
@@ -83,11 +79,6 @@ export interface AudioProcessingContext {
 	track?: Track | null;
 	signal?: AbortSignal;
 	debug?: (...args: any[]) => void;
-	/**
-	 * Describes the stream passed to `process()`. PCM streams cannot be probed by FFmpeg, so their layout must be
-	 * declared here; omit it (or use `kind: "encoded"`) for containers FFmpeg can detect itself.
-	 */
-	inputFormat?: AudioFrameFormat;
 	/** Extra FFmpeg `-af` fragment from `player.filter` (already allowlisted). Combined into one graph. */
 	filterString?: string;
 	/** Output-side seek in milliseconds (`-ss` after `-i`). */

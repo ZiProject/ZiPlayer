@@ -5,8 +5,8 @@
 - Native Opus playback is the preferred path for discrete Opus packets: a single `AudioResource` feeds the shared Discord `AudioPlayer`, and WebSocket listeners receive the same packets through `WebAudioConnection` subscriptions. The subscriber does not add a second stream reader or DSP/FFmpeg process.
 - `Player.connect(webConnection)` registers and removes that subscription; stopping one track updates speaking state without disconnecting the reusable connection. A new track can reuse the same connection.
 - `MultiAudioOutputBackend` remains available for stream-consuming outputs and processing workflows. It fans one per-track processed stream to registered handles with bounded secondary queues, pacing selection, drop metrics, and coordinated controls.
-- Preserved `player.connect(voiceChannel)`, `audioOutputBackendFactory`, `player.connect(backend, { id?, name?, playerVolume? })`, `player.disconnectOutput(id)`, and `player.getAudioOutputs()`. Explicit stream backends can still join or leave during a live PCM track, with late joiners starting at the current position.
-- PCM/WebSocket conversion remains available when a stream-consuming WebSocket backend is explicitly used. Such a PCM-only sink cannot consume an already-running encoded track; subsequent tracks may negotiate s16le PCM, 48 kHz stereo, unless explicitly conflicting settings are provided.
+- Preserved `player.connect(voiceChannel)`, dynamic `player.connect(backend, { id?, name? })`, `player.disconnectOutput(id)`, and `player.getAudioOutputs()`. The removed initial-output factory is not part of `PlayerOptions`.
+- Browser WebSocket output is Opus-only through `WebAudioConnection`. PCM remains available internally to DSP and audio codecs but is not a browser wire format.
 - Native Opus resource creation and Ogg/WebM demuxing validate packet framing and duration without spawning FFmpeg. Source ownership is explicit (`transfer` by default, or `borrow`); closing either side of a validator/demuxer pipe releases the opposite side appropriately.
 - Legacy browser frames remain supported only for an explicitly negotiated `protocolVersion: 0`; missing versions normalize to v1. Opus framing validation enforces the 1,275-byte per-frame maximum for all framing codes.
 - Player volume defaults to the initial output/Discord sink. Dynamically registered stream outputs default to `playerVolume: false`.
@@ -14,8 +14,8 @@
 
 ## Design decisions and trade-offs
 
-- **Native subscriber vs. stream sink:** `WebAudioConnection` uses the shared `AudioPlayer` subscriber path for native Opus. `MultiAudioOutputBackend` and `WebSocketAudioOutputBackend` remain for stream inputs and PCM/DSP workflows; they are a separate, explicit path rather than a duplicate reader for `Player.connect(webConnection)`.
-- **Late joining and format negotiation:** stream-consuming sinks begin at the current position and are not backfilled. PCM-only sinks cannot join an already-running encoded track; subsequent tracks can negotiate s16le 48 kHz stereo. Explicit conflicting settings are rejected.
+- **Native subscriber vs. custom stream sink:** `WebAudioConnection` uses the shared `AudioPlayer` subscriber path for Opus. Custom stream-consuming outputs remain dynamically attachable through `player.connect(backend)`; there is no built-in PCM-over-WebSocket backend.
+- **Late joining and format negotiation:** stream-consuming custom sinks begin at the current position and are not backfilled. Their accepted formats determine whether they can join an active session.
 - **Volume:** `Player.volume` goes to outputs registered with `playerVolume: true`. This is enabled for the initial/Discord output and disabled by default for dynamic outputs.
 - **Transitions:** a Discord + WebSocket combination reports `replacement: "stop-before-start"`, not `"atomic"`; seek is unsupported in the combined capability set. Transition logic cannot overlap old and new tracks in this configuration: the old output stops before the new one starts, and the new track may fade in from zero. This is not a true atomic crossfade.
 - **Unsafe URL mode:** `allowFfmpegUrlInput` now fails validation; callers should use the safe Node HTTP input path so redirects and resolved addresses are checked.
@@ -38,6 +38,5 @@ The repository's available native core build and targeted tests were run with in
 
 - Real Discord Voice/UDP subscription readiness and AutoPaused behavior; real gateway routing to multiple browser subscribers.
 - Windows runtime, true crossfade/transition behavior, real YouTube sources, and 100-track replacement stress testing for process leaks and RAM stability.
-- CPU, peak RAM, and fixture-based latency comparison between PCM+Raw Discord, WebSocket PCM, and native Ogg/Opus passthrough.
 
 Do not treat this implementation as production-verified until the outstanding checks above are run with the project's real dependencies and deployment environment.

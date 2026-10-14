@@ -24,7 +24,6 @@ import {
 	describeOutputFormat,
 	readAudioProcessingHint,
 	resolveAudioProcessingOptions,
-	selectProcessOutputFormat,
 	type AudioProcessingOptions,
 	type AudioProcessingEngine,
 } from "../audio/AudioProcessingEngine";
@@ -173,16 +172,12 @@ export class PlaybackController {
 		if (options.audioProcessing) this.processingOptions.set(playerId, options.audioProcessing);
 		else this.processingOptions.delete(playerId);
 		this.processingEngines.delete(playerId);
-		if (!options.audioOutputBackendFactory && !options.audioPlayer) {
-			throw new TypeError("An audioPlayer is required unless an audioOutputBackendFactory is provided");
+		if (!options.audioPlayer) {
+			throw new TypeError("An audioPlayer is required");
 		}
-		const initialBackend =
-			options.audioOutputBackendFactory ?
-				options.audioOutputBackendFactory({ playerId })
-			:	new DiscordVoiceOutputBackend(options.audioPlayer!);
-		const outputBackend = new MultiAudioOutputBackend(initialBackend, {
-			id: options.audioOutputBackendFactory ? "default" : "discord",
-			name: options.audioOutputBackendFactory ? "Initial output" : "Discord Voice",
+		const outputBackend = new MultiAudioOutputBackend(new DiscordVoiceOutputBackend(options.audioPlayer), {
+			id: "discord",
+			name: "Discord Voice",
 			playerVolume: true,
 		});
 		const slot: PlaybackSlot = {
@@ -233,7 +228,7 @@ export class PlaybackController {
 				this.bus.publish(playerId, BUS_EVENT.stateChanged, a, b);
 				// A Discord subscriber is authoritative only while it is the composite's pacing sink.
 				if (!slot.outputBackend.isPacingOutput("discord")) return;
-				// Idle is not authoritative for a composite: secondary sinks can still have PCM
+				// Idle is not authoritative for a composite: secondary sinks can still have audio
 				// queued. Its handle emits the final ended state after all sinks drain.
 				if (b.status !== AudioPlayerStatus.Idle) slot.outputState = this.mapPlayerStatus(b.status);
 				if (b.status === AudioPlayerStatus.Buffering) this.armStuckWatchdog(slot);
@@ -360,9 +355,9 @@ export class PlaybackController {
 		return slot ? this.outputStatus(slot) : undefined;
 	}
 	private outputStatus(slot: PlaybackSlot): AudioPlayerStatus {
-		// Query the composite handle state while a session exists. AudioPlayer can enter Idle
-		// just before a secondary sink finishes draining the same track.
-		if (slot.activeHandle) return this.mapOutputState(slot.outputState);
+		// Query the live handle state while a session exists. slot.outputState is a best-effort
+		// projection and can lag behind the actual sink lifecycle during startup / pause / resume.
+		if (slot.activeHandle) return this.mapOutputState(slot.activeHandle.state);
 		if (slot.outputBackend.isPacingOutput("discord")) {
 			return slot.audioPlayer?.state.status ?? this.mapOutputState(slot.outputState);
 		}
@@ -565,7 +560,6 @@ export class PlaybackController {
 	// Playback operations
 	// ---------------------------------------------------------------------
 
-	/** Pure factory (no per-player state involved). */
 	public createResource(
 		playerId: string,
 		stream: Readable,
@@ -578,37 +572,18 @@ export class PlaybackController {
 		const slot = this.slots.get(playerId);
 		if (!slot) throw new Error("No output backend is attached for this player");
 		const outputSignal = signal ? AbortSignal.any([slot.lifecycleAbort.signal, signal]) : slot.lifecycleAbort.signal;
-		const requirePcm = slot.outputBackend.requiresPcmProcessing;
-		const shouldProcess = Boolean(processingOptions.enabled || requirePcm);
+		if (resolvedInputType === StreamType.Raw) {
+			if (!stream.destroyed) stream.destroy();
+			throw new TypeError("Raw audio input is unsupported; provide encoded audio");
+		}
+		const shouldProcess = Boolean(processingOptions.enabled);
 		if (shouldProcess) {
 			let effectiveProcessingOptions: AudioProcessingOptions;
 			try {
-				// A PCM WebSocket sink fixes the shared output to PCM s16le, 48 kHz stereo. When these
-				// values are omitted, choose the required format automatically; do not silently override
-				// explicit user settings that cannot be honoured by every registered sink.
-				if (requirePcm) {
-					if (processingOptions.outputFormat !== undefined && processingOptions.outputFormat !== "pcm16le") {
-						throw new TypeError('A registered WebSocket output requires audioProcessing.outputFormat="pcm16le"');
-					}
-					if (processingOptions.sampleRate !== undefined && processingOptions.sampleRate !== 48_000) {
-						throw new TypeError("A registered WebSocket output requires audioProcessing.sampleRate=48000 Hz");
-					}
-					if (processingOptions.resampleRate !== undefined && processingOptions.resampleRate !== 48_000) {
-						throw new TypeError("A registered WebSocket output requires audioProcessing.resampleRate=48000 Hz");
-					}
-					if (processingOptions.channels !== undefined && processingOptions.channels !== 2) {
-						throw new TypeError("A registered WebSocket output requires 2 channels (stereo): audioProcessing.channels must be 2");
-					}
-				}
-				const selectedFormat = selectProcessOutputFormat(
-					requirePcm ? "pcm16le" : processingOptions.outputFormat,
-					slot.outputBackend.capabilities,
-				);
 				effectiveProcessingOptions = {
 					...processingOptions,
 					enabled: true,
-					outputFormat: selectedFormat,
-					...(requirePcm ? { sampleRate: 48_000, resampleRate: 48_000, channels: 2 } : {}),
+					outputFormat: "encoded",
 				};
 			} catch (error) {
 				if (!stream.destroyed) stream.destroy();
@@ -622,20 +597,7 @@ export class PlaybackController {
 				if (!stream.destroyed) stream.destroy();
 				throw error;
 			}
-			const channels = effectiveProcessingOptions.channels ?? 2;
-			const sampleFormat = effectiveProcessingOptions.outputFormat === "pcmFloat32" ? "f32" : "s16";
-			const outputFormat: AudioFrameFormat =
-				effectiveProcessingOptions.outputFormat === "encoded" ?
-					{ kind: "encoded", codec: "opus", container: "ogg" }
-				:	{
-						kind: "pcm",
-						sampleFormat,
-						endianness: "little",
-						sampleRateHz: effectiveProcessingOptions.resampleRate ?? effectiveProcessingOptions.sampleRate ?? 48_000,
-						channels,
-						channelLayout: "interleaved",
-						chunkAlignmentBytes: channels * (sampleFormat === "f32" ? 4 : 2),
-					};
+			const outputFormat: AudioFrameFormat = { kind: "encoded", codec: "opus", container: "ogg" };
 			let processedStream: Readable;
 			// Destroying the output aborts FFmpeg and the source even when the upstream stream is silent.
 			const processingAbort = new AbortController();
@@ -653,9 +615,6 @@ export class PlaybackController {
 							playerId,
 							track,
 							signal: pipelineSignal,
-							// After a seek, FilterController may produce raw PCM which FFmpeg cannot probe.
-							inputFormat:
-								resolvedInputType === StreamType.Raw ? audioFrameFormatFromDiscordStreamType(StreamType.Raw) : undefined,
 						});
 						for await (const chunk of pipeline.process(stream, pipelineSignal)) {
 							if (pipelineSignal.aborted) return;
@@ -785,6 +744,10 @@ export class PlaybackController {
 
 	private reportOutputOperationError(slot: PlaybackSlot, handle: AudioOutputHandle<AudioResource> | null, error: unknown): void {
 		const normalized = error instanceof Error ? error : new Error(String(error));
+		if (normalized instanceof AudioOutputUnsupportedOperationError) {
+			this.bus.event(slot.playerId, { type: BUS_EVENT.streamError, error: normalized, track: slot.activeSession?.track ?? null });
+			return;
+		}
 		if (handle && slot.handles.get(handle.resource) === handle) {
 			this.handleOutputError(slot, handle, normalized);
 			return;

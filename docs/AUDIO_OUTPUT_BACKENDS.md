@@ -49,40 +49,36 @@ types; doing that in this extraction would make it a broad, risky rewrite.
   and optional frame/chunk alignment. PCM frame payloads may be split across stream chunks unless the format states a stricter
   boundary; backends must honor backpressure and not assume each read is a complete frame.
 - Volume is identified as backend-, upstream-, or unsupported. Discord advertises backend volume because its adapter creates an
-  inline-volume resource.
+  inline-volume resource. For encoded Opus input, `@discordjs/voice` inserts an in-process Opus decoder, PCM volume transform, and
+  Opus encoder to make `AudioResource.volume` available; this path does not spawn FFmpeg.
 
 The Discord adapter implements this contract and owns Discord resource creation and player start/pause/resume/stop/volume
-operations. The old synchronous `PlaybackController.createResource()` and `Player.createResource()` behavior remains a
-compatibility path; it returns the original `AudioResource` shape. Playback start and resource refresh pass cancellation to
-resource creation. `audioProcessing` only selects DSP options; it does not select or replace the output backend.
+operations. In the managed playback path, `Player.setVolume()` updates the shared inline-volume resource before the `AudioPlayer`
+dispatches Opus to Discord Voice and any `WebAudioConnection` subscribers. It changes volume for all outputs subscribed to that
+player; it is not a listener-local browser control. `WebAudioConnection` wraps the resulting Opus packets in ZI v1 WebSocket
+frames, while Discord Voice sends them through its encrypted UDP transport. The old synchronous
+`PlaybackController.createResource()` and `Player.createResource()` behavior remains a compatibility path; it returns the original
+`AudioResource` shape. Playback start and resource refresh pass cancellation to resource creation. `audioProcessing` only selects
+DSP options; it does not select or replace the output backend.
 
 ## Selecting a backend
 
-Backend selection is per player and has no global mutable default. `PlayerOptions.audioOutputBackendFactory` is optional; when
-omitted, ZiPlayer constructs `DiscordVoiceOutputBackend` around the manager-created `AudioPlayer`. A factory is invoked once per
-attached player and its backend instance is owned by that player's `PlaybackController` slot. Detaching/replacing the slot aborts
-its lifecycle signal, disposes its handles, detaches event listeners, and disposes the backend. A caller should therefore return a
-fresh backend instance for each factory invocation unless it explicitly manages safe sharing itself.
+ZiPlayer creates `DiscordVoiceOutputBackend` around each manager-created `AudioPlayer`. There is no initial-output factory option.
+Custom stream-consuming outputs can be attached after player creation with `player.connect(backend, { id, name })`; the returned
+registration handle removes only that output. Browser audio is not a stream backend: use `player.connect(webAudioConnection)` to
+subscribe it to the shared `AudioPlayer`.
 
 ```ts
-const player = await manager.create(guildId, {
-	audioOutputBackendFactory: ({ playerId }) => createMyBackend(playerId),
-});
+const output = await player.connect(customBackend, { id: "custom", name: "Custom output" });
+await output.disconnect();
 ```
-
-The factory is a typed injection seam, not a plugin registry. At this stage its resource type remains
-`AudioOutputBackendFactory<AudioResource>` to preserve the Bus, `PlaybackSession`, preload, and public `Player` compatibility
-contracts. A custom transport can run without a Discord voice connection (as the fake integration backend does), but a fully
-Discord-independent resource type is not yet supported at the public TypeScript boundary. Generalizing that identity without
-breaking existing `AudioResource` consumers is follow-up work; do not treat the current seam as a completed Web backend API.
 
 The backend owns each session handle it creates; the slot owns the backend and registered handle-event detachers. A transferred
 input stream is destroyed on stop, cancellation, replacement, failure cleanup, or disposal. A borrowed stream must not be
 destroyed by the backend. Session readiness and backend initialization must settle before start; failure is reported through the
 existing track-error/recovery path. A consumed stream is never replayed after DSP or sink failure. Operations unsupported by the
 selected backend reject explicitly, including seek or volume operations when the capability says unsupported. The fake backend
-tests cover lifecycle, startup cancellation, replacement, output failure, volume/crossfade capability, and disposal without
-opening a Discord voice connection.
+tests cover lifecycle, startup cancellation, replacement, output failure, volume/crossfade capability, and disposal.
 
 Stop is cleanup-safe even when the backend rejects or the caller aborts while stop is pending: the controller disposes the
 captured handle independently, reports disposal failure as a separate stream error, and then propagates the original stop failure.
@@ -159,26 +155,9 @@ later queue change can retry.
 output. Discord remains the default sink. `player.connect(voiceChannel)` retains its voice-join behavior and ensures the Discord
 sink is present, while `player.connect(backend, { id, name })` adds a sink and returns a registration handle with `disconnect()`.
 
-```ts
-const browser = await player.connect(new WebSocketAudioOutputBackend({ socketFactory }), {
-	id: "browser-pcm",
-	name: "Browser PCM",
-});
-const outputs = await player.getAudioOutputs();
-await browser.disconnect(); // remove only this sink
-// or: await player.disconnectOutput("browser-pcm");
-```
-
-A PCM-only sink fixes the shared DSP output to s16le PCM at 48 kHz stereo for subsequent tracks. An active encoded track cannot be
-transcoded from its already-running stream, so adding an incompatible sink rejects with a clear error. The tee selects one pacing
-master: a ready Discord voice subscriber is preferred; an unavailable/autopaused Discord sink does not hold up a live WebSocket
-output. Other sinks are bounded by a 192 KiB tee queue by default; chunks that would exceed the bound are dropped and reported by
-`getAudioOutputs()` as cumulative `droppedChunks`/`droppedBytes`. A failed secondary output is removed from the player and emits
-`streamError` (not `trackError`, so it does not trigger track recovery/anti-stuck); a pacing-master failure remains a track error.
-Operations are exposed only when supported by the combined capabilities: because WebSocket does not support seek, combined seek is
-unsupported. The combined replacement capability is `stop-before-start`, not `atomic`; a configured transition therefore cannot
-overlap both tracks—ZiPlayer stops the old output before starting the new one, and the new track may fade in from zero. This is
-not an atomic crossfade.
+Custom stream backends share one per-track DSP pipeline. Formats accepted by all registered sinks determine the stream format;
+PCM can be used internally when required by DSP or by a custom backend, but ZiPlayer does not provide a PCM-over-WebSocket
+transport. Browser listeners use the Opus `WebAudioConnection` subscriber path described below.
 
 The output list reports current registered sinks and their aggregate active-session/drop counters. WebSocket session fan-out to
 multiple browser subscribers remains the gateway's responsibility; ZiPlayer opens one publisher session per output handle and does
@@ -223,10 +202,9 @@ never blocks the event loop that drives Discord voice frames.
 - **Behaviour differences to be aware of.** A mono source is up-mixed to stereo with FFmpeg's equal-power law (-3 dB). `normalize`
   uses single-pass `loudnorm` presets only (`streaming` -14, `podcast` -16, `broadcast` -23 LUFS); numeric RMS/peak targets are
   rejected. Seeking, filters and processing each use their own FFmpeg process.
-- **Discord volume.** Raw PCM resources use `inlineVolume` so Discord can change volume without changing the shared PCM sent to
-  WebSocket. Encoded Ogg/Opus resources have no live volume transformer; unity volume is a no-op, but non-unity `setVolume`
-  rejects explicitly rather than silently pretending the request worked. Request PCM processing when live Discord volume or fades
-  are required.
+- **Discord volume.** Managed playback resources use `inlineVolume`, so `Player.setVolume()` is applied before the shared
+  `AudioPlayer` fans Opus packets out to Discord and browser subscribers. Encoded Opus input is decoded to PCM for volume and
+  re-encoded in-process; this does not spawn FFmpeg.
 - **FFmpeg concurrency.** The default process-wide gate is sized from available RAM (roughly 50 MiB per FFmpeg child after
   reserving 256 MiB for the application, with a two-process minimum and 64-process cap), not CPU count alone.
   `audioProcessing.maxConcurrentProcesses` sets an engine-local gate; only the explicit `configureFfmpegConcurrency()` function
@@ -238,23 +216,17 @@ never blocks the event loop that drives Discord voice frames.
   and NAT64 ranges; each redirect is independently parsed and DNS-checked. Direct FFmpeg URL input (`allowFfmpegUrlInput`) is
   rejected until redirect-safe FFmpeg URL handling can be guaranteed; use the Node-managed safe HTTP input path.
 
-## WebSocket PCM backend status
+## WebAudioConnection browser output
 
-`WebSocketAudioOutputBackend` implements one-way PCM s16le sessions. Its socket factory supplies an already-connected
-WebSocket-compatible transport; it does not create a gateway or authentication flow. The protocol is fixed at 48 kHz stereo
-interleaved PCM. The backend applies a bounded WebSocket `bufferedAmount` limit and paces output against a monotonic sample
-duration clock so source streams cannot flood the browser. A transport without a measurable `bufferedAmount` is rejected.
-`start()` resolves after configuration is sent; the handle's `completion` promise tracks stream consumption. Replacement uses
-`stop-before-start`; volume is applied by the backend to each s16 frame with clamping (capability `volume: "backend"`).
+Browser output is Opus-only. `WebAudioConnection` subscribes directly to the shared `AudioPlayer`, wraps each post-volume Opus
+packet in the ZI v1 frame header, and sends it over application-owned WebSocket sockets. `@ziplayer/client` validates those frames,
+decodes Opus to Float32 PCM in the browser, and feeds a bounded AudioWorklet jitter buffer. The PCM samples are local to browser
+playback; PCM is not sent over the WebSocket protocol.
 
-Set `WebSocketAudioOutputBackendOptions.sessionId` to a stable player routing ID when the gateway should keep browser listeners
-attached across per-track publisher socket replacement. A backend factory receives `{ playerId }` and can use that value as the
-session ID. Without the option, each output session receives an independent random ID.
-
-Browser playback is available from the dependency-free companion package [`@ziplayer/client`](../client/README.md). It validates
-protocol configuration and PCM frame headers, converts s16 LE to Float32, and feeds a bounded AudioWorklet jitter buffer. Browser
-clients need a gateway which authenticates publishers and listeners, routes sockets by a stable player ID, enforces listener
-buffering bounds, and exposes the application operations (for example search/play) that users need. The runnable
+The application gateway must authenticate publishers and listeners, route sockets by a stable player ID, enforce listener
+buffering bounds, and expose any application operations (for example search/play) that users need. Browser WebSocket APIs cannot
+set an Authorization header, so the example accepts listener tokens in the query string. Use short-lived, session-scoped tokens,
+origin policy, rate limits, and HTTPS/WSS in a deployed service; never expose a long-lived shared secret to browsers. The runnable
 [`examples/backend`](../examples/backend/README.md) demonstrates this pattern with ZiPlayer and its source plugins.
 
 Browser WebSocket APIs cannot set an Authorization header, so the demo accepts listener tokens in the query string. Use
@@ -262,30 +234,37 @@ short-lived, session-scoped tokens, origin policy, rate limits, and HTTPS/WSS in
 shared secret to browsers. This one-way WebSocket transport targets moderate latency tolerance; choose WebRTC when low latency,
 congestion control, or synchronized playback is a primary requirement.
 
-## Native Opus passthrough and WebAudioConnection
+## Opus WebAudioConnection and shared AudioPlayer
 
-For zero-transcode streaming without spawning FFmpeg child processes, ZiPlayer provides `WebAudioConnection` alongside
-`WebSocketAudioOutputBackend`. Instead of converting audio through FFmpeg to PCM, `WebAudioConnection` implements the duck-typed
-connection contract of `@discordjs/voice` `VoiceConnection`.
+For Opus input, `WebAudioConnection` can subscribe directly to the shared `AudioPlayer` alongside Discord Voice, without an FFmpeg
+child process. In the managed playback path, server-side inline volume may still decode Opus to PCM and encode it back to Opus
+using the installed codec implementation. `WebAudioConnection` implements the duck-typed connection contract of `@discordjs/voice`
+`VoiceConnection`.
 
-### Unified `AudioPlayer` Subscriber Model
+### Unified `AudioPlayer` Subscriber Model and Player Volume
 
 ```text
-       AudioResource (StreamType.Opus) [0 FFmpeg]
+             source Readable
                        │
-              @discordjs/voice AudioPlayer
-             (20ms interval scheduler)
-             ┌─────────┴─────────┐
-             ▼                   ▼
-    VoiceConnection     WebAudioConnection
-   (Discord Voice UDP)  (Non-blocking WebSocket Publisher)
-                                 │
-                                 ▼
-                         WebSocket Gateway
-                                 │
-                                 ▼
-                         Browser Listeners
-                       (@ziplayer/client WASM)
+       AudioResource (inline volume)
+          │ encoded Opus input:
+          │ Opus decode → PCM volume → Opus encode
+          ▼
+   @discordjs/voice AudioPlayer
+      (20 ms scheduler)
+       ┌──────┴──────┐
+       ▼             ▼
+Discord Voice   WebAudioConnection
+ (UDP)          (ZI v1 over WebSocket)
+                     │
+                     ▼
+              WebSocket Gateway
+                     │
+                     ▼
+             Browser Opus decoder
+                     │
+                     ▼
+                 PCM → AudioWorklet
 ```
 
 Both outputs subscribe to the same `AudioPlayer`:
@@ -297,29 +276,31 @@ webConnection.subscribe(player);
 
 During each 20 ms tick of `AudioPlayer`, `_stepPrepare()` reads one Opus packet from the resource and calls
 `prepareAudioPacket(packet)` on all ready subscribers. `_stepDispatch()` then calls `dispatchAudio()` to transmit the packet.
+`Player.setVolume()` controls the inline volume on the shared resource before this fan-out. For encoded Opus input, inline volume
+requires an in-process decode/volume/encode stage, so do not describe this configured path as bit-for-bit native Opus passthrough.
+An externally created `AudioResource` without inline volume can bypass this control path.
 
 ### Binary Frame Protocol (Wire Format v1)
 
-Binary audio frames transmitted by `WebAudioConnection` and `WebSocketAudioOutputBackend` use a unified 16-byte fixed header:
+Binary audio frames transmitted by `WebAudioConnection` use a 16-byte fixed header:
 
 | Offset  | Size | Type     | Description                                                                              |
 | ------- | ---- | -------- | ---------------------------------------------------------------------------------------- |
 | 0..1    | 2    | Bytes    | Magic `0x5A 0x49` (`'Z'`, `'I'`)                                                         |
 | 2       | 1    | UInt8    | Protocol version (`0x01`)                                                                |
-| 3       | 1    | UInt8    | Flags: bit 0 codec (`0 = PCM16LE`, `1 = Opus`); bits 1..7 reserved (must be `0`)         |
+| 3       | 1    | UInt8    | Codec flags: `0x01` for Opus; all other values are reserved                              |
 | 4..7    | 4    | UInt32BE | Monotonic sequence number (Big-Endian, uint32 wraparound support)                        |
 | 8..15   | 8    | UInt64BE | Audio timestamp in microseconds from track start (`BigUInt64BE`)                         |
-| 16..end | N    | Bytes    | Audio payload: raw Opus packet (for flag `0x01`) or interleaved s16 LE PCM (flag `0x00`) |
+| 16..end | N    | Bytes    | Raw Opus packet payload                                                                 |
 
 - **Sequence**: Monotonically increments with each dispatched frame. Wraps around safely at $2^{32}-1$ to `0` via
   `(seq + 1) >>> 0`. Reset to `0` upon starting a new track.
 - **Timestamp**: Monotonically advances by the exact audio frame duration in microseconds ($\mu s$). For 20 ms Opus packets,
-  timestamp advances by $+20,000\,\mu s$ per packet. For PCM frames, timestamp advances by
-  `(sampleBytes / (channels * sampleRate * 2)) * 1_000_000\,\mu s`. Reset to `0` on track start.
+  timestamp advances by $+20,000\,\mu s$ per packet. Reset to `0` on track start.
 - **Demuxers**: ZiPlayer provides pure-JavaScript in-process demuxers for Ogg Opus (`demuxOggOpusToPackets`) and WebM Opus
   (`demuxWebmOpusToPackets`) using `prism-media`, parsing container streams directly into raw Opus packets for
   `createOpusAudioResource(stream, { inputType: StreamType.Opus })` with zero FFmpeg child processes spawned.
-- **Backward Compatibility**: Decoders and WebSocket Gateway accept Wire Format v1 with graceful fallback for legacy PCM frames.
+- **Backward Compatibility**: Decoders may accept legacy Opus frames only when protocol version `0` is explicitly negotiated.
 
 ### Backpressure and Non-blocking Fan-Out
 

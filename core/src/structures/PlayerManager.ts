@@ -524,7 +524,6 @@ export class PlayerManager extends EventEmitter {
 			audioPlayer,
 			stuckTimeoutMs: options?.antiStuck?.stuckTimeoutMs,
 			audioProcessing: options?.audioProcessing ? { ffmpegPath: options.ffmpegPath, ...options.audioProcessing } : undefined,
-			audioOutputBackendFactory: options?.audioOutputBackendFactory,
 		});
 		this.controllers.preload.attach(playerId);
 

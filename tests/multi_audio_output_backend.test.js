@@ -3,14 +3,10 @@ const assert = require("node:assert/strict");
 const { PassThrough, Readable } = require("node:stream");
 const { MultiAudioOutputBackend } = require("../core/dist");
 
-const PCM = {
-	kind: "pcm",
-	sampleFormat: "s16",
-	endianness: "little",
-	sampleRateHz: 48000,
-	channels: 2,
-	channelLayout: "interleaved",
-	chunkAlignmentBytes: 4,
+const ENCODED = {
+	kind: "encoded",
+	codec: "opus",
+	container: "ogg",
 };
 
 function deferred() {
@@ -112,7 +108,6 @@ class TestOutputBackend {
 		backpressure = "source",
 		maxBufferedBytes = null,
 		endAfterChunks = 0,
-		acceptedProcessOutputs = ["pcm16le"],
 		replacement = "atomic",
 		seek = "unsupported",
 	} = {}) {
@@ -130,8 +125,6 @@ class TestOutputBackend {
 			volume: "unsupported",
 			backpressure,
 			maxBufferedBytes,
-			acceptedProcessOutputs,
-			preferredProcessOutput: "pcm16le",
 		};
 		this.ready = Promise.resolve();
 		this.handles = new Set();
@@ -151,8 +144,8 @@ class TestOutputBackend {
 	}
 }
 
-function pcmInput(stream) {
-	return { stream, format: PCM, ownership: "transfer" };
+function encodedInput(stream) {
+	return { stream, format: ENCODED, ownership: "transfer" };
 }
 
 async function waitForEnd(handle, backends) {
@@ -160,13 +153,13 @@ async function waitForEnd(handle, backends) {
 	await waitFor(() => handle.state === "ended");
 }
 
-test("fans a single PCM source out to two outputs and ends the composite once", async () => {
+test("fans one encoded source out to two outputs and ends the composite once", async () => {
 	const primary = new TestOutputBackend({ id: "primary", backpressure: "source" });
 	const secondary = new TestOutputBackend({ id: "secondary", backpressure: "bounded", maxBufferedBytes: 192 * 1024 });
 	const mux = new MultiAudioOutputBackend(primary, { id: "primary" });
 	await mux.addBackend(secondary, { id: "secondary" });
 	const sourceChunks = [Buffer.alloc(4096, 0x11), Buffer.alloc(4096, 0x22), Buffer.alloc(4096, 0x33)];
-	const handle = mux.createSession(pcmInput(Readable.from(sourceChunks)), { metadata: { title: "fixture" } });
+	const handle = mux.createSession(encodedInput(Readable.from(sourceChunks)), { metadata: { title: "fixture" } });
 	const primaryChild = [...primary.handles][0];
 	const secondaryChild = [...secondary.handles][0];
 	let endEvents = 0;
@@ -188,7 +181,7 @@ test("a sink connected mid-track starts at the next chunk and can be removed dyn
 	const late = new TestOutputBackend({ id: "late", backpressure: "bounded", maxBufferedBytes: 192 * 1024 });
 	const mux = new MultiAudioOutputBackend(primary, { id: "primary" });
 	const source = new PassThrough();
-	const handle = mux.createSession(pcmInput(source));
+	const handle = mux.createSession(encodedInput(source));
 	await handle.start();
 	const mainChild = [...primary.handles][0];
 	source.write(Buffer.alloc(1024, 1));
@@ -212,7 +205,7 @@ test("when the pacing master ends early, the live secondary becomes master witho
 	const mux = new MultiAudioOutputBackend(primary, { id: "discord" });
 	await mux.addBackend(secondary, { id: "websocket" });
 	const source = new PassThrough();
-	const handle = mux.createSession(pcmInput(source));
+	const handle = mux.createSession(encodedInput(source));
 	await handle.start();
 	const primaryChild = [...primary.handles][0];
 	const secondaryChild = [...secondary.handles][0];
@@ -240,19 +233,16 @@ test("an unavailable Discord-like sink does not become the pacing master over a 
 
 
 
-test("combined capabilities reflect the actual sink intersection", async () => {
-	const discord = new TestOutputBackend({ id: "discord", acceptedProcessOutputs: ["encoded", "pcm16le", "pcmFloat32"] });
+test("combined capabilities reflect the registered sink intersection", async () => {
+	const discord = new TestOutputBackend({ id: "discord" });
 	const websocket = new TestOutputBackend({
 		id: "websocket",
 		backpressure: "bounded",
 		maxBufferedBytes: 64 * 1024,
-		acceptedProcessOutputs: ["pcm16le"],
 		replacement: "stop-before-start",
 	});
 	const mux = new MultiAudioOutputBackend(discord, { id: "discord" });
 	await mux.addBackend(websocket, { id: "websocket" });
-	assert.deepEqual(mux.capabilities.acceptedProcessOutputs, ["pcm16le"]);
-	assert.equal(mux.capabilities.preferredProcessOutput, "pcm16le");
 	assert.equal(mux.capabilities.seek, "unsupported");
 	assert.equal(mux.capabilities.replacement, "stop-before-start");
 	assert.equal(mux.capabilities.maxBufferedBytes, 64 * 1024);
@@ -265,7 +255,7 @@ test("pause, resume, and stop are propagated to every registered sink", async ()
 	const mux = new MultiAudioOutputBackend(primary, { id: "primary" });
 	await mux.addBackend(secondary, { id: "secondary" });
 	const source = new PassThrough();
-	const handle = mux.createSession(pcmInput(source));
+	const handle = mux.createSession(encodedInput(source));
 	await handle.start();
 	const primaryChild = [...primary.handles][0];
 	const secondaryChild = [...secondary.handles][0];
@@ -287,7 +277,7 @@ test("a failed secondary sink is isolated and removed without failing the shared
 	const mux = new MultiAudioOutputBackend(primary, { id: "primary" });
 	await mux.addBackend(secondary, { id: "secondary" });
 	const source = new PassThrough();
-	const handle = mux.createSession(pcmInput(source));
+	const handle = mux.createSession(encodedInput(source));
 	const events = [];
 	handle.onEvent((event) => events.push(event));
 	await handle.start();
@@ -311,7 +301,7 @@ test("a secondary sink without a custom cap is bounded by the default 192 KiB qu
 	const mux = new MultiAudioOutputBackend(primary, { id: "primary" });
 	await mux.addBackend(secondary, { id: "secondary" });
 	const source = Readable.from(Array.from({ length: 20 }, (_, i) => Buffer.alloc(32 * 1024, i)));
-	const handle = mux.createSession(pcmInput(source));
+	const handle = mux.createSession(encodedInput(source));
 	await handle.start();
 	const secondaryChild = [...secondary.handles][0];
 	await waitFor(() => mux.getOutput("secondary").droppedChunks > 0);
@@ -327,7 +317,7 @@ test("a non-consuming secondary branch respects its smaller buffer cap and recor
 	const mux = new MultiAudioOutputBackend(primary, { id: "primary" });
 	await mux.addBackend(secondary, { id: "secondary" });
 	const source = Readable.from(Array.from({ length: 20 }, (_, i) => Buffer.alloc(32 * 1024, i)));
-	const handle = mux.createSession(pcmInput(source));
+	const handle = mux.createSession(encodedInput(source));
 	await handle.start();
 	const secondaryChild = [...secondary.handles][0];
 	await waitFor(() => mux.getOutput("secondary").droppedChunks > 0);

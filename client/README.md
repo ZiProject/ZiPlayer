@@ -1,15 +1,16 @@
 # `@ziplayer/client`
 
-Small browser client for ZiPlayer's WebSocket audio protocol. It validates the publisher configuration and binary frame headers,
-supports both uncompressed 48 kHz stereo s16 LE PCM and compressed Opus audio packets (via `opus-decoder` WebAssembly), converts
-audio frames into Float32 samples, and plays them through an AudioWorklet with a bounded jitter buffer.
+Small browser client for ZiPlayer's Opus-only WebSocket audio protocol. It validates the publisher configuration and binary frame
+headers, decodes Opus packets with `opus-decoder` WebAssembly into Float32 samples, and plays them through an AudioWorklet with a
+bounded jitter buffer.
 
-The package is only the receiving/playback client and event source; it does not expose remote `pause`, `stop`, `seek`, or volume
-methods. Your Node.js application still needs an authenticated WebSocket gateway and a ZiPlayer `WebSocketAudioOutputBackend` or
-`WebAudioConnection` publisher. Authentication is determined by your gateway; the `token` connect option is optional for gateways
-that do not require it. Add playback controls to your own server API and bind them to the intended ZiPlayer player. The gateway
-example in [`../examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend) shows a complete local setup
-with search, publisher routing, browser playback, queue display, and multi-player controls.
+The package is a receiving/playback client; it does not expose remote `pause`, `stop`, `seek`, or volume methods. To control
+playback volume, send a volume command through your server API to the ZiPlayer player, which applies it before audio is sent to
+its subscribers. Your Node.js application still needs an authenticated WebSocket gateway and a `WebAudioConnection` publisher.
+Authentication is determined by your gateway; the `token` connect
+option is optional for gateways that do not require it. Add playback controls to your own server API and bind them to the intended
+ZiPlayer player. The gateway example in [`../examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend)
+shows a complete local setup with search, publisher routing, browser playback, queue display, and multi-player controls.
 
 ## Install and use
 
@@ -17,7 +18,9 @@ with search, publisher routing, browser playback, queue display, and multi-playe
 npm install @ziplayer/client
 ```
 
-Import it from a browser bundle or serve `browser/index.js` as an ES module:
+Import it from a browser bundle or serve `browser/index.js` as an ES module. When serving the file directly without a bundler,
+provide an import map for the `opus-decoder` package and its dependencies; the gateway example includes the required mappings and
+serves those modules from the installed client dependencies:
 
 ```js
 import { WebAudioClient } from "@ziplayer/client";
@@ -67,7 +70,7 @@ active and you want to join that live stream, pass its `sessionId` instead. Call
 | Event         | `event.detail`                                                                         |
 | ------------- | -------------------------------------------------------------------------------------- |
 | `connected`   | `{ sessionId, nextPublisher }`, emitted when the WebSocket opens                       |
-| `config`      | Validated publisher audio configuration (`codec`: `"opus"` or `"pcm16le"`)             |
+| `config`      | Validated publisher audio configuration (`codec: "opus"`)                               |
 | `pcm`         | `{ sequence, timestampMs, samples, peak, payload, sequenceGap, codec }` for each frame |
 | `statechange` | `{ state, previousState }`                                                             |
 | `sequencegap` | `{ expectedSequence, receivedSequence }` when a frame is lost                          |
@@ -75,14 +78,14 @@ active and you want to join that live stream, pass its `sessionId` instead. Call
 | `error`       | `{ error }`                                                                            |
 | `close`       | `{ code, reason }` for a remote WebSocket close                                        |
 
-`payload` is the original frame payload (Opus packet or raw PCM), excluding its 16-byte protocol header. `samples` is interleaved
-stereo Float32 data normalized to `[-1, 1]`. The client transfers that Float32 buffer to its AudioWorklet after dispatching the
-event; copy the samples inside the event callback if they must be retained.
+`payload` is the original Opus packet, excluding its 16-byte protocol header. `samples` is the locally decoded, interleaved stereo
+Float32 data normalized to `[-1, 1]`. The client transfers that Float32 buffer to its AudioWorklet after dispatching the event;
+copy the samples inside the event callback if they must be retained.
 
 ### In-Browser Opus Decoding
 
-When the gateway publisher streams Opus (`codec: "opus"`), configure `opusDecoderFactory` using `opus-decoder` (or any compatible
-decoder):
+When the gateway publisher streams Opus (`codec: "opus"`), the default decoder uses `opus-decoder` (or supply an asynchronous
+`opusDecoderFactory` returning a compatible decoder adapter):
 
 ```js
 import { WebAudioClient, OpusDecoderAdapter } from "@ziplayer/client";
@@ -90,9 +93,9 @@ import { OpusDecoder } from "opus-decoder";
 
 const client = new WebAudioClient({
 	opusDecoderFactory: async () => {
-		const decoder = new OpusDecoder({ channels: 2, rate: 48000 });
+		const decoder = new OpusDecoder({ channels: 2, sampleRate: 48000 });
 		await decoder.ready;
-		return new OpusDecoderAdapter(decoder);
+		return new OpusDecoderAdapter({ decoder, channels: 2, sampleRate: 48000 });
 	},
 });
 ```

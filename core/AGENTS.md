@@ -176,13 +176,14 @@ The first event argument is the affected `Player`, which is useful when one mana
 - The canonical option definitions are `PlayerManagerOptions` and `PlayerOptions` in [`src/types/core.ts`](src/types/core.ts).
   Prefer those definitions over guessing option names or defaults.
 
-### Unified Browser and Discord Audio Output (Native Opus Passthrough)
+### Unified Browser and Discord Audio Output (Shared AudioResource and Volume)
 
-ZiPlayer streams directly to Discord Voice and WebAudio outputs through a single shared `@discordjs/voice` `AudioPlayer` with
-native Opus passthrough (0 FFmpeg child processes when tracks provide Opus). Both connections subscribe to the same player:
+ZiPlayer can send the same `AudioPlayer` output to Discord Voice and WebAudio subscribers. In the normal managed playback path,
+`PlaybackController` creates a Discord `AudioResource` with inline volume, and the `AudioPlayer` dispatches its resulting Opus
+packets to each ready subscriber:
 
 ```ts
-import { PlayerManager, WebAudioConnection, createOpusAudioResource } from "ziplayer";
+import { PlayerManager, WebAudioConnection } from "ziplayer";
 
 const manager = new PlayerManager({ autoCleanup: true });
 const player = await manager.create(guildId);
@@ -195,80 +196,36 @@ const voiceConnection = await player.connect(voiceChannel);
 const webConnection = new WebAudioConnection({ sessionId: player.id });
 const publisherSocket = await connectPublisherToYourGateway(player.id);
 webConnection.attachSocket(publisherSocket);
-webConnection.subscribe(player); // or await player.connect(webConnection);
+const webOutput = await player.connect(webConnection);
 
-// 3. Play Opus resource
-const resource = createOpusAudioResource(opusPacketStream);
-await player.play(resource);
-```
+// 3. Let ZiPlayer resolve the source Readable and create the inline-volume AudioResource
+await player.play(query, { requestedBy: userId });
 
-The pipeline fans out identical Opus packets every 20ms:
-
-- Discord Voice encrypts and transmits via Discord Voice protocol over UDP.
-- WebAudio packages Opus packets with Wire Format v1 (`ZI` magic, 16-byte header) over WebSocket to the application gateway.
-- Browser listeners with [`@ziplayer/client`](https://github.com/ZiProject/ZiPlayer/tree/main/client/README.md) decode Opus in
-  WebAssembly to Float32 PCM directly in an `AudioWorklet`.
-
-No server-side PCM transcoding is performed, eliminating server CPU load and bandwidth overhead.
-
-### Publishing to Multiple Outputs Concurrently
-
-Both Discord Voice and WebAudio connections can be attached and removed dynamically mid-playback:
-
-```ts
-// Attach WebAudio connection dynamically
-const webOutput = await player.connect(webConnection, {
-	id: "web-sink",
-	name: "Web Listeners",
-});
-
-// Inspect active outputs
-const outputs = await player.getAudioOutputs();
-
-// Disconnect only the web output without affecting Discord voice playback
-await webOutput.disconnect(); // or player.disconnectOutput("web-sink");
-```
-
-Outputs can be connected and disconnected mid-track. If no voice subscriber is present on Discord, WebSocket automatically acts as
-the pacing master so audio flows in real time.
-
-### Native Opus Passthrough & Unified `AudioPlayer` Subscribers
-
-For zero-transcode streaming without spawning FFmpeg child processes, ZiPlayer supports native Opus passthrough directly through
-the underlying `@discordjs/voice` `AudioPlayer`. In this architecture, a single `AudioResource` created with `StreamType.Opus` is
-consumed by the `AudioPlayer`, and both Discord Voice and WebSocket outputs subscribe as concurrent audio dispatch targets:
-
-```ts
-import { createOpusAudioResource, WebAudioConnection } from "ziplayer";
-
-// 1. Create a WebAudioConnection adapter and attach your WebSocket publisher socket
-const webConnection = new WebAudioConnection({
-	sessionId: player.id,
-});
-const publisherSocket = connectPublisherToGateway(player.id);
-webConnection.attachSocket(publisherSocket);
-
-// 2. Subscribe both Discord Voice and WebAudio to the player (or use player.connect(webConnection))
-voiceConnection.subscribe(player);
-webConnection.subscribe(player);
-
-// 3. Play native Opus packets directly with 0 FFmpeg processes
-const opusResource = createOpusAudioResource(opusPacketReadable);
-await player.play(opusResource);
+// Player volume is applied server-side to the shared resource before subscriber fan-out
+player.setVolume(65);
 ```
 
 #### Key Architecture Guarantees:
 
-- **0 FFmpeg Processes**: Sources delivering valid Opus packets (e.g. demuxed Ogg Opus, WebM Opus, or raw packets) use
-  `createOpusAudioResource()`. No FFmpeg process, audio decoder, or software resampler is spawned.
-- **Identical Opus Payloads**: `AudioPlayer._stepPrepare()` reads each 20 ms Opus packet once and distributes the exact same
-  payload to all playable subscribers (`voiceConnection` and `webConnection`) before Discord voice applies encryption and framing.
-- **Independent Non-blocking Fan-out**: `WebAudioConnection` implements the complete duck-typed `@discordjs/voice`
+- **One shared player/resource**: The source `Readable` is wrapped in an inline-volume `AudioResource` and started with
+  `AudioPlayer.play(resource)`. Pause, resume, stop, skip, and `Player.setVolume()` remain player-level controls.
+- **Server-side volume before fan-out**: `AudioPlayer._stepPrepare()` distributes the post-volume Opus packets to all playable
+  subscribers. Discord and browser outputs therefore hear the same server-controlled volume.
+- **No FFmpeg required for inline Opus volume**: The inline volume path uses the installed Opus codec implementation.
+- **Independent non-blocking fan-out**: `WebAudioConnection` implements the complete duck-typed `@discordjs/voice`
   `VoiceConnection` contract (`state.status === "ready"`, `prepareAudioPacket`, `dispatchAudio`, `setSpeaking`,
   `onSubscriptionRemoved`). Frame queuing to WebSocket sockets is fully non-blocking; slow or stalled web clients drop excess
   packets (`drop-newest` policy) without stalling Discord Voice packet dispatch or blocking the 20 ms audio scheduler.
-- **Dynamic Attachment**: `webConnection` can be subscribed or unsubscribed mid-track without interrupting ongoing Discord Voice
-  playback.
+- **Distinct wire outputs**: Discord Voice encrypts/frames and sends through its UDP transport. `WebAudioConnection` wraps the
+  same Opus payload in the ZI v1 header and sends it to the gateway; the browser decodes Opus for AudioWorklet playback.
+  The gateway does not adjust player volume.
+- **Opus-only audio contract**: Sources and custom outputs use encoded audio; processing emits Opus in an Ogg container.
+- **External resource caveat**: An `AudioResource` created outside ZiPlayer (for example with `createOpusAudioResource()`) may not
+  have an inline volume transformer. Do not assume `Player.setVolume()` can modify it unless it was created with inline volume
+  enabled.
+
+`WebAudioConnection` can be attached or removed during playback without interrupting the Discord output. When no Discord voice
+subscriber is available, the WebSocket connection can pace the shared stream.
 
 ## Common Mistakes to Avoid
 

@@ -1,22 +1,8 @@
 export declare const WEB_AUDIO_PROTOCOL_VERSION: 1;
 export declare const WEB_AUDIO_SAMPLE_RATE_HZ: 48000;
 export declare const WEB_AUDIO_CHANNELS: 2;
-export declare const WEB_AUDIO_SAMPLE_BYTES: 2;
 export declare const WEB_AUDIO_FRAME_HEADER_BYTES: 16;
 export declare const WEB_AUDIO_MAX_MESSAGE_BYTES: 1048576;
-
-export interface WebAudioPcmConfig {
-	v: 1;
-	type: "audio:config";
-	sessionId: string;
-	protocolVersion?: number;
-	codec?: "pcm";
-	sampleRateHz: 48000;
-	channels: 2;
-	sampleFormat: "s16";
-	endianness: "little";
-	channelLayout: "interleaved";
-}
 
 export interface WebAudioOpusConfig {
 	v: 1;
@@ -28,17 +14,7 @@ export interface WebAudioOpusConfig {
 	channels?: number;
 }
 
-export type WebAudioConfig = WebAudioPcmConfig | WebAudioOpusConfig;
-
-export interface DecodedPcmFrame {
-	sequence: number;
-	timestampMs: number;
-	timestampUs?: bigint;
-	samples: Float32Array;
-	peak: number;
-	payload: Uint8Array;
-	sequenceGap: boolean;
-}
+export type WebAudioConfig = WebAudioOpusConfig;
 
 export interface DecodedOpusFrame {
 	sequence: number;
@@ -51,12 +27,18 @@ export interface DecodedOpusFrame {
 	sequenceGap: boolean;
 }
 
+export interface DecodedPcmFrame {
+	sequence: number;
+	timestampMs: number;
+	timestampUs?: bigint;
+	samples: Float32Array;
+	peak: number;
+	payload: Uint8Array;
+	sequenceGap: boolean;
+	codec: "opus";
+}
+
 export declare function parseAudioConfig(message: string | unknown, expectedSessionId?: string): WebAudioConfig;
-export declare function decodePcmFrame(
-	data: ArrayBuffer,
-	config: WebAudioConfig,
-	expectedSequence?: number | null,
-): DecodedPcmFrame;
 export declare function decodeOpusFrame(
 	data: ArrayBuffer,
 	config: WebAudioConfig,
@@ -76,7 +58,7 @@ export declare class OpusDecoderAdapter {
 export interface WebAudioClientOptions {
 	audioContextFactory?: (options: AudioContextOptions) => AudioContext;
 	webSocketFactory?: (url: URL) => WebSocket;
-	opusDecoderFactory?: (options: { sampleRate: number; channels: number }) => OpusDecoderAdapter;
+	opusDecoderFactory?: (options: { sampleRate: number; channels: number }) => OpusDecoderAdapter | Promise<OpusDecoderAdapter>;
 	startupBufferMs?: number;
 	maxBufferSeconds?: number;
 	connectTimeoutMs?: number;

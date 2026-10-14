@@ -253,7 +253,7 @@ export class StreamController {
 			}
 			return stream;
 		}
-		throw new Error("StreamInfo does not contain a readable stream, url, or recreate factory");
+		throw new Error("StreamInfo does not contain a readable stream, url, or recreation callback");
 	}
 
 	private async replace(playerId: string, state: StreamState, info: StreamInfo, session: PlaybackSession): Promise<ActiveStream> {

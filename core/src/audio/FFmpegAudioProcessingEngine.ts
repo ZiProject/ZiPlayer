@@ -5,7 +5,6 @@ import type {
 	AudioProcessingContext,
 	AudioProcessingEngine,
 	AudioProcessingOptions,
-	AudioProcessingOutputFormat,
 	AudioProcessingPipeline,
 } from "./AudioProcessingEngine";
 import { filterGraphContainsLoudnorm } from "./filterAllowlist";
@@ -86,7 +85,7 @@ export function resolveAudioProcessingOptions(...layers: AudioProcessingOptions[
 	const resolved = {
 		enabled: true,
 		inputFormat: "encoded",
-		outputFormat: "pcm16le",
+		outputFormat: "encoded",
 		sampleRate: 48_000,
 		channels: 2,
 		maxBufferBytes: DEFAULT_MAX_BUFFER_BYTES,
@@ -94,14 +93,10 @@ export function resolveAudioProcessingOptions(...layers: AudioProcessingOptions[
 	} as ResolvedOptions;
 
 	if (resolved.inputFormat !== "encoded") {
-		throw new TypeError(
-			`Audio processing inputFormat=${String(resolved.inputFormat)} is not supported on the public API; use "encoded" and declare PCM per stream via AudioProcessingContext.inputFormat.`,
-		);
+		throw new TypeError(`Unsupported audio processing inputFormat: ${String(resolved.inputFormat)} (expected "encoded")`);
 	}
-	if (resolved.outputFormat !== "encoded" && resolved.outputFormat !== "pcm16le" && resolved.outputFormat !== "pcmFloat32") {
-		throw new TypeError(
-			`Invalid audio processing outputFormat: ${String(resolved.outputFormat)} (expected "pcm16le", "pcmFloat32", or "encoded")`,
-		);
+	if (resolved.outputFormat !== "encoded") {
+		throw new TypeError(`Unsupported audio processing outputFormat: ${String(resolved.outputFormat)} (expected "encoded")`);
 	}
 	if (!isFiniteNumber(resolved.sampleRate) || !isAllowedSampleRate(resolved.sampleRate)) {
 		throw new TypeError(`Audio processing sampleRate must be one of: ${ALLOWED_SAMPLE_RATES.join(", ")}`);
@@ -188,32 +183,7 @@ export function resolveAudioProcessingOptions(...layers: AudioProcessingOptions[
 	return resolved;
 }
 
-function validateInputFormat(format: AudioFrameFormat | undefined): void {
-	if (!format || format.kind !== "pcm") return;
-	if (format.sampleFormat !== "s16" && format.sampleFormat !== "f32") {
-		throw new TypeError(`Unsupported PCM input sample format: ${String(format.sampleFormat)}`);
-	}
-	if (format.endianness !== "little") throw new TypeError("PCM input must be little-endian");
-	if (format.channelLayout !== "interleaved") throw new TypeError("PCM input must be interleaved");
-	if (!isFiniteNumber(format.sampleRateHz) || format.sampleRateHz <= 0) {
-		throw new TypeError("PCM input sampleRateHz must be a positive finite number");
-	}
-	if (!isFiniteNumber(format.channels) || format.channels <= 0 || !Number.isInteger(format.channels)) {
-		throw new TypeError("PCM input channels must be a positive integer");
-	}
-}
-
-function buildInputArgs(options: ResolvedOptions, inputFormat: AudioFrameFormat | undefined): string[] {
-	if (inputFormat?.kind === "pcm") {
-		return [
-			"-f",
-			inputFormat.sampleFormat === "f32" ? "f32le" : "s16le",
-			"-ar",
-			String(inputFormat.sampleRateHz),
-			"-ac",
-			String(inputFormat.channels),
-		];
-	}
+function buildInputArgs(options: ResolvedOptions): string[] {
 	const formats = options.ffmpegInputFormats === undefined ? DEFAULT_FFMPEG_INPUT_FORMATS : options.ffmpegInputFormats;
 	return formats && formats.length > 0 ? ["-format_whitelist", formats.join(",")] : [];
 }
@@ -242,43 +212,29 @@ export function buildFilterChain(options: ResolvedOptions, context: AudioProcess
 }
 
 export function describeOutputFormat(options: ResolvedOptions): AudioFrameFormat {
-	if (options.outputFormat === "encoded") {
-		return { kind: "encoded", codec: "opus", container: "ogg" };
-	}
-	const bytesPerSample = options.outputFormat === "pcmFloat32" ? 4 : 2;
-	return {
-		kind: "pcm",
-		sampleFormat: bytesPerSample === 4 ? "f32" : "s16",
-		endianness: "little",
-		sampleRateHz: options.resampleRate ?? options.sampleRate,
-		channels: options.channels,
-		channelLayout: "interleaved",
-		chunkAlignmentBytes: options.channels * bytesPerSample,
-	};
+	void options;
+	return { kind: "encoded", codec: "opus", container: "ogg" };
 }
 
 function buildOutputArgs(options: ResolvedOptions): string[] {
 	const rate = String(options.resampleRate ?? options.sampleRate);
 	const channels = String(options.channels);
-	if (options.outputFormat === "encoded") {
-		const bitrate = options.encodedBitrate ?? "128k";
-		return [
-			"-ar",
-			rate,
-			"-ac",
-			channels,
-			"-c:a",
-			"libopus",
-			"-application",
-			options.encodedApplication ?? "audio",
-			"-b:a",
-			String(bitrate),
-			"-f",
-			"ogg",
-			"pipe:1",
-		];
-	}
-	return ["-f", options.outputFormat === "pcmFloat32" ? "f32le" : "s16le", "-ar", rate, "-ac", channels, "pipe:1"];
+	const bitrate = options.encodedBitrate ?? "128k";
+	return [
+		"-ar",
+		rate,
+		"-ac",
+		channels,
+		"-c:a",
+		"libopus",
+		"-application",
+		options.encodedApplication ?? "audio",
+		"-b:a",
+		String(bitrate),
+		"-f",
+		"ogg",
+		"pipe:1",
+	];
 }
 
 function waitForDrain(stream: NodeJS.WritableStream): Promise<void> {
@@ -311,7 +267,6 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 		private readonly context: AudioProcessingContext = {},
 		private readonly acquireProcessSlot: (signal?: AbortSignal) => Promise<() => void> = (signal) => acquireFfmpegSlot(signal),
 	) {
-		validateInputFormat(context.inputFormat);
 		if (options.normalize && filterGraphContainsLoudnorm(context.filterString)) {
 			throw new TypeError("audioProcessing.normalize cannot be combined with a loudnorm player filter");
 		}
@@ -330,11 +285,9 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 		const effectiveSignal = signal ?? this.context.signal;
 		const options = this.options;
 		const context = this.context;
-		const alignment = this.outputFormat.kind === "pcm" ? (this.outputFormat.chunkAlignmentBytes ?? 4) : 1;
-		const maxChunk = Math.max(alignment, Math.floor(options.maxBufferBytes / alignment) * alignment);
+		const maxChunk = Math.max(1, Math.floor(options.maxBufferBytes));
 		const active = this.active;
 		const debug = this.context.debug;
-		const inputFormat = this.context.inputFormat;
 		const stallTimeoutMs = options.stallTimeoutMs === null ? null : (options.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS);
 		const maxInputBytes = options.maxInputBytes === null ? null : (options.maxInputBytes ?? DEFAULT_MAX_INPUT_BYTES);
 		const maxDurationMs = options.maxDurationMs === null ? null : options.maxDurationMs;
@@ -381,7 +334,7 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 					"-protocol_whitelist",
 					PIPE_PROTOCOLS,
 				];
-				args.push(...buildInputArgs(options, inputFormat));
+				args.push(...buildInputArgs(options));
 				args.push("-i", "pipe:0", "-vn");
 				if (typeof context.seekMs === "number" && context.seekMs > 0) {
 					args.push("-ss", (context.seekMs / 1000).toFixed(3));
@@ -506,7 +459,6 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 				`${prefix}${detail ? `: ${sanitizeFfmpegLog(detail)}` : ""}`;
 
 			try {
-				let carry: Buffer = Buffer.alloc(0);
 				for await (const raw of stdout) {
 					if (aborted || effectiveSignal?.aborted) return;
 					lastActivity = Date.now();
@@ -514,15 +466,8 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 					bytesOut += read.length;
 					waitingForConsumer = true;
 					try {
-						if (options.outputFormat === "encoded") {
-							yield new Uint8Array(read.buffer, read.byteOffset, read.byteLength);
-							continue;
-						}
-						const buffer = carry.length ? Buffer.concat([carry, read]) : read;
-						const usable = buffer.length - (buffer.length % alignment);
-						carry = usable < buffer.length ? Buffer.from(buffer.subarray(usable)) : Buffer.alloc(0);
-						for (let offset = 0; offset < usable; offset += maxChunk) {
-							yield new Uint8Array(buffer.buffer, buffer.byteOffset + offset, Math.min(maxChunk, usable - offset));
+						for (let offset = 0; offset < read.length; offset += maxChunk) {
+							yield new Uint8Array(read.buffer, read.byteOffset + offset, Math.min(maxChunk, read.length - offset));
 						}
 					} finally {
 						waitingForConsumer = false;
@@ -581,7 +526,7 @@ export class FFmpegAudioProcessingEngine implements AudioProcessingEngine {
 	private readonly processGate: FfmpegProcessGate;
 
 	public constructor(defaults: AudioProcessingOptions = {}) {
-		resolveAudioProcessingOptions({ enabled: true, outputFormat: "pcm16le", inputFormat: "encoded" }, defaults);
+		resolveAudioProcessingOptions({ enabled: true, outputFormat: "encoded", inputFormat: "encoded" }, defaults);
 		this.defaults = { ...defaults };
 		this.processGate = new FfmpegProcessGate(defaults.maxConcurrentProcesses ?? defaultFfmpegConcurrency());
 	}
@@ -607,19 +552,4 @@ export class FFmpegAudioProcessingEngine implements AudioProcessingEngine {
 		};
 		return new FFmpegAudioProcessingPipeline(resolved, context, acquireProcessSlot);
 	}
-}
-
-export function selectProcessOutputFormat(
-	requested: AudioProcessingOutputFormat | undefined,
-	capabilities: { acceptedProcessOutputs?: readonly AudioProcessingOutputFormat[]; preferredProcessOutput?: AudioProcessingOutputFormat },
-): AudioProcessingOutputFormat {
-	const accepted = capabilities.acceptedProcessOutputs ?? ["pcm16le", "pcmFloat32", "encoded"];
-	const preferred = capabilities.preferredProcessOutput ?? "pcm16le";
-	const chosen = requested ?? preferred;
-	if (!accepted.includes(chosen)) {
-		throw new TypeError(
-			`Output backend does not accept audioProcessing.outputFormat=${chosen} (accepted: ${accepted.join(", ")})`,
-		);
-	}
-	return chosen;
 }

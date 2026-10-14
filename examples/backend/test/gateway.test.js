@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { WebSocket } = require("ws");
-const { encodeWebAudioFrame, encodeWebAudioOpusFrame } = require("ziplayer");
+const { encodeWebAudioOpusFrame } = require("ziplayer");
 const { createWebAudioGateway } = require("../gateway");
 const { createPlayerIdleCleanup } = require("../index");
 
@@ -60,7 +60,10 @@ test("a next-track listener receives the publisher config and first PCM frame", 
 		const origin = `http://127.0.0.1:${address.port}`;
 		const page = await fetch(origin);
 		assert.equal(page.status, 200);
-		assert.match(await page.text(), /src="\/client\.js"/);
+		const pageHtml = await page.text();
+		assert.match(pageHtml, /src="\/client\.js"/);
+		assert.match(pageHtml, /"opus-decoder": "\/vendor\/opus-decoder\/index\.js"/);
+		assert.match(pageHtml, /"simple-yenc": "\/vendor\/simple-yenc\/dist\/esm\.js"/);
 
 		const appScript = await fetch(`${origin}/client.js`);
 		assert.equal(appScript.status, 200);
@@ -69,6 +72,20 @@ test("a next-track listener receives the publisher config and first PCM frame", 
 		const audioClient = await fetch(`${origin}/web-audio-client.js`);
 		assert.equal(audioClient.status, 200);
 		assert.match(await audioClient.text(), /class WebAudioClient/);
+
+		for (const modulePath of [
+			"/vendor/opus-decoder/index.js",
+			"/vendor/opus-decoder/src/OpusDecoder.js",
+			"/vendor/@wasm-audio-decoders/common/index.js",
+			"/vendor/@wasm-audio-decoders/common/src/WASMAudioDecoderCommon.js",
+			"/vendor/@eshaz/web-worker/browser.js",
+			"/vendor/simple-yenc/dist/esm.js",
+		]) {
+			const module = await fetch(`${origin}${modulePath}`);
+			assert.equal(module.status, 200, `Expected browser dependency ${modulePath} to be served`);
+			assert.match(module.headers.get("content-type"), /javascript/);
+		}
+		assert.equal((await fetch(`${origin}/vendor/opus-decoder/../../gateway.js`)).status, 404);
 
 		listener = new WebSocket(`${gatewayUrl}/listen-next`);
 		await waitForOpen(listener);
@@ -83,11 +100,9 @@ test("a next-track listener receives the publisher config and first PCM frame", 
 				type: "audio:config",
 				sessionId: "gateway-test-session",
 				protocolVersion: 1,
+				codec: "opus",
 				sampleRateHz: 48_000,
 				channels: 2,
-				sampleFormat: "s16",
-				endianness: "little",
-				channelLayout: "interleaved",
 			}),
 		);
 		const config = await configMessage;
@@ -95,10 +110,10 @@ test("a next-track listener receives the publisher config and first PCM frame", 
 		assert.equal(JSON.parse(config.data.toString()).type, "audio:config");
 
 		const frameMessage = waitForMessage(listener);
-		publisher.send(encodeWebAudioFrame(Buffer.alloc(3840), 0, 0), { binary: true });
+		publisher.send(encodeWebAudioOpusFrame(Buffer.from([0xf8, 0xff, 0xfe]), 0, 0), { binary: true });
 		const frame = await frameMessage;
 		assert.equal(frame.isBinary, true);
-		assert.deepEqual(Buffer.from(frame.data), Buffer.from(encodeWebAudioFrame(Buffer.alloc(3840), 0, 0)));
+		assert.deepEqual(Buffer.from(frame.data), encodeWebAudioOpusFrame(Buffer.from([0xf8, 0xff, 0xfe]), 0, 0));
 
 		const publisherClosed = new Promise((resolve) => publisher.once("close", resolve));
 		publisher.close();
@@ -113,11 +128,9 @@ test("a next-track listener receives the publisher config and first PCM frame", 
 				type: "audio:config",
 				sessionId: "gateway-test-session",
 				protocolVersion: 1,
+				codec: "opus",
 				sampleRateHz: 48_000,
 				channels: 2,
-				sampleFormat: "s16",
-				endianness: "little",
-				channelLayout: "interleaved",
 			}),
 		);
 		const replacementConfig = await replacementConfigMessage;
@@ -125,10 +138,13 @@ test("a next-track listener receives the publisher config and first PCM frame", 
 		assert.equal(JSON.parse(replacementConfig.data.toString()).sessionId, "gateway-test-session");
 
 		const replacementFrameMessage = waitForMessage(listener);
-		replacementPublisher.send(encodeWebAudioFrame(Buffer.alloc(3840, 1), 0, 0), { binary: true });
+		replacementPublisher.send(encodeWebAudioOpusFrame(Buffer.from([0xf8, 0xff, 0xfe, 1]), 0, 0), { binary: true });
 		const replacementFrame = await replacementFrameMessage;
 		assert.equal(replacementFrame.isBinary, true);
-		assert.deepEqual(Buffer.from(replacementFrame.data), Buffer.from(encodeWebAudioFrame(Buffer.alloc(3840, 1), 0, 0)));
+		assert.deepEqual(
+			Buffer.from(replacementFrame.data),
+			encodeWebAudioOpusFrame(Buffer.from([0xf8, 0xff, 0xfe, 1]), 0, 0),
+		);
 	} finally {
 		listener?.close();
 		publisher?.close();
@@ -152,11 +168,9 @@ test("a session-scoped next listener joins an already active publisher", async (
 				type: "audio:config",
 				sessionId: "active-session",
 				protocolVersion: 1,
+				codec: "opus",
 				sampleRateHz: 48_000,
 				channels: 2,
-				sampleFormat: "s16",
-				endianness: "little",
-				channelLayout: "interleaved",
 			}),
 		);
 
@@ -168,10 +182,10 @@ test("a session-scoped next listener joins an already active publisher", async (
 		assert.equal(JSON.parse(config.data.toString()).sessionId, "active-session");
 
 		const frameMessage = waitForMessage(listener);
-		publisher.send(encodeWebAudioFrame(Buffer.alloc(3840), 0, 0), { binary: true });
+		publisher.send(encodeWebAudioOpusFrame(Buffer.from([0xf8, 0xff, 0xfe]), 0, 0), { binary: true });
 		const frame = await frameMessage;
 		assert.equal(frame.isBinary, true);
-		assert.deepEqual(Buffer.from(frame.data), Buffer.from(encodeWebAudioFrame(Buffer.alloc(3840), 0, 0)));
+		assert.deepEqual(Buffer.from(frame.data), encodeWebAudioOpusFrame(Buffer.from([0xf8, 0xff, 0xfe]), 0, 0));
 	} finally {
 		listener?.close();
 		publisher?.close();
@@ -201,11 +215,9 @@ test("session-scoped next-listener routing keeps concurrent publishers isolated"
 				type: "audio:config",
 				sessionId: "alpha-session",
 				protocolVersion: 1,
+				codec: "opus",
 				sampleRateHz: 48_000,
 				channels: 2,
-				sampleFormat: "s16",
-				endianness: "little",
-				channelLayout: "interleaved",
 			}),
 		);
 		const alphaConfig = await alphaConfigMessage;
@@ -220,11 +232,9 @@ test("session-scoped next-listener routing keeps concurrent publishers isolated"
 				type: "audio:config",
 				sessionId: "beta-session",
 				protocolVersion: 1,
+				codec: "opus",
 				sampleRateHz: 48_000,
 				channels: 2,
-				sampleFormat: "s16",
-				endianness: "little",
-				channelLayout: "interleaved",
 			}),
 		);
 		const betaConfig = await betaConfigMessage;
@@ -395,8 +405,16 @@ test("playback controls are routed to the requested player session without a dem
 			sessionId: "second-player",
 		});
 
+		const volume = await sendControl({ sessionId: "single-player", action: "volume", volume: 65 });
+		assert.equal(volume.status, 200);
+		assert.deepEqual(controlCalls[2], {
+			action: "volume",
+			body: { sessionId: "single-player", action: "volume", volume: 65 },
+			sessionId: "single-player",
+		});
+
 		assert.equal((await sendControl({ sessionId: "single-player", action: "volume", volume: 201 })).status, 400);
-		assert.equal(controlCalls.length, 2);
+		assert.equal(controlCalls.length, 3);
 	} finally {
 		await gateway.close();
 	}

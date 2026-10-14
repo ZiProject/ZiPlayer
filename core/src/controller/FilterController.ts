@@ -253,9 +253,8 @@ export class FilterEngine {
 			if (ffmpegSeekSeconds !== null) args.push("-ss", ffmpegSeekSeconds);
 		}
 		if (filterString) args.push("-af", filterString);
-		const inputType = hasSeek ? StreamType.Raw : StreamType.OggOpus;
-		if (hasSeek) args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
-		else args.push("-c:a", "libopus", "-f", "opus", "-ar", "48000", "-ac", "2", "pipe:1");
+		const inputType = StreamType.OggOpus;
+		args.push("-c:a", "libopus", "-f", "opus", "-ar", "48000", "-ac", "2", "pipe:1");
 		const controller = new AbortController();
 		this.ffmpegAbortController = controller;
 		const proc = spawn(executable, args, { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });

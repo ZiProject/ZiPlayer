@@ -1,4 +1,4 @@
-import { WEB_AUDIO_CHANNELS, WEB_AUDIO_SAMPLE_RATE_HZ, WEB_AUDIO_SAMPLE_BYTES, WebAudioClient } from "/web-audio-client.js";
+import { WEB_AUDIO_CHANNELS, WEB_AUDIO_SAMPLE_RATE_HZ, WebAudioClient } from "/web-audio-client.js";
 
 const connectForm = document.querySelector("#connect-form");
 const gatewayUrlInput = document.querySelector("#gateway-url");
@@ -45,7 +45,8 @@ const outputsListElement = document.querySelector("#outputs-list");
 const outputCountElement = document.querySelector("#output-count");
 const addOutputButton = document.querySelector("#add-output-button");
 const outputStatusElement = document.querySelector("#output-status");
-const BYTES_PER_SECOND = WEB_AUDIO_SAMPLE_RATE_HZ * WEB_AUDIO_CHANNELS * WEB_AUDIO_SAMPLE_BYTES;
+const PCM_SAMPLE_BYTES = 2;
+const BYTES_PER_SECOND = WEB_AUDIO_SAMPLE_RATE_HZ * WEB_AUDIO_CHANNELS * PCM_SAMPLE_BYTES;
 const MAX_RECORDING_BYTES = BYTES_PER_SECOND * 60 * 10;
 
 gatewayUrlInput.value = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
@@ -70,9 +71,9 @@ let listeningSessionId = null;
 let recordingActive = false;
 let recordedChunks = [];
 let recordedBytes = 0;
-let receivedPcmFrames = 0;
-let receivedPcmBytes = 0;
-let pcmWatchdog = null;
+let receivedAudioFrames = 0;
+let receivedAudioBytes = 0;
+let audioWatchdog = null;
 let currentActiveFilters = new Set();
 let playerStateSource = null;
 let subscribedPlayerStateSession = null;
@@ -350,12 +351,12 @@ function formatDuration(seconds) {
 	return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
 }
 
-function armPcmWatchdog() {
-	clearTimeout(pcmWatchdog);
-	pcmWatchdog = setTimeout(() => {
+function armAudioWatchdog() {
+	clearTimeout(audioWatchdog);
+	audioWatchdog = setTimeout(() => {
 		if (!audioClient.config) return;
 		const message =
-			receivedPcmFrames === 0 ?
+			receivedAudioFrames === 0 ?
 				"Connected, but no audio frames arrived. Check the server terminal for stream/decode errors."
 			:	"No audio received in the last 5s. The source may have stalled or ended.";
 		setStatus(message);
@@ -377,8 +378,8 @@ function createWavHeader(dataBytes) {
 	view.setUint16(22, WEB_AUDIO_CHANNELS, true);
 	view.setUint32(24, WEB_AUDIO_SAMPLE_RATE_HZ, true);
 	view.setUint32(28, BYTES_PER_SECOND, true);
-	view.setUint16(32, WEB_AUDIO_CHANNELS * WEB_AUDIO_SAMPLE_BYTES, true);
-	view.setUint16(34, WEB_AUDIO_SAMPLE_BYTES * 8, true);
+	view.setUint16(32, WEB_AUDIO_CHANNELS * PCM_SAMPLE_BYTES, true);
+	view.setUint16(34, PCM_SAMPLE_BYTES * 8, true);
 	writeText(36, "data");
 	view.setUint32(40, dataBytes, true);
 	return header;
@@ -400,10 +401,10 @@ function downloadWav() {
 }
 
 function onPcm({ detail }) {
-	receivedPcmFrames++;
+	receivedAudioFrames++;
 	const sampleBytes = detail.samples ? detail.samples.length * 2 : (detail.payload?.byteLength ?? 0);
-	receivedPcmBytes += sampleBytes;
-	armPcmWatchdog();
+	receivedAudioBytes += sampleBytes;
+	armAudioWatchdog();
 	if (recordingActive) {
 		let pcmChunk;
 		if (detail.samples) {
@@ -434,7 +435,7 @@ function onPcm({ detail }) {
 	const formatLabel = detail.codec === "opus" ? "Opus (WASM)" : "PCM";
 	const signalStatus = detail.peak < 0.0001 ? "Audio is silent" : `${formatLabel} playing`;
 	setStatus(
-		`${signalStatus} · ${receivedPcmFrames} frames · ${(receivedPcmBytes / BYTES_PER_SECOND).toFixed(1)}s · AudioContext ${audioClient.state}`,
+		`${signalStatus} · ${receivedAudioFrames} decoded frames · ${(receivedAudioBytes / BYTES_PER_SECOND).toFixed(1)}s · AudioContext ${audioClient.state}`,
 	);
 }
 
@@ -446,10 +447,10 @@ audioClient.addEventListener("statechange", ({ detail }) => {
 	if (detail.state === "disconnected") {
 		followsPublisher = false;
 		listeningSessionId = null;
-		clearTimeout(pcmWatchdog);
-		pcmWatchdog = null;
-		receivedPcmFrames = 0;
-		receivedPcmBytes = 0;
+		clearTimeout(audioWatchdog);
+		audioWatchdog = null;
+		receivedAudioFrames = 0;
+		receivedAudioBytes = 0;
 		connectButton.disabled = false;
 		disconnectButton.disabled = true;
 		setStatus("Disconnected");
@@ -463,17 +464,18 @@ audioClient.addEventListener("connected", ({ detail }) => {
 
 audioClient.addEventListener("config", ({ detail }) => {
 	sessionIdInput.value = detail.sessionId;
-	receivedPcmFrames = 0;
-	receivedPcmBytes = 0;
-	clearTimeout(pcmWatchdog);
-	armPcmWatchdog();
-	setStatus(`Connected to ${detail.sessionId}; waiting for PCM frames`);
+	receivedAudioFrames = 0;
+	receivedAudioBytes = 0;
+	clearTimeout(audioWatchdog);
+	armAudioWatchdog();
+	const mediaFormat = detail.codec === "opus" ? "Opus packets" : "PCM frames";
+	setStatus(`Connected to ${detail.sessionId}; waiting for ${mediaFormat}`);
 	updateRecordingControls();
 });
 
 audioClient.addEventListener("pcm", onPcm);
 audioClient.addEventListener("sequencegap", ({ detail }) => {
-	console.warn(`PCM sequence gap: expected ${detail.expectedSequence}, received ${detail.receivedSequence}`);
+	console.warn(`Audio sequence gap: expected ${detail.expectedSequence}, received ${detail.receivedSequence}`);
 });
 audioClient.addEventListener("error", ({ detail }) => {
 	console.error("Web audio client error:", detail.error);
@@ -520,7 +522,7 @@ recordButton.addEventListener("click", () => {
 	if (recordingActive) {
 		recordingActive = false;
 		if (!downloadWav()) {
-			updateRecordingControls("No PCM audio has been captured yet.");
+			updateRecordingControls("No decoded audio has been captured yet.");
 			return;
 		}
 		recordedChunks = [];

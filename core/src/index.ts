@@ -33,45 +33,28 @@ export type { AudioOutputInfo, AudioOutputRegistrationOptions } from "./output/M
 export {
 	DiscordVoiceOutputBackend,
 	audioFrameFormatFromDiscordStreamType,
-	convertFloat32PcmToS16Le,
-	resolveOutputStreamType,
 } from "./output/DiscordVoiceOutputBackend";
 export {
-	WebSocketAudioOutputBackend,
-	WebAudioOutputBackend,
-	WebSocketOutputBackend,
-	WebAudioOutputHandle,
-	WebSocketAudioOutputHandleImpl,
-	WEB_AUDIO_PROTOCOL_VERSION,
-	WEB_AUDIO_SAMPLE_RATE_HZ,
-	WEB_AUDIO_CHANNELS,
-	WEB_AUDIO_SAMPLE_BYTES,
-	WEB_AUDIO_MAX_MESSAGE_BYTES,
-	webAudioFormatFromPcm,
-	validateWebAudioOutputFormat,
-	encodeWebAudioControlMessage,
-	decodeWebAudioControlMessage,
-	encodeWebAudioFrame,
-	decodeWebAudioFrame,
-	defaultWebAudioSocketFactory,
-} from "./output/WebSocketAudioOutputBackend";
-export {
 	WebAudioConnection,
-	WebAudioConnectionBackend,
 	encodeWebAudioOpusFrame,
 	decodeWebAudioOpusFrame,
 	WEB_AUDIO_MAGIC_0,
 	WEB_AUDIO_MAGIC_1,
 	WEB_AUDIO_PROTOCOL_VERSION_V1,
-	WEB_AUDIO_FLAG_CODEC_PCM,
 	WEB_AUDIO_FLAG_CODEC_OPUS,
 	WEB_AUDIO_OPUS_SAMPLE_RATE_HZ,
 	WEB_AUDIO_OPUS_CHANNELS,
 	WEB_AUDIO_OPUS_CODEC_ID,
+	WEB_AUDIO_MAX_MESSAGE_BYTES,
 	DEFAULT_MAX_BUFFERED_BYTES,
 	DEFAULT_MAX_QUEUED_PACKETS,
 } from "./output/WebAudioConnection";
-export type { WebAudioConnectionOptions, WebAudioConnectionStats, WebAudioConnectionState } from "./output/WebAudioConnection";
+export type {
+	WebAudioConnectionOptions,
+	WebAudioConnectionStats,
+	WebAudioConnectionState,
+	WebSocketLike,
+} from "./output/WebAudioConnection";
 export {
 	createOpusAudioResource,
 	demuxOggOpusToPackets,
@@ -85,22 +68,12 @@ export type {
 	AudioFrameFormat,
 	AudioOutputInput,
 	AudioOutputCapabilities,
-	AudioOutputBackendFactory,
-	AudioOutputBackendFactoryContext,
 	AudioOutputContext,
 	AudioOutputEvent,
 	AudioOutputHandle,
 	AudioOutputState,
 	AudioOutputBackend,
 } from "./output/AudioOutputBackend";
-export type {
-	WebSocketLike,
-	WebSocketAudioControlMessage,
-	WebSocketAudioBackendContext,
-	WebSocketAudioOutputBackendOptions,
-	WebSocketAudioOutputHandleContract,
-	WebSocketAudioSessionResource,
-} from "./output/WebSocketAudioOutputBackend";
 export { AudioOutputUnsupportedOperationError } from "./output/AudioOutputBackend";
 export { TrackLoader } from "./structures/TrackLoader";
 export { PlaybackController } from "./controller/PlaybackController";

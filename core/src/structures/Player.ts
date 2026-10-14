@@ -57,8 +57,6 @@ const WEB_AUDIO_SUBSCRIPTION_CAPABILITIES: AudioOutputCapabilities = {
 	volume: "unsupported",
 	backpressure: "bounded",
 	maxBufferedBytes: 256 * 1024,
-	acceptedProcessOutputs: ["encoded"],
-	preferredProcessOutput: "encoded",
 };
 
 function isAudioOutputBackend(value: unknown): value is AudioOutputBackend<any> {

@@ -7,11 +7,9 @@ const {
 	isBlockedIpAddress,
 	parseMediaUrl,
 	resolveFfmpegExecutable,
-	resolveOutputStreamType,
 	resolveAudioProcessingOptions,
 	getFfmpegProcessStats,
 } = require("../core/dist");
-const { StreamType } = require("@discordjs/voice");
 
 test("URL safety distinguishes domain names from IP literals and blocks private address ranges", () => {
 	assert.equal(isBlockedIpAddress("example.com"), false);
@@ -76,10 +74,4 @@ test("FFmpeg cannot bypass redirect-safe URL input using direct URL mode", () =>
 		() => resolveAudioProcessingOptions({ allowFfmpegUrlInput: true }),
 		/disabled.*redirect-by-redirect/i,
 	);
-});
-
-test("encoded DSP output selects Ogg/Opus container metadata", () => {
-	assert.equal(resolveOutputStreamType({ enabled: true, outputFormat: "encoded" }, StreamType.Opus), StreamType.OggOpus);
-	assert.equal(resolveOutputStreamType({ enabled: true, outputFormat: "pcm16le" }, StreamType.Opus), StreamType.Raw);
-	assert.equal(resolveOutputStreamType({ enabled: false, outputFormat: "encoded" }, StreamType.WebmOpus), StreamType.WebmOpus);
 });

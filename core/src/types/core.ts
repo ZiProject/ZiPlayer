@@ -5,7 +5,6 @@ import type { AudioFilter } from "./filter";
 import type { SourcePluginLike } from "./plugin";
 import type { AudioResource, StreamType } from "@discordjs/voice";
 import type { PlayerDebugLevel } from "./debug";
-import type { AudioOutputBackendFactory } from "../output/AudioOutputBackend";
 import type { AudioProcessingOptions } from "../audio/AudioProcessingEngine";
 
 export enum PlaybackMode {
@@ -104,6 +103,9 @@ export function inferStreamType(info: Partial<RawStreamInfo>): StreamType {
 
 export function normalizeStreamInfo(requestedTrack: Track, info: RawStreamInfo): StreamInfo {
 	const streamType = info.streamType ?? info.inputType ?? (info.type as StreamType) ?? inferStreamType(info);
+	if (String(streamType).toLowerCase() === "raw") {
+		throw new TypeError("Raw audio input is unsupported; provide encoded audio");
+	}
 	return {
 		...info,
 		track: info.track ?? requestedTrack,
@@ -193,10 +195,6 @@ export interface PlayerOptions {
 	};
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
 	audioProcessing?: AudioProcessingOptions;
-	/**
-	 * @deprecated Use `voiceConnection.subscribe(player)` and `webConnection.subscribe(player)` with dynamic `player.connect(webConnection)` instead.
-	 */
-	audioOutputBackendFactory?: AudioOutputBackendFactory<AudioResource>;
 	maxStreamStore?: number;
 }
 

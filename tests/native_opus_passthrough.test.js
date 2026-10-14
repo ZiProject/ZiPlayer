@@ -9,8 +9,6 @@ const {
 	createOpusAudioResource,
 	encodeWebAudioOpusFrame,
 	decodeWebAudioOpusFrame,
-	encodeWebAudioFrame,
-	decodeWebAudioFrame,
 	demuxOggOpusToPackets,
 	demuxWebmOpusToPackets,
 	getOpusPacketDurationMs,
@@ -21,10 +19,6 @@ const {
 	WEB_AUDIO_MAGIC_1,
 	WEB_AUDIO_PROTOCOL_VERSION_V1,
 	WEB_AUDIO_FLAG_CODEC_OPUS,
-	WEB_AUDIO_FLAG_CODEC_PCM,
-	WebAudioConnectionBackend,
-	WebSocketAudioOutputBackend,
-	AudioOutputUnsupportedOperationError,
 	PLAYER_RPC,
 } = require("../core/dist");
 const { VoiceConnectionStatus, createAudioPlayer, StreamType } = require("@discordjs/voice");
@@ -460,25 +454,10 @@ test("Wire Format v1 sequence supports uint32 wraparound", () => {
 	assert.equal(decodedWrapped.timestampUs, 20_000n);
 });
 
-test("Wire Format v1 PCM framing enforces Magic 'ZI', Version 1, Flags (0), Sequence BE, and microsecond timestamps", () => {
-	const pcmPayload = Buffer.alloc(3840, 0x7f); // 20ms of 48kHz stereo s16
-	const seq = 50;
-	const timestampUs = 1_000_000n; // 1 second
-
-	const frame = encodeWebAudioFrame(pcmPayload, seq, timestampUs, { isMicroseconds: true });
-	assert.equal(frame[0], 0x5a);
-	assert.equal(frame[1], 0x49);
-	assert.equal(frame[2], 0x01);
-	assert.equal(frame[3], 0x00); // PCM flag = 0
-	assert.equal(Buffer.from(frame).readUInt32BE(4), seq);
-	assert.equal(Buffer.from(frame).readBigUInt64BE(8), timestampUs);
-
-	const decoded = decodeWebAudioFrame(frame);
-	assert.equal(decoded.version, 1);
-	assert.equal(decoded.sequence, seq);
-	assert.equal(decoded.timestampUs, timestampUs);
-	assert.equal(decoded.timestampMs, 1000);
-	assert.equal(decoded.payload.length, pcmPayload.length);
+test("Wire Format v1 decoder rejects the removed PCM frame codec", () => {
+	const frame = Buffer.alloc(20);
+	frame.set([WEB_AUDIO_MAGIC_0, WEB_AUDIO_MAGIC_1, WEB_AUDIO_PROTOCOL_VERSION_V1, 0x00]);
+	assert.throws(() => decodeWebAudioOpusFrame(frame), /Invalid audio frame flags/);
 });
 
 test("Ogg Opus demuxer extracts valid Opus packets from Ogg Opus stream without FFmpeg", async () => {
@@ -866,99 +845,6 @@ test("WebAudioConnection drop-oldest policy drops oldest queued packet when queu
 	assert.equal(droppedSeq[1], 1, "Oldest packet (1) must be dropped");
 
 	webConn.destroy();
-});
-
-test("WebAudioConnectionBackend capabilities accurately reflect unsupported replacement and volume", async () => {
-	const webConn = new WebAudioConnection({ sessionId: "backend-cap-sess" });
-	webConn.attachSocket(createFakeSocket());
-	const backend = new WebAudioConnectionBackend(webConn);
-
-	assert.equal(backend.capabilities.replacement, "unsupported");
-	assert.equal(backend.capabilities.volume, "unsupported");
-
-	const handle = backend.createSession({
-		stream: Readable.from([]),
-		format: { kind: "encoded", codec: "opus" },
-		ownership: "borrow",
-	});
-
-	assert.throws(() => handle.replace({}), AudioOutputUnsupportedOperationError);
-	assert.throws(() => handle.setVolume(0.5), AudioOutputUnsupportedOperationError);
-	await handle.start();
-	await handle.stop();
-	assert.equal(webConn.isReady, true, "stopping a track must preserve the WebAudio connection");
-	assert.equal(webConn.isSpeaking, false);
-	webConn.disconnect();
-	await handle.start();
-	assert.equal(webConn.isReady, true, "starting a track should reconnect a disconnected WebAudio connection");
-	handle.dispose();
-	backend.dispose();
-});
-
-test("WebSocketAudioOutputBackend demuxes Ogg Opus container input before sending Opus frames", async () => {
-	const socket = createFakeSocket();
-	const backend = new WebSocketAudioOutputBackend({
-		codec: "opus",
-		socketFactory: () => socket,
-	});
-
-	// Build an Ogg Opus stream with 2 packets
-	function createOggPage(headerType, granulePosition, serialNumber, pageSeq, segments) {
-		const segmentTable = [];
-		const body = [];
-		for (const seg of segments) {
-			let remaining = seg.length;
-			while (remaining >= 255) {
-				segmentTable.push(255);
-				remaining -= 255;
-			}
-			segmentTable.push(remaining);
-			body.push(seg);
-		}
-		const header = Buffer.alloc(27 + segmentTable.length);
-		header.write("OggS", 0);
-		header.writeUInt8(0, 4);
-		header.writeUInt8(headerType, 5);
-		header.writeBigInt64LE(BigInt(granulePosition), 6);
-		header.writeUInt32BE(serialNumber, 14);
-		header.writeUInt32LE(pageSeq, 18);
-		header.writeUInt32LE(0, 22);
-		header.writeUInt8(segmentTable.length, 26);
-		Buffer.from(segmentTable).copy(header, 27);
-		return Buffer.concat([header, ...body]);
-	}
-
-	const serial = 0x12345678;
-	const opusHead = Buffer.concat([Buffer.from("OpusHead"), Buffer.alloc(11)]);
-	const opusTags = Buffer.concat([Buffer.from("OpusTags"), Buffer.alloc(8)]);
-	const opusPacket1 = Buffer.from([0xf8, 0xff, 0xfe, 0xaa]);
-	const opusPacket2 = Buffer.from([0xf8, 0xff, 0xfe, 0xbb]);
-
-	const page1 = createOggPage(2, 0, serial, 0, [opusHead]);
-	const page2 = createOggPage(0, 0, serial, 1, [opusTags]);
-	const page3 = createOggPage(0, 960, serial, 2, [opusPacket1, opusPacket2]);
-
-	const oggStream = Readable.from([page1, page2, page3]); // Byte stream, container ogg
-
-	const handle = backend.createSession({
-		stream: oggStream,
-		format: { kind: "encoded", codec: "opus", container: "ogg" },
-		ownership: "borrow",
-	});
-
-	await handle.start();
-	await handle.completion;
-
-	const binaryFrames = socket.sent.filter((msg) => typeof msg.data !== "string");
-	assert.equal(binaryFrames.length, 2, "Backend should demux Ogg and emit 2 discrete Opus frames");
-
-	const decoded1 = decodeWebAudioOpusFrame(binaryFrames[0].data);
-	const decoded2 = decodeWebAudioOpusFrame(binaryFrames[1].data);
-	assert.deepEqual(decoded1.payload, opusPacket1);
-	assert.deepEqual(decoded2.payload, opusPacket2);
-
-	await handle.dispose();
-	backend.dispose();
 });
 
 test("Unified Architecture: Single Opus stream -> AudioResource + AudioPlayer -> voiceConnection.subscribe(player) & webConnection.subscribe(player)", async () => {

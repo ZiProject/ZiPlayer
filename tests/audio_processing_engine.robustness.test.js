@@ -2,8 +2,10 @@
 // Chạy: npm test (build core trước). Engine: FFmpeg tiến trình con.
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
 const { Readable } = require("node:stream");
 const { createAudioProcessingEngine } = require("../core/dist");
+const ffmpegPath = require("ffmpeg-static");
 const helpers = require("./helpers/wav");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -32,8 +34,29 @@ async function render(opts, source) {
 	const bufs = [];
 	for await (const c of p.process(source, AbortSignal.timeout(10_000))) bufs.push(Buffer.from(c));
 	await p.dispose();
-	const all = Buffer.concat(bufs);
-	const { channels, sampleRateHz } = p.outputFormat;
+	const encoded = Buffer.concat(bufs);
+	const sampleRateHz = opts.resampleRate ?? opts.sampleRate ?? 48_000;
+	const channels = opts.channels ?? 2;
+	const all = execFileSync(
+		ffmpegPath,
+		[
+			"-hide_banner",
+			"-loglevel",
+			"error",
+			"-f",
+			"ogg",
+			"-i",
+			"pipe:0",
+			"-f",
+			"s16le",
+			"-ar",
+			String(sampleRateHz),
+			"-ac",
+			String(channels),
+			"pipe:1",
+		],
+		{ input: encoded, maxBuffer: 4 * 1024 * 1024 },
+	);
 	const frames = all.length / (channels * 2);
 	const left = new Float32Array(frames),
 		right = new Float32Array(frames);
@@ -48,8 +71,8 @@ async function render(opts, source) {
 	return { frames, sampleRateHz, channels, peak, freq: zc / (frames / sampleRateHz), left, right, bytes: all.length };
 }
 
-test("PCM output preserves amplitude, frequency, duration and declared sample rate", async () => {
-	const r = await render({ outputFormat: "pcm16le", normalize: false }, wavSource({ seconds: 1, sr: 44100, ch: 2, amp: 0.5 }));
+test("encoded output preserves amplitude, frequency, duration and configured sample rate", async () => {
+	const r = await render({ normalize: false }, wavSource({ seconds: 1, sr: 44100, ch: 2, amp: 0.5 }));
 	assert.equal(r.sampleRateHz, 48000);
 	assert.equal(r.channels, 2);
 	assert.ok(Math.abs(r.frames - 48000) <= 2, `frames=${r.frames}`);
@@ -61,7 +84,7 @@ test("PCM output preserves amplitude, frequency, duration and declared sample ra
 });
 
 test("mono source is upmixed to both channels (unity or equal-power, never lower)", async () => {
-	const r = await render({ outputFormat: "pcm16le", normalize: false }, wavSource({ seconds: 0.5, sr: 44100, ch: 1, amp: 0.5 }));
+	const r = await render({ normalize: false }, wavSource({ seconds: 0.5, sr: 44100, ch: 1, amp: 0.5 }));
 	assert.ok(r.peak >= 0.5 * Math.SQRT1_2 - 0.01 && r.peak <= 0.51, `peak=${r.peak}`);
 	let maxDiff = 0;
 	for (let i = 0; i < r.frames; i++) maxDiff = Math.max(maxDiff, Math.abs(r.left[i] - r.right[i]));
@@ -69,10 +92,10 @@ test("mono source is upmixed to both channels (unity or equal-power, never lower
 });
 
 test("gain is applied linearly (+6 dB) and hard gain clamps instead of wrapping", async () => {
-	const g6 = await render({ outputFormat: "pcm16le", normalize: false, gainDb: 6 }, wavSource({ seconds: 0.5, ch: 2, amp: 0.5 }));
+	const g6 = await render({ normalize: false, gainDb: 6 }, wavSource({ seconds: 0.5, ch: 2, amp: 0.5 }));
 	assert.ok(Math.abs(g6.peak - 0.5 * 10 ** (6 / 20)) < 0.02, `peak=${g6.peak}`);
 	const g12 = await render(
-		{ outputFormat: "pcm16le", normalize: false, gainDb: 12 },
+		{ normalize: false, gainDb: 12 },
 		wavSource({ seconds: 0.5, ch: 2, amp: 0.5 }),
 	);
 	assert.ok(g12.peak <= 1 && g12.peak > 0.99);
@@ -80,7 +103,7 @@ test("gain is applied linearly (+6 dB) and hard gain clamps instead of wrapping"
 });
 
 test("highpass attenuates content below the cutoff", async () => {
-	const r = await render({ outputFormat: "pcm16le", normalize: false, highpassHz: 2000 }, wavSource({ seconds: 0.5, amp: 0.5 }));
+	const r = await render({ normalize: false, highpassHz: 2000 }, wavSource({ seconds: 0.5, amp: 0.5 }));
 	assert.ok(r.peak < 0.15, `peak=${r.peak}`);
 });
 

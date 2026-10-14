@@ -39,8 +39,8 @@ backwards-compatible `Player` facade.
   volume, active filters, loop mode).
 - ⚡ **High Performance & Auto-Scaling** — Low-performance mode automatically disables memory-heavy features (preload, crossfade)
   on constrained host environments.
-- 🎛️ Custom and browser audio output through `audioOutputBackendFactory`
-- 🌐 WebSocket PCM publishing for browser clients using a strict 48 kHz stereo s16 LE contract
+- 🎛️ Shared Discord and browser playback through the `AudioPlayer` Opus subscriber path
+
 ---
 
 ## 📦 Installation
@@ -143,10 +143,9 @@ client.login(process.env.DISCORD_TOKEN);
 
 ## 🌐 Browser Playback with `@ziplayer/client`
 
-ZiPlayer can send a player's processed PCM to a browser instead of Discord Voice. The core package provides
-`WebSocketAudioOutputBackend`; your application provides an authenticated WebSocket gateway and a `socketFactory` that returns a
-connected publisher socket. The backend sends 48 kHz stereo s16 LE PCM and manages playback controls and stream cleanup. It does
-not create or host the gateway.
+Browser playback uses `WebAudioConnection` to subscribe to the shared `AudioPlayer` and publish Opus packets. It can fan out the
+same server-volume-adjusted Opus packets as Discord Voice. The WebSocket gateway is application-provided; ZiPlayer does not
+create or host it.
 
 Install the browser receiver separately:
 
@@ -154,37 +153,56 @@ Install the browser receiver separately:
 npm install @ziplayer/client
 ```
 
-Configure the output backend when creating a regular player. Keep the player ID as the backend's `sessionId` so browser listeners
-can stay subscribed when the player's output socket is replaced for the next track:
+Connect a WebAudio subscriber to a regular player. Keep the player ID as the connection's `sessionId` so listeners can stay
+subscribed across track changes:
 
 ```ts
-import { PlayerManager, WebSocketAudioOutputBackend } from "ziplayer";
+import { PlayerManager, WebAudioConnection } from "ziplayer";
 
+const manager = new PlayerManager();
 const playerId = "web-player";
-const player = await manager.create(playerId, {
-	audioProcessing: {
-		enabled: true,
-		inputFormat: "encoded",
-		outputFormat: "pcm16le",
-		sampleRate: 48_000,
-		channels: 2,
-		maxBufferBytes: 64 * 1024,
-	},
-	audioOutputBackendFactory: ({ playerId }) =>
-		new WebSocketAudioOutputBackend({
-			sessionId: playerId,
-			socketFactory: ({ sessionId, signal }) => connectPublisherSocket({ sessionId, signal, gatewayUrl, token }),
-		}),
-});
+const player = await manager.create(playerId);
+const webConnection = new WebAudioConnection({ sessionId: playerId });
+webConnection.attachSocket(await connectPublisherSocket({ sessionId: playerId, gatewayUrl, token }));
+const browserOutput = await player.connect(webConnection);
 
 await player.play(query, userId);
+// Disconnect only the browser output when it is no longer needed.
+await browserOutput.disconnect();
 ```
 
 `connectPublisherSocket` is application/gateway-specific and must resolve to an open WebSocket; authenticate the publisher on the
-server and honor the provided abort signal. In the browser, import `WebAudioClient` from `@ziplayer/client` and call `connect()`
-from a user gesture. For a newly starting stream, connect with `nextPublisher: true` before requesting playback so the listener is
-ready before the first PCM frames arrive. The client handles protocol validation, s16 conversion, and bounded AudioWorklet
-playback.
+server. In the browser, import `WebAudioClient` from `@ziplayer/client` and call `connect()` from a user gesture. For a newly
+starting stream, connect with `nextPublisher: true` before requesting playback so the listener is ready before the first Opus
+frames arrive. The client validates the protocol, decodes Opus, and plays it through a bounded AudioWorklet buffer.
+
+### Shared Discord and browser playback with server-side volume
+
+For simultaneous Discord and browser playback, attach `WebAudioConnection` to the player's `AudioPlayer`:
+
+```ts
+import { WebAudioConnection } from "ziplayer";
+
+const player = await manager.create(guildId);
+const voiceConnection = await player.connect(voiceChannel);
+const webConnection = new WebAudioConnection({ sessionId: player.id });
+webConnection.attachSocket(await connectPublisherSocket({ sessionId: player.id }));
+const webOutput = await player.connect(webConnection);
+
+await player.play(query, { requestedBy: userId });
+player.setVolume(65); // server-side player volume, shared by Discord and browser listeners
+// Call webOutput.disconnect() when the browser output is no longer needed.
+```
+
+The source `Readable` is wrapped in a Discord `AudioResource` with inline volume, then played by the shared Discord `AudioPlayer`.
+The player emits Opus packets to both subscribers: `DiscordVoiceConnection` sends them through the Discord Voice protocol, while
+`WebAudioConnection` adds the ZI v1 frame header and publishes them over WebSocket. The gateway relays those Opus frames to the
+browser for local decoding and playback. `player.setVolume()` changes the shared server-side resource before the fan-out, so the
+updated audio is heard by both outputs. It is not a per-browser volume control.
+
+Inline volume is applied to the shared `AudioResource` before Opus packets are distributed. This in-process codec step does not
+require FFmpeg; both subscribers receive the same post-volume Opus packets. Passing an `AudioResource` created externally may
+bypass ZiPlayer's inline-volume resource setup.
 
 For a complete runnable gateway, player session, and browser UI example, see
 [`examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend/README.md). For client events, options, and
@@ -474,15 +492,16 @@ ownership, and teardown lifecycle, see [**AGENTS.md**](./AGENTS.md).
 
 MIT © [ZiProject](https://github.com/ZiProject)
 
-
 ## Dynamic multiple outputs
 
-`Player.connect(voiceChannel)` continues to join Discord Voice. To add a second output, pass an `AudioOutputBackend` instead:
+`Player.connect(voiceChannel)` continues to join Discord Voice. Custom stream-consuming outputs can still be registered dynamically
+with `player.connect(backend)`:
 
 ```ts
-const output = await player.connect(backend, { id: "web", name: "Web PCM" });
+const output = await player.connect(backend, { id: "custom", name: "Custom output" });
 console.log(await player.getAudioOutputs());
 await output.disconnect(); // Discord continues
 ```
 
-Use `player.disconnectOutput(id)` to remove a registered output by ID. All outputs share one per-track DSP pipeline. A WebSocket PCM output requires 48 kHz stereo s16le and therefore fixes the DSP format for subsequent tracks; it cannot join a currently active encoded track. With this sink registered, combined replacement is stop-before-start, so a configured transition cannot perform an atomic crossfade: the old track stops before the new one starts, which may fade in from zero.
+Use `player.disconnectOutput(id)` to remove a registered output by ID. All outputs share one per-track processing pipeline and
+receive encoded audio. Register each output explicitly with `player.connect(backend)`.

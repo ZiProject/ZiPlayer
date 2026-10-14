@@ -1,29 +1,27 @@
 import { EventEmitter } from "node:events";
 import { VoiceConnectionStatus, type AudioPlayer, type PlayerSubscription } from "@discordjs/voice";
-import { WEB_AUDIO_MAX_MESSAGE_BYTES, type WebSocketLike } from "./WebSocketAudioOutputBackend";
 import { getOpusPacketDurationMs, validateOpusPacketDuration, validateOpusPacketFraming } from "../audio/OpusSourceAdapter";
-import type {
-	AudioOutputBackend,
-	AudioOutputCapabilities,
-	AudioOutputContext,
-	AudioOutputEvent,
-	AudioOutputHandle,
-	AudioOutputInput,
-	AudioOutputState,
-} from "./AudioOutputBackend";
-import { AudioOutputUnsupportedOperationError } from "./AudioOutputBackend";
 
 export const WEB_AUDIO_MAGIC_0 = 0x5a;
 export const WEB_AUDIO_MAGIC_1 = 0x49;
 export const WEB_AUDIO_PROTOCOL_VERSION_V1 = 1;
-export const WEB_AUDIO_FLAG_CODEC_PCM = 0x00;
 export const WEB_AUDIO_FLAG_CODEC_OPUS = 0x01;
 export const WEB_AUDIO_FRAME_HEADER_BYTES = 16;
+export const WEB_AUDIO_MAX_MESSAGE_BYTES = 1024 * 1024;
 export const WEB_AUDIO_OPUS_CODEC_ID = 0;
 export const WEB_AUDIO_OPUS_SAMPLE_RATE_HZ = 48_000;
 export const WEB_AUDIO_OPUS_CHANNELS = 2;
 export const DEFAULT_MAX_BUFFERED_BYTES = 256 * 1024;
 export const DEFAULT_MAX_QUEUED_PACKETS = 50; // 50 * 20ms = 1s of audio
+
+export interface WebSocketLike {
+	readyState: number;
+	bufferedAmount: number;
+	send(data: string | ArrayBuffer | Uint8Array): void;
+	close(code?: number, reason?: string): void;
+	addEventListener?(type: string, listener: (event: any) => void): void;
+	removeEventListener?(type: string, listener: (event: any) => void): void;
+}
 
 export interface WebAudioConnectionStats {
 	dispatchedPackets: number;
@@ -54,7 +52,7 @@ export interface WebAudioConnectionState {
  * Encodes a raw Opus packet into the 16-byte protocol binary frame format v1:
  * - Bytes 0..1: Magic 0x5A 0x49 ('ZI')
  * - Byte 2: Protocol version (0x01)
- * - Byte 3: Flags (bit 0 = 1 for Opus, 0 for PCM; bits 1..7 = 0)
+ * - Byte 3: Flags (0x01 for Opus)
  * - Bytes 4..7: Sequence (UInt32BE)
  * - Bytes 8..15: Media timestamp in microseconds (BigUInt64BE)
  * - Bytes 16..N: Raw Opus packet payload
@@ -84,7 +82,7 @@ export function decodeWebAudioOpusFrame(
 	options?: { protocolVersion?: number; allowLegacy?: boolean },
 ): {
 	version: number;
-	codec: "opus" | "pcm16le";
+	codec: "opus";
 	sequence: number;
 	timestampMs: number;
 	timestampUs: bigint;
@@ -102,17 +100,16 @@ export function decodeWebAudioOpusFrame(
 			throw new Error(`Unsupported audio frame protocol version: ${version}`);
 		}
 		const flags = view[3];
-		if (flags !== WEB_AUDIO_FLAG_CODEC_OPUS && flags !== WEB_AUDIO_FLAG_CODEC_PCM) {
+		if (flags !== WEB_AUDIO_FLAG_CODEC_OPUS) {
 			throw new Error(`Invalid audio frame flags: 0x${flags.toString(16)}`);
 		}
-		const codec = flags === WEB_AUDIO_FLAG_CODEC_OPUS ? "opus" : "pcm16le";
 		const sequence = view.readUInt32BE(4);
 		const timestampUs = view.readBigUInt64BE(8);
 		const timestampMs = Number(timestampUs / 1000n);
 		const payload = view.subarray(WEB_AUDIO_FRAME_HEADER_BYTES);
 		return {
 			version,
-			codec,
+			codec: "opus",
 			sequence,
 			timestampMs,
 			timestampUs,
@@ -131,9 +128,9 @@ export function decodeWebAudioOpusFrame(
 		const sampleRateHz = view.readUInt16LE(8);
 		const channels = view.readUInt16LE(10);
 		const codecId = view.readUInt16LE(12);
-		const codec = codecId === 0 ? "opus" : "pcm16le";
+		if (codecId !== WEB_AUDIO_OPUS_CODEC_ID) throw new Error(`Unsupported legacy audio codec ID: ${codecId}`);
 		const payload = view.subarray(WEB_AUDIO_FRAME_HEADER_BYTES);
-		return { version: 0, codec, sequence, timestampMs, timestampUs, sampleRateHz, channels, payload };
+		return { version: 0, codec: "opus", sequence, timestampMs, timestampUs, sampleRateHz, channels, payload };
 	}
 }
 
@@ -598,117 +595,5 @@ export class WebAudioConnection extends EventEmitter {
 		try {
 			socket.send(configMsg);
 		} catch {}
-	}
-}
-
-/**
- * Adapts a WebAudioConnection into a stream-consuming AudioOutputBackend for explicit
- * MultiAudioOutputBackend registration. Player.connect(connection) uses the AudioPlayer subscription path.
- */
-export class WebAudioConnectionBackend implements AudioOutputBackend<WebAudioConnection> {
-	public readonly capabilities: AudioOutputCapabilities = {
-		pause: true,
-		resume: true,
-		stop: true,
-		seek: "unsupported",
-		replacement: "unsupported",
-		ownership: "both",
-		volume: "unsupported",
-		backpressure: "bounded",
-		maxBufferedBytes: DEFAULT_MAX_BUFFERED_BYTES,
-		acceptedProcessOutputs: ["encoded", "pcm16le"],
-		preferredProcessOutput: "encoded",
-	};
-	public readonly ready = Promise.resolve();
-
-	public constructor(public readonly connection: WebAudioConnection) {}
-
-	public isAvailableForPacing(): boolean {
-		return this.connection.isAvailableForPacing();
-	}
-
-	public async initialize(_signal?: AbortSignal): Promise<void> {
-		return;
-	}
-
-	public createSession(input: AudioOutputInput, _context: AudioOutputContext = {}): AudioOutputHandle<WebAudioConnection> {
-		const conn = this.connection;
-		let disposed = false;
-		const listeners = new Set<(event: AudioOutputEvent) => void>();
-
-		const emit = (event: AudioOutputEvent) => {
-			for (const l of listeners) l(event);
-		};
-
-		if (!conn.state.subscription && input.stream && !input.stream.destroyed) {
-			input.stream.on("data", (chunk: any) => {
-				if (disposed) return;
-				const packet = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-				conn.prepareAudioPacket(packet);
-				conn.dispatchAudio();
-			});
-			input.stream.once("end", () => {
-				emit({ type: "state", state: "ended" });
-			});
-			input.stream.once("error", (err: any) => {
-				emit({ type: "error", error: err instanceof Error ? err : new Error(String(err)) });
-			});
-		}
-
-		return {
-			resource: conn,
-			format: input.format,
-			ready: Promise.resolve(),
-			get state(): AudioOutputState {
-				if (disposed) return "stopped";
-				return conn.isReady ? "playing" : "ready";
-			},
-			get bufferedBytes(): number | null {
-				return 0;
-			},
-			start: () => {
-				conn.reconnect();
-				conn.setSpeaking(true);
-				emit({ type: "state", state: "playing" });
-			},
-			pause: () => {
-				conn.setSpeaking(false);
-				emit({ type: "state", state: "paused" });
-				return true;
-			},
-			resume: () => {
-				conn.setSpeaking(true);
-				emit({ type: "state", state: "playing" });
-				return true;
-			},
-			stop: () => {
-				conn.setSpeaking(false);
-				emit({ type: "state", state: "stopped" });
-				return true;
-			},
-			seek: () => false,
-			replace: () => {
-				throw new AudioOutputUnsupportedOperationError("replace");
-			},
-			setVolume: () => {
-				throw new AudioOutputUnsupportedOperationError("setVolume");
-			},
-			onEvent: (listener) => {
-				listeners.add(listener);
-				return () => listeners.delete(listener);
-			},
-			dispose: () => {
-				if (disposed) return;
-				disposed = true;
-				listeners.clear();
-				if (input.ownership === "transfer" && !input.stream.destroyed) {
-					input.stream.destroy();
-				}
-			},
-		};
-	}
-
-	public dispose(): void {
-		this.connection.destroy();
 	}
 }

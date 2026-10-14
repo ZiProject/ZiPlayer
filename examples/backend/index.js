@@ -3,78 +3,56 @@
 // Run `npm run build:core` before starting the loopback-only example.
 require("dotenv").config();
 const { WebSocket } = require("ws");
-const { PlayerManager, WebAudioConnection, WebSocketAudioOutputBackend } = require("ziplayer");
+const { PlayerManager, WebAudioConnection } = require("ziplayer");
 const { createWebAudioGateway } = require("./gateway");
 const pluginPackage = require("@ziplayer/plugin");
 
 const SAMPLE_RATE_HZ = 48_000;
 const CHANNELS = 2;
-function createPublisherSocketFactory({ gatewayUrl }) {
+function connectPublisherSocket({ gatewayUrl, sessionId, signal }) {
 	if (!gatewayUrl) throw new TypeError("gatewayUrl is required");
+	if (!sessionId) throw new TypeError("sessionId is required");
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			const error = new Error("WebSocket connection was aborted");
+			error.name = "AbortError";
+			reject(error);
+			return;
+		}
 
-	return ({ sessionId, signal }) =>
-		new Promise((resolve, reject) => {
-			if (!sessionId) {
-				reject(new TypeError("WebSocket audio backend did not provide a sessionId"));
-				return;
-			}
-			if (signal?.aborted) {
-				const error = new Error("WebSocket connection was aborted");
-				error.name = "AbortError";
-				reject(error);
-				return;
-			}
+		const url = new URL("/publish", gatewayUrl);
+		url.searchParams.set("sessionId", sessionId);
+		const socket = new WebSocket(url);
+		const cleanup = () => {
+			socket.off("open", onOpen);
+			socket.off("error", onError);
+			signal?.removeEventListener("abort", onAbort);
+		};
+		const onOpen = () => {
+			cleanup();
+			socket.on("error", (error) => {
+				console.error(`WebSocket publisher error for ${sessionId}:`, error);
+				socket.close(1011, "Publisher transport error");
+			});
+			resolve(socket);
+		};
+		const onError = (error) => {
+			cleanup();
+			socket.terminate();
+			reject(error);
+		};
+		const onAbort = () => {
+			cleanup();
+			socket.terminate();
+			const error = new Error("WebSocket connection was aborted");
+			error.name = "AbortError";
+			reject(error);
+		};
 
-			const url = new URL("/publish", gatewayUrl);
-			url.searchParams.set("sessionId", sessionId);
-			const socket = new WebSocket(url);
-			const cleanup = () => {
-				socket.off("open", onOpen);
-				socket.off("error", onError);
-				signal?.removeEventListener("abort", onAbort);
-			};
-			const onOpen = () => {
-				cleanup();
-				socket.on("error", (error) => {
-					console.error(`WebSocket publisher error for ${sessionId}:`, error);
-					socket.close(1011, "Publisher transport error");
-				});
-				resolve(socket);
-			};
-			const onError = (error) => {
-				cleanup();
-				socket.terminate();
-				reject(error);
-			};
-			const onAbort = () => {
-				cleanup();
-				socket.terminate();
-				const error = new Error("WebSocket connection was aborted");
-				error.name = "AbortError";
-				reject(error);
-			};
-
-			socket.once("open", onOpen);
-			socket.once("error", onError);
-			signal?.addEventListener("abort", onAbort, { once: true });
-		});
-}
-
-function createWebSocketAudioOutputBackend({ gatewayUrl, sessionId }) {
-	const socketFactory = createPublisherSocketFactory({ gatewayUrl });
-	return new WebSocketAudioOutputBackend({
-		socketFactory,
-		sessionId,
+		socket.once("open", onOpen);
+		socket.once("error", onError);
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
-}
-
-function createAudioOutputBackendFactory(options) {
-	const socketFactory = createPublisherSocketFactory(options);
-	return ({ playerId }) =>
-		new WebSocketAudioOutputBackend({
-			socketFactory,
-			sessionId: playerId,
-		});
 }
 
 function serializeTrack(track) {
@@ -205,15 +183,12 @@ async function main() {
 				case "connect-output": {
 					const outputId = body.outputId || `webaudio-${sessionId}-${Date.now().toString(36)}`;
 					const name = body.name || `Web Audio (${outputId})`;
-					const socketFactory = createPublisherSocketFactory({ gatewayUrl });
-					const socket = await socketFactory({ sessionId });
+					const socket = await connectPublisherSocket({ gatewayUrl, sessionId });
 					const webConn = new WebAudioConnection({ sessionId });
 					webConn.attachSocket(socket);
-					webConn.subscribe(player);
 					const registration = await player.connect(webConn, {
 						id: outputId,
 						name,
-						playerVolume: Boolean(body.playerVolume),
 					});
 					return { id: registration.id, name: registration.name };
 				}
@@ -272,16 +247,12 @@ async function main() {
 				crossfade: { enabled: false },
 				userdata: { webAudioGateway: { sessionId } },
 			});
-			// Subscribe WebAudioConnection directly to the AudioPlayer with native Opus passthrough
-			const socketFactory = createPublisherSocketFactory({ gatewayUrl });
-			const socket = await socketFactory({ sessionId });
+			const socket = await connectPublisherSocket({ gatewayUrl, sessionId });
 			const webConn = new WebAudioConnection({ sessionId });
 			webConn.attachSocket(socket);
-			webConn.subscribe(player);
 			const outputRegistration = await player.connect(webConn, {
 				id: `webaudio-${sessionId}`,
 				name: `Web Audio (${sessionId})`,
-				playerVolume: false,
 			});
 			player.userdata.webAudioGateway.outputRegistration = outputRegistration;
 			player.userdata.webAudioGateway.connection = webConn;
@@ -336,9 +307,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-	createAudioOutputBackendFactory,
-	createWebSocketAudioOutputBackend,
-	createPublisherSocketFactory,
+	connectPublisherSocket,
 	createWebAudioGateway,
 	createPlayerIdleCleanup,
 };
