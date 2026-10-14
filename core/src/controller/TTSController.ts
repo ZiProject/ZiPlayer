@@ -107,7 +107,7 @@ export class TTSController {
 	}
 
 	private getConnection(playerId: string): VoiceConnection | null {
-		return (this.bus.querySync(playerId, PLAYER_QUERY.connection) as VoiceConnection | null) ?? null;
+		return this.bus.querySync(playerId, PLAYER_QUERY.voiceConnection) ?? null;
 	}
 
 	private async playInternal(playerId: string, state: TTSState, track: Track): Promise<void> {

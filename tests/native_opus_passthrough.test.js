@@ -415,6 +415,33 @@ test("Player.connect(webConnection) attaches WebAudio output dynamically during 
 	await connectionController.detach("dynamic-web-player");
 });
 
+test("PLAYER_QUERY.connection returns every subscribed WebAudio connection and destroys them on player teardown", async () => {
+	const { player, controller, connectionController } = createPlayerWithAudioPlayer("multiple-web-outputs-player");
+	const firstConnection = new WebAudioConnection({ sessionId: "multiple-web-first" });
+	const secondConnection = new WebAudioConnection({ sessionId: "multiple-web-second" });
+	firstConnection.attachSocket(createFakeSocket());
+	secondConnection.attachSocket(createFakeSocket());
+
+	const firstRegistration = await player.connect(firstConnection);
+	await player.connect(secondConnection);
+	assert.deepEqual(player.connections, [firstConnection, secondConnection]);
+	assert.deepEqual(
+		player.getWebAudioSubscribers().map(({ id }) => id),
+		["multiple-web-first", "multiple-web-second"],
+	);
+
+	assert.equal(await firstRegistration.disconnect(), true);
+	assert.equal(firstConnection.getStats().status, VoiceConnectionStatus.Destroyed);
+	assert.deepEqual(player.connections, [secondConnection]);
+	assert.equal(player.hasOutput, true);
+
+	player.destroy();
+	assert.equal(secondConnection.getStats().status, VoiceConnectionStatus.Destroyed);
+	assert.deepEqual(player.connections, []);
+	controller.detach("multiple-web-outputs-player");
+	await connectionController.detach("multiple-web-outputs-player");
+});
+
 test("Wire Format v1 Opus framing enforces Magic 'ZI', Version 1, Flags, Sequence BE, and microsecond timestamps", () => {
 	const packet = Buffer.from([0xf8, 0xff, 0xfe, 0x01, 0x02]);
 	const seq = 12345;

@@ -68,10 +68,13 @@ export class ConnectionController {
 				this.disconnectWebAudio(ctx.playerId, id),
 			);
 			bus.registerRpc<void, void>(PLAYER_RPC.connectionWebAudioClear, (_request, ctx) => this.clearWebAudioOutputs(ctx.playerId));
-			bus.registerQuery(PLAYER_QUERY.connection, (playerId) => this.slots.get(playerId)?.connection ?? null);
+			bus.registerRpc<void, WebAudioSubscriberInfo[]>(PLAYER_RPC.connectionWebAudioList, (_request, ctx) =>
+				this.getWebAudioSubscribers(ctx.playerId),
+			);
+			bus.registerQuery(PLAYER_QUERY.connection, (playerId) => this.getConnections(playerId));
+			bus.registerQuery(PLAYER_QUERY.voiceConnection, (playerId) => this.slots.get(playerId)?.connection ?? null);
 			bus.registerQuery(PLAYER_QUERY.connectionState, (playerId) => this.slots.get(playerId)?.connection?.state.status);
 			bus.registerQuery(PLAYER_QUERY.hasOutput, (playerId) => this.hasOutput(playerId));
-			bus.registerQuery(PLAYER_QUERY.webAudioSubscribers, (playerId) => this.getWebAudioSubscribers(playerId));
 			bus.onInput(BUS_REQUEST.connectionConnect, (event) => {
 				this.trace(event.playerId, BUS_REQUEST.connectionConnect, `channel=${event.channel.id}`);
 				this.enqueue(event.playerId, () => this.connect(event.playerId, event));
@@ -148,6 +151,17 @@ export class ConnectionController {
 	public getActive(playerId: string): VoiceConnection | null {
 		return this.slots.get(playerId)?.connection ?? null;
 	}
+	public getConnections(playerId: string): Array<VoiceConnection | WebAudioConnection> {
+		const slot = this.slots.get(playerId);
+		if (!slot) return [];
+		this.pruneDestroyedWebAudioOutputs(slot);
+		const connections: Array<VoiceConnection | WebAudioConnection> = [];
+		if (slot.connection && slot.subscription) connections.push(slot.connection);
+		for (const { connection } of slot.webAudioOutputs.values()) {
+			if (connection.state.subscription) connections.push(connection);
+		}
+		return connections;
+	}
 	public hasOutput(playerId: string): boolean {
 		const slot = this.slots.get(playerId);
 		return (
@@ -158,6 +172,7 @@ export class ConnectionController {
 	public getWebAudioSubscribers(playerId: string): WebAudioSubscriberInfo[] {
 		const slot = this.slots.get(playerId);
 		if (!slot) return [];
+		this.pruneDestroyedWebAudioOutputs(slot);
 		return [...slot.webAudioOutputs].map(([id, { connection, name }]) => {
 			const stats = connection.getStats();
 			return {
@@ -178,6 +193,7 @@ export class ConnectionController {
 		if (!slot || slot.disposed || !slot.audioPlayer) {
 			throw new Error(`Audio output cannot be attached to player "${playerId}" without an active AudioPlayer`);
 		}
+		this.pruneDestroyedWebAudioOutputs(slot);
 		if (slot.webAudioOutputs.has(id)) {
 			throw new Error(`Audio output id already exists: ${id}`);
 		}
@@ -199,6 +215,11 @@ export class ConnectionController {
 		const slot = this.slots.get(playerId);
 		if (!slot) return;
 		for (const [id] of slot.webAudioOutputs) this.disconnectWebAudio(playerId, id);
+	}
+	private pruneDestroyedWebAudioOutputs(slot: ConnectionSlot): void {
+		for (const [id, { connection }] of slot.webAudioOutputs) {
+			if (connection.getStats().status === VoiceConnectionStatus.Destroyed) slot.webAudioOutputs.delete(id);
+		}
 	}
 	public getActiveChannel(playerId: string): VoiceChannel | null {
 		return this.slots.get(playerId)?.channel ?? null;

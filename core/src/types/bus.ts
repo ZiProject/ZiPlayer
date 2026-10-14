@@ -284,6 +284,7 @@ export interface PlayerRpcMap {
 	};
 	"connection.webAudio.disconnect": { request: { id: string }; response: boolean };
 	"connection.webAudio.clear": { request: undefined; response: void };
+	"connection.webAudio.list": { request: undefined; response: WebAudioSubscriberInfo[] };
 	search: { request: { query: string; requestedBy?: string; plugin?: string | string[] }; response: SearchResult };
 	"search.cache.get": { request: { query: string }; response: SearchResult | null };
 	"search.cache.set": { request: { query: string; result: SearchResult }; response: void };
@@ -373,10 +374,10 @@ export interface PlayerRpcMap {
 
 export interface PlayerQueryMap {
 	audioPlayer: import("@discordjs/voice").AudioPlayer | null;
-	connection: import("@discordjs/voice").VoiceConnection | null;
+	connection: Array<import("@discordjs/voice").VoiceConnection | WebAudioConnection>;
+	"connection.voice": import("@discordjs/voice").VoiceConnection | null;
 	"connection.state": import("@discordjs/voice").VoiceConnectionStatus | undefined;
 	"connection.hasOutput": boolean;
-	"connection.webAudioSubscribers": WebAudioSubscriberInfo[];
 	"tts.hasPlayer": boolean;
 	"stream.stats": {
 		active: number;

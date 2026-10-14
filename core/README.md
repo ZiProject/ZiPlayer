@@ -172,9 +172,44 @@ await browserOutput.disconnect();
 ```
 
 `connectPublisherSocket` is application/gateway-specific and must resolve to an open WebSocket; authenticate the publisher on the
-server. In the browser, import `WebAudioClient` from `@ziplayer/client` and call `connect()` from a user gesture. For a newly
-starting stream, connect with `nextPublisher: true` before requesting playback so the listener is ready before the first Opus
-frames arrive. The client validates the protocol, decodes Opus, and plays it through a bounded AudioWorklet buffer.
+server. For the included local gateway, a minimal Node.js helper using `ws` is:
+
+```sh
+npm install ws
+```
+
+```ts
+import { WebSocket } from "ws";
+
+function connectPublisherSocket({ gatewayUrl, sessionId }: { gatewayUrl: string; sessionId: string }): Promise<WebSocket> {
+	const url = new URL("/publish", gatewayUrl);
+	url.searchParams.set("sessionId", sessionId);
+	const socket = new WebSocket(url);
+
+	return new Promise<WebSocket>((resolve, reject) => {
+		const onError = (error: Error) => {
+			socket.off("open", onOpen);
+			socket.terminate();
+			reject(error);
+		};
+		const onOpen = () => {
+			socket.off("error", onError);
+			socket.on("error", (error: Error) => {
+				console.error("Publisher socket error:", error);
+				socket.close(1011, "Publisher transport error");
+			});
+			resolve(socket);
+		};
+		socket.once("error", onError);
+		socket.once("open", onOpen);
+	});
+}
+```
+
+This example assumes the gateway's `/publish` endpoint and no authentication; adapt the URL and auth handshake for your gateway.
+In the browser, import `WebAudioClient` from `@ziplayer/client` and call `connect()` from a user gesture. For a newly starting
+stream, connect with `nextPublisher: true` before requesting playback so the listener is ready before the first Opus frames
+arrive. The client validates the protocol, decodes Opus, and plays it through a bounded AudioWorklet buffer.
 
 ### Minimal browser client (Vite)
 
@@ -607,4 +642,6 @@ The source `Readable` is wrapped in an inline-volume Discord `AudioResource` and
 `WebAudioConnection` subscribers. Remove a browser subscriber by its registration handle or with
 `player.disconnectWebAudio(id)`. Generic stream-output backends and output factories are not part of the player API.
 The shared `ConnectionController` owns each player's voice and WebAudio connection state; `Player` delegates WebAudio
-registration, lookup, and teardown through the Bus.
+registration, lookup, and teardown through the Bus. `player.connections` (also exposed through
+`PLAYER_QUERY.connection`) returns all currently subscribed Voice and WebAudio connections; each WebAudio connection can be
+removed through its registration handle or destroyed during player teardown.

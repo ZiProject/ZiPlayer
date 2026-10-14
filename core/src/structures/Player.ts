@@ -144,7 +144,10 @@ export class Player extends EventEmitter {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.currentResource) as AudioResource | null;
 	}
 	public get connection(): VoiceConnection | null {
-		return this.bus.querySync(this.playerId, PLAYER_QUERY.connection) ?? null;
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.voiceConnection) ?? null;
+	}
+	public get connections(): Array<VoiceConnection | WebAudioConnection> {
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.connection) ?? [];
 	}
 	public get hasOutput(): boolean {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.hasOutput) ?? false;
@@ -318,7 +321,7 @@ export class Player extends EventEmitter {
 		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.connectionWebAudioDisconnect, { id });
 	}
 	public getWebAudioSubscribers() {
-		return this.bus.querySync(this.playerId, PLAYER_QUERY.webAudioSubscribers) ?? [];
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.connectionWebAudioList, undefined);
 	}
 	public async disconnect(): Promise<void> {
 		return this.bus
