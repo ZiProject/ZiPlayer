@@ -21,9 +21,8 @@ Measured on 5-minute stereo fixtures, gain + highpass, output s16le 48 kHz stere
 process, running it in a `worker_thread` fixed the stall but not the RAM or the missing backpressure. The repo already shipped
 `ffmpeg-static` and `FilterController`, so no dependency was added.
 
-Correction to an earlier statement: the legacy (no-DSP) path is **not** free. `DiscordVoiceOutputBackend` always creates resources
-with `inlineVolume: true`, and `@discordjs/voice` then builds `ffmpeg -> volume -> opus encoder` even for WebM/Opus input
-(verified). The DSP path replaces that decode step rather than adding a new one.
+The managed playback path creates an inline-volume `AudioResource` directly in `PlaybackController`. `@discordjs/voice` then
+builds its volume/Opus transformation for that resource; the DSP path emits Opus and bypasses the resource's normal decode path.
 
 ## Changes
 
@@ -36,7 +35,7 @@ with `inlineVolume: true`, and `@discordjs/voice` then builds `ffmpeg -> volume 
 - `tests/`: engine tests rewritten without `audio`; new `helpers/wav.js`, `audio_processing_engine.robustness.test.js`,
   `playback_processing_lifecycle.test.js`, `playback_output_integration.test.js`; `audio_engine_benchmark.js` now compares the engine
   with direct FFmpeg on identical fixtures. Suite: 233 tests, all passing.
-- Docs: `README.md`, `AGENTS.md`, `docs/AUDIO_OUTPUT_BACKENDS.md` updated (including a new FFmpeg engine section).
+- Docs: `README.md`, `AGENTS.md`, and the audio architecture guide describe the FFmpeg engine and direct AudioPlayer subscriptions.
 
 ## Bugs found while reviewing the output side, and fixed
 
@@ -47,15 +46,11 @@ with `inlineVolume: true`, and `@discordjs/voice` then builds `ffmpeg -> volume 
 2. **FFmpeg and the source leaked when the player destroyed a stalled stream.** `Readable.from()` only finishes teardown when the
    generator's pending `await` settles, so `AudioPlayer.stop()/replace` left FFmpeg running until the whole player was detached
    (one leaked process per skipped stalled track). Fix: abort the pipeline from `processedStream._destroy`. The new test fails without it.
-3. **The source stream leaked when the backend rejected the format** right after `createResource` (the generator never started, so
-   nothing closed the plugin's socket). Fixed in the same `_destroy` hook.
+3. **The source stream leaked when resource creation failed** before playback (the generator never started, so nothing closed the
+   plugin's socket). Resource construction now destroys the transferred source on failure.
 4. `audioProcessing` now receives the player's `ffmpegPath`.
-5. `docs/AUDIO_OUTPUT_BACKENDS.md` claimed the web backend has no volume support; the code implements `volume: "backend"`.
-6. The web backend's "only supports PCM" error now says to enable `audioProcessing`.
-
-Checked and found fine: Discord backend float32 conversion and stop (no spurious `failed` event, no uncaught errors); web backend
-pacing (100 frames over 1980 ms for 2 s of audio), stop, track replacement (per-track publisher sockets are by design), sequence
-numbers and content (440 Hz, peak 0.500).
+Checked and found fine: inline-volume Opus handling; WebAudio subscriber packet pacing, stop, track replacement, sequence numbers,
+and frame content (440 Hz, peak 0.500).
 
 ## Behaviour differences you should know about
 

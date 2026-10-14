@@ -71,6 +71,58 @@ test("WebAudioClient can connect to a gateway that does not require a token", as
 	}
 });
 
+test("WebAudioClient receives audio configuration sent immediately after WebSocket authentication", async () => {
+	const originalAudioWorkletNode = globalThis.AudioWorkletNode;
+	class FakeSocket extends EventTarget {
+		readyState = 1;
+		binaryType = "";
+		close() {
+			this.readyState = 3;
+		}
+	}
+	class FakeAudioWorkletNode {
+		port = { postMessage() {} };
+		connect() {}
+		disconnect() {}
+	}
+	globalThis.AudioWorkletNode = FakeAudioWorkletNode;
+	const client = new WebAudioClient({
+		audioContextFactory: () => ({
+			sampleRate: 48_000,
+			state: "running",
+			destination: {},
+			audioWorklet: { async addModule() {} },
+			async resume() {},
+			async close() {
+				this.state = "closed";
+			},
+		}),
+		webSocketFactory: () => {
+			const socket = new FakeSocket();
+			socket.addEventListener(
+				"open",
+				() => {
+					const event = new Event("message");
+					Object.defineProperty(event, "data", { value: JSON.stringify(config) });
+					socket.dispatchEvent(event);
+				},
+				{ once: true },
+			);
+			queueMicrotask(() => socket.dispatchEvent(new Event("open")));
+			return socket;
+		},
+	});
+
+	try {
+		await client.connect({ gatewayUrl: "ws://127.0.0.1:8080", sessionId: config.sessionId });
+		assert.deepEqual(client.config, config);
+	} finally {
+		await client.disconnect();
+		if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+		else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+	}
+});
+
 test("WebAudioClient decodes Opus into worklet audio and dispatches PCM before transferring samples", async () => {
 	const originalAudioWorkletNode = globalThis.AudioWorkletNode;
 	let socket;

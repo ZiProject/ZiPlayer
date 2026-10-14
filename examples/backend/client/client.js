@@ -193,7 +193,7 @@ function renderOutputs(outputs = []) {
 	if (!outputs.length) {
 		const empty = document.createElement("li");
 		empty.className = "empty-track";
-		empty.textContent = "No active audio outputs";
+		empty.textContent = "No active WebAudio subscribers";
 		outputsListElement.append(empty);
 		return;
 	}
@@ -211,8 +211,7 @@ function renderOutputs(outputs = []) {
 		const meta = document.createElement("div");
 		meta.className = "track-subtitle";
 		const badges = [];
-		if (output.isMaster) badges.push("👑 Pacing Master");
-		else badges.push("Secondary Sink");
+		badges.push("WebAudio subscriber");
 		if (output.state) badges.push(`State: ${output.state}`);
 		if (output.droppedChunks) badges.push(`Dropped: ${output.droppedChunks}`);
 		meta.textContent = badges.join(" · ");

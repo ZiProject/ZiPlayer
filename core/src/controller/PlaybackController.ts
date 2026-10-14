@@ -1,19 +1,12 @@
-import { AudioPlayer, AudioPlayerState, AudioPlayerStatus, AudioResource, StreamType } from "@discordjs/voice";
-import { Readable } from "stream";
-import type {
-	AudioFrameFormat,
-	AudioOutputBackend,
-	AudioOutputHandle,
-	AudioOutputState,
-	AudioOutputInput,
-} from "../output/AudioOutputBackend";
-import { AudioOutputUnsupportedOperationError } from "../output/AudioOutputBackend";
-import { audioFrameFormatFromDiscordStreamType, DiscordVoiceOutputBackend } from "../output/DiscordVoiceOutputBackend";
 import {
-	MultiAudioOutputBackend,
-	type AudioOutputInfo,
-	type AudioOutputRegistrationOptions,
-} from "../output/MultiAudioOutputBackend";
+	AudioPlayer,
+	AudioPlayerState,
+	AudioPlayerStatus,
+	AudioResource,
+	createAudioResource,
+	StreamType,
+} from "@discordjs/voice";
+import { Readable } from "stream";
 import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
@@ -39,9 +32,7 @@ import {
 /** Everything the controller keeps for ONE player. Lives only inside `PlaybackController.slots`. */
 interface PlaybackSlot {
 	readonly playerId: string;
-	readonly audioPlayer: AudioPlayer | null;
-	readonly outputBackend: MultiAudioOutputBackend;
-	backendInitialization: Promise<void> | null;
+	readonly audioPlayer: AudioPlayer;
 	readonly stuckTimeoutMs: number;
 	readonly recoveryHandlers: AntiStuckRetryHandlers;
 	readonly lifecycleAbort: AbortController;
@@ -49,14 +40,8 @@ interface PlaybackSlot {
 	readonly onStateChange: (oldState: AudioPlayerState, newState: AudioPlayerState) => void;
 	readonly onError: (error: Error) => void;
 	activeResource: AudioResource | null;
-	activeHandle: AudioOutputHandle<AudioResource> | null;
-	outputState: AudioOutputState;
-	readonly handles: Map<AudioResource, AudioOutputHandle<AudioResource>>;
-	readonly handleDetachers: Map<AudioResource, () => void>;
 	readonly volumeValues: Map<AudioResource, number>;
-	readonly disposalPromises: WeakMap<AudioOutputHandle<AudioResource>, Promise<void>>;
-	readonly stopPromises: Map<AudioOutputHandle<AudioResource>, Promise<boolean>>;
-	readonly startAbortControllers: Map<AudioOutputHandle<AudioResource>, AbortController>;
+	readonly stopPromises: Map<string, Promise<boolean>>;
 	activeSession: PlaybackSession | null;
 	transitionTimer: ReturnType<typeof setTimeout> | null;
 	transitionStartResolve: (() => void) | null;
@@ -65,6 +50,7 @@ interface PlaybackSlot {
 	resourceRefreshInProgress: boolean;
 	fadeGain: number | null;
 	fadeResource: AudioResource | null;
+	stopping: boolean;
 	disposed: boolean;
 }
 
@@ -90,34 +76,6 @@ export class PlaybackController {
 		this.bus = bus;
 
 		const at = (playerId: string) => this.slots.get(playerId);
-		bus.registerRpc<{ backend: AudioOutputBackend<any>; options: AudioOutputRegistrationOptions }, AudioOutputInfo>(
-			CONTROLLER_RPC.playbackOutputAdd,
-			({ backend, options }, ctx) => {
-				const slot = at(ctx.playerId);
-				if (!slot) throw new Error("No PlaybackController registered for this player");
-				return slot.outputBackend.addBackend(backend, options);
-			},
-		);
-		bus.registerRpc<{ id: string }, boolean>(CONTROLLER_RPC.playbackOutputRemove, ({ id }, ctx) => {
-			const slot = at(ctx.playerId);
-			if (!slot) return false;
-			return slot.outputBackend.removeBackend(id);
-		});
-		bus.registerRpc<void, AudioOutputInfo[]>(
-			CONTROLLER_RPC.playbackOutputList,
-			(_req, ctx) => at(ctx.playerId)?.outputBackend.listOutputs() ?? [],
-		);
-		bus.registerRpc<void, AudioOutputInfo>(CONTROLLER_RPC.playbackEnsureDiscord, async (_req, ctx) => {
-			const slot = at(ctx.playerId);
-			if (!slot?.audioPlayer) throw new Error("Discord Voice output requires an AudioPlayer");
-			const existing = slot.outputBackend.getOutput("discord");
-			if (existing) return existing;
-			return slot.outputBackend.addBackend(new DiscordVoiceOutputBackend(slot.audioPlayer), {
-				id: "discord",
-				name: "Discord Voice",
-				playerVolume: true,
-			});
-		});
 		bus.registerRpc<{ resource: AudioResource; from: number; to: number; durationMs: number }, void>(
 			PLAYER_RPC.transitionFade,
 			({ resource, from, to, durationMs }, ctx) => this.fadeResourceVolume(ctx.playerId, resource, from, to, durationMs),
@@ -175,28 +133,15 @@ export class PlaybackController {
 		if (!options.audioPlayer) {
 			throw new TypeError("An audioPlayer is required");
 		}
-		const outputBackend = new MultiAudioOutputBackend(new DiscordVoiceOutputBackend(options.audioPlayer), {
-			id: "discord",
-			name: "Discord Voice",
-			playerVolume: true,
-		});
 		const slot: PlaybackSlot = {
 			playerId,
-			audioPlayer: options.audioPlayer ?? null,
-			outputBackend,
-			backendInitialization: null,
+			audioPlayer: options.audioPlayer,
 			stuckTimeoutMs: Math.max(0, options.stuckTimeoutMs ?? 10000),
 			lifecycleAbort: new AbortController(),
 			detachBusHandlers: [],
 			activeResource: null,
-			activeHandle: null,
-			outputState: options.audioPlayer ? this.mapPlayerStatus(options.audioPlayer.state.status) : "ready",
-			handles: new Map(),
-			handleDetachers: new Map(),
 			volumeValues: new Map(),
-			disposalPromises: new WeakMap(),
 			stopPromises: new Map(),
-			startAbortControllers: new Map(),
 			activeSession: null,
 			transitionTimer: null,
 			transitionStartResolve: null,
@@ -205,6 +150,7 @@ export class PlaybackController {
 			resourceRefreshInProgress: false,
 			fadeGain: null,
 			fadeResource: null,
+			stopping: false,
 			disposed: false,
 			recoveryHandlers: {
 				retry: async ({ session }) => {
@@ -226,18 +172,19 @@ export class PlaybackController {
 			},
 			onStateChange: (a, b) => {
 				this.bus.publish(playerId, BUS_EVENT.stateChanged, a, b);
-				// A Discord subscriber is authoritative only while it is the composite's pacing sink.
-				if (!slot.outputBackend.isPacingOutput("discord")) return;
-				// Idle is not authoritative for a composite: secondary sinks can still have audio
-				// queued. Its handle emits the final ended state after all sinks drain.
-				if (b.status !== AudioPlayerStatus.Idle) slot.outputState = this.mapPlayerStatus(b.status);
 				if (b.status === AudioPlayerStatus.Buffering) this.armStuckWatchdog(slot);
-				else if (b.status !== AudioPlayerStatus.Idle) this.clearStuckWatchdog(slot);
+				else this.clearStuckWatchdog(slot);
 				if (b.status === AudioPlayerStatus.Idle && a.status !== AudioPlayerStatus.Idle) {
-					// In a multi-output session, Discord can finish before a slower secondary sink has
-					// drained. Only the composite handle may declare trackEnd after every sink is done.
 					const previousResource = "resource" in a ? a.resource : undefined;
-					if (previousResource && slot.activeResource && previousResource !== slot.activeResource) return;
+					if (!slot.stopping && previousResource && previousResource === slot.activeResource) {
+						const session = slot.activeSession;
+						if (session?.isActive()) {
+							this.bus.event(playerId, { type: BUS_EVENT.trackEnd, session: session.snapshot() });
+						}
+						slot.activeSession = null;
+						slot.activeResource = null;
+						slot.volumeValues.delete(previousResource);
+					}
 				}
 			},
 			onError: (error) => {
@@ -258,11 +205,12 @@ export class PlaybackController {
 				if (!slot.activeResource) return;
 				const track = slot.activeSession?.track ?? (slot.activeResource.metadata as Track | undefined);
 				void this.applyTargetVolume(slot, slot.activeResource, track, slot.fadeGain ?? 1).catch((error) =>
-					this.reportOutputOperationError(slot, slot.activeHandle, error),
+					this.reportAsyncFailure(slot, error, track ?? null),
 				);
 			}),
 		);
-		slot.audioPlayer?.on("stateChange", slot.onStateChange);
+		slot.audioPlayer.on("stateChange", slot.onStateChange);
+		slot.audioPlayer.on("error", slot.onError);
 		this.slots.set(playerId, slot);
 	}
 
@@ -281,15 +229,13 @@ export class PlaybackController {
 		slot.activeSession?.destroy();
 		slot.activeSession = null;
 		for (const detach of slot.detachBusHandlers.splice(0)) detach();
-		slot.audioPlayer?.removeListener("stateChange", slot.onStateChange);
-		const handleDisposals = [...slot.handles.values()].map((handle) => this.disposeOutputHandle(slot, handle));
-		void Promise.all(handleDisposals)
-			.then(() => slot.outputBackend.dispose())
-			.catch((error) => {
-				this.reportAsyncFailure(slot, error, null);
-			});
+		slot.audioPlayer.removeListener("stateChange", slot.onStateChange);
+		slot.audioPlayer.removeListener("error", slot.onError);
+		slot.stopping = true;
+		if (slot.activeResource) this.destroyResourceStream(slot.activeResource);
+		slot.audioPlayer.stop(true);
 		slot.activeResource = null;
-		slot.activeHandle = null;
+		slot.volumeValues.clear();
 	}
 
 	/** Global shutdown: releases every player's slot. */
@@ -351,44 +297,7 @@ export class PlaybackController {
 		return this.slots.get(playerId)?.audioPlayer?.state ?? null;
 	}
 	public status(playerId: string): AudioPlayerStatus | undefined {
-		const slot = this.slots.get(playerId);
-		return slot ? this.outputStatus(slot) : undefined;
-	}
-	private outputStatus(slot: PlaybackSlot): AudioPlayerStatus {
-		// Query the live handle state while a session exists. slot.outputState is a best-effort
-		// projection and can lag behind the actual sink lifecycle during startup / pause / resume.
-		if (slot.activeHandle) return this.mapOutputState(slot.activeHandle.state);
-		if (slot.outputBackend.isPacingOutput("discord")) {
-			return slot.audioPlayer?.state.status ?? this.mapOutputState(slot.outputState);
-		}
-		return this.mapOutputState(slot.outputState);
-	}
-	private mapPlayerStatus(status: AudioPlayerStatus): AudioOutputState {
-		switch (status) {
-			case AudioPlayerStatus.Buffering:
-				return "buffering";
-			case AudioPlayerStatus.Playing:
-				return "playing";
-			case AudioPlayerStatus.Paused:
-			case AudioPlayerStatus.AutoPaused:
-				return "paused";
-			case AudioPlayerStatus.Idle:
-				return "stopped";
-			default:
-				return "stopped";
-		}
-	}
-	private mapOutputState(state: AudioOutputState): AudioPlayerStatus {
-		switch (state) {
-			case "buffering":
-				return AudioPlayerStatus.Buffering;
-			case "playing":
-				return AudioPlayerStatus.Playing;
-			case "paused":
-				return AudioPlayerStatus.Paused;
-			default:
-				return AudioPlayerStatus.Idle;
-		}
+		return this.slots.get(playerId)?.audioPlayer.state.status;
 	}
 	public currentResource(playerId: string): AudioResource | null {
 		const slot = this.slots.get(playerId);
@@ -448,28 +357,11 @@ export class PlaybackController {
 		signal?: AbortSignal,
 	): Promise<void> {
 		if (!resource) return;
-		let handle = slot.handles.get(resource);
-		if (!handle && typeof (slot.outputBackend as any).getSessionHandle === "function") {
-			try {
-				handle = (slot.outputBackend as any).getSessionHandle(resource);
-				if (handle) this.registerOutputHandle(slot, handle);
-			} catch {}
-		}
 		const target = this.requestVolumeTarget(slot.playerId, track);
 		const value = target * Math.max(0, Number.isFinite(gain) ? gain : 1);
-		if (slot.outputBackend.capabilities.volume === "unsupported") {
-			if (value === 1) return;
-			throw new AudioOutputUnsupportedOperationError("volume control");
-		}
-		if (!handle) {
-			if ((resource as any)?.volume && typeof (resource as any).volume.setVolume === "function") {
-				(resource as any).volume.setVolume(value);
-				slot.volumeValues.set(resource, value);
-				return;
-			}
-			throw new Error("No output handle is registered for the requested resource");
-		}
-		await handle.setVolume(value, signal ?? slot.lifecycleAbort.signal);
+		if (signal?.aborted || slot.lifecycleAbort.signal.aborted) throw this.outputAbortError();
+		if (resource.volume) resource.volume.setVolume(value);
+		else if (value !== 1) throw new Error("AudioResource must be created with inline volume enabled");
 		slot.volumeValues.set(resource, value);
 	}
 
@@ -503,7 +395,7 @@ export class PlaybackController {
 			slot.stuckTimer = null;
 			if (
 				slot.resourceRefreshInProgress ||
-				slot.outputState !== "buffering" ||
+				slot.audioPlayer.state.status !== AudioPlayerStatus.Buffering ||
 				slot.activeResource !== resource ||
 				slot.activeSession !== session
 			)
@@ -530,7 +422,7 @@ export class PlaybackController {
 		const slot = this.slots.get(playerId);
 		if (!slot) return;
 		slot.resourceRefreshInProgress = false;
-		if (slot.outputState === "buffering") this.armStuckWatchdog(slot);
+		if (slot.audioPlayer.state.status === AudioPlayerStatus.Buffering) this.armStuckWatchdog(slot);
 	}
 	public reportFilterError(playerId: string, error: Error): void {
 		const slot = this.slots.get(playerId);
@@ -570,7 +462,7 @@ export class PlaybackController {
 		const resolvedInputType = inputType ?? (stream as Readable & { inputType?: StreamType }).inputType;
 		const processingOptions = this.processingOptions.get(playerId) ?? {};
 		const slot = this.slots.get(playerId);
-		if (!slot) throw new Error("No output backend is attached for this player");
+		if (!slot) throw new Error("No AudioPlayer is attached for this player");
 		const outputSignal = signal ? AbortSignal.any([slot.lifecycleAbort.signal, signal]) : slot.lifecycleAbort.signal;
 		if (resolvedInputType === StreamType.Raw) {
 			if (!stream.destroyed) stream.destroy();
@@ -597,7 +489,6 @@ export class PlaybackController {
 				if (!stream.destroyed) stream.destroy();
 				throw error;
 			}
-			const outputFormat: AudioFrameFormat = { kind: "encoded", codec: "opus", container: "ogg" };
 			let processedStream: Readable;
 			// Destroying the output aborts FFmpeg and the source even when the upstream stream is silent.
 			const processingAbort = new AbortController();
@@ -645,114 +536,30 @@ export class PlaybackController {
 				baseDestroy.call(this, error, callback);
 			};
 			processedStream.once("close", () => outputSignal.removeEventListener("abort", abortProcessing));
-			return this.createOutputResource(slot, processedStream, track, outputFormat, outputSignal);
+			return this.createInlineVolumeResource(processedStream, track, StreamType.OggOpus, outputSignal);
 		}
-		return this.createOutputResource(slot, stream, track, audioFrameFormatFromDiscordStreamType(resolvedInputType), outputSignal);
+		return this.createInlineVolumeResource(stream, track, resolvedInputType, outputSignal);
 	}
 
-	private createOutputResource(
-		slot: PlaybackSlot,
+	private createInlineVolumeResource(
 		stream: Readable,
 		track: Track,
-		format: AudioFrameFormat,
+		inputType?: StreamType,
 		signal?: AbortSignal,
 	): AudioResource {
-		const input: AudioOutputInput = { stream, format, ownership: "transfer" };
-		if (slot.outputBackend.capabilities.ownership !== "both" && slot.outputBackend.capabilities.ownership !== input.ownership) {
-			if (!stream.destroyed) stream.destroy();
-			throw new TypeError(`Output backend does not accept ${input.ownership} stream ownership`);
-		}
 		try {
-			const handle = slot.outputBackend.createSession(input, { metadata: track, signal });
-			this.registerOutputHandle(slot, handle);
-			return handle.resource;
+			const resource = createAudioResource(stream, { inputType, metadata: track, inlineVolume: true });
+			const abortResource = () => {
+				if (!stream.destroyed) stream.destroy();
+			};
+			if (signal?.aborted) abortResource();
+			else signal?.addEventListener("abort", abortResource, { once: true });
+			stream.once("close", () => signal?.removeEventListener("abort", abortResource));
+			return resource;
 		} catch (error) {
-			if (input.ownership === "transfer" && !stream.destroyed) stream.destroy();
+			if (!stream.destroyed) stream.destroy();
 			throw error;
 		}
-	}
-
-	private registerOutputHandle(slot: PlaybackSlot, handle: AudioOutputHandle<AudioResource>): void {
-		if (slot.handles.get(handle.resource) === handle) return;
-		const detach = handle.onEvent((event) => {
-			if (slot.handles.get(handle.resource) !== handle) return;
-			if (event.type === "error") {
-				this.handleOutputError(slot, handle, event.error);
-				return;
-			}
-			if (event.type === "sinkError") {
-				this.bus.event(slot.playerId, {
-					type: BUS_EVENT.streamError,
-					error: new Error(`Audio output "${event.sinkId}" failed: ${event.error.message}`),
-					track: (handle.resource as AudioResource).metadata as Track | null,
-				});
-				return;
-			}
-			if (slot.activeHandle !== handle) return;
-			slot.outputState = event.state;
-			if (event.state === "buffering") this.armStuckWatchdog(slot);
-			else this.clearStuckWatchdog(slot);
-			if (event.state === "ended" && slot.activeHandle === handle) {
-				const session = slot.activeSession;
-				if (session?.isActive()) this.bus.event(slot.playerId, { type: BUS_EVENT.trackEnd, session: session.snapshot() });
-				slot.activeSession = null;
-				slot.activeResource = null;
-				slot.activeHandle = null;
-				void this.disposeOutputHandle(slot, handle);
-			} else if (event.state === "stopped" && slot.activeHandle === handle) {
-				slot.activeResource = null;
-				slot.activeHandle = null;
-				if (!slot.resourceRefreshInProgress) {
-					slot.activeSession?.markStopped();
-					slot.activeSession = null;
-				}
-			}
-		});
-		slot.handles.set(handle.resource, handle);
-		slot.handleDetachers.set(handle.resource, detach);
-	}
-
-	private handleOutputError(slot: PlaybackSlot, handle: AudioOutputHandle<AudioResource>, error: Error): void {
-		if (slot.handles.get(handle.resource) !== handle) return;
-		if (slot.activeHandle !== handle) {
-			this.bus.event(slot.playerId, {
-				type: BUS_EVENT.streamError,
-				error,
-				track: (handle.resource as AudioResource).metadata as Track | null,
-			});
-			void this.disposeOutputHandle(slot, handle);
-			return;
-		}
-		slot.outputState = "failed";
-		const session = slot.activeSession;
-		if (session?.isActive()) {
-			this.bus.event(slot.playerId, { type: BUS_EVENT.trackError, session: session.snapshot(), error });
-			void this.reportStuck(slot, session, `audio output error: ${error.message}`).catch((reportError) =>
-				this.bus.event(slot.playerId, {
-					type: BUS_EVENT.streamError,
-					error: reportError instanceof Error ? reportError : new Error(String(reportError)),
-					track: session.track,
-				}),
-			);
-		} else {
-			this.bus.event(slot.playerId, { type: BUS_EVENT.streamError, error, track: null });
-		}
-		slot.activeHandle = null;
-		slot.activeResource = null;
-		void this.disposeOutputHandle(slot, handle);
-	}
-
-	private reportOutputOperationError(slot: PlaybackSlot, handle: AudioOutputHandle<AudioResource> | null, error: unknown): void {
-		const normalized = error instanceof Error ? error : new Error(String(error));
-		if (normalized instanceof AudioOutputUnsupportedOperationError) {
-			this.bus.event(slot.playerId, { type: BUS_EVENT.streamError, error: normalized, track: slot.activeSession?.track ?? null });
-			return;
-		}
-		if (handle && slot.handles.get(handle.resource) === handle) {
-			this.handleOutputError(slot, handle, normalized);
-			return;
-		}
-		this.bus.event(slot.playerId, { type: BUS_EVENT.streamError, error: normalized, track: null });
 	}
 
 	public play(
@@ -764,219 +571,29 @@ export class PlaybackController {
 		signal?: AbortSignal,
 	): void | Promise<void> {
 		const slot = this.slots.get(playerId);
-		if (!slot) return;
-		if (session && !session.isActive()) return;
-		let handle = slot.handles.get(resource);
-		if (!handle && typeof (slot.outputBackend as any).getSessionHandle === "function") {
-			try {
-				handle = (slot.outputBackend as any).getSessionHandle(resource);
-				if (handle) this.registerOutputHandle(slot, handle);
-			} catch {}
-		}
-		if (!handle) throw new Error("No output handle is registered for the requested resource");
-		if (slot.audioPlayer && slot.outputBackend.hasOutputId("discord") && slot.outputBackend.listOutputs().length === 1) {
-			return this.playDiscordCompatibility(slot, resource, handle, session, from, to);
-		}
-		return this.playWithBackend(slot, resource, handle, session, from, to, signal);
-	}
-
-	private async playWithBackend(
-		slot: PlaybackSlot,
-		resource: AudioResource,
-		handle: AudioOutputHandle<AudioResource>,
-		session?: PlaybackSession,
-		from?: Track | null,
-		to?: Track,
-		signal?: AbortSignal,
-	): Promise<void> {
-		const playerId = slot.playerId;
+		if (!slot || (session && !session.isActive())) return;
+		if (signal?.aborted || slot.lifecycleAbort.signal.aborted) throw this.outputAbortError();
 		this.cancelTransition(slot);
 		const track = session?.track ?? to ?? (resource.metadata as Track | undefined);
 		const plan = from && to ? this.requestTransitionPlan(playerId, from, to) : undefined;
-		if (
-			plan?.enabled &&
-			slot.activeResource &&
-			slot.outputState !== "stopped" &&
-			slot.outputState !== "ended" &&
-			slot.outputState !== "failed"
-		) {
-			if (slot.outputBackend.capabilities.volume === "unsupported") {
-				await this.disposeOutputHandle(slot, handle);
-				throw new AudioOutputUnsupportedOperationError("crossfade volume control");
-			}
-			if (slot.outputBackend.capabilities.replacement === "unsupported") {
-				await this.disposeOutputHandle(slot, handle);
-				throw new AudioOutputUnsupportedOperationError("track replacement");
-			}
-			try {
-				await this.fadeTransition(slot, slot.activeResource, resource, plan, session, track);
-			} catch (error) {
-				if (slot.fadeResource === resource) {
-					if (slot.fadeTimer) clearInterval(slot.fadeTimer);
-					slot.fadeTimer = null;
-					slot.fadeGain = null;
-					slot.fadeResource = null;
-				}
-				if (slot.activeHandle === handle) {
-					this.handleOutputError(slot, handle, error instanceof Error ? error : new Error(String(error)));
-				} else {
-					await this.disposeOutputHandle(slot, handle);
-				}
+		if (plan?.enabled && slot.activeResource && slot.audioPlayer.state.status !== AudioPlayerStatus.Idle) {
+			return this.fadeTransition(slot, slot.activeResource, resource, plan, session, track).catch((error) => {
+				if (slot.fadeResource === resource) this.cancelFadeSlot(slot);
 				throw error;
-			}
-			return;
+			});
 		}
 		slot.fadeGain = null;
-		try {
-			await this.startOutputHandle(slot, handle, signal ?? session?.signal, (activeSignal) =>
-				this.applyTargetVolume(slot, resource, track, 1, activeSignal),
-			);
-			if (slot.disposed || slot.activeHandle !== handle) {
-				throw this.outputAbortError();
-			}
-			if (session) session.setResource(resource);
-			slot.activeSession = session ?? null;
-			slot.activeResource = resource;
-			this.retirePendingSession(playerId);
-		} catch (error) {
-			if (slot.activeHandle !== handle) await this.disposeOutputHandle(slot, handle);
-			throw error;
+		const volumeUpdate = this.applyTargetVolume(slot, resource, track);
+		if (signal?.aborted || slot.lifecycleAbort.signal.aborted || slot.disposed) {
+			this.destroyResourceStream(resource);
+			throw this.outputAbortError();
 		}
-	}
-
-	private playDiscordCompatibility(
-		slot: PlaybackSlot,
-		resource: AudioResource,
-		handle: AudioOutputHandle<AudioResource>,
-		session?: PlaybackSession,
-		from?: Track | null,
-		to?: Track,
-	): void {
-		this.cancelTransition(slot);
-		const track = session?.track ?? to ?? (resource.metadata as Track | undefined);
-		const plan = from && to ? this.requestTransitionPlan(slot.playerId, from, to) : undefined;
-		const currentStatus = this.outputStatus(slot);
-		if (plan?.enabled && slot.activeResource && currentStatus !== AudioPlayerStatus.Idle) {
-			if (slot.outputBackend.capabilities.volume === "unsupported") {
-				void this.disposeOutputHandle(slot, handle);
-				throw new AudioOutputUnsupportedOperationError("crossfade volume control");
-			}
-			if (slot.outputBackend.capabilities.replacement === "unsupported") {
-				void this.disposeOutputHandle(slot, handle);
-				throw new AudioOutputUnsupportedOperationError("track replacement");
-			}
-			void this.fadeTransition(slot, slot.activeResource, resource, plan, session, track).catch((error) =>
-				this.reportOutputOperationError(slot, slot.handles.get(resource) ?? null, error),
-			);
-			return;
-		}
-		slot.fadeGain = null;
-		void this.applyTargetVolume(slot, resource, track, 1).catch((error) => {
-			this.reportOutputOperationError(slot, handle, error);
-		});
 		if (session) session.setResource(resource);
 		slot.activeSession = session ?? null;
 		slot.activeResource = resource;
-		slot.activeHandle = handle;
-		try {
-			const startPromise = handle.start(session?.signal);
-			if (startPromise && typeof (startPromise as any).catch === "function") {
-				void (startPromise as Promise<void>).catch(() => undefined);
-			}
-			slot.outputState = handle.state;
-			this.retirePendingSession(slot.playerId);
-		} catch (error) {
-			this.handleOutputError(slot, handle, error instanceof Error ? error : new Error(String(error)));
-			throw error;
-		}
-	}
-
-	private async startOutputHandle(
-		slot: PlaybackSlot,
-		handle: AudioOutputHandle<AudioResource>,
-		signal?: AbortSignal,
-		beforeStart?: (signal: AbortSignal) => void | Promise<void>,
-	): Promise<void> {
-		const lifecycleSignal = slot.lifecycleAbort.signal;
-		const startAbort = new AbortController();
-		slot.startAbortControllers.set(handle, startAbort);
-		const signals = [lifecycleSignal, startAbort.signal];
-		if (signal) signals.push(signal);
-		const activeSignal = AbortSignal.any(signals);
-		let previous = slot.activeHandle;
-		try {
-			slot.backendInitialization ??= slot.outputBackend.initialize(lifecycleSignal);
-			await this.awaitWithAbort(slot.backendInitialization, activeSignal);
-			await this.awaitWithAbort(handle.ready, activeSignal);
-			if (activeSignal.aborted) throw new Error("Audio output start was aborted");
-			previous = slot.activeHandle;
-			if (previous && previous !== handle) {
-				if (slot.outputBackend.capabilities.replacement === "unsupported") {
-					throw new AudioOutputUnsupportedOperationError("track replacement");
-				}
-				if (slot.outputBackend.capabilities.replacement === "stop-before-start") {
-					try {
-						await previous.stop(activeSignal);
-					} catch (error) {
-						await this.disposeOutputHandle(slot, previous);
-						if (slot.activeHandle === previous) {
-							slot.activeHandle = null;
-							slot.activeResource = null;
-							if (!slot.resourceRefreshInProgress) {
-								slot.activeSession?.markStopped();
-								slot.activeSession = null;
-							}
-						}
-						throw error;
-					}
-					await this.disposeOutputHandle(slot, previous);
-					if (slot.activeHandle === previous) {
-						slot.activeHandle = null;
-						slot.activeResource = null;
-						if (!slot.resourceRefreshInProgress) {
-							slot.activeSession?.markStopped();
-							slot.activeSession = null;
-						}
-					}
-				}
-			}
-			await beforeStart?.(activeSignal);
-			if (activeSignal.aborted || slot.disposed) throw this.outputAbortError();
-			await handle.start(activeSignal);
-			if (activeSignal.aborted || slot.disposed) throw this.outputAbortError();
-			if (slot.handles.get(handle.resource) !== handle || handle.state === "failed") {
-				throw new Error("Audio output handle failed during startup");
-			}
-			slot.activeHandle = handle;
-			slot.outputState = handle.state;
-			if (previous && previous !== handle) await this.disposeOutputHandle(slot, previous);
-		} catch (error) {
-			const normalized = error instanceof Error ? error : new Error(String(error));
-			if (slot.activeHandle === handle) {
-				this.handleOutputError(slot, handle, normalized);
-			} else if (!activeSignal.aborted && !(normalized.name === "AbortError")) {
-				this.reportOutputOperationError(slot, handle, normalized);
-			}
-			if (
-				previous &&
-				slot.activeHandle === previous &&
-				(previous.state === "stopped" || previous.state === "ended" || previous.state === "failed")
-			) {
-				slot.activeHandle = null;
-				slot.activeResource = null;
-				if (!slot.resourceRefreshInProgress) {
-					slot.activeSession?.markStopped();
-					slot.activeSession = null;
-				}
-				slot.outputState = previous.state;
-				await this.disposeOutputHandle(slot, previous);
-			}
-			throw error;
-		} finally {
-			if (slot.startAbortControllers.get(handle) === startAbort) {
-				slot.startAbortControllers.delete(handle);
-			}
-		}
+		slot.audioPlayer.play(resource);
+		this.retirePendingSession(playerId);
+		return volumeUpdate;
 	}
 
 	private async awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -1001,43 +618,13 @@ export class PlaybackController {
 	}
 
 	private outputAbortError(): Error {
-		const error = new Error("Audio output operation was aborted");
+		const error = new Error("Audio playback operation was aborted");
 		error.name = "AbortError";
 		return error;
 	}
 
-	private async disposeOutputHandle(slot: PlaybackSlot, handle: AudioOutputHandle<AudioResource>): Promise<void> {
-		const existing = slot.disposalPromises.get(handle);
-		if (existing) return existing;
-		const detach = slot.handleDetachers.get(handle.resource);
-		detach?.();
-		slot.handleDetachers.delete(handle.resource);
-		slot.handles.delete(handle.resource);
-		slot.volumeValues.delete(handle.resource);
-		let finishDisposal!: () => void;
-		const disposal = new Promise<void>((resolve) => {
-			finishDisposal = resolve;
-		});
-		slot.disposalPromises.set(handle, disposal);
-		const reportDisposalFailure = (error: unknown) => {
-			try {
-				this.bus.event(slot.playerId, {
-					type: BUS_EVENT.streamError,
-					error: error instanceof Error ? error : new Error(String(error)),
-					track: slot.activeSession?.track ?? ((handle.resource as AudioResource).metadata as Track | null),
-				});
-			} catch (reportError) {
-				console.error("[PlaybackController] Failed to report output disposal error:", reportError);
-			} finally {
-				finishDisposal();
-			}
-		};
-		try {
-			void Promise.resolve(handle.dispose()).then(finishDisposal, reportDisposalFailure);
-		} catch (error) {
-			reportDisposalFailure(error);
-		}
-		return disposal;
+	private destroyResourceStream(resource: AudioResource): void {
+		if (resource.playStream && !resource.playStream.destroyed) resource.playStream.destroy();
 	}
 
 	public async fadeResourceVolume(
@@ -1066,33 +653,13 @@ export class PlaybackController {
 		}
 	}
 	private async setResourceVolume(slot: PlaybackSlot, resource: AudioResource, value: number): Promise<void> {
-		let handle = slot.handles.get(resource);
-		if (!handle && typeof (slot.outputBackend as any).getSessionHandle === "function") {
-			try {
-				handle = (slot.outputBackend as any).getSessionHandle(resource);
-				if (handle) this.registerOutputHandle(slot, handle);
-			} catch {}
-		}
-		if (slot.outputBackend.capabilities.volume === "unsupported") {
-			throw new AudioOutputUnsupportedOperationError("volume control");
-		}
-		if (!handle) {
-			if ((resource as any)?.volume && typeof (resource as any).volume.setVolume === "function") {
-				(resource as any).volume.setVolume(value);
-				slot.volumeValues.set(resource, value);
-				return;
-			}
-			throw new Error("No output handle is registered for the requested resource");
-		}
-		await handle.setVolume(value, slot.lifecycleAbort.signal);
+		if (resource.volume) resource.volume.setVolume(value);
+		else if (value !== 1) throw new Error("AudioResource must be created with inline volume enabled");
 		slot.volumeValues.set(resource, value);
 	}
 	public async applyCrossfadeIn(playerId: string, resource: AudioResource, track: Track): Promise<void> {
 		const slot = this.slots.get(playerId);
 		if (!slot || slot.disposed) return;
-		if (slot.outputBackend.capabilities.volume === "unsupported") {
-			throw new AudioOutputUnsupportedOperationError("crossfade volume control");
-		}
 		await this.applyTargetVolume(slot, resource, track, 1);
 		const target = slot.volumeValues.get(resource) ?? 0;
 		await this.setResourceVolume(slot, resource, 0);
@@ -1147,36 +714,18 @@ export class PlaybackController {
 			slot.transitionTimer = null;
 			if (slot.disposed || (session && !session.isActive())) {
 				this.cancelFadeSlot(slot);
+				this.destroyResourceStream(newResource);
 				return;
 			}
-			slot.fadeGain = 0;
-			const handle = slot.handles.get(newResource);
-			if (!handle) throw new Error("No output handle is registered for the transition resource");
-			await this.startOutputHandle(slot, handle, session?.signal, (activeSignal) =>
-				this.applyTargetVolume(slot, newResource, track, 0, activeSignal),
-			);
-			if (slot.disposed || slot.activeHandle !== handle) {
-				if (slot.activeHandle !== handle) await this.disposeOutputHandle(slot, handle);
-				return;
-			}
-			if (session && !session.isActive()) {
-				try {
-					await handle.stop(slot.lifecycleAbort.signal);
-				} catch (error) {
-					this.reportOutputOperationError(slot, handle, error);
-				}
-				await this.disposeOutputHandle(slot, handle);
-				if (slot.activeHandle === handle) {
-					slot.activeHandle = null;
-					slot.activeResource = null;
-					slot.activeSession = null;
-					slot.outputState = "stopped";
-				}
+			await this.applyTargetVolume(slot, newResource, track, 0, session?.signal);
+			if (slot.disposed || (session && !session.isActive())) {
+				this.destroyResourceStream(newResource);
 				return;
 			}
 			if (session) session.setResource(newResource);
 			slot.activeSession = session ?? null;
 			slot.activeResource = newResource;
+			slot.audioPlayer.play(newResource);
 			this.retirePendingSession(slot.playerId);
 			if (slot.fadeGain === null) {
 				slot.fadeResource = null;
@@ -1189,15 +738,15 @@ export class PlaybackController {
 					this.cancelFadeSlot(slot);
 					return;
 				}
-				const p = Math.min(1, (Date.now() - start) / Math.max(1, plan.durationMs));
-				slot.fadeGain = p;
-				void this.applyTargetVolume(slot, newResource, track, p).catch((error) =>
-					this.reportOutputOperationError(slot, handle, error),
+				const progress = Math.min(1, (Date.now() - start) / Math.max(1, plan.durationMs));
+				slot.fadeGain = progress;
+				void this.applyTargetVolume(slot, newResource, track, progress).catch((error) =>
+					this.reportAsyncFailure(slot, error, track ?? null),
 				);
-				if (p >= 1) {
+				if (progress >= 1) {
 					this.cancelFadeSlot(slot);
 					void this.applyTargetVolume(slot, newResource, track, 1).catch((error) =>
-						this.reportOutputOperationError(slot, handle, error),
+						this.reportAsyncFailure(slot, error, track ?? null),
 					);
 				}
 			}, 25);
@@ -1227,51 +776,46 @@ export class PlaybackController {
 			const resource = slot.fadeResource ?? slot.activeResource;
 			slot.fadeResource = null;
 			if (resource) {
-				const track =
-					resource === slot.activeResource ?
-						(slot.activeSession?.track ?? (resource.metadata as Track | undefined))
-					:	(resource.metadata as Track | undefined);
-				void this.applyTargetVolume(slot, resource, track, 1).catch((error) => {
-					const handle = slot.handles.get(resource);
-					this.reportOutputOperationError(slot, handle ?? null, error);
-				});
+				const track = resource === slot.activeResource ?
+					(slot.activeSession?.track ?? (resource.metadata as Track | undefined)) :
+					(resource.metadata as Track | undefined);
+				void this.applyTargetVolume(slot, resource, track, 1).catch((error) =>
+					this.reportAsyncFailure(slot, error, track ?? null),
+				);
 			}
 		}
 	}
+
 	private cancelTransition(slot: PlaybackSlot): void {
 		if (slot.transitionTimer) {
 			clearTimeout(slot.transitionTimer);
 			slot.transitionTimer = null;
 			const resource = slot.fadeResource;
-			const handle = resource ? slot.handles.get(resource) : undefined;
-			if (handle && slot.activeHandle !== handle) {
-				void this.disposeOutputHandle(slot, handle);
-			}
+			if (resource && resource !== slot.activeResource) this.destroyResourceStream(resource);
 			slot.transitionStartResolve?.();
 			slot.transitionStartResolve = null;
 		}
 		this.cancelFadeSlot(slot);
 	}
+
 	public async pause(playerId: string, signal?: AbortSignal): Promise<boolean> {
 		const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
-		if (mode === PlaybackMode.REMOTE) {
-			return this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemotePause, {});
-		}
+		if (mode === PlaybackMode.REMOTE) return this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemotePause, {});
 		const slot = this.slots.get(playerId);
-		if (!slot?.activeHandle) return false;
-		if (!slot.outputBackend.capabilities.pause) throw new AudioOutputUnsupportedOperationError("pause");
-		return slot.activeHandle.pause(signal ?? slot.lifecycleAbort.signal);
+		if (!slot?.activeResource) return false;
+		if (signal?.aborted) throw this.outputAbortError();
+		return slot.audioPlayer.pause();
 	}
+
 	public async resume(playerId: string, signal?: AbortSignal): Promise<boolean> {
 		const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
-		if (mode === PlaybackMode.REMOTE) {
-			return this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteResume, {});
-		}
+		if (mode === PlaybackMode.REMOTE) return this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackRemoteResume, {});
 		const slot = this.slots.get(playerId);
-		if (!slot?.activeHandle) return false;
-		if (!slot.outputBackend.capabilities.resume) throw new AudioOutputUnsupportedOperationError("resume");
-		return slot.activeHandle.resume(signal ?? slot.lifecycleAbort.signal);
+		if (!slot?.activeResource) return false;
+		if (signal?.aborted) throw this.outputAbortError();
+		return slot.audioPlayer.unpause();
 	}
+
 	public async stop(playerId: string, signal?: AbortSignal): Promise<boolean> {
 		const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
 		if (mode === PlaybackMode.REMOTE) {
@@ -1291,51 +835,38 @@ export class PlaybackController {
 		const slot = this.slots.get(playerId);
 		if (!slot) return false;
 		this.cancelTransition(slot);
-		for (const startAbort of slot.startAbortControllers.values()) startAbort.abort();
-		const handle = slot.activeHandle;
-		const pendingDisposals = [...slot.handles.values()]
-			.filter((candidate) => candidate !== handle)
-			.map((candidate) => this.disposeOutputHandle(slot, candidate));
-		await Promise.all(pendingDisposals);
-		if (!handle) return false;
-		const ongoing = slot.stopPromises.get(handle);
-		if (ongoing) return ongoing;
-		const operation = Promise.resolve().then(async () => {
+		if (signal?.aborted) throw this.outputAbortError();
+		const ongoing = slot.stopPromises.get(playerId);
+		if (ongoing) return signal ? this.awaitWithAbort(ongoing, signal) : ongoing;
+		const operation = Promise.resolve().then(() => {
+			if (signal?.aborted) throw this.outputAbortError();
+			const resource = slot.activeResource;
+			if (!resource) return false;
 			const session = slot.activeSession;
-			let stopped = false;
-			let stopError: unknown;
-			let stopFailed = false;
+			slot.stopping = true;
+			let stopped: boolean;
 			try {
-				if (!slot.outputBackend.capabilities.stop) {
-					throw new AudioOutputUnsupportedOperationError("stop");
-				}
-				const stopSignal = signal ?? slot.lifecycleAbort.signal;
-				const stopOperation = Promise.resolve().then(() => handle.stop(stopSignal));
-				stopped = await this.awaitWithAbort(stopOperation, stopSignal);
-			} catch (error) {
-				stopFailed = true;
-				stopError = error;
+				stopped = slot.audioPlayer.stop(true);
+				this.destroyResourceStream(resource);
+			} finally {
+				slot.stopping = false;
 			}
-			await this.disposeOutputHandle(slot, handle);
-			if (slot.activeHandle === handle) {
-				slot.activeHandle = null;
-				slot.activeResource = null;
-				slot.outputState = "stopped";
-				if (slot.activeSession === session) {
-					session?.markStopped();
-					slot.activeSession = null;
-				}
+			slot.activeResource = null;
+			slot.volumeValues.delete(resource);
+			if (slot.activeSession === session) {
+				session?.markStopped();
+				slot.activeSession = null;
 			}
-			if (stopFailed) throw stopError;
 			return stopped;
 		});
-		slot.stopPromises.set(handle, operation);
+		slot.stopPromises.set(playerId, operation);
 		try {
-			return await operation;
+			return signal ? await this.awaitWithAbort(operation, signal) : await operation;
 		} finally {
-			if (slot.stopPromises.get(handle) === operation) slot.stopPromises.delete(handle);
+			if (slot.stopPromises.get(playerId) === operation) slot.stopPromises.delete(playerId);
 		}
 	}
+
 	public async seek(playerId: string, position: number, session?: PlaybackSession): Promise<boolean> {
 		if (!this.slots.has(playerId)) return false;
 		if (!Number.isFinite(position) || position < 0) return false;

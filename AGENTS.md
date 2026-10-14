@@ -5,7 +5,7 @@ Read the root [`README.md`](README.md) for public setup and player workflows. Fo
 
 ## Repository structure
 
-- `core/src/` contains the player facade, manager, controllers, stream handling, output backends, and public exports. Edit source
+- `core/src/` contains the player facade, manager, controllers, stream handling, audio subscribers, and public exports. Edit source
   here; `core/dist/` is generated.
 - `plugins/`, `extension/`, `infinity/`, and `adapters/` are separate integration packages.
 - `client/` is the browser Opus receiver package. Keep its browser entry free of Node.js APIs.
@@ -20,8 +20,9 @@ Read the root [`README.md`](README.md) for public setup and player workflows. Fo
 - Discord Voice and WebAudio outputs subscribe to the shared `@discordjs/voice` `AudioPlayer`; attach browser output with
   `player.connect(webConnection)`. `WebAudioConnection` publishes only Opus packets in Wire Format v1 frames through an
   application gateway. The `@ziplayer/client` browser receiver decodes Opus to PCM locally for AudioWorklet playback.
-- PCM is an internal DSP/codec format, not a WebSocket transport. Do not reintroduce a PCM browser backend or the removed
-  `audioOutputBackendFactory`; dynamic custom stream outputs use `player.connect(backend)`.
+- PCM remains internal to DSP/codec processing and browser decoding, not a WebSocket transport. Do not reintroduce server-side PCM
+  output backends or a custom output backend/factory API. Discord Voice and WebAudio connections subscribe directly to the shared
+  `AudioPlayer`; attach browser output with `player.connect(webConnection)`.
 - The current player stack supports queue orchestration, smart preloading, crossfade/transition flow, loudness normalization,
   anti-stuck recovery, filter chains, and browser/WebSocket publishing in addition to standard voice playback.
 - The DSP pipeline (`FFmpegAudioProcessingEngine`) runs FFmpeg as a child process and emits PCM. `audioProcessing.inputFormat`

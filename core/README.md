@@ -176,6 +176,105 @@ server. In the browser, import `WebAudioClient` from `@ziplayer/client` and call
 starting stream, connect with `nextPublisher: true` before requesting playback so the listener is ready before the first Opus
 frames arrive. The client validates the protocol, decodes Opus, and plays it through a bounded AudioWorklet buffer.
 
+### Minimal browser client (Vite)
+
+The browser package receives and plays audio; it does not start or control a ZiPlayer. Point it at an application gateway that
+implements the `/listen` WebSocket endpoint and is already publishing the selected player's stream. Start a vanilla Vite app and
+install the client:
+
+```sh
+npm create vite@latest ziplayer-web -- --template vanilla
+cd ziplayer-web
+npm install
+npm install @ziplayer/client
+npm run dev
+```
+
+Replace `index.html` with a small page containing the gateway URL and the exact player ID used by `WebAudioConnection`:
+
+```html
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>ZiPlayer listener</title>
+	</head>
+	<body>
+		<label>
+			Gateway WebSocket URL
+			<input id="gateway" value="ws://127.0.0.1:8080" />
+		</label>
+		<label>
+			Player ID
+			<input id="session" value="web-audio-demo" />
+		</label>
+		<label>
+			Token (if required by your gateway)
+			<input id="token" type="password" autocomplete="off" />
+		</label>
+		<button id="connect">Listen</button>
+		<button id="disconnect" disabled>Disconnect</button>
+		<p id="status">Disconnected</p>
+		<script type="module" src="/src/main.js"></script>
+	</body>
+</html>
+```
+
+Replace `src/main.js` with:
+
+```js
+import { WebAudioClient } from "@ziplayer/client";
+
+const client = new WebAudioClient();
+const connectButton = document.querySelector("#connect");
+const disconnectButton = document.querySelector("#disconnect");
+const status = document.querySelector("#status");
+
+client.addEventListener("config", ({ detail }) => {
+	status.textContent = `Receiving audio from: ${detail.sessionId}`;
+});
+client.addEventListener("error", ({ detail }) => {
+	status.textContent = `Audio error: ${detail.error.message}`;
+	console.error("ZiPlayer client error:", detail.error);
+});
+client.addEventListener("close", ({ detail }) => {
+	status.textContent = `Connection closed (${detail.code})`;
+});
+
+connectButton.addEventListener("click", async () => {
+	connectButton.disabled = true;
+	status.textContent = "Connecting…";
+	try {
+		const token = document.querySelector("#token").value.trim();
+		await client.connect({
+			gatewayUrl: document.querySelector("#gateway").value.trim(),
+			sessionId: document.querySelector("#session").value.trim(),
+			...(token ? { token } : {}),
+		});
+		disconnectButton.disabled = false;
+		status.textContent = "Connected; waiting for audio…";
+	} catch (error) {
+		status.textContent = `Could not connect: ${error.message}`;
+		connectButton.disabled = false;
+	}
+});
+
+disconnectButton.addEventListener("click", async () => {
+	await client.disconnect();
+	connectButton.disabled = false;
+	disconnectButton.disabled = true;
+	status.textContent = "Disconnected";
+});
+```
+
+Run the gateway separately and make sure its publisher uses the same player ID. To try the included local gateway and publisher,
+follow the [Web Audio quick start](../examples/backend/README.md), start playback there, and then open the Vite URL and click
+**Listen**. The gateway URL is the WebSocket origin (for example `ws://127.0.0.1:8080`); the client appends `/listen`. To listen
+before a new publisher starts, use `nextPublisher: true` instead of `sessionId`, then start playback through your application API
+after the WebSocket connects. Supply a short-lived token only if the gateway requires one. Serve the page over HTTPS when
+connecting to a non-local `wss://` gateway.
+
 ### Shared Discord and browser playback with server-side volume
 
 For simultaneous Discord and browser playback, attach `WebAudioConnection` to the player's `AudioPlayer`:
@@ -492,16 +591,18 @@ ownership, and teardown lifecycle, see [**AGENTS.md**](./AGENTS.md).
 
 MIT © [ZiProject](https://github.com/ZiProject)
 
-## Dynamic multiple outputs
+## Shared Discord and WebAudio playback
 
-`Player.connect(voiceChannel)` continues to join Discord Voice. Custom stream-consuming outputs can still be registered dynamically
-with `player.connect(backend)`:
+`Player.connect(voiceChannel)` joins Discord Voice. A browser publisher can subscribe to the same `AudioPlayer`:
 
 ```ts
-const output = await player.connect(backend, { id: "custom", name: "Custom output" });
-console.log(await player.getAudioOutputs());
-await output.disconnect(); // Discord continues
+const webConnection = new WebAudioConnection({ sessionId: player.id });
+webConnection.attachSocket(publisherSocket);
+const subscription = await player.connect(webConnection);
+await subscription.disconnect(); // Discord playback continues
 ```
 
-Use `player.disconnectOutput(id)` to remove a registered output by ID. All outputs share one per-track processing pipeline and
-receive encoded audio. Register each output explicitly with `player.connect(backend)`.
+The source `Readable` is wrapped in an inline-volume Discord `AudioResource` and played once through the shared
+`@discordjs/voice` `AudioPlayer`. The player applies volume and fans out Opus packets directly to the Discord Voice and
+`WebAudioConnection` subscribers. Remove a browser subscriber by its registration handle or with
+`player.disconnectWebAudio(id)`. Generic stream-output backends and output factories are not part of the player API.

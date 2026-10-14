@@ -1,7 +1,7 @@
 import { PlayerManager, getGlobalManager } from "./structures/PlayerManager";
 
 export { Player, assertVoiceChannel } from "./structures/Player";
-export type { PlayerAudioOutputRegistration } from "./structures/Player";
+export type { PlayerWebAudioRegistration } from "./structures/Player";
 export { PlayerManager } from "./structures/PlayerManager";
 export { Bus } from "./structures/Bus";
 export {
@@ -28,12 +28,6 @@ export { PlayerAction } from "./structures/PlayerAction";
 export { PlaybackOrchestrator, createPlaybackOrchestrator } from "./structures/PlaybackOrchestrator";
 export { createSharedControllers } from "./structures/PlayerManager";
 export { PlaybackSession } from "./structures/PlaybackSession";
-export { MultiAudioOutputBackend } from "./output/MultiAudioOutputBackend";
-export type { AudioOutputInfo, AudioOutputRegistrationOptions } from "./output/MultiAudioOutputBackend";
-export {
-	DiscordVoiceOutputBackend,
-	audioFrameFormatFromDiscordStreamType,
-} from "./output/DiscordVoiceOutputBackend";
 export {
 	WebAudioConnection,
 	encodeWebAudioOpusFrame,
@@ -64,17 +58,7 @@ export {
 	validateOpusPacketFraming,
 } from "./audio/OpusSourceAdapter";
 export type { CreateOpusAudioResourceOptions } from "./audio/OpusSourceAdapter";
-export type {
-	AudioFrameFormat,
-	AudioOutputInput,
-	AudioOutputCapabilities,
-	AudioOutputContext,
-	AudioOutputEvent,
-	AudioOutputHandle,
-	AudioOutputState,
-	AudioOutputBackend,
-} from "./output/AudioOutputBackend";
-export { AudioOutputUnsupportedOperationError } from "./output/AudioOutputBackend";
+export type { AudioFrameFormat } from "./audio/AudioFrameFormat";
 export { TrackLoader } from "./structures/TrackLoader";
 export { PlaybackController } from "./controller/PlaybackController";
 export { ConnectionController } from "./controller/ConnectionController";

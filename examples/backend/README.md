@@ -74,17 +74,14 @@ npm start --prefix examples/backend -- "https://www.youtube.com/watch?v=..."
 
 ## What is running?
 
-The example registers YouTube, SoundCloud, Spotify, attachments, and TTS source plugins with `PlayerManager`. It uses the unified
-ZiPlayer playback pipeline with concurrent multi-output support:
+The example registers YouTube, SoundCloud, Spotify, attachments, and TTS source plugins with `PlayerManager`. It uses the shared
+ZiPlayer `AudioPlayer` playback path:
 
-- Instead of transcoding to PCM on the server, the single `@discordjs/voice` `AudioPlayer` reads native Opus packets directly and
-  fans them out to registered sinks (`webConnection.subscribe(player)` and `voiceConnection.subscribe(player)`).
+- A single `@discordjs/voice` `AudioPlayer` reads packets from its inline-volume `AudioResource`; both
+  `webConnection.subscribe(player)` and `voiceConnection.subscribe(player)` receive those same Opus packets.
 - If a Discord voice channel connection is also established, both Discord Voice and Web Audio stream concurrently from the exact
   same Opus packet stream with 0 FFmpeg transcoding processes.
-- The pacing sink automatically adapts: while Discord Voice is actively connected, it paces playback; when only Web Audio is
-  active, Web Audio paces the stream in real time.
-- The web page allows viewing active outputs (`/outputs` or in the player panel), disconnecting outputs
-  (`player.disconnectOutput(id)`), and dynamically connecting secondary outputs mid-stream. The gateway forwards Opus frames to
+- The web page can add and remove WebAudio subscriptions while a player is already active. The gateway forwards Opus frames to
   browser listeners; the browser's reusable `@ziplayer/client` decodes Opus in WebAssembly to Float32 PCM directly in an
   AudioWorklet.
 - The page's session fields are available for manual connections if you want to listen to an already-running player.

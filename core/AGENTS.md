@@ -219,13 +219,13 @@ player.setVolume(65);
 - **Distinct wire outputs**: Discord Voice encrypts/frames and sends through its UDP transport. `WebAudioConnection` wraps the
   same Opus payload in the ZI v1 header and sends it to the gateway; the browser decodes Opus for AudioWorklet playback.
   The gateway does not adjust player volume.
-- **Opus-only audio contract**: Sources and custom outputs use encoded audio; processing emits Opus in an Ogg container.
+- **Opus-only audio contract**: Sources use encoded audio; processing emits Opus in an Ogg container.
 - **External resource caveat**: An `AudioResource` created outside ZiPlayer (for example with `createOpusAudioResource()`) may not
   have an inline volume transformer. Do not assume `Player.setVolume()` can modify it unless it was created with inline volume
   enabled.
 
-`WebAudioConnection` can be attached or removed during playback without interrupting the Discord output. When no Discord voice
-subscriber is available, the WebSocket connection can pace the shared stream.
+`WebAudioConnection` can be attached or removed during playback without interrupting Discord Voice. Both connections subscribe to
+the same `AudioPlayer`; no stream-output backend or secondary pacing layer is used.
 
 ## Common Mistakes to Avoid
 

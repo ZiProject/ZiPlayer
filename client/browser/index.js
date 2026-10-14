@@ -290,6 +290,16 @@ export class WebAudioClient extends EventTarget {
 		}
 		this.socket = socket;
 		socket.binaryType = "arraybuffer";
+		socket.addEventListener("message", (event) => {
+			if (this.socket !== socket) return;
+			try {
+				if (typeof event.data === "string") this.receiveControlMessage(event.data);
+				else this.receiveOpusFrame(event.data);
+			} catch (error) {
+				this.reportError(error);
+				socket.close(1002, "Invalid audio protocol message");
+			}
+		});
 
 		try {
 			await new Promise((resolve, reject) => {
@@ -325,16 +335,6 @@ export class WebAudioClient extends EventTarget {
 			throw error;
 		}
 
-		socket.addEventListener("message", (event) => {
-			if (this.socket !== socket) return;
-			try {
-				if (typeof event.data === "string") this.receiveControlMessage(event.data);
-				else this.receiveOpusFrame(event.data);
-			} catch (error) {
-				this.reportError(error);
-				socket.close(1002, "Invalid audio protocol message");
-			}
-		});
 		socket.addEventListener("close", (event) => {
 			if (this.socket !== socket) return;
 			this.socket = null;

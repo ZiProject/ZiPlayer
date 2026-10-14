@@ -1,6 +1,6 @@
 import type { Readable } from "stream";
 import type { Track } from "../types";
-import type { AudioFrameFormat } from "../output/AudioOutputBackend";
+import type { AudioFrameFormat } from "./AudioFrameFormat";
 import { FFmpegAudioProcessingEngine } from "./FFmpegAudioProcessingEngine";
 export {
 	FFmpegAudioProcessingEngine,

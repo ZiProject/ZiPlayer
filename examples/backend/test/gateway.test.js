@@ -574,8 +574,7 @@ test("queue, loop, autoplay, and filter controls are validated and routed", asyn
 test("audio output controls and /outputs endpoint query and route correctly", async () => {
 	const controlCalls = [];
 	const outputs = [
-		{ id: "discord", name: "Discord Voice", isMaster: false },
-		{ id: "webaudio-p1", name: "Web Audio (p1)", isMaster: true },
+		{ id: "webaudio-p1", name: "Web Audio (p1)", state: "playing" },
 	];
 	const gateway = createWebAudioGateway({
 		host: "127.0.0.1",

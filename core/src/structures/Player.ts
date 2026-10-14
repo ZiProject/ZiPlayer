@@ -35,36 +35,14 @@ import { PlayerAction } from "./PlayerAction";
 import type { BasePlugin } from "../plugins/BasePlugin";
 import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
-import type { AudioOutputBackend, AudioOutputCapabilities } from "../output/AudioOutputBackend";
-import type { AudioOutputInfo, AudioOutputRegistrationOptions } from "../output/MultiAudioOutputBackend";
 import type { PlaybackSession } from "./PlaybackSession";
 import { BUS_EVENT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
 import type { PlayerQueue } from "../controller/QueueController";
 
-export interface PlayerAudioOutputRegistration {
+export interface PlayerWebAudioRegistration {
 	readonly id: string;
 	readonly name: string;
 	disconnect(): Promise<boolean>;
-}
-
-const WEB_AUDIO_SUBSCRIPTION_CAPABILITIES: AudioOutputCapabilities = {
-	pause: true,
-	resume: true,
-	stop: true,
-	seek: "unsupported",
-	replacement: "unsupported",
-	ownership: "borrow",
-	volume: "unsupported",
-	backpressure: "bounded",
-	maxBufferedBytes: 256 * 1024,
-};
-
-function isAudioOutputBackend(value: unknown): value is AudioOutputBackend<any> {
-	if (!value || typeof value !== "object") return false;
-	const candidate = value as AudioOutputBackend<any>;
-	return (
-		typeof candidate.createSession === "function" && typeof candidate.initialize === "function" && Boolean(candidate.capabilities)
-	);
 }
 
 export function assertVoiceChannel(channel: VoiceChannel): asserts channel is VoiceChannel {
@@ -289,18 +267,12 @@ export class Player extends EventEmitter {
 	): Promise<VoiceConnection>;
 	public connect(
 		connection: WebAudioConnection,
-		options?: Omit<AudioOutputRegistrationOptions, "id"> & { id?: string },
-	): Promise<PlayerAudioOutputRegistration>;
-	public connect(
-		backend: AudioOutputBackend<any>,
-		options?: Omit<AudioOutputRegistrationOptions, "id"> & { id?: string },
-	): Promise<PlayerAudioOutputRegistration>;
+		options?: { id?: string; name?: string },
+	): Promise<PlayerWebAudioRegistration>;
 	public async connect(
-		target: VoiceChannel | WebAudioConnection | AudioOutputBackend<any>,
-		options?:
-			| { group?: string; selfDeaf?: boolean; selfMute?: boolean; deaf?: boolean; mute?: boolean }
-			| (Omit<AudioOutputRegistrationOptions, "id"> & { id?: string }),
-	): Promise<VoiceConnection | PlayerAudioOutputRegistration> {
+		target: VoiceChannel | WebAudioConnection,
+		options?: { group?: string; selfDeaf?: boolean; selfMute?: boolean; deaf?: boolean; mute?: boolean; id?: string; name?: string },
+	): Promise<VoiceConnection | PlayerWebAudioRegistration> {
 		if (
 			target &&
 			typeof target === "object" &&
@@ -310,37 +282,17 @@ export class Player extends EventEmitter {
 					typeof (target as any).attachSocket === "function"))
 		) {
 			const conn = target as WebAudioConnection;
-			const outputOptions = (options ?? {}) as Omit<AudioOutputRegistrationOptions, "id"> & { id?: string };
-			const id = outputOptions.id ?? conn.sessionId;
-			const name = outputOptions.name ?? `WebAudio (${conn.sessionId})`;
-			if ((await this.getAudioOutputs()).some((output) => output.id === id)) {
+			const id = options?.id ?? conn.sessionId;
+			const name = options?.name ?? `WebAudio (${conn.sessionId})`;
+			if (this.webAudioOutputs.has(id)) {
 				throw new Error(`Audio output id already exists: ${id}`);
 			}
-			// WebAudio receives AudioPlayer packets directly; it must not create a second tee sink.
 			if (!conn.subscribe(this)) throw new Error(`WebAudio connection "${conn.sessionId}" cannot subscribe to this player`);
 			this.webAudioOutputs.set(id, { connection: conn, name });
 			return {
 				id,
 				name,
-				disconnect: () => this.disconnectOutput(id),
-			};
-		}
-		if (isAudioOutputBackend(target)) {
-			const outputOptions = (options ?? {}) as Omit<AudioOutputRegistrationOptions, "id"> & { id?: string };
-			const id = outputOptions.id ?? `output-${createPlayerRequestId()}`;
-			const registrationOptions: AudioOutputRegistrationOptions = {
-				id,
-				name: outputOptions.name ?? id,
-				playerVolume: outputOptions.playerVolume ?? false,
-			};
-			await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackOutputAdd, {
-				backend: target,
-				options: registrationOptions,
-			});
-			return {
-				id,
-				name: registrationOptions.name!,
-				disconnect: () => this.disconnectOutput(id),
+				disconnect: () => this.disconnectWebAudio(id),
 			};
 		}
 		const channel = target as VoiceChannel;
@@ -359,42 +311,28 @@ export class Player extends EventEmitter {
 				:	undefined,
 		} as const;
 		const reply = await (this.bus.request(this.playerId, request as any) as Promise<{ connection: VoiceConnection }>);
-		// Legacy custom factories used to join voice without activating their AudioPlayer as an output.
-		// Ensure Voice is now a peer sink in the shared pipeline, no-op when it is already registered.
-		try {
-			await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackEnsureDiscord, {});
-		} catch (error: any) {
-			if (error?.reason !== "unhandled") throw error;
-		}
 		return reply.connection;
 	}
-	public async getAudioOutputs(): Promise<AudioOutputInfo[]> {
-		const outputs = [
-			...(await this.bus.requestRpc<void, AudioOutputInfo[]>(this.playerId, CONTROLLER_RPC.playbackOutputList, undefined)),
-		];
-		for (const [id, { connection, name }] of this.webAudioOutputs) {
+	public async disconnectWebAudio(id: string): Promise<boolean> {
+		const output = this.webAudioOutputs.get(id);
+		if (!output) return false;
+		this.webAudioOutputs.delete(id);
+		output.connection.unsubscribe();
+		output.connection.destroy();
+		return true;
+	}
+	public getWebAudioSubscribers() {
+		return [...this.webAudioOutputs].map(([id, { connection, name }]) => {
 			const stats = connection.getStats();
-			outputs.push({
+			return {
 				id,
 				name,
 				state: connection.isSpeaking ? "playing" : connection.isReady ? "ready" : "stopped",
 				activeSessions: connection.isSpeaking ? 1 : 0,
 				droppedChunks: stats.droppedPackets,
 				droppedBytes: stats.droppedBytes,
-				capabilities: WEB_AUDIO_SUBSCRIPTION_CAPABILITIES,
-			});
-		}
-		return outputs;
-	}
-	public async disconnectOutput(id: string): Promise<boolean> {
-		const webOutput = this.webAudioOutputs.get(id);
-		if (webOutput) {
-			this.webAudioOutputs.delete(id);
-			webOutput.connection.unsubscribe();
-			webOutput.connection.destroy();
-			return true;
-		}
-		return this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackOutputRemove, { id });
+			};
+		});
 	}
 	public async disconnect(): Promise<void> {
 		return this.bus

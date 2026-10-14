@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { Readable } from "node:stream";
-import type { AudioFrameFormat } from "../output/AudioOutputBackend";
+import type { AudioFrameFormat } from "./AudioFrameFormat";
 import type {
 	AudioProcessingContext,
 	AudioProcessingEngine,

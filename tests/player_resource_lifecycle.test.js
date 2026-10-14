@@ -50,6 +50,20 @@ function createSampleResource(title = "Direct Track") {
 	});
 }
 
+test("Player.createResource enables inline volume on the shared AudioResource", async (t) => {
+	const manager = new PlayerManager();
+	t.after(() => manager.destroy());
+	const player = await manager.create("inline-volume-resource");
+	const source = Readable.from([Buffer.from([0xf8, 0xff, 0xfe])], { objectMode: true });
+	const track = { id: "inline-volume-track", title: "Inline volume track", duration: 0 };
+
+	const resource = player.createResource(source, track);
+
+	assert.ok(resource.volume, "managed resources must support shared server-side volume");
+	assert.equal(resource.metadata, track);
+	resource.playStream.destroy();
+});
+
 test("Player.play(AudioResource) integrates with PlaybackController lifecycle", async (t) => {
 	const mgr = new PlayerManager();
 	t.after(() => mgr.destroy());

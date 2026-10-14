@@ -394,7 +394,7 @@ test("Player.connect(webConnection) attaches WebAudio output dynamically during 
 	const binaryFrames = socket.sent.filter((msg) => typeof msg.data !== "string");
 	assert.ok(binaryFrames.length > 0, "Dynamically connected WebAudio should receive Opus frames");
 
-	const outputs = await player.getAudioOutputs();
+	const outputs = player.getWebAudioSubscribers();
 	assert.ok(outputs.some((o) => o.name === "Dynamic Web Audio"));
 
 	await registration.disconnect();

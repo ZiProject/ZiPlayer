@@ -3,7 +3,7 @@
 # ZiPlayer
 
 ZiPlayer is a Discord audio engine built on top of `@discordjs/voice` and designed for real-time playback, queue orchestration,
-advanced filter pipelines, custom output backends, and resilient player lifecycle management.
+advanced filter pipelines, shared Discord/WebAudio playback, and resilient player lifecycle management.
 
 The public API is intentionally centered on `PlayerManager` and `Player`; the internal bus/controllers are operational details
 used by the runtime, not the normal application integration surface.
@@ -18,9 +18,8 @@ used by the runtime, not the normal application integration surface.
 - FFmpeg filter pipeline with safe filter validation and early failure handling
 - Preload, crossfade, smart transition, and anti-stuck recovery flow
 - Loudness normalization and volume shaping for smoother transitions
-- Custom output backends through dynamic `player.connect(backend)`
-- Unified Discord/WebAudio `AudioPlayer` fan-out: server-side `Player.setVolume()` is applied to the shared AudioResource before
-  its resulting Opus packets reach either subscriber
+- One Discord `AudioPlayer` and inline-volume `AudioResource` feed Discord Voice and WebAudio subscribers with the same Opus
+  packets; server-side `Player.setVolume()` is applied before fan-out
 - WebSocket Opus publishing and in-browser Opus decoding via `@ziplayer/client` (`opus-decoder` WebAssembly)
 - WebAudio browser publishing subscribes to the same AudioPlayer Opus packets as Discord Voice
 - FFmpeg-backed DSP pipeline (gain, high/low-pass, loudness presets, resample/remix) that decodes common containers to PCM in a
@@ -161,11 +160,11 @@ manager.on("playerDestroy", (player) => {});
 
 ---
 
-## Browser and custom audio outputs
+## Shared Discord and browser playback
 
-ZiPlayer uses Discord Voice as the default output and supports custom output backends through `player.connect(backend)`. Browser
-playback uses `WebAudioConnection` to subscribe to the player's shared `AudioPlayer` and publish Opus frames through an
-application-owned WebSocket gateway. There is no PCM-over-WebSocket output backend or initial-output backend factory.
+ZiPlayer plays through one Discord `AudioPlayer`. Discord Voice connections and browser `WebAudioConnection`s subscribe directly
+to that player; browser subscriptions publish its Opus packets through an application-owned WebSocket gateway. There is no
+separate stream-output backend or output factory.
 
 The audio DSP engine may use PCM internally for decoding, filters, resampling, and inline volume; this is not a browser transport
 format. `audioProcessing.inputFormat` remains `"encoded"` for player-level configuration because raw PCM input metadata is
@@ -265,8 +264,8 @@ const player = await manager.create(guildId, {
 
 - Create one `PlayerManager` per bot process; reuse it across commands.
 - Call `await player.connect(voiceChannel)` before playback unless the voice channel is passed as part of the play call.
-- Register custom output backends with `player.connect(backend)` and remove them with the returned handle or
-  `player.disconnectOutput(id)`. Browser listeners use `player.connect(webAudioConnection)`.
+- Add a browser Opus subscriber with `player.connect(webAudioConnection)` and remove it with the returned handle or
+  `player.disconnectWebAudio(id)`.
 - Prefer `PlayerManager`/`Player` exports over bus/controller internals for application code.
 - Keep `audioProcessing.inputFormat` set to `"encoded"`; raw PCM is an internal processing/codec format, not a WebSocket transport.
 - `audioProcessing.normalize` accepts `true` or the presets `streaming` (-14 LUFS), `podcast` (-16), `broadcast` (-23); numeric

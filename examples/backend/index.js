@@ -175,10 +175,10 @@ async function main() {
 				case "filter-clear":
 					return player.filter.clearFilters();
 				case "outputs":
-					return player.getAudioOutputs();
+					return player.getWebAudioSubscribers();
 				case "disconnect-output": {
 					if (!body.outputId) throw Object.assign(new Error("outputId is required"), { statusCode: 400 });
-					return player.disconnectOutput(body.outputId);
+					return player.disconnectWebAudio(body.outputId);
 				}
 				case "connect-output": {
 					const outputId = body.outputId || `webaudio-${sessionId}-${Date.now().toString(36)}`;
@@ -186,10 +186,7 @@ async function main() {
 					const socket = await connectPublisherSocket({ gatewayUrl, sessionId });
 					const webConn = new WebAudioConnection({ sessionId });
 					webConn.attachSocket(socket);
-					const registration = await player.connect(webConn, {
-						id: outputId,
-						name,
-					});
+					const registration = await player.connect(webConn, { id: outputId, name });
 					return { id: registration.id, name: registration.name };
 				}
 			}
@@ -201,7 +198,6 @@ async function main() {
 				name: filter.name,
 				description: filter.description,
 			});
-			const outputs = await player.getAudioOutputs().catch(() => []);
 			return {
 				currentTrack: serializeTrack(player.currentTrack),
 				tracks: player.upcomingTracks.map(serializeTrack),
@@ -211,7 +207,7 @@ async function main() {
 				volume: player.volume,
 				filters: player.filter.getAvailableFilters().map(toFilterSummary),
 				activeFilters: player.filter.getActiveFilters().map(toFilterSummary),
-				outputs,
+				outputs: player.getWebAudioSubscribers(),
 			};
 		},
 		onListenerCount: (sessionId, listenerCount) => playerIdleCleanup?.onListenerCount(sessionId, listenerCount),
