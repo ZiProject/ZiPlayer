@@ -108,7 +108,12 @@ export class SearchController {
 		this.throwIfAborted(operationSignal);
 		const pluginResult = await options.pluginManager.search(
 			query,
-			{ requestedBy, plugins: plugin, signal: operationSignal },
+			{
+				requestedBy,
+				plugins: plugin,
+				signal: operationSignal,
+				playerId: options.pluginManager.hasPlayerRuntime(playerId) ? playerId : undefined,
+			},
 			operationSignal,
 		);
 		this.throwIfAborted(operationSignal);
@@ -146,7 +151,7 @@ export class SearchController {
 			return { isCached: false, cacheAge: undefined, pluginCount: 0, ttsFiltered: false };
 		}
 		const isCached = state.options.cacheEnabled !== false && state.cache.has(this.key(query));
-		const allPlugins = state.options.pluginManager.getAll();
+		const allPlugins = state.options.pluginManager.getAll(playerId);
 		const plugins = allPlugins.filter(
 			(plugin) => !(plugin.name.toLowerCase() === "tts" && !query.toLowerCase().startsWith("tts:")),
 		);

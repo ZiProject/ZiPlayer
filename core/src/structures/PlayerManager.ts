@@ -15,6 +15,7 @@ import {
 	type PlayerDebugLevel,
 	normalizeTrackMiddleware,
 	SharedControllerSet,
+	SourcePluginLike,
 } from "../types";
 import type { BaseExtension } from "../extensions";
 import { withTimeout } from "../utils/timeout";
@@ -41,7 +42,6 @@ import { ExtensionController } from "../controller/ExtensionController";
 import { SearchController } from "../controller/SearchController";
 import { StreamManager } from "./StreamManager";
 import { PreloadManager } from "./PreloadManager";
-import { PluginManager } from "../plugins";
 import { ExtensionManager } from "../extensions";
 import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { SaveController } from "../controller/SaveController";
@@ -55,6 +55,9 @@ export function createSharedControllers(params: {
 	debugSink?: (...args: any[]) => void;
 	bus?: Bus;
 	busLatencyTrace?: BusLatencyTrace;
+	owner?: PlayerManager;
+	plugins?: readonly SourcePluginLike[];
+	pluginDebug?: (...args: any[]) => void;
 }): SharedControllerSet {
 	const bus = params.bus ?? new Bus(params.busLatencyTrace);
 	const sessionController = new PlaybackSessionController(bus);
@@ -89,7 +92,9 @@ export function createSharedControllers(params: {
 		forward: new ForwardController(bus),
 		resourceRefresh: new ResourceRefreshController(bus),
 		eventBridge: new PlayerEventBridge(bus),
-		plugin: new PluginController(bus),
+		plugin: new PluginController(bus, params.owner, params.plugins, params.pluginDebug, {
+			extractorTimeout: params.options?.extractorTimeout,
+		}),
 		extension: new ExtensionController(bus),
 		session: sessionController,
 	};
@@ -286,8 +291,6 @@ export class PlayerManager extends EventEmitter {
 		return await globaldef.create("default", opt);
 	}
 
-	private plugins: SourcePlugin[];
-	private managerSearchPluginManager: PluginManager;
 	/**
 	 * Owns the "runtime.ping" heartbeat per attached playerId (own instance per manager, not the
 	 * process-wide {@link GlobalControllerRegistry.global}, so `dispose()` only ever clears this
@@ -313,6 +316,9 @@ export class PlayerManager extends EventEmitter {
 			options,
 			debugSink: this.debugSink,
 			busLatencyTrace: this.debugTracer.latencyTraceInstance,
+			owner: this,
+			plugins: options.plugins,
+			pluginDebug: (message, ...args) => this.debug(message, ...args),
 		});
 		this.bus = this.controllers.bus;
 
@@ -339,42 +345,17 @@ export class PlayerManager extends EventEmitter {
 			}
 		});
 		this.monitoring = new PlayerMonitoring(this.controllers);
-		this.plugins = [];
 		this.searchCache = new Map();
-
-		// Initialize plugins
-		const provided = options.plugins || [];
-		for (const p of provided as any[]) {
-			try {
-				let instance: SourcePlugin | null = null;
-
-				if (p && typeof p === "object") {
-					instance = p as SourcePlugin;
-				} else if (typeof p === "function") {
-					instance = new (p as any)();
-				}
-
-				if (instance) {
-					this.plugins.push(instance);
-				}
-				this.debug(`Registered plugin: ${p.name || "unnamed"}`);
-			} catch (e) {
-				this.debug(`Failed to init plugin:`, e);
-			}
-		}
 
 		this.extensions = options.extensions || [];
 		this.extractorTimeout = options.extractorTimeout ?? 10000;
 		this.autoCleanup = options.autoCleanup ?? true;
 		this.cleanupTimeout = options.cleanupInterval ?? 60000;
 		this.enableSearchCache = options.enableSearchCache ?? true;
-		this.managerSearchPluginManager = new PluginManager(null, this, {
-			extractorTimeout: this.extractorTimeout,
-			debug: (message, ...args) => this.debug(message, ...args),
-		});
-		for (const plugin of this.plugins) this.managerSearchPluginManager.register(plugin);
+		const pluginManager = this.controllers.plugin?.getSharedManager();
+		if (!pluginManager) throw new Error("PluginController is unavailable");
 		this.controllers.search?.attach(MANAGER_SEARCH_ID, {
-			pluginManager: this.managerSearchPluginManager,
+			pluginManager,
 			debug: (message, ...args) => this.debug(message, ...args),
 			cacheEnabled: false,
 		});
@@ -391,7 +372,9 @@ export class PlayerManager extends EventEmitter {
 		}
 
 		setGlobalManager(this);
-		this.debug(`Initialized with ${this.plugins.length} plugins, ${this.extensions.length} extensions`);
+		this.debug(
+			`Initialized with ${this.controllers.plugin?.getPlugins().length ?? 0} plugins, ${this.extensions.length} extensions`,
+		);
 	}
 
 	private resolveGuildId(guildOrId: string | { id: string }): string {
@@ -538,12 +521,11 @@ export class PlayerManager extends EventEmitter {
 		// Controllers own each manager as soon as it is created so partial attachment/
 		// creation failure and repeated attach calls still release all prior resources.
 		this.controllers.stream?.attach(playerId, streamManager);
-		const pluginManager = new PluginManager(null, this, {
+		const pluginController = this.controllers.plugin;
+		if (!pluginController) throw new Error("PluginController is unavailable");
+		const pluginManager = pluginController.attach(playerId, streamManager, {
 			extractorTimeout: options?.extractorTimeout,
-			debug: channel("Plugins"),
 		});
-		pluginManager.setStreamManager(streamManager);
-		this.controllers.plugin?.attach(playerId, pluginManager);
 		const extensionManager = new ExtensionManager(null as any, this, channel("Extensions"));
 		this.controllers.extension?.attach(playerId, extensionManager);
 		const isLowPerf = Boolean(options?.lowPerformance || options?.quality === "low");
@@ -605,8 +587,8 @@ export class PlayerManager extends EventEmitter {
 		this.controllers.save?.attach(playerId, {
 			middleware: [async (track) => this.controllers.trackLoader.applyMiddleware(playerId, track)],
 			middlewareContext: { playerId, manager: this } as any,
-			resolveStream: (track) => pluginManager.getStream(track),
-			resolveVideoStream: (track) => pluginManager.getVideo(track),
+			resolveStream: (track) => pluginManager.getStream(track, { context: { playerId } }),
+			resolveVideoStream: (track) => pluginManager.getVideo(track, { playerId }),
 			debug: channel("SaveController"),
 		});
 		this.controllers.filter?.attach(playerId, undefined, channel("FilterController"), {
@@ -682,9 +664,6 @@ export class PlayerManager extends EventEmitter {
 				created = player;
 				this.controllers.extension?.getManager(playerId)?.attachPlayer(player);
 				this.controllers.eventBridge?.attachPlayer(playerId, player);
-
-				// Add all registered plugins
-				this.plugins.forEach((plugin) => player.addPlugin(plugin));
 
 				// Activate extensions
 				let extsToActivate: any[] = [];
@@ -1297,7 +1276,6 @@ export class PlayerManager extends EventEmitter {
 		await Promise.allSettled([...this.pendingTeardowns]);
 
 		this.controllers.search?.detach(MANAGER_SEARCH_ID);
-		this.managerSearchPluginManager.destroy();
 		this.searchCache.clear();
 		this.cache.clear();
 
@@ -1323,6 +1301,7 @@ export class PlayerManager extends EventEmitter {
 			["connection", () => c.connection.dispose()],
 			["trackLoader", () => c.trackLoader.dispose()],
 			["trackResolver", () => c.trackResolver.dispose()],
+			["plugin", () => c.plugin?.dispose()],
 		];
 		for (const [name, dispose] of steps) {
 			try {
@@ -1383,14 +1362,10 @@ export class PlayerManager extends EventEmitter {
 	 * @param {SourcePlugin} plugin - Plugin to register
 	 */
 	registerPlugin(plugin: SourcePlugin): void {
-		this.plugins.push(plugin);
-		this.managerSearchPluginManager.register(plugin);
-
+		const pluginController = this.controllers.plugin;
+		if (!pluginController) throw new Error("PluginController is unavailable");
+		pluginController.registerSharedPlugin(plugin);
 		this.debug(`Registered plugin: ${plugin.name}`);
-
-		for (const player of this.players.values()) {
-			player.addPlugin(plugin);
-		}
 	}
 
 	/**
@@ -1400,12 +1375,8 @@ export class PlayerManager extends EventEmitter {
 	 * @returns {boolean} True if plugin was unregistered
 	 */
 	unregisterPlugin(name: string): boolean {
-		const index = this.plugins.findIndex((p) => p.name === name);
-		if (index === -1) return false;
-
-		this.plugins.splice(index, 1);
-		this.managerSearchPluginManager.unregister(name);
-
+		const pluginController = this.controllers.plugin;
+		if (!pluginController?.unregisterSharedPlugin(name)) return false;
 		this.debug(`Unregistered plugin: ${name}`);
 
 		return true;
@@ -1415,7 +1386,7 @@ export class PlayerManager extends EventEmitter {
 	 * Get all registered plugins
 	 */
 	getPlugins(): SourcePlugin[] {
-		return [...this.plugins];
+		return this.controllers.plugin?.getPlugins() ?? [];
 	}
 
 	/**
@@ -1442,7 +1413,7 @@ export class PlayerManager extends EventEmitter {
 			autoCleanup: this.autoCleanup,
 			cleanupTimeout: this.cleanupTimeout,
 			enableSearchCache: this.enableSearchCache,
-			pluginsCount: this.plugins.length,
+			pluginsCount: this.controllers.plugin?.getPlugins().length ?? 0,
 			extensionsCount: this.extensions.length,
 			playersCount: this.players.size,
 		};

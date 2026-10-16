@@ -67,7 +67,10 @@ export class TrackResolver {
 		if (stream?.remote && stream.handle) return normalizeStreamInfo(track, stream);
 		if (stream?.stream || stream?.url || stream?.recreate) return normalizeStreamInfo(track, stream);
 
-		stream = await pluginManager.getStream(track, options);
+		stream = await pluginManager.getStream(track, {
+			...options,
+			context: { ...options?.context, playerId },
+		});
 		if (isDestroyed()) {
 			stream?.stream?.destroy?.();
 			throw new Error("PLAYER_DESTROYED");
@@ -83,7 +86,7 @@ export class TrackResolver {
 			}
 			return normalizeStreamInfo(track, stream);
 		}
-		if (!pluginManager.hasStreamCandidate(track)) throw new Error(`UNRECOVERABLE_NO_PLUGIN:${track.title}`);
+		if (!pluginManager.hasStreamCandidate(track, playerId)) throw new Error(`UNRECOVERABLE_NO_PLUGIN:${track.title}`);
 		throw new Error(`No stream available for track: ${track.title}`);
 	}
 }

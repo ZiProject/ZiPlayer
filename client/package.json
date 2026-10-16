@@ -1,6 +1,6 @@
 {
 	"name": "@ziplayer/client",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Browser AudioWorklet client for ZiPlayer WebSocket Opus streams",
 	"license": "MIT",
 	"type": "module",
