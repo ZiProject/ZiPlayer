@@ -16,9 +16,9 @@ import {
 	normalizeTrackMiddleware,
 	SharedControllerSet,
 	SourcePluginLike,
+	type TrackRequester,
 } from "../types";
 import type { BaseExtension } from "../extensions";
-import { withTimeout } from "../utils/timeout";
 import { PlayerEventDebug } from "../controller/PlayerEventDebug";
 import { BusLatencyTrace } from "../controller/BusLatencyTrace";
 import { TrackLoader } from "./TrackLoader";
@@ -49,6 +49,7 @@ import { PlaybackSessionController } from "../controller/PlaybackSessionControll
 import { GlobalControllerRegistry } from "../controller/GlobalControllerRegistry";
 import { BUS_EVENT, BUS_OUTPUT, CONTROLLER_RPC, PLAYER_RPC } from "./BusContract";
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
+import { getRequesterId, withTrackRequester } from "../utils/requester";
 
 export function createSharedControllers(params: {
 	options?: PlayerManagerOptions;
@@ -649,7 +650,6 @@ export class PlayerManager extends EventEmitter {
 
 		const creationPromise = (async () => {
 			await Promise.resolve();
-			// What has been attached so far, so a failed or aborted creation can release exactly that.
 			let controllersAttached = false;
 			let created: Player | null = null;
 			try {
@@ -682,12 +682,12 @@ export class PlayerManager extends EventEmitter {
 						extsToActivate = optExts;
 					}
 				} else {
-					// Use all extensions by default
-					extsToActivate = this.extensions;
+					// No extensions specified in options
+					extsToActivate = [];
 				}
 
+				const extensionAttachments: Promise<void>[] = [];
 				for (const ext of extsToActivate) {
-					// Extension activation awaits: dispose() may have started in the meantime.
 					this.assertNotDisposed();
 					let instance = ext;
 					if (typeof ext === "function") {
@@ -699,32 +699,21 @@ export class PlayerManager extends EventEmitter {
 						}
 					}
 
-					if (instance && typeof instance === "object") {
-						const extInstance = instance as BaseExtension;
-						if ("player" in extInstance && !extInstance.player) extInstance.player = player;
-						player.attachExtension(extInstance);
-
-						if (typeof extInstance.active === "function") {
-							let activated: boolean | void = true;
-							try {
-								activated = await withTimeout(
-									Promise.resolve(extInstance.active({ manager: this, player })),
-									player.options.extractorTimeout ?? 15000,
-									`Extension ${extInstance?.name} activation timed out`,
-								);
-								this.debug(`Extension ${extInstance?.name} active check returned: ${activated}`);
-							} catch (e) {
-								activated = false;
-								this.debug(`Extension activation error for ${extInstance?.name}:`, e);
-							}
-
-							if (activated === false) {
-								player.detachExtension(extInstance);
-								continue;
-							}
+					if (typeof ext === "string") {
+						try {
+							instance = this.extensions.find((e) => (typeof e === "function" ? e.name : e?.name) === ext);
+						} catch (e) {
+							this.debug(`Extension constructor error for ${ext}:`, e);
+							continue;
 						}
 					}
+
+					if (instance && typeof instance === "object") {
+						const extInstance = instance as BaseExtension;
+						extensionAttachments.push(player.attachExtension(extInstance));
+					}
 				}
+				await Promise.all(extensionAttachments);
 
 				// Last check before the player becomes visible: from here on dispose() sees it and tears it down.
 				this.assertNotDisposed();
@@ -1317,16 +1306,16 @@ export class PlayerManager extends EventEmitter {
 	 * playback/voice controller state.
 	 *
 	 * @param {string} query
-	 * @param {string} requestedBy
+	 * @param {TrackRequester} requestedBy
 	 * @returns {Promise<SearchResult>}
 	 */
-	async search(query: string, requestedBy: string): Promise<SearchResult> {
+	async search(query: string, requestedBy: TrackRequester): Promise<SearchResult> {
 		this.assertNotDisposed();
-		this.debug(`Search called with query: ${query}, requestedBy: ${requestedBy}`);
+		this.debug(`Search called with query: ${query}, requestedBy: ${getRequesterId(requestedBy) ?? "Unknown"}`);
 
 		const cached = this.getCachedSearch(query);
 		if (cached) {
-			return cached;
+			return withTrackRequester(cached, requestedBy);
 		}
 
 		try {
@@ -1340,7 +1329,7 @@ export class PlayerManager extends EventEmitter {
 
 			this.setCachedSearch(query, result);
 
-			return result;
+			return withTrackRequester(result, requestedBy);
 		} catch (error) {
 			this.debug(`Search error:`, error);
 			throw error as Error;
@@ -1394,14 +1383,12 @@ export class PlayerManager extends EventEmitter {
 	 *
 	 * @param {BaseExtension} extension - Extension to register
 	 */
-	registerExtension(extension: BaseExtension): void {
+	async registerExtension(extension: BaseExtension): Promise<void> {
 		this.extensions.push(extension);
 		this.debug(`Registered extension: ${extension.name}`);
 
 		// Register extension with all existing players
-		for (const player of this.players.values()) {
-			player.attachExtension(extension);
-		}
+		await Promise.all([...this.players.values()].map((player) => player.attachExtension(extension)));
 	}
 
 	/**

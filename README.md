@@ -85,7 +85,7 @@ client.on("messageCreate", async (message) => {
 	});
 
 	if (!player.connection) await player.connect(voiceChannel);
-	await player.play(message.content.slice(6).trim(), message.author.id);
+	await player.play(message.content.slice(6).trim(), message.author);
 });
 
 manager.on("trackStart", (player, track) => console.log(`[${player.id}] now playing: ${track.title}`));
@@ -100,6 +100,7 @@ client.login(process.env.DISCORD_TOKEN);
 
 ```ts
 await player.play("Never Gonna Give You Up", userId);
+await player.play("Never Gonna Give You Up", { requestedBy: user });
 await player.play("https://example.com/audio");
 await player.play(track);
 await player.play(searchResult);
@@ -114,6 +115,9 @@ await player.seek(45_000);
 await player.stop();
 player.setVolume(80);
 ```
+
+`requestedBy` accepts either a user identifier or a user object. When an object is supplied, it is preserved as
+`track.requestedBy`; search plugins still receive the user's ID.
 
 ### Queue operations
 

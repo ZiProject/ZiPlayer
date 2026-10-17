@@ -104,7 +104,11 @@ export class PlaybackOrchestrator {
 			return state ? state.prepare.createRelatedTracks(track) : Promise.resolve([]);
 		});
 		bus.registerRpc<
-			{ query: import("../types").SearchResult | Track | string | null; requestedBy?: string; plugin?: string | string[] },
+			{
+				query: import("../types").SearchResult | Track | string | null;
+				requestedBy?: import("../types").TrackRequester;
+				plugin?: string | string[];
+			},
 			any
 		>(CONTROLLER_RPC.play, (request, context) => {
 			const state = this.states.get(context.playerId);

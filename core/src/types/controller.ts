@@ -117,7 +117,7 @@ export interface AntiStuckRetryHandlers {
 }
 export interface SearchRequest {
 	query: string;
-	requestedBy?: string;
+	requestedBy?: import("./core").TrackRequester;
 	plugin?: string | string[];
 }
 

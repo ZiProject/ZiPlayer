@@ -19,6 +19,7 @@ import type {
 	PlayOptions,
 	SearchOptions,
 	PlayResult,
+	TrackRequester,
 } from "../types";
 import { PlaybackMode } from "../types";
 import type { FilterEngine } from "../controller/FilterController";
@@ -56,7 +57,15 @@ export function assertVoiceChannel(channel: VoiceChannel): asserts channel is Vo
 	}
 }
 
-function normalizeTrackMetadata(resource: AudioResource, metadata: unknown, requestedBy?: string): Track {
+function isRequester(value: unknown): value is TrackRequester {
+	return (typeof value === "string" && Boolean(value.trim())) || (value !== null && typeof value === "object");
+}
+
+function isSearchOptions(value: TrackRequester | undefined): value is SearchOptions {
+	return !!value && typeof value === "object" && ("requestedBy" in value || "plugin" in value || "signal" in value);
+}
+
+function normalizeTrackMetadata(resource: AudioResource, metadata: unknown, requestedBy?: TrackRequester): Track {
 	const raw = metadata && typeof metadata === "object" ? (metadata as Record<string, any>) : {};
 	const fallbackId = `resource-${Date.now()}`;
 	const id = typeof raw.id === "string" && raw.id.trim() ? raw.id : fallbackId;
@@ -65,8 +74,8 @@ function normalizeTrackMetadata(resource: AudioResource, metadata: unknown, requ
 	const rawDuration = Number(raw.duration);
 	const duration = Number.isFinite(rawDuration) ? rawDuration : Number((resource as any)?.playbackDuration ?? 0);
 	const normalizedRequestedBy =
-		typeof raw.requestedBy === "string" && raw.requestedBy.trim() ? raw.requestedBy
-		: typeof requestedBy === "string" && requestedBy.trim() ? requestedBy
+		isRequester(raw.requestedBy) ? raw.requestedBy
+		: isRequester(requestedBy) ? requestedBy
 		: "resource";
 	const source = typeof raw.source === "string" && raw.source.trim() ? raw.source : "resource";
 
@@ -233,19 +242,15 @@ export class Player extends EventEmitter {
 	public get relatedTracks(): Track[] {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.relatedTracks) ?? [];
 	}
-	public search(query: string, optionsOrRequestedBy?: SearchOptions | string): Promise<SearchResult> {
+	public search(query: string, optionsOrRequestedBy?: SearchOptions | TrackRequester): Promise<SearchResult> {
 		const options =
-			typeof optionsOrRequestedBy === "string" ? { requestedBy: optionsOrRequestedBy } : (optionsOrRequestedBy ?? {});
-		const requestedBy =
-			typeof options.requestedBy === "string" ?
-				options.requestedBy
-			:	(options.requestedBy?.id ??
-				options.requestedBy?.username ??
-				(options.requestedBy ? String(options.requestedBy) : undefined));
+			typeof optionsOrRequestedBy === "string" ? { requestedBy: optionsOrRequestedBy }
+			: isSearchOptions(optionsOrRequestedBy) ? optionsOrRequestedBy
+			: { requestedBy: optionsOrRequestedBy };
 		return this.bus.requestRpc(
 			this.playerId,
 			PLAYER_RPC.search,
-			{ query, requestedBy: requestedBy ?? "Unknown", plugin: options.plugin },
+			{ query, requestedBy: options.requestedBy, plugin: options.plugin },
 			{ signal: options.signal },
 		);
 	}
@@ -331,7 +336,7 @@ export class Player extends EventEmitter {
 
 	public async play(
 		query: string | Track | SearchResult | AudioResource | null,
-		optionsOrRequestedBy?: PlayOptions | string,
+		optionsOrRequestedBy?: PlayOptions | TrackRequester,
 	): Promise<PlayResult | false> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot play while subscribed to another player. Call unsubscribeForward() first.");
@@ -376,12 +381,7 @@ export class Player extends EventEmitter {
 
 		const combinedSignal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
 
-		const reqBy =
-			typeof options.requestedBy === "string" ?
-				options.requestedBy
-			:	(options.requestedBy?.id ??
-				options.requestedBy?.username ??
-				(options.requestedBy ? String(options.requestedBy) : undefined));
+		const reqBy = options.requestedBy;
 
 		const isResource =
 			query && typeof query === "object" && ("playStream" in query || ("readable" in query && "playbackDuration" in query));
@@ -432,7 +432,7 @@ export class Player extends EventEmitter {
 				}
 
 				const rpcResult = await this.bus.requestRpc<
-					{ query: string | Track | SearchResult | null; requestedBy?: string; plugin?: string | string[] },
+					{ query: string | Track | SearchResult | null; requestedBy?: TrackRequester; plugin?: string | string[] },
 					{ ok: boolean; track: Track | null } | boolean
 				>(this.playerId, PLAYER_RPC.play, { query, requestedBy: reqBy, plugin: options.plugin }, { signal: combinedSignal });
 
@@ -720,14 +720,14 @@ export class Player extends EventEmitter {
 		}
 		this.bus.requestRpcSync<void, void>(this.playerId, PLAYER_RPC.queueClear, undefined);
 	}
-	public async insert(query: string | Track | Track[], index = 0, requestedBy?: string): Promise<boolean> {
+	public async insert(query: string | Track | Track[], index = 0, requestedBy?: TrackRequester): Promise<boolean> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot insert while subscribed to another player");
 			return false;
 		}
 		return this.bus
 			.requestRpc<
-				{ query: string | Track | Track[]; index: number; requestedBy?: string },
+				{ query: string | Track | Track[]; index: number; requestedBy?: TrackRequester },
 				boolean
 			>(this.playerId, PLAYER_RPC.queueInsert, { query, index, requestedBy })
 			.catch(() => false);
@@ -908,8 +908,8 @@ export class Player extends EventEmitter {
 	public removePlugin(name: string): boolean {
 		return this.bus.requestRpcSync<{ name: string }, boolean>(this.playerId, PLAYER_RPC.pluginRemove, { name });
 	}
-	public attachExtension(extension: BaseExtension): void {
-		this.bus.requestRpcSync<{ extension: BaseExtension }, void>(this.playerId, PLAYER_RPC.extensionAdd, { extension });
+	public attachExtension(extension: BaseExtension): Promise<void> {
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.extensionAdd, { extension });
 	}
 	public detachExtension(extension: BaseExtension): boolean {
 		return this.bus.requestRpcSync<{ extension: BaseExtension }, boolean>(this.playerId, PLAYER_RPC.extensionRemove, {

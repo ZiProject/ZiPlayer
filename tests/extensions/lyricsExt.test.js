@@ -67,7 +67,7 @@ test("lyricsExt attaches lyrics on trackStart and emits event", async (t) => {
 	});
 
 	const track = makeTrack("a1", "Artist - Song Title (Official Video) [Lyrics]", "Artist");
-	player.emit("trackStart", track);
+	player.bus.event(player.playerId, { type: "TRACK_STARTED", track, session: { track } });
 
 	await new Promise((r) => setTimeout(r, 20));
 
@@ -79,6 +79,39 @@ test("lyricsExt attaches lyrics on trackStart and emits event", async (t) => {
 	assert.equal(typeof payload.track.metadata.lyrics.text, "string");
 	assert.ok(changed, "lyricsChange should be emitted");
 	assert.equal(changed.plr, player);
+});
+
+test("a shared lyricsExt instance keeps Bus subscriptions scoped to each attached player", async (t) => {
+	const ext = new lyricsExt();
+	ext.fetch = async (track) => ({
+		provider: "lrclib",
+		text: `Lyrics for ${track.title}`,
+		synced: null,
+		trackName: track.title,
+		matchedBy: "test",
+	});
+
+	const mgr = new PlayerManager({ extensions: [ext] });
+	t.after(() => mgr.destroy());
+	const first = await mgr.create("guild-lyrics-shared-1", { extensions: ["lyricsExt"] });
+	const second = await mgr.create("guild-lyrics-shared-2", { extensions: ["lyricsExt"] });
+	const emitted = [];
+	mgr.on("lyricsCreate", (player, track) => emitted.push({ player, track }));
+
+	const publishStart = (player, track) => player.bus.event(player.playerId, { type: "TRACK_STARTED", track, session: { track } });
+	publishStart(first, makeTrack("shared-first", "First player"));
+	publishStart(second, makeTrack("shared-second", "Second player"));
+	await new Promise((resolve) => setTimeout(resolve, 20));
+
+	assert.equal(emitted.length, 2);
+	assert.equal(emitted[0].player, first, "the same extension instance should handle events in the first player's context");
+	assert.equal(emitted[1].player, second, "the same extension instance should handle events in the second player's context");
+
+	first.detachExtension(ext);
+	publishStart(second, makeTrack("shared-second-after-detach", "Second remains attached"));
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(emitted.length, 3, "detaching from one player should not remove the other player's Bus subscription");
+	assert.equal(emitted[2].player, second);
 });
 
 test("lyricsExt releases listeners and its active schedule when detached", async (t) => {
@@ -97,11 +130,8 @@ test("lyricsExt releases listeners and its active schedule when detached", async
 	const mgr = new PlayerManager({ extensions: [ext] });
 	t.after(() => mgr.destroy());
 	const player = await mgr.create("guild-lyrics-cleanup", { extensions: ["lyricsExt"] });
-	const baselineListenerCounts = ["trackStart", "playerPause", "playerResume", "trackEnd", "playerDestroy"].map((event) =>
-		player.listenerCount(event),
-	);
-
-	player.emit("trackStart", makeTrack("cleanup", "Cleanup test"));
+	const track = makeTrack("cleanup", "Cleanup test");
+	player.bus.event(player.playerId, { type: "TRACK_STARTED", track, session: { track } });
 	await new Promise((resolve) => setTimeout(resolve, 20));
 
 	const schedule = ext.schedules.get(player.guildId);
@@ -109,12 +139,15 @@ test("lyricsExt releases listeners and its active schedule when detached", async
 	assert.ok(schedule.timer, "only the next lyric line should have an active timer");
 
 	assert.equal(player.detachExtension(ext), true);
-	assert.deepEqual(
-		["trackStart", "playerPause", "playerResume", "trackEnd", "playerDestroy"].map((event) => player.listenerCount(event)),
-		baselineListenerCounts.map((count) => count - 1),
-		"detaching should remove lyrics event listeners",
-	);
 	assert.equal(ext.schedules.size, 0, "detaching should release the schedule and its lyric lines");
+	const detachedTrack = makeTrack("after-detach", "After detach");
+	player.bus.event(player.playerId, {
+		type: "TRACK_STARTED",
+		track: detachedTrack,
+		session: { track: detachedTrack },
+	});
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(ext.schedules.size, 0, "detached extensions should no longer receive Bus events");
 });
 
 test("lyricsExt falls back to lyrics.ovh when lrclib not found", async () => {

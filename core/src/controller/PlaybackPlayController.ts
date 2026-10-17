@@ -8,6 +8,7 @@ import type {
 	ExtensionPlayRequest,
 	ExtensionPlayResponse,
 	ExtensionAfterPlayPayload,
+	TrackRequester,
 } from "../types";
 import { BUS_EVENT, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, PLAYER_ACTION } from "../structures/BusContract";
 
@@ -85,7 +86,7 @@ export class PlaybackPlayController {
 
 	public async play(
 		query: string | Track | SearchResult | null,
-		requestedBy: string | undefined,
+		requestedBy: TrackRequester | undefined,
 		rpcContext: BusRpcContext,
 		pluginSelection?: string | string[],
 	): Promise<{ ok: boolean; track: Track | null } | boolean> {
@@ -163,7 +164,7 @@ export class PlaybackPlayController {
 					isPlaylist = hookResponse.isPlaylist ?? hookTracks.length > 1;
 				} else if (typeof effectiveRequest.query === "string") {
 					const result = await this.bus.requestRpc<
-						{ query: string; requestedBy: string; plugin?: string | string[] },
+						{ query: string; requestedBy: TrackRequester; plugin?: string | string[] },
 						SearchResult
 					>(
 						this.playerId,
@@ -181,6 +182,10 @@ export class PlaybackPlayController {
 				} else if (effectiveRequest.query) {
 					tracksToAdd = [effectiveRequest.query as Track];
 				}
+			}
+
+			if (requestedBy && typeof requestedBy === "object") {
+				tracksToAdd = tracksToAdd.map((track) => ({ ...track, requestedBy }));
 			}
 
 			if (tracksToAdd.length === 0 || context.signal.aborted) {

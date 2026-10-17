@@ -15,13 +15,16 @@ export enum PlaybackMode {
 /**
  * Represents a music track with metadata and streaming information.
  */
+export type TrackRequester = string | object;
+
 export interface Track {
 	id: string;
 	title: string;
 	url: string;
 	duration: number;
 	thumbnail?: string;
-	requestedBy: string;
+	/** User object or identifier who requested this track. */
+	requestedBy: TrackRequester;
 	source: string;
 	metadata?: Record<string, any>;
 	isLive?: boolean;
@@ -320,8 +323,8 @@ export interface PlayerRuntimeState {
 }
 
 export interface PlayOptions {
-	/** User or identifier who requested playback. */
-	requestedBy?: any;
+	/** User object or identifier who requested playback. Track metadata preserves the supplied value. */
+	requestedBy?: TrackRequester;
 	/** Guild voice channel to connect to automatically before playback. */
 	voiceChannel?: VoiceChannel;
 	/** Target plugin or list of plugins to search/play from. */
@@ -332,8 +335,8 @@ export interface PlayOptions {
 }
 
 export interface SearchOptions {
-	/** User or identifier who requested the search. */
-	requestedBy?: any;
+	/** User object or identifier who requested the search. Track metadata preserves the supplied value. */
+	requestedBy?: TrackRequester;
 	/** Restrict search to this plugin or list of plugins. */
 	plugin?: string | string[];
 	/** AbortSignal to cancel the search. */
@@ -343,7 +346,7 @@ export interface SearchOptions {
 export interface PlayResult {
 	track: Track;
 	query: string;
-	requestedBy?: any;
+	requestedBy?: TrackRequester;
 	voiceConnection?: any;
 	player: Player;
 }

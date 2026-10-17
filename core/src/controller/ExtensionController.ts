@@ -36,9 +36,9 @@ export class ExtensionController {
 			PLAYER_RPC.extensionDisable,
 			({ name }, ctx) => this.manager(ctx.playerId)?.disable(name) ?? false,
 		);
-		bus.registerRpc<{ extension: BaseExtension }, void>(PLAYER_RPC.extensionAdd, ({ extension }, ctx) =>
-			this.manager(ctx.playerId)?.register(extension),
-		);
+		bus.registerRpc<{ extension: BaseExtension }, void>(PLAYER_RPC.extensionAdd, async ({ extension }, ctx) => {
+			await this.manager(ctx.playerId)?.attach(extension);
+		});
 		bus.registerRpc<{ extension: BaseExtension }, boolean>(
 			PLAYER_RPC.extensionRemove,
 			({ extension }, ctx) => this.manager(ctx.playerId)?.unregister(extension) ?? false,
