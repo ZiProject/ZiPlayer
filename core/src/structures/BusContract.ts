@@ -148,6 +148,7 @@ export const CONTROLLER_RPC = {
 	playbackPrepareAutoplay: "playback.prepareAutoplay",
 	playbackCreateRelatedTracks: "playback.createRelatedTracks",
 	playbackStart: "playback.start",
+	playbackStartResource: "playback.startResource",
 	playbackReportFilterError: "playback.reportFilterError",
 	playbackSessionRetirePending: "playback.session.retirePending",
 	preloadHas: "preload.has",
@@ -191,6 +192,10 @@ export type ControllerRpcKey = keyof typeof CONTROLLER_RPC;
 export const PLAYER_RPC = {
 	play: "play",
 	volumeSet: "volume.set",
+	connectionWebAudioRegister: "connection.webAudio.register",
+	connectionWebAudioDisconnect: "connection.webAudio.disconnect",
+	connectionWebAudioClear: "connection.webAudio.clear",
+	connectionWebAudioList: "connection.webAudio.list",
 	search: "search",
 	searchCacheGet: "search.cache.get",
 	searchCacheSet: "search.cache.set",
@@ -344,7 +349,9 @@ export type PlayerActionKey = keyof typeof PLAYER_ACTION;
 export const PLAYER_QUERY = {
 	audioPlayer: "audioPlayer",
 	connection: "connection",
+	voiceConnection: "connection.voice",
 	connectionState: "connection.state",
+	hasOutput: "connection.hasOutput",
 	ttsHasPlayer: "tts.hasPlayer",
 	streamStats: "stream.stats",
 	streamState: "stream.state",

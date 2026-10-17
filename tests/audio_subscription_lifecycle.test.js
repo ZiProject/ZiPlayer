@@ -302,7 +302,7 @@ test("StreamController.resolve follows fallback chain: stream -> url -> recreate
 			await streamController.resolve(playerId, { type: "arbitrary" }, session);
 		},
 		{
-			message: /StreamInfo does not contain a readable stream, url, or recreate factory/,
+			message: /StreamInfo does not contain a readable stream, url, or recreation callback/,
 		},
 	);
 

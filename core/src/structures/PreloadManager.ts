@@ -149,32 +149,32 @@ export class PreloadManager {
 		preloadSlot.loadPromise = null;
 		return { track, stream, streamInfo, streamId };
 	}
-	public async preloadNextTrack(id: string): Promise<void> {
+	public async preloadNextTrack(id: string): Promise<boolean> {
 		const slot = this.slots.get(id);
-		if (!slot) return;
+		if (!slot) return false;
 		const { debug, isDestroyed, isEnabled } = slot.deps;
 		const preloadSlot = slot.preloadSlot;
-		if (isDestroyed()) return;
+		if (isDestroyed()) return false;
 		if (!isEnabled()) {
 			debug(`[Preload] Disabled by options/runtime profile`);
-			return;
+			return false;
 		}
 		if (slot.preloadLock) {
 			debug(`[Preload] Already preloading, skipping`);
-			return;
+			return false;
 		}
 		const nextTrack = this.getNextTrack(slot);
 		if (!nextTrack) {
 			debug(`[Preload] No next track to preload`);
-			return;
+			return false;
 		}
 		if (this.slotHasValidPreload(slot, nextTrack)) {
 			debug(`[Preload] Already have valid preload for: ${nextTrack.title}`);
-			return;
+			return true;
 		}
 		if (preloadSlot.isLoading && this.trackMatches(preloadSlot.track, nextTrack)) {
 			if (preloadSlot.loadPromise) await preloadSlot.loadPromise;
-			return;
+			return this.slotHasValidPreload(slot, nextTrack);
 		}
 		if (preloadSlot.isValid && !this.trackMatches(preloadSlot.track, nextTrack)) await this.safeCancelPreload(id);
 		slot.preloadLock = true;
@@ -211,6 +211,7 @@ export class PreloadManager {
 			preloadSlot.loadPromise = null;
 		}
 		if (slot.preloadNext && !isDestroyed() && isEnabled()) await this.preloadNextTrack(slot.playerId);
+		return this.slotHasValidPreload(slot, nextTrack);
 	}
 	public async safeCancelPreload(id: string): Promise<void> {
 		const slot = this.slots.get(id);

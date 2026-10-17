@@ -102,7 +102,7 @@ export class ForwardController {
 		const issues: string[] = [];
 		if (role === "leader") {
 			for (const followerId of state.followers) {
-				if (!this.bus.querySync(followerId, PLAYER_QUERY.connection)) issues.push(followerId);
+				if (!this.bus.querySync(followerId, PLAYER_QUERY.voiceConnection)) issues.push(followerId);
 			}
 		} else if (role === "follower" && !state.leaderId) {
 			issues.push("missing leader");
@@ -157,8 +157,8 @@ export class ForwardController {
 			this.bus.querySync(leaderId, PLAYER_QUERY.forwardLeaderId) ?? this.bus.querySync(leaderId, PLAYER_QUERY.forwardLeader);
 		if (leaderMode === PlaybackMode.FORWARD || leaderLeader) return false;
 
-		const myConn = this.bus.querySync(playerId, PLAYER_QUERY.connection);
-		const leaderConn = this.bus.querySync(leaderId, PLAYER_QUERY.connection);
+		const myConn = this.bus.querySync(playerId, PLAYER_QUERY.voiceConnection);
+		const leaderConn = this.bus.querySync(leaderId, PLAYER_QUERY.voiceConnection);
 		if (!myConn || !leaderConn) return false;
 
 		const leaderAudioPlayer = this.bus.querySync(leaderId, PLAYER_QUERY.audioPlayer);

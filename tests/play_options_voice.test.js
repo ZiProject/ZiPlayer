@@ -161,7 +161,7 @@ test("player.play auto-connects to valid voiceChannel and rejects invalid channe
 	});
 
 	// Register query so Player.connection sees the connection
-	bus.registerQuery(PLAYER_QUERY.connection, () => (connectedChannel ? mockConnection : null));
+	bus.registerQuery(PLAYER_QUERY.voiceConnection, () => (connectedChannel ? mockConnection : null));
 
 	// Rejects invalid channel with TypeError
 	await assert.rejects(() => player.play("song", { voiceChannel: { id: "text-chan", type: 0 } }), TypeError);

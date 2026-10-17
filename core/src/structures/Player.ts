@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import type { Stream } from "stream";
-import type { VoiceConnection } from "@discordjs/voice";
+import type { VoiceConnection, PlayerSubscription } from "@discordjs/voice";
+import { WebAudioConnection } from "../output/WebAudioConnection";
 import type { PlayerManager } from "./PlayerManager";
 import type {
 	PlayerOptions,
@@ -18,6 +19,7 @@ import type {
 	PlayOptions,
 	SearchOptions,
 	PlayResult,
+	TrackRequester,
 } from "../types";
 import { PlaybackMode } from "../types";
 import type { FilterEngine } from "../controller/FilterController";
@@ -38,6 +40,12 @@ import type { PlaybackSession } from "./PlaybackSession";
 import { BUS_EVENT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
 import type { PlayerQueue } from "../controller/QueueController";
 
+export interface PlayerWebAudioRegistration {
+	readonly id: string;
+	readonly name: string;
+	disconnect(): Promise<boolean>;
+}
+
 export function assertVoiceChannel(channel: VoiceChannel): asserts channel is VoiceChannel {
 	if (
 		!channel ||
@@ -47,6 +55,40 @@ export function assertVoiceChannel(channel: VoiceChannel): asserts channel is Vo
 	) {
 		throw new TypeError("play({ voiceChannel }) requires a Guild VoiceChannel");
 	}
+}
+
+function isRequester(value: unknown): value is TrackRequester {
+	return (typeof value === "string" && Boolean(value.trim())) || (value !== null && typeof value === "object");
+}
+
+function isSearchOptions(value: TrackRequester | undefined): value is SearchOptions {
+	return !!value && typeof value === "object" && ("requestedBy" in value || "plugin" in value || "signal" in value);
+}
+
+function normalizeTrackMetadata(resource: AudioResource, metadata: unknown, requestedBy?: TrackRequester): Track {
+	const raw = metadata && typeof metadata === "object" ? (metadata as Record<string, any>) : {};
+	const fallbackId = `resource-${Date.now()}`;
+	const id = typeof raw.id === "string" && raw.id.trim() ? raw.id : fallbackId;
+	const title = typeof raw.title === "string" && raw.title.trim() ? raw.title : "Direct Audio Resource";
+	const url = typeof raw.url === "string" ? raw.url : "";
+	const rawDuration = Number(raw.duration);
+	const duration = Number.isFinite(rawDuration) ? rawDuration : Number((resource as any)?.playbackDuration ?? 0);
+	const normalizedRequestedBy =
+		isRequester(raw.requestedBy) ? raw.requestedBy
+		: isRequester(requestedBy) ? requestedBy
+		: "resource";
+	const source = typeof raw.source === "string" && raw.source.trim() ? raw.source : "resource";
+
+	return {
+		...raw,
+		id,
+		title,
+		url,
+		duration: Number.isFinite(duration) ? duration : 0,
+		requestedBy: normalizedRequestedBy,
+		source,
+		metadata: { ...raw },
+	};
 }
 
 export class Player extends EventEmitter {
@@ -111,7 +153,13 @@ export class Player extends EventEmitter {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.currentResource) as AudioResource | null;
 	}
 	public get connection(): VoiceConnection | null {
-		return this.bus.querySync(this.playerId, PLAYER_QUERY.connection) ?? null;
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.voiceConnection) ?? null;
+	}
+	public get connections(): Array<VoiceConnection | WebAudioConnection> {
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.connection) ?? [];
+	}
+	public get hasOutput(): boolean {
+		return this.bus.querySync(this.playerId, PLAYER_QUERY.hasOutput) ?? false;
 	}
 	public get playbackMode(): PlaybackMode {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackMode) ?? PlaybackMode.NATIVE;
@@ -194,19 +242,15 @@ export class Player extends EventEmitter {
 	public get relatedTracks(): Track[] {
 		return this.bus.querySync(this.playerId, PLAYER_QUERY.relatedTracks) ?? [];
 	}
-	public search(query: string, optionsOrRequestedBy?: SearchOptions | string): Promise<SearchResult> {
+	public search(query: string, optionsOrRequestedBy?: SearchOptions | TrackRequester): Promise<SearchResult> {
 		const options =
-			typeof optionsOrRequestedBy === "string" ? { requestedBy: optionsOrRequestedBy } : (optionsOrRequestedBy ?? {});
-		const requestedBy =
-			typeof options.requestedBy === "string" ?
-				options.requestedBy
-			:	(options.requestedBy?.id ??
-				options.requestedBy?.username ??
-				(options.requestedBy ? String(options.requestedBy) : undefined));
+			typeof optionsOrRequestedBy === "string" ? { requestedBy: optionsOrRequestedBy }
+			: isSearchOptions(optionsOrRequestedBy) ? optionsOrRequestedBy
+			: { requestedBy: optionsOrRequestedBy };
 		return this.bus.requestRpc(
 			this.playerId,
 			PLAYER_RPC.search,
-			{ query, requestedBy: requestedBy ?? "Unknown", plugin: options.plugin },
+			{ query, requestedBy: options.requestedBy, plugin: options.plugin },
 			{ signal: options.signal },
 		);
 	}
@@ -225,10 +269,42 @@ export class Player extends EventEmitter {
 	public createRelatedTracks(track?: Track | null): Promise<Track[]> {
 		return this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackCreateRelatedTracks, { track });
 	}
-	public async connect(
+	public connect(
 		channel: VoiceChannel,
 		options?: { group?: string; selfDeaf?: boolean; selfMute?: boolean; deaf?: boolean; mute?: boolean },
-	): Promise<VoiceConnection> {
+	): Promise<VoiceConnection>;
+	public connect(connection: WebAudioConnection, options?: { id?: string; name?: string }): Promise<PlayerWebAudioRegistration>;
+	public async connect(
+		target: VoiceChannel | WebAudioConnection,
+		options?: {
+			group?: string;
+			selfDeaf?: boolean;
+			selfMute?: boolean;
+			deaf?: boolean;
+			mute?: boolean;
+			id?: string;
+			name?: string;
+		},
+	): Promise<VoiceConnection | PlayerWebAudioRegistration> {
+		if (
+			target &&
+			typeof target === "object" &&
+			("isWebAudioConnection" in target ||
+				(typeof (target as any).prepareAudioPacket === "function" &&
+					typeof (target as any).dispatchAudio === "function" &&
+					typeof (target as any).attachSocket === "function"))
+		) {
+			const conn = target as WebAudioConnection;
+			const id = options?.id ?? conn.sessionId;
+			const name = options?.name ?? `WebAudio (${conn.sessionId})`;
+			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.connectionWebAudioRegister, { id, name, connection: conn });
+			return {
+				id,
+				name,
+				disconnect: () => this.disconnectWebAudio(id),
+			};
+		}
+		const channel = target as VoiceChannel;
 		assertVoiceChannel(channel);
 		const request = {
 			type: BUS_REQUEST.connectionConnect,
@@ -237,24 +313,30 @@ export class Player extends EventEmitter {
 			options:
 				options ?
 					{
-						group: options.group,
-						deaf: options.deaf ?? options.selfDeaf,
-						mute: options.mute ?? options.selfMute,
+						group: (options as any).group,
+						deaf: (options as any).deaf ?? (options as any).selfDeaf,
+						mute: (options as any).mute ?? (options as any).selfMute,
 					}
 				:	undefined,
 		} as const;
-		return (this.bus.request(this.playerId, request as any) as Promise<{ connection: VoiceConnection }>).then(
-			(e) => e.connection,
-		);
+		const reply = await (this.bus.request(this.playerId, request as any) as Promise<{ connection: VoiceConnection }>);
+		return reply.connection;
+	}
+	public async disconnectWebAudio(id: string): Promise<boolean> {
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.connectionWebAudioDisconnect, { id });
+	}
+	public getWebAudioSubscribers() {
+		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.connectionWebAudioList, undefined);
 	}
 	public async disconnect(): Promise<void> {
 		return this.bus
 			.request(this.playerId, { type: BUS_REQUEST.connectionDisconnect, requestId: createPlayerRequestId() })
 			.then(() => undefined);
 	}
+
 	public async play(
-		query: string | Track | SearchResult | null,
-		optionsOrRequestedBy?: PlayOptions | string,
+		query: string | Track | SearchResult | AudioResource | null,
+		optionsOrRequestedBy?: PlayOptions | TrackRequester,
 	): Promise<PlayResult | false> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot play while subscribed to another player. Call unsubscribeForward() first.");
@@ -299,19 +381,58 @@ export class Player extends EventEmitter {
 
 		const combinedSignal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
 
-		const reqBy =
-			typeof options.requestedBy === "string" ?
-				options.requestedBy
-			:	(options.requestedBy?.id ??
-				options.requestedBy?.username ??
-				(options.requestedBy ? String(options.requestedBy) : undefined));
+		const reqBy = options.requestedBy;
+
+		const isResource =
+			query && typeof query === "object" && ("playStream" in query || ("readable" in query && "playbackDuration" in query));
 
 		const operation = this.playOperation
 			.catch(() => false as const)
 			.then(async () => {
 				if (generation !== this.playGeneration || combinedSignal.aborted) return false;
+
+				if (isResource) {
+					const resource = query as AudioResource;
+					const track = normalizeTrackMetadata(resource, resource.metadata, reqBy);
+					resource.metadata = track;
+
+					if (this.bus.hasRpc(CONTROLLER_RPC.playbackStartResource)) {
+						const started = await this.bus.requestRpc<{ resource: AudioResource; track: Track }, boolean>(
+							this.playerId,
+							CONTROLLER_RPC.playbackStartResource,
+							{ resource, track },
+							{ signal: combinedSignal },
+						);
+						if (generation !== this.playGeneration || combinedSignal.aborted || !started) return false;
+					} else if (this.bus.hasRpc(CONTROLLER_RPC.playbackPlay)) {
+						if (this.bus.hasRpc(PLAYER_RPC.queueSetCurrent)) {
+							this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueSetCurrent, { track });
+						}
+						await this.bus.requestRpc(
+							this.playerId,
+							CONTROLLER_RPC.playbackPlay,
+							{ resource, to: track },
+							{ signal: combinedSignal },
+						);
+						if (generation !== this.playGeneration || combinedSignal.aborted) return false;
+					} else {
+						const audioPlayer = this.audioPlayer;
+						if (!audioPlayer) throw new Error(`AudioPlayer is not available for player "${this.playerId}"`);
+						audioPlayer.play(resource);
+					}
+
+					const playResult: PlayResult = {
+						track,
+						query: "resource",
+						requestedBy: options.requestedBy,
+						voiceConnection: this.connection ?? undefined,
+						player: this,
+					};
+					return playResult;
+				}
+
 				const rpcResult = await this.bus.requestRpc<
-					{ query: string | Track | SearchResult | null; requestedBy?: string; plugin?: string | string[] },
+					{ query: string | Track | SearchResult | null; requestedBy?: TrackRequester; plugin?: string | string[] },
 					{ ok: boolean; track: Track | null } | boolean
 				>(this.playerId, PLAYER_RPC.play, { query, requestedBy: reqBy, plugin: options.plugin }, { signal: combinedSignal });
 
@@ -355,8 +476,7 @@ export class Player extends EventEmitter {
 			this.debug("[Player] Cannot pause while subscribed to another player");
 			return false;
 		}
-		if (!this.isPlaying || this.isPaused) return false;
-		this.invalidatePlay();
+		if (!this.currentTrack) return false;
 		return this.action({ type: PLAYER_ACTION.pause })
 			.then(() => this.isPaused)
 			.catch(() => false);
@@ -366,9 +486,9 @@ export class Player extends EventEmitter {
 			this.debug("[Player] Cannot resume while subscribed to another player");
 			return false;
 		}
-		if (!this.isPaused) return false;
+		if (!this.currentTrack) return false;
 		return this.action({ type: PLAYER_ACTION.resume })
-			.then(() => !this.isPaused)
+			.then(() => this.isPlaying)
 			.catch(() => false);
 	}
 	public async stop(): Promise<boolean> {
@@ -399,7 +519,10 @@ export class Player extends EventEmitter {
 		this.invalidatePlay();
 		return this.action({ type: PLAYER_ACTION.seek, position })
 			.then(() => true)
-			.catch(() => false);
+			.catch((error) => {
+				this.debug(`[Player] Seek failed at ${position}ms:`, error);
+				return false;
+			});
 	}
 	public async skip(
 		indexOrOptions?: number | { index?: number; signal?: AbortSignal },
@@ -597,17 +720,16 @@ export class Player extends EventEmitter {
 		}
 		this.bus.requestRpcSync<void, void>(this.playerId, PLAYER_RPC.queueClear, undefined);
 	}
-	public async insert(query: string | Track | Track[], index = 0, requestedBy?: string): Promise<boolean> {
+	public async insert(query: string | Track | Track[], index = 0, requestedBy?: TrackRequester): Promise<boolean> {
 		if (this.playbackMode === PlaybackMode.FORWARD) {
 			this.debug("[Player] Cannot insert while subscribed to another player");
 			return false;
 		}
 		return this.bus
-			.requestRpc<{ query: string | Track | Track[]; index: number; requestedBy?: string }, boolean>(
-				this.playerId,
-				PLAYER_RPC.queueInsert,
-				{ query, index, requestedBy },
-			)
+			.requestRpc<
+				{ query: string | Track | Track[]; index: number; requestedBy?: TrackRequester },
+				boolean
+			>(this.playerId, PLAYER_RPC.queueInsert, { query, index, requestedBy })
 			.catch(() => false);
 	}
 	public remove(index: number): Track | null {
@@ -758,8 +880,27 @@ export class Player extends EventEmitter {
 	public query<K extends PlayerQuery>(query: K): Promise<PlayerQueryMap[K]> {
 		return this.bus.query(this.playerId, query);
 	}
-	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void {
-		return this.bus.subscribe(this.playerId, type, listener);
+	public subscribe(connection: VoiceConnection | WebAudioConnection | any): PlayerSubscription | undefined;
+	public subscribe<K extends PlayerEventType>(type: K, listener: (event: Extract<PlayerEvent, { type: K }>) => void): () => void;
+	public subscribe(targetOrType: VoiceConnection | WebAudioConnection | PlayerEventType | any, listener?: any): any {
+		if (
+			targetOrType &&
+			typeof targetOrType === "object" &&
+			(typeof targetOrType.prepareAudioPacket === "function" ||
+				typeof targetOrType.dispatchAudio === "function" ||
+				"joinConfig" in targetOrType ||
+				"isWebAudioConnection" in targetOrType ||
+				targetOrType instanceof WebAudioConnection)
+		) {
+			const audioPlayer = this.audioPlayer;
+			if (!audioPlayer) throw new Error(`AudioPlayer is not available for player "${this.playerId}"`);
+			const subscribeMethod = (audioPlayer as any)["subscribe"];
+			if (typeof subscribeMethod !== "function") {
+				throw new TypeError("AudioPlayer does not implement subscribe(connection)");
+			}
+			return subscribeMethod.call(audioPlayer, targetOrType);
+		}
+		return this.bus.subscribe(this.playerId, targetOrType, listener);
 	}
 	public addPlugin(plugin: BasePlugin): void {
 		this.bus.requestRpcSync<{ plugin: BasePlugin }, void>(this.playerId, PLAYER_RPC.pluginAdd, { plugin });
@@ -767,8 +908,8 @@ export class Player extends EventEmitter {
 	public removePlugin(name: string): boolean {
 		return this.bus.requestRpcSync<{ name: string }, boolean>(this.playerId, PLAYER_RPC.pluginRemove, { name });
 	}
-	public attachExtension(extension: BaseExtension): void {
-		this.bus.requestRpcSync<{ extension: BaseExtension }, void>(this.playerId, PLAYER_RPC.extensionAdd, { extension });
+	public attachExtension(extension: BaseExtension): Promise<void> {
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.extensionAdd, { extension });
 	}
 	public detachExtension(extension: BaseExtension): boolean {
 		return this.bus.requestRpcSync<{ extension: BaseExtension }, boolean>(this.playerId, PLAYER_RPC.extensionRemove, {
@@ -793,6 +934,9 @@ export class Player extends EventEmitter {
 		this.destroyed = true;
 		this.invalidatePlay();
 		this.actionExecutor.dispose();
+		if (this.bus.hasRpc(PLAYER_RPC.connectionWebAudioClear)) {
+			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.connectionWebAudioClear, undefined);
+		}
 	}
 	/**
 	 * Destroys the player.

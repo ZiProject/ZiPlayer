@@ -15,6 +15,7 @@ export type PluginManagerOptions = {
 export interface TrackResolveContext {
 	history?: Track[];
 	signal?: AbortSignal;
+	playerId?: string;
 	[key: string]: any;
 }
 

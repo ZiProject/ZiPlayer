@@ -67,13 +67,7 @@ interface LyricsSchedule {
 
 interface LyricsPlayerBinding {
 	manager?: PlayerManager;
-	listeners: {
-		trackStart: (track: Track) => void;
-		playerPause: () => void;
-		playerResume: () => void;
-		trackEnd: () => void;
-		playerDestroy: () => void;
-	};
+	unsubscribers: Array<() => void>;
 }
 
 /**
@@ -176,30 +170,28 @@ export class lyricsExt extends BaseExtension {
 
 		if (this.options.autoFetchOnTrackStart && !this.bindings.has(player)) {
 			this.debug(`Wiring trackStart for guild=${player.guildId}`);
-			let binding: LyricsPlayerBinding;
-			const listeners: LyricsPlayerBinding["listeners"] = {
-				trackStart: (track) => void this.handleTrackStart(player, binding, track),
-				playerPause: () => {
+			const binding: LyricsPlayerBinding = { manager, unsubscribers: [] };
+			this.bindings.set(player, binding);
+			binding.unsubscribers.push(
+				player.bus.subscribe(
+					player.playerId,
+					"TRACK_STARTED",
+					(event) => void this.handleTrackStart(player, binding, event.track),
+				),
+				player.bus.subscribe(player.playerId, "playerPause", () => {
 					this.debug("playerPause: pausing lyrics sync");
 					this.pauseLineSchedule(player);
-				},
-				playerResume: () => {
+				}),
+				player.bus.subscribe(player.playerId, "playerResume", () => {
 					this.debug("playerResume: resuming lyrics sync");
 					this.resumeLineSchedule(player);
-				},
-				trackEnd: () => {
+				}),
+				player.bus.subscribe(player.playerId, "TRACK_END", () => {
 					this.debug("trackEnd: clearing line schedule");
 					this.clearLineSchedule(player);
-				},
-				playerDestroy: () => this.cleanupPlayer(player),
-			};
-			binding = { manager, listeners };
-			this.bindings.set(player, binding);
-			player.on("trackStart", listeners.trackStart);
-			player.on("playerPause", listeners.playerPause);
-			player.on("playerResume", listeners.playerResume);
-			player.on("trackEnd", listeners.trackEnd);
-			player.on("playerDestroy", listeners.playerDestroy);
+				}),
+				player.bus.subscribe(player.playerId, "destroyed", () => this.cleanupPlayer(player)),
+			);
 		}
 
 		return true;
@@ -244,11 +236,7 @@ export class lyricsExt extends BaseExtension {
 	private cleanupPlayer(player: Player): void {
 		const binding = this.bindings.get(player);
 		if (binding) {
-			player.off("trackStart", binding.listeners.trackStart);
-			player.off("playerPause", binding.listeners.playerPause);
-			player.off("playerResume", binding.listeners.playerResume);
-			player.off("trackEnd", binding.listeners.trackEnd);
-			player.off("playerDestroy", binding.listeners.playerDestroy);
+			for (const unsubscribe of binding.unsubscribers.splice(0)) unsubscribe();
 			this.bindings.delete(player);
 		}
 		this.clearLineSchedule(player);

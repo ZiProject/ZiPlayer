@@ -13,6 +13,9 @@ const {
 	TrackLoader,
 	BUS_REQUEST,
 	BUS_OUTPUT,
+	CONTROLLER_RPC,
+	PLAYER_QUERY,
+	PLAYER_RPC,
 } = require("../core/dist");
 
 const waitFor = async (predicate) => {
@@ -80,6 +83,50 @@ const context = () => ({
 
 const play = (harness, track) => harness.bus.action(harness.playerId, { type: "PLAY", track }, context());
 
+test("playing search candidates queues only the first match unless the result is a playlist", async () => {
+	const searchResult = {
+		tracks: [
+			{ id: "match-1", title: "Best Match", duration: 180000 },
+			{ id: "match-2", title: "Similar Match", duration: 180000 },
+			{ id: "match-3", title: "Another Similar Match", duration: 180000 },
+		],
+	};
+	const candidatesHarness = createOrchestrator();
+	candidatesHarness.bus.registerRpc(PLAYER_RPC.search, async () => searchResult);
+
+	const playResult = await candidatesHarness.bus.requestRpc(candidatesHarness.playerId, CONTROLLER_RPC.play, {
+		query: "song title",
+		requestedBy: "user",
+	});
+
+	assert.equal(playResult.track.id, "match-1");
+	assert.deepEqual(
+		candidatesHarness.bus.querySync(candidatesHarness.playerId, PLAYER_QUERY.queue).map((track) => track.id),
+		[],
+	);
+	await candidatesHarness.orchestrator.dispose();
+	candidatesHarness.queueController.dispose();
+
+	const playlistHarness = createOrchestrator();
+	playlistHarness.bus.registerRpc(PLAYER_RPC.search, async () => ({
+		...searchResult,
+		playlist: { name: "Album" },
+	}));
+
+	const playlistPlayResult = await playlistHarness.bus.requestRpc(playlistHarness.playerId, CONTROLLER_RPC.play, {
+		query: "album title",
+		requestedBy: "user",
+	});
+
+	assert.equal(playlistPlayResult.track.id, "match-1");
+	assert.deepEqual(
+		playlistHarness.bus.querySync(playlistHarness.playerId, PLAYER_QUERY.queue).map((track) => track.id),
+		["match-2", "match-3"],
+	);
+	await playlistHarness.orchestrator.dispose();
+	playlistHarness.queueController.dispose();
+});
+
 test("autoplay starts the related track after TRACK_END", async () => {
 	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
 	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
@@ -136,6 +183,67 @@ test("related tracks resolve and set willNext even when autoplay is disabled", a
 	});
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	assert.equal(harness.orchestrator.getCurrentSession(harness.playerId).track, trackA);
+	await harness.orchestrator.dispose();
+	harness.queueController.dispose();
+});
+
+test("related-track generation failure is reported and still reaches queue-end fallback once", async () => {
+	const trackA = { id: "track-related-failure", title: "Track A", duration: 180000 };
+	const failure = new Error("related track lookup failed");
+	const harness = createOrchestrator({
+		autoPlay: true,
+		relatedResolver: async () => {
+			throw failure;
+		},
+	});
+	const streamErrors = [];
+	let queueEndCount = 0;
+	harness.bus.subscribe(harness.playerId, "streamError", (event) => streamErrors.push(event.error));
+	harness.bus.subscribe(harness.playerId, "queueEnd", () => queueEndCount++);
+
+	await play(harness, trackA);
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
+	await waitFor(() => queueEndCount === 1);
+
+	assert.ok(streamErrors.includes(failure));
+	assert.equal(queueEndCount, 1);
+	assert.equal(harness.orchestrator.getCurrentSession(harness.playerId).status, "ended");
+	assert.deepEqual(harness.played, ["track-related-failure"]);
+	await harness.orchestrator.dispose();
+	harness.queueController.dispose();
+});
+
+test("failed queued-track start restores transition guards and retries on a later queue change", async () => {
+	const trackA = { id: "track-start-failure", title: "Track A", duration: 180000 };
+	const trackB = { id: "track-start-failure-next", title: "Track B", duration: 180000 };
+	const trackC = { id: "track-start-retry", title: "Track C", duration: 180000 };
+	const harness = createOrchestrator();
+	const streamErrors = [];
+	harness.bus.subscribe(harness.playerId, "streamError", (event) => streamErrors.push(event.error));
+
+	await play(harness, trackA);
+	harness.queueController.add(trackB);
+	let startAttempts = 0;
+	harness.bus.registerRpc("playback.start", () => {
+		startAttempts++;
+		if (startAttempts === 1) throw new Error("queued track start failed");
+	});
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
+	await waitFor(() => streamErrors.length === 1);
+	const trackEnd = harness.orchestrator.states.get(harness.playerId).trackEnd;
+	assert.equal(trackEnd.isTransitioning, false);
+	assert.equal(trackEnd.isWaitingForQueue, true);
+
+	harness.queueController.add(trackC);
+	trackEnd.onQueueChanged();
+	await trackEnd.waitForQueue(new AbortController().signal);
+	assert.equal(startAttempts, 2);
+	assert.equal(trackEnd.isWaitingForQueue, false);
+	assert.equal(trackEnd.isTransitioning, false);
+	assert.equal(streamErrors[0].message, "queued track start failed");
 	await harness.orchestrator.dispose();
 	harness.queueController.dispose();
 });

@@ -9,6 +9,7 @@ import { CONTROLLER_RPC, PLAYER_QUERY, type TtsIsTTSRequest, type TtsPlayRequest
 import type { TTSControllerOptions } from "../types";
 
 interface TTSState {
+	playerId: string;
 	ttsPlayer: AudioPlayer;
 	pluginManager: PluginManager;
 	extensionManager?: ExtensionManager;
@@ -42,6 +43,7 @@ export class TTSController {
 	attach(playerId: string, options: Omit<TTSControllerOptions, "bus"> & { bus?: never }): void {
 		this.detach(playerId);
 		const state = {
+			playerId,
 			pluginManager: options.pluginManager,
 			extensionManager: options.extensionManager,
 			audioPlayer: options.audioPlayer,
@@ -85,7 +87,7 @@ export class TTSController {
 		try {
 			const extensionStream = state.extensionManager ? await state.extensionManager.provideStream(track) : null;
 			if (extensionStream?.stream || extensionStream?.remote) return extensionStream;
-			const stream = await state.pluginManager.getStream(track);
+			const stream = await state.pluginManager.getStream(track, { context: { playerId: state.playerId } });
 			if (!stream) throw new Error(`No TTS stream available for track: ${track.title}`);
 			return stream;
 		} catch (error) {
@@ -107,7 +109,7 @@ export class TTSController {
 	}
 
 	private getConnection(playerId: string): VoiceConnection | null {
-		return (this.bus.querySync(playerId, PLAYER_QUERY.connection) as VoiceConnection | null) ?? null;
+		return this.bus.querySync(playerId, PLAYER_QUERY.voiceConnection) ?? null;
 	}
 
 	private async playInternal(playerId: string, state: TTSState, track: Track): Promise<void> {

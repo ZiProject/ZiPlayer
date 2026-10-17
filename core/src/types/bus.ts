@@ -15,6 +15,8 @@ import type {
 	SaveOptions,
 	SaveVideoOptions,
 } from ".";
+import type { WebAudioConnection } from "../output/WebAudioConnection";
+import type { WebAudioSubscriberInfo } from "./controller";
 
 export type { Bus } from "../structures/Bus";
 import type { BasePlugin } from "../plugins/BasePlugin";
@@ -186,16 +188,15 @@ export type PlayerEventArgsMap = {
 	) ?
 		[]
 	: K extends (
-
-			| "TRACK_LOADING"
-			| "TRACK_LOADED"
-			| "TRACK_STARTED"
-			| "TRACK_END"
-			| "STREAM_ABORTED"
-			| "playbackStateChanged"
-			| "playbackSessionCreated"
-			| "RECOVERY_STARTED"
-			| "RECOVERY_FAILED"
+		| "TRACK_LOADING"
+		| "TRACK_LOADED"
+		| "TRACK_STARTED"
+		| "TRACK_END"
+		| "STREAM_ABORTED"
+		| "playbackStateChanged"
+		| "playbackSessionCreated"
+		| "RECOVERY_STARTED"
+		| "RECOVERY_FAILED"
 	) ?
 		[PlaybackSessionSnapshot]
 	: K extends "TRACK_ERROR" ? [PlaybackSessionSnapshot, Error]
@@ -273,11 +274,25 @@ export interface BusRpcOptions {
 }
 export interface PlayerRpcMap {
 	play: {
-		request: { query: string | Track | SearchResult | null; requestedBy?: string; plugin?: string | string[] };
+		request: {
+			query: string | Track | SearchResult | null;
+			requestedBy?: import("./core").TrackRequester;
+			plugin?: string | string[];
+		};
 		response: { ok: boolean; track: Track | null } | boolean;
 	};
 	"volume.set": { request: { value: number }; response: number };
-	search: { request: { query: string; requestedBy?: string; plugin?: string | string[] }; response: SearchResult };
+	"connection.webAudio.register": {
+		request: { id: string; name: string; connection: WebAudioConnection };
+		response: void;
+	};
+	"connection.webAudio.disconnect": { request: { id: string }; response: boolean };
+	"connection.webAudio.clear": { request: undefined; response: void };
+	"connection.webAudio.list": { request: undefined; response: WebAudioSubscriberInfo[] };
+	search: {
+		request: { query: string; requestedBy?: import("./core").TrackRequester; plugin?: string | string[] };
+		response: SearchResult;
+	};
 	"search.cache.get": { request: { query: string }; response: SearchResult | null };
 	"search.cache.set": { request: { query: string; result: SearchResult }; response: void };
 	"search.cache.clear": { request: Record<string, never>; response: void };
@@ -288,7 +303,10 @@ export interface PlayerRpcMap {
 	"queue.shuffle": { request: undefined; response: void };
 	"queue.clear": { request: undefined; response: void };
 	"queue.addMultiple": { request: { tracks: Track[] }; response: number };
-	"queue.insert": { request: { query: string | Track | Track[]; index?: number; requestedBy?: string }; response: boolean };
+	"queue.insert": {
+		request: { query: string | Track | Track[]; index?: number; requestedBy?: import("./core").TrackRequester };
+		response: boolean;
+	};
 	"queue.remove": { request: { index: number }; response: Track | null };
 	"queue.loop": { request: { mode: LoopMode | number }; response: LoopMode };
 	"queue.autoPlay": { request: { enabled: boolean }; response: boolean };
@@ -308,6 +326,7 @@ export interface PlayerRpcMap {
 	"playback.transitionLock": { request: { active: boolean }; response: void };
 	"playback.prepareAutoplay": { request: { session: PlaybackSession; context: PlayerMessageContext }; response: Track | null };
 	"playback.start": { request: { track: Track; context: PlayerMessageContext; from: Track | null }; response: void };
+	"playback.startResource": { request: { resource: AudioResource; track: Track }; response: boolean };
 	"forward.health": { request: undefined; response: ForwardHealthStatus };
 	"forward.subscribe": { request: { leader: unknown; options?: { forwardMode?: boolean } }; response: boolean };
 	"forward.unsubscribe": { request: { reason?: string }; response: boolean };
@@ -365,8 +384,10 @@ export interface PlayerRpcMap {
 
 export interface PlayerQueryMap {
 	audioPlayer: import("@discordjs/voice").AudioPlayer | null;
-	connection: import("@discordjs/voice").VoiceConnection | null;
+	connection: Array<import("@discordjs/voice").VoiceConnection | WebAudioConnection>;
+	"connection.voice": import("@discordjs/voice").VoiceConnection | null;
 	"connection.state": import("@discordjs/voice").VoiceConnectionStatus | undefined;
+	"connection.hasOutput": boolean;
 	"tts.hasPlayer": boolean;
 	"stream.stats": {
 		active: number;
