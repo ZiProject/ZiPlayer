@@ -86,7 +86,7 @@ export interface RawStreamInfo {
 export interface StreamInfo extends RawStreamInfo {
 	stream?: Readable;
 	track?: Track;
-	streamType: StreamType;
+	streamType?: StreamType;
 	/** @deprecated Use streamType */
 	inputType?: StreamType;
 	/** @deprecated Use streamType */
