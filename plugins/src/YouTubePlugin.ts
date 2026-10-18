@@ -94,7 +94,7 @@ export class YouTubePlugin extends BasePlugin {
 	}
 
 	private debug(message?: any, ...optionalParams: any[]): void {
-		const tracer = this.player?.runtimeGraph?.debugTracer;
+		const tracer = this.player?.manager?.debugTracerInstance;
 		if (tracer) {
 			tracer.log("debug", "YouTubePlugin", message, ...optionalParams);
 			return;
@@ -394,9 +394,8 @@ export class YouTubePlugin extends BasePlugin {
 				try {
 					// Get the specific video info directly (fast basic_info lookup first)
 					const info: any =
-						(await this.client
-							.getBasicInfo(videoId, { client: this.options.searchClientType || "WEB" })
-							.catch(() => null)) || (await this.client.getInfo(videoId, { client: this.options.searchClientType || "WEB" }));
+						(await this.client.getBasicInfo(videoId, { client: this.options.searchClientType || "WEB" }).catch(() => null)) ||
+						(await this.client.getInfo(videoId, { client: this.options.searchClientType || "WEB" }));
 					this.debug("Video info:", info);
 
 					if (info && (info.basic_info || info.video_details)) {

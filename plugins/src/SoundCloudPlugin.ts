@@ -1,4 +1,4 @@
-import { BasePlugin, Track, SearchResult, StreamInfo } from "ziplayer";
+import { BasePlugin, Track, SearchResult, StreamInfo, TrackRequester } from "ziplayer";
 
 import SoundCloud from "@zibot/scdl";
 import { URL } from "url";
@@ -132,7 +132,7 @@ export class SoundCloudPlugin extends BasePlugin {
 	 * const searchResult = await plugin.search("chill music", "user123");
 	 * console.log(searchResult.tracks); // Array of Track objects
 	 */
-	async search(query: string, requestedBy: string): Promise<SearchResult> {
+	async search(query: string, requestedBy: TrackRequester): Promise<SearchResult> {
 		await this.ready;
 
 		// If the query is a URL but not a SoundCloud URL, do not handle it here
@@ -366,7 +366,7 @@ export class SoundCloudPlugin extends BasePlugin {
 	 * );
 	 * console.log(`Found ${tracks.length} tracks in playlist`);
 	 */
-	async extractPlaylist(url: string, requestedBy: string): Promise<Track[]> {
+	async extractPlaylist(url: string, requestedBy: TrackRequester): Promise<Track[]> {
 		await this.ready;
 		try {
 			const playlist = await this.client.getPlaylistDetails(url);
