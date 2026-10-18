@@ -64,9 +64,9 @@ test("audio processing rejects invalid DSP configuration and non-encoded formats
 });
 
 test("audio processing ignores undefined overrides and accepts Node readable streams", async () => {
-	const engine = createAudioProcessingEngine({ enabled: true, sampleRate: 44_100, channels: 1 });
+	const engine = createAudioProcessingEngine({ enabled: true, sampleRate: 24_000, channels: 1 }); // libopus only supports 8/12/16/24/48 kHz
 	const pipeline = await engine.createPipeline({ sampleRate: undefined, channels: undefined });
-	const audio = await collect(pipeline, Readable.from([makeWav({ seconds: 0.1, sampleRate: 44100, channels: 1 })]));
+	const audio = await collect(pipeline, Readable.from([makeWav({ seconds: 0.1, sampleRate: 24000, channels: 1 })]));
 	assert.equal(audio.subarray(0, 4).toString(), "OggS");
 	assert.deepEqual(pipeline.outputFormat, { kind: "encoded", codec: "opus", container: "ogg" });
 	await pipeline.dispose();
@@ -95,14 +95,19 @@ test("unrecognized raw input is rejected instead of being guessed by FFmpeg", as
 });
 
 test("loudness presets produce valid encoded output", async () => {
-	for (const normalize of [true, "streaming", "podcast", "broadcast"]) {
-		const options = { enabled: true, normalize };
-		const pipeline = await createAudioProcessingEngine(options).createPipeline(options);
-		const audio = await collect(pipeline, [makeWav({ seconds: 0.3, sampleRate: 48000, channels: 2, amplitude: 0.5 })]);
-		assert.equal(audio.subarray(0, 4).toString(), "OggS");
-		assert.ok(decodeOpus(audio).length > 0);
-		await pipeline.dispose();
-	}
+	await Promise.all(
+		[true, "streaming", "podcast", "broadcast"].map(async (normalize) => {
+			const options = { enabled: true, normalize };
+			const pipeline = await createAudioProcessingEngine(options).createPipeline(options);
+			try {
+				const audio = await collect(pipeline, [makeWav({ seconds: 0.3, sampleRate: 48000, channels: 2, amplitude: 0.5 })]);
+				assert.equal(audio.subarray(0, 4).toString(), "OggS");
+				assert.ok(decodeOpus(audio).length > 0);
+			} finally {
+				await pipeline.dispose();
+			}
+		}),
+	);
 });
 
 test(

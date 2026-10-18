@@ -1260,7 +1260,7 @@ export class PluginManager {
 			options.signal?.addEventListener("abort", onAbort, { once: true });
 
 			try {
-				if (plugin.validate && !plugin.validate(track.url ?? "")) continue;
+				if (plugin === primary && plugin.validate && !plugin.validate(track.url ?? "")) continue;
 
 				this.debug(`[Video] ${plugin.name} resolving video: ${track.title}`);
 				const result = await withTimeout(plugin.getVideo!(track, controller.signal), 50000, `${plugin.name} getVideo timeout`);

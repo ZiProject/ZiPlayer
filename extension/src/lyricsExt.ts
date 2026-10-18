@@ -531,7 +531,10 @@ export class lyricsExt extends BaseExtension {
 
 		const qs = new URLSearchParams(params).toString();
 		const url = `https://lrclib.net/api/search?${qs}`;
-		const res = await axios.get(url, { timeout: 10_000 }).then((r) => r.data as any[]);
+		const res = await axios
+			.get(url, { timeout: 10_000 })
+			.then((r) => r.data as any[])
+			.catch(() => []);
 
 		const items: any[] = Array.isArray(res) ? res : [];
 		if (!items.length) {

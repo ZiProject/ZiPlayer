@@ -9,7 +9,7 @@ const {
 	demuxOggOpusToPackets,
 	demuxWebmOpusToPackets,
 } = require("../core/dist");
-const { createAudioPlayer } = require("@discordjs/voice");
+const { createTrackedAudioPlayer: createAudioPlayer } = require("./helpers/audio-player");
 
 function createPlayerWithAudioPlayer(playerId) {
 	const bus = new Bus();

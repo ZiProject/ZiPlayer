@@ -34,7 +34,8 @@ async function waitFor(predicate, timeoutMs, message) {
 test("destroying the processed resource releases a stalled source without waiting for player detach", async () => {
 	const controller = createController("lifecycle-stalled");
 	const stats = {};
-	const source = Readable.from(wavSource({ seconds: 300, channels: 2, stats, hangAfter: 30 }));
+	// FFmpeg probes ~3s of input (~30 chunks) before emitting its first byte; stall well after that.
+	const source = Readable.from(wavSource({ seconds: 300, channels: 2, stats, hangAfter: 90 }));
 	const resource = controller.createResource(
 		"lifecycle-stalled",
 		source,
@@ -81,6 +82,7 @@ test("a source that fails mid-stream surfaces as a track error instead of silenc
 		{ id: "t", title: "Dropped", duration: 1000 },
 		StreamType.Arbitrary,
 	);
+	let hangTimer;
 	const outcome = await Promise.race([
 		(async () => {
 			try {
@@ -92,8 +94,9 @@ test("a source that fails mid-stream surfaces as a track error instead of silenc
 				return String(error.message);
 			}
 		})(),
-		sleep(8000).then(() => "hung"),
+		new Promise((resolve) => (hangTimer = setTimeout(() => resolve("hung"), 8000))),
 	]);
+	clearTimeout(hangTimer);
 	assert.notEqual(outcome, "hung", "playback hung on an upstream error");
 	assert.match(outcome, /Audio processing failed for Dropped.*ECONNRESET/);
 	controller.detach("lifecycle-error");

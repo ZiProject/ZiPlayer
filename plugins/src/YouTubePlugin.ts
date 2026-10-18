@@ -392,12 +392,15 @@ export class YouTubePlugin extends BasePlugin {
 
 			if (videoId) {
 				try {
-					// Get the specific video info directly
-					const info: any = await this.client.getInfo(videoId, { client: this.options.searchClientType || "WEB" });
+					// Get the specific video info directly (fast basic_info lookup first)
+					const info: any =
+						(await this.client
+							.getBasicInfo(videoId, { client: this.options.searchClientType || "WEB" })
+							.catch(() => null)) || (await this.client.getInfo(videoId, { client: this.options.searchClientType || "WEB" }));
 					this.debug("Video info:", info);
 
-					if (info && info.basic_info) {
-						const track = this.buildTrack(info.basic_info, requestedBy);
+					if (info && (info.basic_info || info.video_details)) {
+						const track = this.buildTrack(info.basic_info || info.video_details, requestedBy);
 						this.debug("Track created:", track);
 						return { tracks: [track] };
 					}
@@ -683,20 +686,6 @@ export class YouTubePlugin extends BasePlugin {
 		}
 
 		this.debug("🚀 Attempting sabr download for video ID:", id);
-		const videoInfo = await this.client.getInfo(id, { client: "WEB" });
-		this.throwIfAborted(signal);
-
-		const actualTitle = videoInfo.basic_info?.title || "";
-		const similarity = this.calculateTitleSimilarity(expectedTitle, actualTitle);
-
-		if (similarity < 60 && track.url && this.validate(track.url)) {
-			this.debug(`⚠️ Title mismatch! Expected "${expectedTitle}" but got "${actualTitle}"`);
-			throw new Error(`Wrong video: Expected "${track.title}" but got "${actualTitle}"`);
-		}
-
-		this.debug(`Title similarity: ${similarity}%`);
-		this.debug(`Expected: "${expectedTitle}"`);
-		this.debug(`Actual: "${actualTitle}"`);
 
 		const sabrOptions = {
 			preferWebM: true,
@@ -706,6 +695,12 @@ export class YouTubePlugin extends BasePlugin {
 		};
 
 		const { stream, title, format } = await createSabrStream(id, this.client, sabrOptions, signal);
+
+		if (title && expectedTitle) {
+			const actualTitle = title.toLowerCase().trim();
+			const similarity = this.calculateTitleSimilarity(expectedTitle, actualTitle);
+			this.debug(`Title similarity: ${similarity}% (Expected: "${expectedTitle}", Actual: "${title}")`);
+		}
 
 		this.debug("✅ Sabr download successful, stream ready");
 
@@ -815,12 +810,25 @@ export class YouTubePlugin extends BasePlugin {
 	}
 
 	async getVideo(track: Track, signal?: AbortSignal): Promise<StreamInfo> {
-		if (!track?.url && !track?.id) throw new Error("Track must have a URL or ID");
+		if (!track?.url && !track?.id && !track?.title) throw new Error("Track must have a URL, ID, or title");
 		const plugin = this as any;
 		plugin.throwIfAborted?.(signal);
 		await plugin.ready;
 		plugin.throwIfAborted?.(signal);
-		const id = track.id || plugin.extractVideoId(track.url);
+		let id = track.id || plugin.extractVideoId(track.url);
+		if (!id && track.title) {
+			const query = `${track.title} ${track.author || track.metadata?.author || ""}`.trim();
+			plugin.debug("🎬 No direct YouTube ID for track, searching video:", query);
+			try {
+				const searchRes = await plugin.search(query, "youtube-video");
+				const first = searchRes.tracks?.[0];
+				if (first) {
+					id = first.id || plugin.extractVideoId(first.url);
+				}
+			} catch (err) {
+				plugin.debug("⚠️ Video fallback search failed:", err);
+			}
+		}
 		if (!id) throw new Error("Invalid YouTube video id");
 		plugin.debug("🎬 Resolving YouTube video through SABR:", id);
 		const result = await createSabrVideoStream(id, plugin.client, undefined, signal);

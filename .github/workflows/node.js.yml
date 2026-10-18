@@ -87,26 +87,36 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20.x"
+          node-version: "22.x"
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key:
+            npm-${{ runner.os }}-${{ hashFiles('core/package.json', 'plugins/package.json', 'extension/package.json',
+            'package.json') }}
+          restore-keys: npm-${{ runner.os }}-
 
       - name: Bootstrap core package
         run: |
           # package-lock.json is ignored and no lockfiles are committed for these packages.
-          npm -C core install --package-lock=false
+          # core/package.json overrides prism-media's opusscript peer so install has no ERESOLVE.
+          npm -C core install --package-lock=false --no-audit --no-fund
           npm -C core run build
 
       - name: Bootstrap plugins package
         run: |
-          npm -C plugins install --package-lock=false
+          npm -C plugins install --package-lock=false --no-audit --no-fund
           npm -C plugins run build
 
       - name: Bootstrap extension package
         run: |
-          npm -C extension install --package-lock=false
+          npm -C extension install --package-lock=false --no-audit --no-fund
           npm -C extension run build
 
       - name: Bootstrap root package
-        run: npm install --no-save --package-lock=false ./core
+        run: npm install --no-save --package-lock=false --no-audit --no-fund ./core
 
       - name: Run tests
         id: tests
@@ -145,7 +155,7 @@ jobs:
               summary || 'No summary captured',
               '```',
               '',
-              '_Node.js 20.x_'
+              '_Node.js 22.x_'
             ].join('\n');
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;

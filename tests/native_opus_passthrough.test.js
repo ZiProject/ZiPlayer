@@ -22,7 +22,8 @@ const {
 	WEB_AUDIO_FLAG_CODEC_OPUS,
 	PLAYER_RPC,
 } = require("../core/dist");
-const { VoiceConnectionStatus, createAudioPlayer, StreamType } = require("@discordjs/voice");
+const { VoiceConnectionStatus, StreamType } = require("@discordjs/voice");
+const { createTrackedAudioPlayer: createAudioPlayer } = require("./helpers/audio-player");
 
 function createFakeSocket(initialBufferedAmount = 0, initialReadyState = 1) {
 	const listeners = new Map();
@@ -101,6 +102,14 @@ function createPlayerWithAudioPlayer(playerId, bus = new Bus()) {
 	return { player, audioPlayer, controller, connectionController, bus };
 }
 
+// Poll instead of sleeping a fixed time: under CPU load (parallel test files, FFmpeg stress tests)
+// a fixed 50-100ms wait is not enough for frames to reach the fake socket.
+async function waitFor(predicate, timeoutMs = 3000) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline && !predicate()) await new Promise((resolve) => setTimeout(resolve, 10));
+}
+const binaryFrameCount = (socket) => socket.sent.filter((message) => typeof message.data !== "string").length;
+
 // 20ms fullband stereo Opus silence frame (TOC 0xf8 = Config 31)
 const OPUS_SILENCE_PACKET = Buffer.from([0xf8, 0xff, 0xfe]);
 
@@ -130,8 +139,8 @@ test("Player stop preserves the same WebAudio subscriber for the next resource p
 		);
 
 	await player.play(playResource("before-stop"));
-	await new Promise((resolve) => setTimeout(resolve, 50));
-	const firstFrameCount = socket.sent.filter((message) => typeof message.data !== "string").length;
+	await waitFor(() => binaryFrameCount(socket) > 0);
+	const firstFrameCount = binaryFrameCount(socket);
 	assert.ok(firstFrameCount > 0, "WebAudio should receive the first track");
 
 	await player.stop();
@@ -139,8 +148,8 @@ test("Player stop preserves the same WebAudio subscriber for the next resource p
 	assert.equal(webConn.isReady, true, "stopping a track must not disconnect the shared connection");
 
 	await player.play(playResource("after-stop"));
-	await new Promise((resolve) => setTimeout(resolve, 100));
-	const framesAfterReplay = socket.sent.filter((message) => typeof message.data !== "string").length;
+	await waitFor(() => binaryFrameCount(socket) > firstFrameCount);
+	const framesAfterReplay = binaryFrameCount(socket);
 	assert.ok(framesAfterReplay > firstFrameCount, "WebAudio should receive the next track after stop");
 
 	player.destroy();
@@ -167,8 +176,8 @@ test("Player stop preserves the same WebAudio subscriber for the next query play
 	});
 
 	await player.play("query-before-stop");
-	await new Promise((resolve) => setTimeout(resolve, 50));
-	const firstFrameCount = socket.sent.filter((message) => typeof message.data !== "string").length;
+	await waitFor(() => binaryFrameCount(socket) > 0);
+	const firstFrameCount = binaryFrameCount(socket);
 	assert.ok(firstFrameCount > 0, "WebAudio should receive the first query track");
 
 	await player.stop();
@@ -176,8 +185,8 @@ test("Player stop preserves the same WebAudio subscriber for the next query play
 	assert.equal(webConn.isReady, true, "stopping a track must not disconnect the shared connection");
 
 	await player.play("query-after-stop");
-	await new Promise((resolve) => setTimeout(resolve, 100));
-	const framesAfterReplay = socket.sent.filter((message) => typeof message.data !== "string").length;
+	await waitFor(() => binaryFrameCount(socket) > firstFrameCount);
+	const framesAfterReplay = binaryFrameCount(socket);
 	assert.ok(framesAfterReplay > firstFrameCount, "WebAudio should receive the next query track after stop");
 
 	player.destroy();

@@ -3,7 +3,8 @@ const assert = require("node:assert/strict");
 const childProcess = require("node:child_process");
 const { Readable } = require("node:stream");
 const { Player, Bus, WebAudioConnection, createOpusAudioResource, PlaybackController } = require("../core/dist");
-const { VoiceConnectionStatus, createAudioPlayer } = require("@discordjs/voice");
+const { VoiceConnectionStatus } = require("@discordjs/voice");
+const { createTrackedAudioPlayer: createAudioPlayer } = require("./helpers/audio-player");
 
 function createFakeSocket() {
 	const listeners = new Map();
