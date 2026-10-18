@@ -85,7 +85,7 @@ export interface RawStreamInfo {
  */
 export interface StreamInfo extends RawStreamInfo {
 	stream?: Readable;
-	track: Track;
+	track?: Track;
 	streamType: StreamType;
 	/** @deprecated Use streamType */
 	inputType?: StreamType;
@@ -395,4 +395,5 @@ export interface ManagerEvents {
 	forwardModeEnd: [player: Player, leader: Player, reason: string | undefined];
 	seek: [player: Player, payload: { track: Track; position: number }];
 	trackStuck: [player: Player, track: Track | null];
+	playerIdChange: [player: Player, newPlayerId: string, oldPlayerId: string];
 }

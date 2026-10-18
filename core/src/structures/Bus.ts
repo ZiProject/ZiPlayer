@@ -141,7 +141,8 @@ export class Bus {
 		}
 	}
 
-	private resolvePlayerId(playerId: string): string {
+	public resolvePlayerId(playerId: string): string {
+		if (this.playerIdAliases.size === 0) return playerId;
 		return this.playerIdAliases.get(playerId) ?? playerId;
 	}
 

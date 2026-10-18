@@ -154,7 +154,9 @@ export class ForwardController {
 	async subscribeTo(playerId: string, leader: any, options?: { forwardMode?: boolean }): Promise<boolean> {
 		const state = this.state(playerId);
 		if (this.disposed || !leader) return false;
-		const leaderId = typeof leader === "string" ? leader : (leader.guildId ?? leader.id ?? leader.playerId);
+		const rawLeaderId =
+			typeof leader === "string" ? leader : (leader.routingPlayerId ?? leader.guildId ?? leader.id ?? leader.playerId);
+		const leaderId = typeof rawLeaderId === "string" ? this.bus.resolvePlayerId(rawLeaderId) : rawLeaderId;
 		if (!leaderId || leaderId === playerId || !this.states.has(leaderId)) return false;
 
 		const leaderMode = this.bus.querySync(leaderId, PLAYER_QUERY.playbackMode);

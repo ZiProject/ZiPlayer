@@ -811,31 +811,36 @@ export class PlayerManager extends EventEmitter {
 	 * Change a managed player's public identifier without reattaching controllers or interrupting playback.
 	 * Controller state and in-flight work continue using the original internal routing key.
 	 */
-	public changePlayerId(currentPlayerId: string | { id: string }, newPlayerId: string): Player {
+	public changePlayerId(currentPlayerId: string | { id: string }, newPlayerId: string | { id: string }): Player {
 		this.assertNotDisposed();
 		const currentId = this.resolveGuildId(currentPlayerId);
 		const player = this.players.get(currentId);
 		if (!player) throw new Error(`No player exists for id "${currentId}".`);
-		if (typeof newPlayerId !== "string" || !newPlayerId.trim()) {
+		if (player.destroyed) throw new Error("Cannot change playerId on a destroyed player.");
+		const nextId =
+			typeof newPlayerId === "object" && newPlayerId && "id" in newPlayerId ? (newPlayerId as { id: string }).id : newPlayerId;
+		if (typeof nextId !== "string" || !nextId.trim()) {
 			throw new TypeError("newPlayerId must be a non-empty string.");
 		}
-		if (newPlayerId === MANAGER_SEARCH_ID) {
+		if (nextId === MANAGER_SEARCH_ID) {
 			throw new Error(`Guild id "${MANAGER_SEARCH_ID}" is reserved for manager search.`);
 		}
-		if (newPlayerId === currentId) return player;
+		if (nextId === currentId) return player;
 		if (
-			this.players.has(newPlayerId) ||
-			this.pendingPlayers.has(newPlayerId) ||
-			(this.controllerRegistry.has(newPlayerId) && newPlayerId !== player.routingPlayerId)
+			this.players.has(nextId) ||
+			this.pendingPlayers.has(nextId) ||
+			(this.playersByRoutingId.has(nextId) && nextId !== player.routingPlayerId) ||
+			(this.controllerRegistry.has(nextId) && nextId !== player.routingPlayerId)
 		) {
-			throw new Error(`A player or active player state already exists for id "${newPlayerId}".`);
+			throw new Error(`A player or active player state already exists for id "${nextId}".`);
 		}
 
-		this.bus.replacePlayerIdAlias(currentId, newPlayerId, player.routingPlayerId);
+		this.bus.replacePlayerIdAlias(currentId, nextId, player.routingPlayerId);
 		this.players.delete(currentId);
-		this.players.set(newPlayerId, player);
-		player.updatePlayerId(newPlayerId);
-		this.debug(`Changed player id from "${currentId}" to "${newPlayerId}" without interrupting playback.`);
+		this.players.set(nextId, player);
+		player.updatePlayerId(nextId);
+		player.emit("playerIdChange", nextId, currentId);
+		this.debug(`Changed player id from "${currentId}" to "${nextId}" without interrupting playback.`);
 		return player;
 	}
 
@@ -1099,21 +1104,22 @@ export class PlayerManager extends EventEmitter {
 	/**
 	 * Destroy a specific player or all players / manager when called without arguments.
 	 */
-	public async destroy(playerId?: string): Promise<void> {
+	public async destroy(playerId?: string | { id: string }): Promise<void> {
 		if (!playerId) {
 			return this.dispose();
 		}
-		const player = this.players.get(playerId);
+		const resolvedId = this.resolveGuildId(playerId);
+		const player = this.players.get(resolvedId) ?? this.playersByRoutingId.get(resolvedId);
 
 		if (!player) {
 			// create() still running: let it finish, then destroy what it produced.
-			const creating = this.pendingPlayers.get(playerId);
+			const creating = this.pendingPlayers.get(resolvedId);
 			if (!creating) return;
 			const createdPlayer = await creating.catch(() => null);
-			return createdPlayer ? this.destroy(playerId) : undefined;
+			return createdPlayer ? this.destroy(resolvedId) : undefined;
 		}
 
-		this.players.delete(playerId);
+		this.players.delete(player.playerId);
 		this.playersByRoutingId.delete(player.routingPlayerId);
 		return this.runTeardown(player.routingPlayerId, player);
 	}
@@ -1253,7 +1259,8 @@ export class PlayerManager extends EventEmitter {
 				for (const follower of followers) {
 					try {
 						if (typeof follower === "string") {
-							this.get(follower)?.unsubscribeForward("Leader destroyed");
+							const followerPlayer = this.get(follower) ?? this.playersByRoutingId.get(follower);
+							followerPlayer?.unsubscribeForward("Leader destroyed");
 						} else if (follower && typeof follower.unsubscribeForward === "function") {
 							follower.unsubscribeForward("Leader destroyed");
 						}

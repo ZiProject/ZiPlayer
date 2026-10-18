@@ -137,7 +137,7 @@ export class Player extends EventEmitter {
 		};
 		this.manager = manager;
 		this.userdata = this.options.userdata;
-		this.actionExecutor = new PlayerAction(this.bus, this.playerId);
+		this.actionExecutor = new PlayerAction(this.bus, this.routingPlayerId);
 		this.bus.publish(this.playerId, BUS_EVENT.initialized);
 		this.bus.publish(this.playerId, BUS_EVENT.ready);
 	}
@@ -150,7 +150,8 @@ export class Player extends EventEmitter {
 		return this.playerId;
 	}
 
-	public changePlayerId(newPlayerId: string): this {
+	public changePlayerId(newPlayerId: string | { id: string }): this {
+		if (this.destroyed) throw new Error("Cannot change playerId on a destroyed player.");
 		if (!this.manager) throw new Error("Cannot change playerId on a Player without a PlayerManager");
 		this.manager.changePlayerId(this.playerId, newPlayerId);
 		return this;

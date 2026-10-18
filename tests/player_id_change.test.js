@@ -74,3 +74,63 @@ test("changing a player ID rejects invalid or occupied IDs without changing the 
 	assert.equal(manager.get("guild-original"), player);
 	assert.equal(manager.has("guild-occupied"), true);
 });
+
+test("changing player ID supports guild object input and emits playerIdChange events", async (t) => {
+	const manager = new PlayerManager({ autoCleanup: false });
+	t.after(() => manager.destroy());
+
+	const player = await manager.create("guild-event-init");
+	const playerEvents = [];
+	const managerEvents = [];
+
+	player.on("playerIdChange", (nextId, prevId) => {
+		playerEvents.push({ nextId, prevId });
+	});
+	manager.on("playerIdChange", (p, nextId, prevId) => {
+		managerEvents.push({ player: p, nextId, prevId });
+	});
+
+	// Support object input with .id
+	player.changePlayerId({ id: "guild-event-next" });
+	assert.equal(player.id, "guild-event-next");
+	assert.equal(player.playerId, "guild-event-next");
+	assert.equal(manager.get("guild-event-next"), player);
+	assert.equal(playerEvents.length, 1);
+	assert.deepEqual(playerEvents[0], { nextId: "guild-event-next", prevId: "guild-event-init" });
+	assert.equal(managerEvents.length, 1);
+	assert.equal(managerEvents[0].player, player);
+	assert.equal(managerEvents[0].nextId, "guild-event-next");
+	assert.equal(managerEvents[0].prevId, "guild-event-init");
+
+	// Destroying via original routing ID works
+	await manager.destroy("guild-event-init");
+	assert.equal(player.destroyed, true);
+	assert.equal(manager.get("guild-event-next"), undefined);
+	assert.equal(manager.has("guild-event-init"), false);
+	assert.equal(manager.has("guild-event-next"), false);
+
+	// Cannot change ID on a destroyed player
+	assert.throws(() => player.changePlayerId("guild-cannot-change"), /destroyed/);
+});
+
+test("hot changing player ID preserves and cleans up audio forward leader-follower links", async (t) => {
+	const manager = new PlayerManager({ autoCleanup: false });
+	t.after(() => manager.destroy());
+
+	const leader = await manager.create("guild-leader");
+	const follower = await manager.create("guild-follower");
+
+	// Hot change leader ID to an alias
+	leader.changePlayerId("guild-leader-renamed");
+	// Hot change follower ID to an alias
+	follower.changePlayerId("guild-follower-renamed");
+
+	// Add follower using forwardController RPC
+	manager.controllers.forward.addFollower(leader.routingPlayerId, follower.routingPlayerId);
+	assert.equal(leader.forwardFollowers.has(follower.routingPlayerId), true);
+
+	// Destroy leader; follower should be cleanly unsubscribed
+	await manager.destroy(leader.playerId);
+	assert.equal(leader.destroyed, true);
+	assert.equal(leader.forwardFollowers.size, 0);
+});
