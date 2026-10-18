@@ -1,5 +1,6 @@
 import { type StreamInfo, type Track, type TrackResolveContext, type TrackResolverOptions, normalizeStreamInfo } from "../types";
 import type { Bus } from "./Bus";
+import { playerDataMap } from "./PlayerDataRegistry";
 import { PLAYER_RPC } from "./BusContract";
 
 /**
@@ -7,14 +8,16 @@ import { PLAYER_RPC } from "./BusContract";
  *
  * Shared, singleton — created once in `ensureSharedControllers()`. It keeps references to
  * per-player managers owned by StreamController, PluginController and ExtensionController
- * in an internal `Map<playerId, TrackResolverOptions>` (opened by `attach(playerId, ...)`,
- * released by `detach(playerId)`). `"stream.resolve"` is registered once in the constructor
+ * in each player's `data` Map (registered by `attach(playerId, ...)`, released by
+ * `detach(playerId)`). `"stream.resolve"` is registered once in the constructor
  * and routes by `ctx.playerId`.
  */
 export class TrackResolver {
-	private readonly slots = new Map<string, TrackResolverOptions>();
+	private get slots(): Map<string, TrackResolverOptions> {
+		return playerDataMap(this.bus, "structure.trackResolver.slots");
+	}
 
-	public constructor(bus: Bus) {
+	public constructor(private readonly bus: Bus) {
 		bus.registerRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>(PLAYER_RPC.streamResolve, ({ track, fresh }, ctx) =>
 			this.resolve(ctx.playerId, track, { fresh }),
 		);

@@ -320,7 +320,7 @@ test("Player.play resolves true when the next session is not materialized yet", 
 	const harness = createOrchestrator();
 	const player = Object.create(Player.prototype);
 	player.bus = harness.bus;
-	player.playerId = harness.playerId;
+	player.updatePlayerId(harness.playerId);
 	player.playOperation = Promise.resolve(false);
 	player.playGeneration = 0;
 	player.playAbortController = null;

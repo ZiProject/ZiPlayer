@@ -8,7 +8,8 @@ import {
 	type PlayerSubscription,
 } from "@discordjs/voice";
 import type { VoiceChannel, PlayerConnectionInput, ConnectionControllerOptions, WebAudioSubscriberInfo } from "../types";
-import { createPlayerSessionId, type Bus, type PlayerRequestId, type PlayerSessionId } from "../structures/Bus";
+import { Bus, createPlayerSessionId, type PlayerRequestId, type PlayerSessionId } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { BUS_OUTPUT, BUS_REQUEST, PLAYER_QUERY, PLAYER_RPC, traceBusSignal } from "../structures/BusContract";
 import type { WebAudioConnection } from "../output/WebAudioConnection";
 
@@ -35,8 +36,8 @@ interface ConnectionSlot {
  * Singleton — created exactly once in `ensureSharedControllers()` and shared by every
  * player in the process (see `SharedControllerGraph`). A Discord voice connection is
  * inherently per-guild (one `VoiceConnection`/`AudioPlayer` can only ever serve one
- * guild), so that per-guild resource still exists once per player — it just lives as an
- * entry in this controller's internal `Map<playerId, ConnectionSlot>` (via
+ * guild), so that per-guild resource still exists once per player — it lives in the
+ * player.data under this controller's namespace (via
  * `attach(playerId, ...)`/`detach(playerId)`) instead of a whole separate
  * `ConnectionController` instance. `connection.setAudioPlayer`/`connection`/
  * `connection.state` and the three `onInput` listeners below are registered exactly
@@ -48,12 +49,16 @@ interface ConnectionSlot {
  */
 export class ConnectionController {
 	private readonly bus?: Bus;
-	private readonly slots = new Map<string, ConnectionSlot>();
+	private readonly stateBus: Bus;
+	private get slots(): Map<string, ConnectionSlot> {
+		return playerDataMap(this.stateBus, "controller.connection.slots");
+	}
 	/** Process-wide debug sink (separate from each slot's own `debug` set at `attach()` time). */
 	private readonly debugSink?: (message: string) => void;
 
 	public constructor(bus?: Bus, debugSink?: (message: string) => void) {
 		this.bus = bus;
+		this.stateBus = bus ?? new Bus();
 		this.debugSink = debugSink;
 
 		if (bus) {

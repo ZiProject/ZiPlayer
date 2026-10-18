@@ -38,6 +38,7 @@ import type { BaseExtension } from "../extensions/BaseExtension";
 import type { AudioResource } from "@discordjs/voice";
 import type { PlaybackSession } from "./PlaybackSession";
 import { BUS_EVENT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
+import { PlayerData, PlayerDataRegistry } from "./PlayerDataRegistry";
 import type { PlayerQueue } from "../controller/QueueController";
 
 export interface PlayerWebAudioRegistration {
@@ -94,7 +95,11 @@ function normalizeTrackMetadata(resource: AudioResource, metadata: unknown, requ
 export class Player extends EventEmitter {
 	public readonly bus: Bus;
 	public readonly actionExecutor: PlayerAction;
-	public readonly playerId: string;
+	/** Public player-scoped data Map shared with controller runtime state. */
+	public readonly data: Map<string, unknown>;
+	private currentPlayerId: string;
+	/** @internal Stable Bus/controller routing key; playerId is the mutable public identifier. */
+	public readonly routingPlayerId: string;
 	public readonly manager?: PlayerManager;
 	public readonly options: PlayerOptions;
 	public userdata?: Record<string, any>;
@@ -105,10 +110,18 @@ export class Player extends EventEmitter {
 	private playGeneration = 0;
 	private playAbortController: AbortController | null = null;
 
-	public constructor(playerId: string, bus: Bus, options: PlayerOptions = {}, manager?: PlayerManager) {
+	public constructor(
+		playerId: string,
+		bus: Bus,
+		options: PlayerOptions = {},
+		manager?: PlayerManager,
+		playerData?: Map<string, unknown>,
+	) {
 		super();
-		this.playerId = playerId;
+		this.currentPlayerId = playerId;
+		this.routingPlayerId = playerId;
 		this.bus = bus;
+		this.data = PlayerDataRegistry.for(this.bus).attach(this.routingPlayerId, playerData ?? new PlayerData());
 		this.options = {
 			leaveOnEnd: true,
 			leaveOnEmpty: true,
@@ -129,8 +142,23 @@ export class Player extends EventEmitter {
 		this.bus.publish(this.playerId, BUS_EVENT.ready);
 	}
 
+	public get playerId(): string {
+		return this.currentPlayerId;
+	}
+
 	public get id(): string {
 		return this.playerId;
+	}
+
+	public changePlayerId(newPlayerId: string): this {
+		if (!this.manager) throw new Error("Cannot change playerId on a Player without a PlayerManager");
+		this.manager.changePlayerId(this.playerId, newPlayerId);
+		return this;
+	}
+
+	/** @internal */
+	public updatePlayerId(newPlayerId: string): void {
+		this.currentPlayerId = newPlayerId;
 	}
 
 	public debug(message?: any, ...optionalParams: any[]): void {
@@ -956,7 +984,7 @@ export class Player extends EventEmitter {
 	 * player's bus subscriptions. `PlayerManager` calls it after every controller has detached;
 	 * call `destroy()` instead of this method.
 	 */
-	public completeDestroy(): void {
+	public completeDestroy(deferDataDisposal = false): void {
 		if (this.disposed) return;
 		this.destroyed = true;
 		try {
@@ -969,7 +997,7 @@ export class Player extends EventEmitter {
 		} catch {
 			// ignore
 		}
-		this.disposeBus();
+		this.disposeBus(deferDataDisposal);
 		this.emit("playerDestroy");
 		this.removeAllListeners();
 	}
@@ -980,12 +1008,13 @@ export class Player extends EventEmitter {
 	public dispose(): void {
 		this.destroy();
 	}
-	private disposeBus(): void {
+	private disposeBus(deferDataDisposal: boolean): void {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.invalidatePlay();
 		this.actionExecutor.dispose();
 		this.bus.publish(this.playerId, BUS_EVENT.destroyed);
+		if (!deferDataDisposal) PlayerDataRegistry.for(this.bus).disposePlayer(this.routingPlayerId);
 		this.bus.disposePlayer(this.playerId);
 	}
 }

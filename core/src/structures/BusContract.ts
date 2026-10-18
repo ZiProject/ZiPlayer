@@ -16,8 +16,8 @@
  *   - {@link PLAYER_QUERY}     `registerQuery` / `query()`    e.g. "currentTrack", "volume"
  *
  * `Player` does not own controller instances or controller lifecycle.
- * Shared controllers are owned by `PlayerManager` and keep per-player state
- * internally, keyed by playerId. This contract is what keeps every one of
+ * Shared controllers are owned by `PlayerManager` and store per-player state
+ * in the corresponding player's `data` Map, keyed by playerId. This contract is what keeps every one of
  * those controllers, plus `Player` itself, referring to the exact same
  * strings instead of re-typing literals that can silently drift apart.
  *

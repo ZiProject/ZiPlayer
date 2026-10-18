@@ -171,8 +171,14 @@ The first event argument is the affected `Player`, which is useful when one mana
 - Connect with `await player.connect(voiceChannel)` before playback unless you pass a `voiceChannel` in `play()` options.
 - Call `player.destroy()` when the bot explicitly removes a player. Manager cleanup may also destroy idle players according to its
   options.
+- Player-scoped runtime state belongs in `player.data`, not controller-owned maps or the Bus. Controllers use namespaced
+  `playerDataMap(namespace)` adapters that read and write directly to each player's public data Map; application code should avoid
+  changing the reserved `@ziplayer/` keys. The data Map is cleared and closed during player teardown.
 - Configure source plugins on `PlayerManagerOptions.plugins`; per-player options such as volume, voice behavior, filters, preload,
   and crossfade belong in `PlayerOptions`.
+- A managed player's public ID can be changed at runtime with `player.changePlayerId(newId)` or
+  `manager.changePlayerId(currentId, newId)`. This preserves the current controller state and playback; it changes manager lookup
+  identity only and does not migrate the Discord voice connection to another guild.
 - The canonical option definitions are `PlayerManagerOptions` and `PlayerOptions` in [`src/types/core.ts`](src/types/core.ts).
   Prefer those definitions over guessing option names or defaults.
 
@@ -217,8 +223,8 @@ player.setVolume(65);
   `onSubscriptionRemoved`). Frame queuing to WebSocket sockets is fully non-blocking; slow or stalled web clients drop excess
   packets (`drop-newest` policy) without stalling Discord Voice packet dispatch or blocking the 20 ms audio scheduler.
 - **Distinct wire outputs**: Discord Voice encrypts/frames and sends through its UDP transport. `WebAudioConnection` wraps the
-  same Opus payload in the ZI v1 header and sends it to the gateway; the browser decodes Opus for AudioWorklet playback.
-  The gateway does not adjust player volume.
+  same Opus payload in the ZI v1 header and sends it to the gateway; the browser decodes Opus for AudioWorklet playback. The
+  gateway does not adjust player volume.
 - **Opus-only audio contract**: Sources use encoded audio; processing emits Opus in an Ogg container.
 - **External resource caveat**: An `AudioResource` created outside ZiPlayer (for example with `createOpusAudioResource()`) may not
   have an inline volume transformer. Do not assume `Player.setVolume()` can modify it unless it was created with inline volume

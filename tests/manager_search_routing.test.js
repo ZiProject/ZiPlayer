@@ -35,7 +35,7 @@ test("PlayerManager.search uses the Bus without attaching a hidden Player or pla
 		assert.equal(mgr.controllers.playback.slots.has(MANAGER_SEARCH_ID), false);
 		assert.equal(mgr.controllers.transition.states.has(MANAGER_SEARCH_ID), false);
 		assert.ok(mgr.controllers.search.cache(MANAGER_SEARCH_ID));
-		assert.equal(mgr.controllerRegistry.timers.has(MANAGER_SEARCH_ID), false);
+		assert.equal(mgr.controllerRegistry.has(MANAGER_SEARCH_ID), false);
 	} finally {
 		await mgr.destroy();
 	}

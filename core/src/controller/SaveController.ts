@@ -2,6 +2,7 @@ import { Readable } from "stream";
 import type { AudioFilter, SaveOptions, SaveVideoOptions, Track, TrackMiddleware, TrackMiddlewareContext } from "../types";
 import { FilterEngine } from "./FilterController";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { PLAYER_RPC } from "../structures/BusContract";
 import type { SaveControllerOptions } from "../types";
 
@@ -19,7 +20,9 @@ interface SaveState {
 
 /** Shared non-playback export pipeline with active operations tracked per playerId. */
 export class SaveController {
-	public readonly states = new Map<string, SaveState>();
+	public get states(): Map<string, SaveState> {
+		return playerDataMap(this.bus, "controller.save.states");
+	}
 
 	public constructor(private readonly bus: Bus) {
 		bus.registerRpc<{ track: Track; options?: SaveOptions | string }, Readable>(

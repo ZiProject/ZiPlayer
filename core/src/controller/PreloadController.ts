@@ -8,6 +8,7 @@ import {
 	normalizeStreamInfo,
 } from "../types";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { createPlayerRequestId } from "../structures/Bus";
 import type { TrackLoader } from "../structures/TrackLoader";
 import type { PreloadManager } from "../structures/PreloadManager";
@@ -32,7 +33,7 @@ export interface PreloadState {
  * Owns preload lifecycle for every player.
  *
  * Shared, singleton — created once in PlayerManager constructor. Attachment is tracked
- * in `states = new Map<string, PreloadState>()` (opened by `attach(playerId)`, released by `detach(playerId)`); the
+ * in each player's `data` Map (registered by `attach(playerId)`, released by `detach(playerId)`); the
  * actual preload slot lives in the (also shared) `PreloadManager` this controller was
  * constructed with. Every `preload.*` RPC/query below, plus the
  * `BUS_REQUEST.preloadRequest` ("[Player]->[Preload]:request" in `traceBusSignal` terms) input,
@@ -43,7 +44,9 @@ export class PreloadController {
 	private readonly bus?: Bus;
 	private readonly loader: TrackLoader;
 	private readonly manager: PreloadManager;
-	private readonly states = new Map<string, PreloadState>();
+	private get states(): Map<string, PreloadState> {
+		return playerDataMap(this.bus!, "controller.preload.states");
+	}
 	private readonly debug?: (message: string) => void;
 
 	public constructor(bus: Bus, options: PreloadControllerOptions) {

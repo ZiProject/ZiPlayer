@@ -1,6 +1,7 @@
 import { type Track, type StreamInfo, type StreamSlot, type PromotedPreload, normalizeStreamInfo } from "../types";
 import type { StreamManager } from "./StreamManager";
-import type { Bus } from "./Bus";
+import { Bus } from "./Bus";
+import { playerDataMap } from "./PlayerDataRegistry";
 import { PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
 
 /** Per-player resources handed to the shared `PreloadManager` via `attach(playerId, deps)`. */
@@ -39,16 +40,20 @@ const newStreamSlot = (): StreamSlot => ({
  * Owns every player's single "next track" preload slot.
  *
  * Shared, singleton — created once in `ensureSharedControllers()`. Each player's slot,
- * lock flags and StreamManager reference live in an internal `Map<playerId, ...>`,
+ * lock flags and StreamManager reference live in each player's `data` Map,
  * opened by `attach(playerId, deps)` and released by `detach(playerId)`.
  */
 export class PreloadManager {
 	private readonly bus?: Bus;
-	private readonly slots = new Map<string, PreloadPlayerSlot>();
+	private get slots(): Map<string, PreloadPlayerSlot> {
+		return playerDataMap(this.stateBus, "structure.preloadManager.slots");
+	}
+	private readonly stateBus: Bus;
 
 	/** `bus` is only needed by players that attach without `getNextTrack`/`getStream`/`removeTrackFromQueue` deps. */
 	public constructor(bus?: Bus) {
 		this.bus = bus;
+		this.stateBus = bus ?? new Bus();
 	}
 
 	public attach(playerId: string, deps: PreloadManagerDeps): void {

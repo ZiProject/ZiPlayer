@@ -1,5 +1,6 @@
 import type { AudioResource } from "@discordjs/voice";
 import type { Bus, PlayerAction, PlayerActionExecutionContext } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import type { Track, VolumeControllerOptions } from "../types";
 import { PlaybackMode } from "../types";
 import {
@@ -23,8 +24,7 @@ interface VolumeState {
 	activeResourceResolver: (() => ActiveResourceState) | null;
 }
 
-/** Shared, singleton controller: owns per-player volume state and resource-level volume
- *  application, keyed by playerId. */
+/** Shared singleton controller for per-player volume behavior; state lives in each player's `data` Map. */
 export const defaults = {
 	loudness: {
 		maxBoostDb: 6,
@@ -34,7 +34,9 @@ export const defaults = {
 } as const;
 
 export class VolumeController {
-	private readonly states = new Map<string, VolumeState>();
+	private get states(): Map<string, VolumeState> {
+		return playerDataMap(this.bus, "controller.volume.states");
+	}
 	private disposed = false;
 
 	constructor(private readonly bus: Bus) {

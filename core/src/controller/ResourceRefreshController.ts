@@ -1,5 +1,6 @@
 import type { AudioResource, StreamType } from "@discordjs/voice";
 import type { Bus, PlayerInput } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import type { BusRpcContext } from "../types";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlaybackSessionSnapshot, StreamInfo, Track } from "../types";
@@ -21,7 +22,9 @@ interface ResourceRefreshState {
 
 /** Shared resource-refresh controller with transient state isolated by playerId. */
 export class ResourceRefreshController {
-	private readonly states = new Map<string, ResourceRefreshState>();
+	private get states(): Map<string, ResourceRefreshState> {
+		return playerDataMap(this.bus, "controller.resourceRefresh.states");
+	}
 
 	constructor(
 		private readonly bus: Bus,

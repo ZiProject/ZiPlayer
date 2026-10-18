@@ -1,6 +1,7 @@
 import { PlaybackMode, type Track, type ForwardHealthStatus } from "../types";
 import { AudioPlayerStatus } from "@discordjs/voice";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { PLAYER_QUERY, PLAYER_RPC, BUS_EVENT, PLAYER_ACTION, CONTROLLER_RPC } from "../structures/BusContract";
 
 interface ForwardState {
@@ -9,13 +10,17 @@ interface ForwardState {
 	mode: PlaybackMode;
 }
 
-/** Shared, singleton controller: owns leader/follower voice-subscription state for
- *  forward playback across every player, keyed by playerId. Since every player shares
+/** Shared singleton controller for leader/follower voice subscriptions; state lives
+ *  in each player's `data` Map. Since every player shares
  *  the same Bus, cross-player coordination is just a bus call addressed to
  *  the other player's id — no separate per-player bus lookup is needed. */
 export class ForwardController {
-	private readonly states = new Map<string, ForwardState>();
-	private readonly leaderSubscriptions = new Map<string, Array<() => void>>();
+	private get states(): Map<string, ForwardState> {
+		return playerDataMap(this.bus, "controller.forward.states");
+	}
+	private get leaderSubscriptions(): Map<string, Array<() => void>> {
+		return playerDataMap(this.bus, "controller.forward.leaderSubscriptions");
+	}
 	private disposed = false;
 	private readonly debug: (...args: any[]) => void;
 

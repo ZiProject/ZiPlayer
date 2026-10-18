@@ -1,5 +1,6 @@
 import type { Track } from "../types";
-import type { Bus } from "../structures/Bus";
+import { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import {
 	CONTROLLER_RPC,
 	PLAYER_QUERY,
@@ -12,11 +13,15 @@ type ResolvedOptions = Required<Omit<TransitionControllerOptions, "genreDuration
 	genreDurations: Record<string, number>;
 };
 
-/** Shared, singleton controller: owns per-player transition (crossfade) settings, keyed by playerId. */
+/** Shared singleton transition controller; per-player settings live in each player's `data` Map. */
 export class TransitionController {
-	private readonly states = new Map<string, ResolvedOptions>();
+	private readonly stateBus: Bus;
+	private get states(): Map<string, ResolvedOptions> {
+		return playerDataMap(this.stateBus, "controller.transition.states");
+	}
 
 	public constructor(bus?: Bus) {
+		this.stateBus = bus ?? new Bus();
 		if (bus) {
 			bus.registerQuery(
 				PLAYER_QUERY.transitionSettings,

@@ -5,6 +5,7 @@ import type { StreamInfo, Track } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { CONTROLLER_RPC, PLAYER_QUERY, type TtsIsTTSRequest, type TtsPlayRequest } from "../structures/BusContract";
 import type { TTSControllerOptions } from "../types";
 
@@ -27,7 +28,9 @@ interface TTSState {
 
 /** Shared TTS controller with audio and playback state isolated per playerId. */
 export class TTSController {
-	public readonly states = new Map<string, TTSState>();
+	public get states(): Map<string, TTSState> {
+		return playerDataMap(this.bus, "controller.tts.states");
+	}
 
 	constructor(private readonly bus: Bus) {
 		bus.registerQuery(PLAYER_QUERY.ttsHasPlayer, (playerId) => Boolean(this.states.get(playerId)?.ttsPlayer));

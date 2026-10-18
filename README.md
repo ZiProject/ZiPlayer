@@ -149,6 +149,34 @@ player.volume;
 player.queue;
 ```
 
+### Player-scoped application data
+
+Use `player.data` for application-owned values that should live as long as the player:
+
+```ts
+player.data.set("my-plugin:settings", { autoplay: true });
+const settings = player.data.get("my-plugin:settings");
+```
+
+The player's public `data` Map holds both application data and runtime controller state. Controllers store their state under
+reserved `@ziplayer/` keys directly in `player.data`; application code should use its own namespaced keys and avoid changing
+reserved entries. The Bus remains responsible for communication and routing, not player data. Destroying a player clears and
+closes its `data` Map.
+
+### Change a player ID
+
+Change a managed player's public ID without disconnecting it or interrupting playback:
+
+```ts
+player.changePlayerId("new-guild-id");
+// or
+manager.changePlayerId("current-guild-id", "new-guild-id");
+```
+
+The old ID stops resolving through `manager.get()`/`manager.has()`, and the new ID resolves to the same player. Existing playback,
+connections, queue, and controller state are preserved. The player remains attached to its current Discord voice connection;
+changing its ID does not move it between Discord guilds. IDs that are already in use or reserved are rejected.
+
 Manager-level events:
 
 ```ts
@@ -271,7 +299,8 @@ const player = await manager.create(guildId, {
 - Add a browser Opus subscriber with `player.connect(webAudioConnection)` and remove it with the returned handle or
   `player.disconnectWebAudio(id)`.
 - Prefer `PlayerManager`/`Player` exports over bus/controller internals for application code.
-- Keep `audioProcessing.inputFormat` set to `"encoded"`; raw PCM is an internal processing/codec format, not a WebSocket transport.
+- Keep `audioProcessing.inputFormat` set to `"encoded"`; raw PCM is an internal processing/codec format, not a WebSocket
+  transport.
 - `audioProcessing.normalize` accepts `true` or the presets `streaming` (-14 LUFS), `podcast` (-16), `broadcast` (-23); numeric
   targets are not supported.
 

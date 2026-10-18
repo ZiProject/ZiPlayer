@@ -5,6 +5,7 @@ import { spawn, type ChildProcess } from "child_process";
 import ffmpegStaticPath from "ffmpeg-static";
 import { resolveFfmpegExecutable } from "../audio/ffmpegLimits";
 import type { Bus, PlayerAction } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { StreamType } from "@discordjs/voice";
 import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 
@@ -383,7 +384,9 @@ export function isSafeCustomFilter(f: string) {
 }
 
 export class FilterController {
-	private readonly engines = new Map<string, FilterEngine>();
+	private get engines(): Map<string, FilterEngine> {
+		return playerDataMap(this.bus, "controller.filter.engines");
+	}
 
 	constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => {

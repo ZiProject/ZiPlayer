@@ -108,7 +108,7 @@ type RpcHandler<TRequest, TResponse> = (request: TRequest, context: BusRpcContex
  *
  * Controllers are singletons: they register their RPC/query/action handlers on this
  * bus exactly once (at bootstrap), and every call carries an explicit `playerId` so a
- * handler can route to the right per-player state slice it keeps internally.
+ * handler can route to the right per-player data bucket owned by this Bus.
  *
  * `Player` instances never touch this class directly — they get a small `Bus`
  * facade (see below) that already knows its own `playerId` and exposes the same
@@ -124,11 +124,25 @@ export class Bus {
 	private readonly queryHandlers = new Map<PlayerQuery, Set<PlayerQueryHandler<any>>>();
 	private readonly rpcHandlers = new Map<string, RpcHandler<any, any>>();
 	private readonly pendingRequests = new Set<() => void>();
+	private readonly playerIdAliases = new Map<string, string>();
 	private readonly latencyTrace?: BusLatencyTrace;
 	private disposed = false;
 
 	public constructor(latencyTrace?: BusLatencyTrace) {
 		this.latencyTrace = latencyTrace;
+	}
+
+	public replacePlayerIdAlias(currentId: string, nextId: string, routingId: string): void {
+		if (currentId !== routingId) this.playerIdAliases.delete(currentId);
+		if (nextId === routingId) {
+			this.playerIdAliases.delete(nextId);
+		} else {
+			this.playerIdAliases.set(nextId, routingId);
+		}
+	}
+
+	private resolvePlayerId(playerId: string): string {
+		return this.playerIdAliases.get(playerId) ?? playerId;
 	}
 
 	// ---------------------------------------------------------------------
@@ -162,7 +176,8 @@ export class Bus {
 		input: T,
 		options: PlayerRequestOptions<T["type"]> = {},
 	): Promise<PlayerRequestReply<T["type"]>["success"]> {
-		const fullInput = { ...input, playerId } as unknown as PlayerInput;
+		const routingId = this.resolvePlayerId(playerId);
+		const fullInput = { ...input, playerId: routingId } as unknown as PlayerInput;
 		type K = T["type"];
 		if (this.disposed)
 			return Promise.reject(
@@ -216,13 +231,13 @@ export class Bus {
 			}
 			cleanups.push(
 				this.onOutput(contract.success, (event) => {
-					if (event.requestId === requestId && event.playerId === playerId)
+					if (event.requestId === requestId && event.playerId === routingId)
 						settle(() => resolve(event as PlayerRequestReply<K>["success"]));
 				}),
 			);
 			cleanups.push(
 				this.onOutput(contract.error, (event: any) => {
-					if (event.requestId === requestId && event.playerId === playerId)
+					if (event.requestId === requestId && event.playerId === routingId)
 						settle(() =>
 							reject(
 								event.error instanceof Error ?
@@ -235,7 +250,7 @@ export class Bus {
 			if (contract.progress && options.onProgress)
 				cleanups.push(
 					this.onOutput(contract.progress, (event) => {
-						if (event.requestId === requestId && event.playerId === playerId && !settled)
+						if (event.requestId === requestId && event.playerId === routingId && !settled)
 							options.onProgress!(event as PlayerRequestProgress<K>);
 					}),
 				);
@@ -266,6 +281,7 @@ export class Bus {
 		request: TRequest,
 		options: BusRpcOptions = {},
 	): Promise<TResponse> {
+		playerId = this.resolvePlayerId(playerId);
 		if (this.disposed)
 			return Promise.reject(new BusRequestError("disposed", type, `Bus is disposed; cannot request RPC "${type}"`));
 		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
@@ -310,6 +326,7 @@ export class Bus {
 	): PlayerRpcMap[K]["response"];
 	public requestRpcSync<TRequest, TResponse>(playerId: string, type: string, request: TRequest): TResponse;
 	public requestRpcSync<TRequest, TResponse>(playerId: string, type: string, request: TRequest): TResponse {
+		playerId = this.resolvePlayerId(playerId);
 		if (this.disposed) throw new BusRequestError("disposed", type, `Bus is disposed; cannot request RPC "${type}"`);
 		const handler = this.rpcHandlers.get(type) as RpcHandler<TRequest, TResponse> | undefined;
 		if (!handler) throw new BusRequestError("unhandled", type, `No RPC handler registered for "${type}"`);
@@ -352,6 +369,7 @@ export class Bus {
 	// ---------------------------------------------------------------------
 	public action(playerId: string, action: PlayerAction, context?: Partial<PlayerActionExecutionContext>): Promise<void> {
 		if (this.disposed) return Promise.resolve();
+		playerId = this.resolvePlayerId(playerId);
 		const execution: PlayerActionExecutionContext = {
 			playerId,
 			signal: context?.signal ?? new AbortController().signal,
@@ -379,6 +397,7 @@ export class Bus {
 	// guild's events even though every controller instance is shared.
 	// ---------------------------------------------------------------------
 	public event<K extends PlayerEventType>(playerId: string, event: Extract<PlayerEvent, { type: K }>): void {
+		playerId = this.resolvePlayerId(playerId);
 		if (!this.disposed) this.dispatchScoped(this.eventListeners, event.type, playerId, event);
 	}
 	public publish<K extends PlayerEventType>(playerId: string, type: K, ...args: PlayerEventArgsMap[K]): void {
@@ -389,7 +408,7 @@ export class Bus {
 		type: K,
 		listener: (event: Extract<PlayerEvent, { type: K }>) => void,
 	): () => void {
-		return this.addScopedListener(this.eventListeners, type, playerId, listener as any);
+		return this.addScopedListener(this.eventListeners, type, this.resolvePlayerId(playerId), listener as any);
 	}
 
 	// ---------------------------------------------------------------------
@@ -408,6 +427,7 @@ export class Bus {
 	}
 	public query<K extends PlayerQuery>(playerId: string, query: K): Promise<PlayerQueryMap[K]> {
 		if (this.disposed) return Promise.resolve(undefined as any);
+		playerId = this.resolvePlayerId(playerId);
 		const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined;
 		if (!handler) return Promise.resolve(undefined as any);
 		const operation = () => Promise.resolve(handler(playerId));
@@ -416,6 +436,7 @@ export class Bus {
 	}
 	public querySync<K extends PlayerQuery>(playerId: string, query: K): PlayerQueryMap[K] {
 		if (this.disposed) return undefined as any;
+		playerId = this.resolvePlayerId(playerId);
 		const handler = [...(this.queryHandlers.get(query) ?? [])][0] as PlayerQueryHandler<K> | undefined;
 		if (!handler) return undefined as any;
 		const operation = () => {
@@ -428,11 +449,14 @@ export class Bus {
 		return operation();
 	}
 
-	/** Drop everything scoped to a single player (its event subscriptions). Shared, global
-	 * controller registrations (rpc/query/action) are untouched — controllers themselves
-	 * drop their per-player state slice via GlobalControllerRegistry. */
+	/** Drop a player's event subscriptions. Shared, global controller registrations (rpc/query/action)
+	 * are untouched — controllers detach through GlobalControllerRegistry first. */
 	public disposePlayer(playerId: string): void {
+		playerId = this.resolvePlayerId(playerId);
 		for (const byPlayer of this.eventListeners.values()) byPlayer.delete(playerId);
+		for (const [alias, routingId] of this.playerIdAliases) {
+			if (routingId === playerId) this.playerIdAliases.delete(alias);
+		}
 	}
 
 	public clear(): void {
@@ -440,6 +464,7 @@ export class Bus {
 		this.inputListeners.clear();
 		this.outputListeners.clear();
 		this.eventListeners.clear();
+		this.playerIdAliases.clear();
 		this.actionListeners.clear();
 		this.queryHandlers.clear();
 		this.rpcHandlers.clear();

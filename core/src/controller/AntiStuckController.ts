@@ -9,6 +9,7 @@ import {
 	type AntiStuckReportRequest,
 } from "../structures/BusContract";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 
 const MAX_FAILURE_ENTRIES = 500;
 
@@ -146,7 +147,9 @@ async function recover(
 
 /** Shared anti-stuck controller with per-player retry accounting and timers. */
 export class AntiStuckController {
-	public readonly states = new Map<string, AntiStuckState>();
+	public get states(): Map<string, AntiStuckState> {
+		return playerDataMap(this.bus, "controller.antiStuck.states");
+	}
 
 	public constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => {

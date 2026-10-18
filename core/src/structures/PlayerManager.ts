@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { LRUCache } from "lru-cache";
 import { Player } from "./Player";
 import { Bus } from "./Bus";
+import { PlayerData, PlayerDataRegistry } from "./PlayerDataRegistry";
 import {
 	PlaybackMode,
 	PlayerManagerOptions,
@@ -247,6 +248,7 @@ export class PlayerManager extends EventEmitter {
 		this.debugTracer.setDebugLevel(level);
 	}
 	private players: Map<string, Player> = new Map();
+	private readonly playersByRoutingId: Map<string, Player> = new Map();
 	public readonly bus: Bus;
 	private readonly controllers: SharedControllerSet;
 	private readonly monitoring: PlayerMonitoring;
@@ -330,7 +332,7 @@ export class PlayerManager extends EventEmitter {
 		// *rejected* request as unreachable.
 		this.bus.registerRpc<{ playerId?: string }, true>(CONTROLLER_RPC.runtimePing, (_request, ctx) => {
 			const id = ctx.playerId;
-			const alive = this.players.get(id)?.destroyed === false;
+			const alive = this.playersByRoutingId.get(id)?.destroyed === false;
 			if (!alive) throw new Error(`runtime.ping: player "${id}" is not tracked by this PlayerManager`);
 			return true;
 		});
@@ -339,7 +341,7 @@ export class PlayerManager extends EventEmitter {
 				event.type === BUS_OUTPUT.connectionDisconnected &&
 				(event.reason === "destroyed" || event.reason === "leave-timeout")
 			) {
-				const player = this.players.get(event.playerId);
+				const player = this.playersByRoutingId.get(event.playerId);
 				if (player && !player.destroyed) {
 					void this.requestDestroy(player);
 				}
@@ -490,7 +492,12 @@ export class PlayerManager extends EventEmitter {
 		}
 	}
 
-	private attachPlayerControllers(playerId: string, options?: PlayerOptions): void {
+	private attachPlayerControllers(
+		playerId: string,
+		options?: PlayerOptions,
+		playerData: Map<string, unknown> = new PlayerData(),
+	): void {
+		PlayerDataRegistry.for(this.bus).attach(playerId, playerData);
 		const channel = (tag: string, level: PlayerDebugLevel = "debug") => this.debugTracer.channel(tag, level);
 		const middleware: TrackMiddleware[] = [
 			...this.getTrackMiddlewareChain(),
@@ -610,12 +617,13 @@ export class PlayerManager extends EventEmitter {
 			debug: channel("SearchController"),
 		});
 		this.controllers.eventBridge?.attach(playerId, this.debugTracer);
+	}
 
-		// A player that stops answering "runtime.ping" is torn down through the same path as an
-		// explicit destroy().
+	private registerPlayerHeartbeat(playerId: string): void {
 		this.controllerRegistry.register(playerId, this.bus, this.controllers, () => {
-			const player = this.players.get(playerId) ?? null;
-			this.players.delete(playerId);
+			const player = this.playersByRoutingId.get(playerId) ?? null;
+			this.playersByRoutingId.delete(playerId);
+			if (player) this.players.delete(player.playerId);
 			return this.runTeardown(playerId, player).catch((error) =>
 				this.debug(`Error disposing unreachable player ${playerId}:`, error),
 			);
@@ -641,11 +649,13 @@ export class PlayerManager extends EventEmitter {
 			this.debug(`Player already exists for guildId: ${guildId}, returning existing`);
 			return this.players.get(guildId)!;
 		}
-
 		// Check if a player is already being created for this guild
 		if (this.pendingPlayers.has(guildId)) {
 			this.debug(`Player creation already in progress for guildId: ${guildId}, awaiting...`);
 			return this.pendingPlayers.get(guildId)!;
+		}
+		if (this.controllerRegistry.has(guildId)) {
+			throw new Error(`Guild id "${guildId}" is still reserved by an active player.`);
 		}
 
 		const creationPromise = (async () => {
@@ -656,11 +666,12 @@ export class PlayerManager extends EventEmitter {
 				this.assertNotDisposed();
 				this.debug(`Creating player for guildId: ${guildId}`);
 				const playerId = guildId;
+				const playerData = new PlayerData();
 
 				controllersAttached = true;
-				this.attachPlayerControllers(playerId, options);
+				this.attachPlayerControllers(playerId, options, playerData);
 
-				const player = new Player(playerId, this.bus, options, this);
+				const player = new Player(playerId, this.bus, options, this, playerData);
 				created = player;
 				this.controllers.extension?.getManager(playerId)?.attachPlayer(player);
 				this.controllers.eventBridge?.attachPlayer(playerId, player);
@@ -725,6 +736,8 @@ export class PlayerManager extends EventEmitter {
 				(player as any)._lastActivity = Date.now();
 
 				this.players.set(guildId, player);
+				this.playersByRoutingId.set(player.routingPlayerId, player);
+				this.registerPlayerHeartbeat(player.routingPlayerId);
 				this.debug(`Player created for guildId: ${guildId}`);
 				return player;
 			} catch (error) {
@@ -764,8 +777,8 @@ export class PlayerManager extends EventEmitter {
 		player.on("playerDestroy", () => {
 			// Forward links are released in teardownPlayer() (they need the controllers still attached).
 			// Safety net: a no-op when the manager already tore this player down.
-			void this.destroy(guildId).catch(() => undefined);
-			this.debug(`Player destroyed for guildId: ${guildId}`);
+			void this.destroy(player.playerId).catch(() => undefined);
+			this.debug(`Player destroyed for guildId: ${player.playerId}`);
 		});
 
 		player.on("trackStart", () => {
@@ -792,6 +805,38 @@ export class PlayerManager extends EventEmitter {
 	 */
 	getPlayer(guildOrId: string | { id: string }): Player | undefined {
 		return this.get(guildOrId);
+	}
+
+	/**
+	 * Change a managed player's public identifier without reattaching controllers or interrupting playback.
+	 * Controller state and in-flight work continue using the original internal routing key.
+	 */
+	public changePlayerId(currentPlayerId: string | { id: string }, newPlayerId: string): Player {
+		this.assertNotDisposed();
+		const currentId = this.resolveGuildId(currentPlayerId);
+		const player = this.players.get(currentId);
+		if (!player) throw new Error(`No player exists for id "${currentId}".`);
+		if (typeof newPlayerId !== "string" || !newPlayerId.trim()) {
+			throw new TypeError("newPlayerId must be a non-empty string.");
+		}
+		if (newPlayerId === MANAGER_SEARCH_ID) {
+			throw new Error(`Guild id "${MANAGER_SEARCH_ID}" is reserved for manager search.`);
+		}
+		if (newPlayerId === currentId) return player;
+		if (
+			this.players.has(newPlayerId) ||
+			this.pendingPlayers.has(newPlayerId) ||
+			(this.controllerRegistry.has(newPlayerId) && newPlayerId !== player.routingPlayerId)
+		) {
+			throw new Error(`A player or active player state already exists for id "${newPlayerId}".`);
+		}
+
+		this.bus.replacePlayerIdAlias(currentId, newPlayerId, player.routingPlayerId);
+		this.players.delete(currentId);
+		this.players.set(newPlayerId, player);
+		player.updatePlayerId(newPlayerId);
+		this.debug(`Changed player id from "${currentId}" to "${newPlayerId}" without interrupting playback.`);
+		return player;
 	}
 
 	/**
@@ -1069,7 +1114,8 @@ export class PlayerManager extends EventEmitter {
 		}
 
 		this.players.delete(playerId);
-		return this.runTeardown(playerId, player);
+		this.playersByRoutingId.delete(player.routingPlayerId);
+		return this.runTeardown(player.routingPlayerId, player);
 	}
 
 	/** Starts {@link teardownPlayer} and tracks it until it settles. */
@@ -1100,7 +1146,7 @@ export class PlayerManager extends EventEmitter {
 	 *   2. Player.abortWorkflow()  (pending play()/actions)
 	 *   3. release per-player resources (stream/plugin/extension managers)
 	 *   4. detach shared controllers (orchestrator + lifecycle first, connection last)
-	 *   5. Player.completeDestroy() -> bus "destroyed" + Bus.disposePlayer(playerId)
+	 *   5. Player.completeDestroy() -> bus "destroyed" + subscription cleanup
 	 *
 	 * Steps 1-3 and the start of 4 run synchronously, so `players.has()` / `player.destroyed` are
 	 * already up to date when the caller gets the promise back.
@@ -1126,9 +1172,11 @@ export class PlayerManager extends EventEmitter {
 		} finally {
 			// Bus disposal is last, and must happen even if a detach failed.
 			try {
-				player?.completeDestroy();
+				player?.completeDestroy(true);
 			} catch (error) {
 				this.debug(`Error destroying player ${playerId}:`, error);
+			} finally {
+				this.bus.disposePlayer(playerId);
 			}
 			// Observes the final "destroyed" event, so it goes after completeDestroy().
 			try {
@@ -1136,6 +1184,7 @@ export class PlayerManager extends EventEmitter {
 			} catch (error) {
 				this.debug(`Error detaching eventBridge for ${playerId}:`, error);
 			}
+			PlayerDataRegistry.for(this.bus).disposePlayer(playerId);
 		}
 	}
 
@@ -1256,9 +1305,12 @@ export class PlayerManager extends EventEmitter {
 
 		const playerEntries = [...this.players.entries()];
 		this.players.clear();
+		this.playersByRoutingId.clear();
 
-		for (const [playerId, player] of playerEntries) {
-			this.runTeardown(playerId, player).catch((err) => this.debug(`Error destroying player ${playerId}:`, err));
+		for (const [, player] of playerEntries) {
+			this.runTeardown(player.routingPlayerId, player).catch((err) =>
+				this.debug(`Error destroying player ${player.playerId}:`, err),
+			);
 		}
 		// Includes teardowns started earlier by destroy(playerId)/player.destroy(): none may still be
 		// running when the shared controllers and the Bus are disposed below.

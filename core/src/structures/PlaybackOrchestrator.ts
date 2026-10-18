@@ -1,5 +1,6 @@
 import type { AudioResource } from "@discordjs/voice";
 import type { Bus, PlayerAction } from "./Bus";
+import { playerDataMap } from "./PlayerDataRegistry";
 import { PlaybackSession } from "./PlaybackSession";
 import { PlaybackSessionController } from "../controller/PlaybackSessionController";
 import {
@@ -48,15 +49,19 @@ interface PlaybackOrchestratorState {
  * handling, and queue-refill/autoplay orchestration for every player.
  *
  * Shared, singleton — created once in PlayerManager constructor. Per-player runtime
- * data and child-controller references live in an internal state map keyed by playerId.
+ * data and child-controller references live in each player's `data` Map.
  */
 export class PlaybackOrchestrator {
 	private readonly bus: Bus;
-	public readonly states = new Map<string, PlaybackOrchestratorState>();
+	public get states(): Map<string, PlaybackOrchestratorState> {
+		return playerDataMap(this.bus, "structure.playbackOrchestrator.states");
+	}
 	private readonly sessionController: PlaybackSessionController;
 	private readonly seekController: PlaybackSeekController;
 	private readonly detachAction: () => void;
-	private readonly remoteStopOperations = new Map<string, Promise<void>>();
+	private get remoteStopOperations(): Map<string, Promise<void>> {
+		return playerDataMap(this.bus, "structure.playbackOrchestrator.remoteStopOperations");
+	}
 
 	public constructor(bus: Bus, options: PlaybackOrchestratorOptions) {
 		this.bus = bus;

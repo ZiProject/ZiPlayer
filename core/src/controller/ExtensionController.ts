@@ -1,4 +1,5 @@
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import type { ExtensionManager } from "../extensions";
 import type { BaseExtension } from "../extensions/BaseExtension";
@@ -16,9 +17,11 @@ import type {
  * `attach`/`detach`.
  */
 export class ExtensionController {
-	private readonly managers = new Map<string, ExtensionManager>();
+	private get managers(): Map<string, ExtensionManager> {
+		return playerDataMap(this.bus, "controller.extension.managers");
+	}
 
-	constructor(bus: Bus) {
+	constructor(private readonly bus: Bus) {
 		bus.registerQuery(PLAYER_QUERY.extensions, (playerId) => this.manager(playerId)?.getAll() ?? []);
 		bus.registerQuery(PLAYER_QUERY.extensionList, (playerId) => this.manager(playerId)?.getAll() ?? []);
 		bus.registerRpc<Record<string, never> | undefined, BaseExtension[]>(

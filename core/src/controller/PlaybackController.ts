@@ -8,6 +8,7 @@ import {
 } from "@discordjs/voice";
 import { Readable } from "stream";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
 import { PlaybackMode } from "../types";
@@ -61,16 +62,24 @@ const NO_TRANSITION: TransitionPlanResponse = { enabled: false, durationMs: 0, w
  *
  * Shared, singleton controller — created once in `ensureSharedControllers()`. Each
  * player's `AudioPlayer`, active resource/session, fade/stuck timers and listeners live
- * in an internal `Map<playerId, PlaybackSlot>` (opened by `attach(playerId, ...)`,
- * released by `detach(playerId)`). All RPC handlers and queries below are registered
+ * in each player's `data` Map (registered by `attach(playerId, ...)`, released by
+ * `detach(playerId)`). All RPC handlers and queries below are registered
  * exactly once, in the constructor, and route by `ctx.playerId` / the query's `playerId`.
  */
 export class PlaybackController {
 	private readonly bus: Bus;
-	private readonly slots = new Map<string, PlaybackSlot>();
-	private readonly processingOptions = new Map<string, AudioProcessingOptions>();
-	private readonly processingEngines = new Map<string, AudioProcessingEngine>();
-	private readonly remoteStopPromises = new Map<string, Promise<boolean>>();
+	private get slots(): Map<string, PlaybackSlot> {
+		return playerDataMap(this.bus, "controller.playback.slots");
+	}
+	private get processingOptions(): Map<string, AudioProcessingOptions> {
+		return playerDataMap(this.bus, "controller.playback.processingOptions");
+	}
+	private get processingEngines(): Map<string, AudioProcessingEngine> {
+		return playerDataMap(this.bus, "controller.playback.processingEngines");
+	}
+	private get remoteStopPromises(): Map<string, Promise<boolean>> {
+		return playerDataMap(this.bus, "controller.playback.remoteStopPromises");
+	}
 
 	public constructor(bus: Bus) {
 		this.bus = bus;
@@ -776,9 +785,10 @@ export class PlaybackController {
 			const resource = slot.fadeResource ?? slot.activeResource;
 			slot.fadeResource = null;
 			if (resource) {
-				const track = resource === slot.activeResource ?
-					(slot.activeSession?.track ?? (resource.metadata as Track | undefined)) :
-					(resource.metadata as Track | undefined);
+				const track =
+					resource === slot.activeResource ?
+						(slot.activeSession?.track ?? (resource.metadata as Track | undefined))
+					:	(resource.metadata as Track | undefined);
 				void this.applyTargetVolume(slot, resource, track, 1).catch((error) =>
 					this.reportAsyncFailure(slot, error, track ?? null),
 				);

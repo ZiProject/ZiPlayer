@@ -4,6 +4,7 @@ import type { TrackRequester } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { PLAYER_RPC } from "../structures/BusContract";
 import { getRequesterId, withTrackRequester } from "../utils/requester";
 
@@ -21,10 +22,12 @@ interface SearchState {
 	cache: LRUCache<string, SearchResult>;
 }
 
-/** Shared search orchestration; player-specific options and cache are keyed by playerId. */
+/** Shared search orchestration; player-specific options and cache live in each player's `data` Map. */
 export class SearchController {
 	private static readonly CACHE_TTL = 2 * 60 * 1000;
-	private readonly states = new Map<string, SearchState>();
+	private get states(): Map<string, SearchState> {
+		return playerDataMap(this.bus, "controller.search.states");
+	}
 
 	public constructor(private readonly bus: Bus) {
 		bus.registerRpc<SearchRequest, SearchResult>(PLAYER_RPC.search, (request, context) =>
