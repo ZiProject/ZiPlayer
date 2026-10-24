@@ -55,6 +55,104 @@ export declare class OpusDecoderAdapter {
 	free(): void;
 }
 
+export interface WebAudioAnalyserOptions {
+	fftSize?: number;
+	maxDecibels?: number;
+	minDecibels?: number;
+	smoothingTimeConstant?: number;
+}
+
+export interface FrequencyBandOptions {
+	/**
+	 * Number of output frequency bands / bars.
+	 * @default 32
+	 */
+	bands?: number;
+
+	/**
+	 * Minimum audible frequency in Hz to include in the lowest band.
+	 * Frequencies below this (e.g. DC offset and sub-audible rumble) are filtered out.
+	 * @default 28
+	 */
+	minHz?: number;
+
+	/**
+	 * Maximum frequency in Hz to include in the highest band.
+	 * Frequencies above this (e.g. ultrasonic and lossy codec roll-off) are filtered out.
+	 * @default 16000
+	 */
+	maxHz?: number;
+
+	/**
+	 * Audio sample rate in Hz. Required when passing raw Uint8Array instead of AnalyserNode.
+	 * @default 48000
+	 */
+	sampleRate?: number;
+
+	/**
+	 * Apply musical frequency energy weighting (equal-loudness compensation curve)
+	 * to prevent dense mid-range frequencies from clipping while keeping bass and highs lively.
+	 * Set to false to disable weighting.
+	 * @default true
+	 */
+	weighting?: boolean;
+
+	/**
+	 * Apply 5-point Gaussian spatial smoothing across adjacent bands (like After Effects)
+	 * to create continuous, organic curves instead of jagged isolated spikes.
+	 * Set to false to disable.
+	 * @default true
+	 */
+	spatialSmoothing?: boolean;
+
+	/**
+	 * Soft-knee compression threshold (0 to 1). When amplitudes exceed this threshold,
+	 * a non-linear tanh curve smoothly compresses the peak to prevent flat table-top clipping.
+	 * Set to false to disable.
+	 * @default 0.7
+	 */
+	softKnee?: number | false;
+
+	/**
+	 * Target Float32Array to write output into. If provided, reuses this buffer to avoid GC allocations.
+	 */
+	outputBuffer?: Float32Array;
+
+	/**
+	 * Pre-allocated Uint8Array to receive frequency data from AnalyserNode.
+	 */
+	frequencyData?: Uint8Array;
+}
+
+export interface BassEnergyOptions {
+	/**
+	 * Minimum sub-bass frequency in Hz.
+	 * @default 45
+	 */
+	minHz?: number;
+
+	/**
+	 * Maximum kick/bass frequency in Hz.
+	 * @default 120
+	 */
+	maxHz?: number;
+
+	/**
+	 * Audio sample rate in Hz. Required when passing raw Uint8Array instead of AnalyserNode.
+	 * @default 48000
+	 */
+	sampleRate?: number;
+
+	/**
+	 * Pre-allocated Uint8Array to receive frequency data from AnalyserNode.
+	 */
+	frequencyData?: Uint8Array;
+}
+
+export declare function getFrequencyBands(source: AnalyserNode | Uint8Array, options?: FrequencyBandOptions): Float32Array;
+
+export declare function getBassEnergy(source: AnalyserNode | Uint8Array, options?: BassEnergyOptions): number;
+
 export interface WebAudioClientOptions {
 	audioContextFactory?: (options: AudioContextOptions) => AudioContext;
 	webSocketFactory?: (url: URL) => WebSocket;
@@ -62,6 +160,7 @@ export interface WebAudioClientOptions {
 	startupBufferMs?: number;
 	maxBufferSeconds?: number;
 	connectTimeoutMs?: number;
+	analyserOptions?: WebAudioAnalyserOptions | false;
 }
 
 export interface WebAudioConnectOptions {
@@ -90,6 +189,12 @@ export declare class WebAudioClient extends EventTarget {
 	readonly sessionId: string | null;
 	readonly config: WebAudioConfig | null;
 	readonly state: WebAudioClientState;
+	readonly audioContext: AudioContext | null;
+	readonly analyser: AnalyserNode | null;
+	getAudioContext(): AudioContext | null;
+	getAnalyser(): AnalyserNode | null;
+	getFrequencyBands(options?: FrequencyBandOptions): Float32Array | null;
+	getBassEnergy(options?: BassEnergyOptions): number;
 	connect(options: WebAudioConnectOptions): Promise<this>;
 	disconnect(): Promise<void>;
 	addEventListener<K extends keyof WebAudioClientEventMap>(

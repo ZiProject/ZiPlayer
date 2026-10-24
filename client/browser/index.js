@@ -221,6 +221,185 @@ function dispatchDetail(target, type, detail) {
 	target.dispatchEvent(new CustomEvent(type, { detail }));
 }
 
+export function getFrequencyBands(source, options = {}) {
+	if (!source) throw new TypeError("source must be an AnalyserNode or a Uint8Array");
+
+	let freqBuffer = options.frequencyData;
+	let sampleRate = options.sampleRate ?? WEB_AUDIO_SAMPLE_RATE_HZ;
+
+	if (typeof source.getByteFrequencyData === "function") {
+		const binCount = source.frequencyBinCount;
+		if (!freqBuffer || freqBuffer.length !== binCount) {
+			if (source._cachedFreqBuffer && source._cachedFreqBuffer.length === binCount) {
+				freqBuffer = source._cachedFreqBuffer;
+			} else {
+				freqBuffer = new Uint8Array(binCount);
+				try {
+					source._cachedFreqBuffer = freqBuffer;
+				} catch {}
+			}
+		}
+		source.getByteFrequencyData(freqBuffer);
+		if (source.context?.sampleRate) {
+			sampleRate = source.context.sampleRate;
+		}
+	} else if (source instanceof Uint8Array) {
+		freqBuffer = source;
+	} else {
+		throw new TypeError("source must be an AnalyserNode or a Uint8Array");
+	}
+
+	const binCount = freqBuffer.length;
+	if (binCount === 0) return new Float32Array(0);
+
+	const bands = options.bands ?? 32;
+	if (!Number.isInteger(bands) || bands <= 0) {
+		throw new TypeError("bands must be a positive integer");
+	}
+
+	const minHz = options.minHz ?? 28;
+	const maxHz = options.maxHz ?? 16000;
+	if (!Number.isFinite(minHz) || minHz <= 0) {
+		throw new TypeError("minHz must be a positive number");
+	}
+	if (!Number.isFinite(maxHz) || maxHz <= minHz) {
+		throw new TypeError("maxHz must be a finite number greater than minHz");
+	}
+
+	const binResolution = sampleRate / 2 / binCount;
+	const output =
+		options.outputBuffer instanceof Float32Array && options.outputBuffer.length >= bands ?
+			options.outputBuffer
+		:	new Float32Array(bands);
+
+	const rawBars = new Float32Array(bands);
+	const applyWeighting = options.weighting !== false;
+	const softKnee = options.softKnee ?? 0.7;
+
+	// 1. Logarithmic mapping + sub-bin linear interpolation
+	for (let i = 0; i < bands; i++) {
+		const t = bands === 1 ? 0.5 : i / (bands - 1);
+		const tLow = Math.max(0, (i - 0.45) / Math.max(1, bands - 1));
+		const tHigh = Math.min(1, (i + 0.45) / Math.max(1, bands - 1));
+		const fLow = minHz * Math.pow(maxHz / minHz, tLow);
+		const fHigh = minHz * Math.pow(maxHz / minHz, tHigh);
+		const fCenter = minHz * Math.pow(maxHz / minHz, t);
+
+		const binLow = fLow / binResolution;
+		const binHigh = fHigh / binResolution;
+
+		let val = 0;
+		if (binHigh - binLow <= 1.5) {
+			const binFloat = fCenter / binResolution;
+			const k = Math.floor(binFloat);
+			const frac = binFloat - k;
+			const v0 = freqBuffer[Math.min(binCount - 1, k)] || 0;
+			const v1 = freqBuffer[Math.min(binCount - 1, k + 1)] || 0;
+			val = v0 * (1 - frac) + v1 * frac;
+		} else {
+			const startBin = Math.max(0, Math.floor(binLow));
+			const endBin = Math.min(binCount - 1, Math.ceil(binHigh));
+			let maxVal = 0;
+			let sumVal = 0;
+			let count = 0;
+			for (let b = startBin; b <= endBin; b++) {
+				const sample = freqBuffer[b];
+				if (sample > maxVal) maxVal = sample;
+				sumVal += sample;
+				count++;
+			}
+			val = count > 0 ? (sumVal / count) * 0.7 + maxVal * 0.3 : maxVal;
+		}
+
+		let norm = val / 255;
+		if (applyWeighting) {
+			const weight = 0.68 + 0.42 * Math.pow(1 - t, 2) + 0.55 * Math.pow(t, 2);
+			norm *= weight;
+		}
+
+		if (typeof softKnee === "number" && softKnee > 0 && softKnee < 1) {
+			if (norm > softKnee) {
+				const excess = norm - softKnee;
+				norm = softKnee + (1 - softKnee) * Math.tanh(excess / (1 - softKnee));
+			}
+		}
+
+		rawBars[i] = Math.max(0, Math.min(1, norm));
+	}
+
+	// 2. Spatial 5-point Gaussian smoothing (like After Effects)
+	if (options.spatialSmoothing !== false && bands >= 3) {
+		for (let i = 0; i < bands; i++) {
+			let sum = 0;
+			let weightSum = 0;
+			for (let offset = -2; offset <= 2; offset++) {
+				const neighbor = i + offset;
+				if (neighbor >= 0 && neighbor < bands) {
+					const w =
+						offset === 0 ? 0.38
+						: Math.abs(offset) === 1 ? 0.24
+						: 0.07;
+					sum += rawBars[neighbor] * w;
+					weightSum += w;
+				}
+			}
+			output[i] = sum / weightSum;
+		}
+	} else {
+		output.set(rawBars);
+	}
+
+	return output;
+}
+
+export function getBassEnergy(source, options = {}) {
+	if (!source) throw new TypeError("source must be an AnalyserNode or a Uint8Array");
+
+	let freqBuffer = options.frequencyData;
+	let sampleRate = options.sampleRate ?? WEB_AUDIO_SAMPLE_RATE_HZ;
+
+	if (typeof source.getByteFrequencyData === "function") {
+		const binCount = source.frequencyBinCount;
+		if (!freqBuffer || freqBuffer.length !== binCount) {
+			if (source._cachedFreqBuffer && source._cachedFreqBuffer.length === binCount) {
+				freqBuffer = source._cachedFreqBuffer;
+			} else {
+				freqBuffer = new Uint8Array(binCount);
+				try {
+					source._cachedFreqBuffer = freqBuffer;
+				} catch {}
+			}
+		}
+		source.getByteFrequencyData(freqBuffer);
+		if (source.context?.sampleRate) {
+			sampleRate = source.context.sampleRate;
+		}
+	} else if (source instanceof Uint8Array) {
+		freqBuffer = source;
+	} else {
+		throw new TypeError("source must be an AnalyserNode or a Uint8Array");
+	}
+
+	const binCount = freqBuffer.length;
+	if (binCount === 0) return 0;
+
+	const minHz = options.minHz ?? 45;
+	const maxHz = options.maxHz ?? 120;
+	const binResolution = sampleRate / 2 / binCount;
+
+	const startBin = Math.max(0, Math.round(minHz / binResolution));
+	const endBin = Math.min(binCount - 1, Math.max(startBin, Math.round(maxHz / binResolution)));
+
+	let sum = 0;
+	let count = 0;
+	for (let b = startBin; b <= endBin; b++) {
+		sum += freqBuffer[b];
+		count++;
+	}
+
+	return count > 0 ? sum / count / 255 : 0;
+}
+
 export class WebAudioClient extends EventTarget {
 	constructor({
 		audioContextFactory = (options) => new AudioContext(options),
@@ -229,6 +408,7 @@ export class WebAudioClient extends EventTarget {
 		startupBufferMs = 100,
 		maxBufferSeconds = 2,
 		connectTimeoutMs = 5000,
+		analyserOptions = null,
 	} = {}) {
 		super();
 		if (!Number.isFinite(startupBufferMs) || startupBufferMs < 0) {
@@ -243,15 +423,25 @@ export class WebAudioClient extends EventTarget {
 		if (!Number.isInteger(connectTimeoutMs) || connectTimeoutMs <= 0) {
 			throw new TypeError("connectTimeoutMs must be a positive integer");
 		}
+		if (
+			analyserOptions !== null &&
+			analyserOptions !== undefined &&
+			analyserOptions !== false &&
+			typeof analyserOptions !== "object"
+		) {
+			throw new TypeError("analyserOptions must be an object or false when provided");
+		}
 		this.audioContextFactory = audioContextFactory;
 		this.webSocketFactory = webSocketFactory;
 		this.opusDecoderFactory = opusDecoderFactory;
 		this.startupBufferMs = startupBufferMs;
 		this.maxBufferSeconds = maxBufferSeconds;
 		this.connectTimeoutMs = connectTimeoutMs;
+		this.analyserOptions = analyserOptions;
 		this.socket = null;
 		this.audioContext = null;
 		this.workletNode = null;
+		this.analyserNode = null;
 		this.opusDecoder = null;
 		this.opusDecoderReady = false;
 		this.opusDecoderGeneration = 0;
@@ -261,6 +451,28 @@ export class WebAudioClient extends EventTarget {
 		this.expectedSequence = null;
 		this.acceptNextSession = false;
 		this.state = "disconnected";
+	}
+
+	get analyser() {
+		return this.analyserNode;
+	}
+
+	getAnalyser() {
+		return this.analyserNode;
+	}
+
+	getAudioContext() {
+		return this.audioContext;
+	}
+
+	getFrequencyBands(options = {}) {
+		if (!this.analyserNode) return null;
+		return getFrequencyBands(this.analyserNode, options);
+	}
+
+	getBassEnergy(options = {}) {
+		if (!this.analyserNode) return 0;
+		return getBassEnergy(this.analyserNode, options);
 	}
 
 	async connect({ gatewayUrl, token, sessionId, nextPublisher = false } = {}) {
@@ -398,7 +610,48 @@ export class WebAudioClient extends EventTarget {
 					startupBufferFrames,
 				},
 			});
-			this.workletNode.connect(context.destination);
+			if (this.analyserOptions !== false && typeof context.createAnalyser === "function") {
+				const analyser = context.createAnalyser();
+				analyser.fftSize = 2048;
+				analyser.minDecibels = -85;
+				analyser.maxDecibels = -10;
+				analyser.smoothingTimeConstant = 0.65;
+				if (this.analyserOptions && typeof this.analyserOptions === "object") {
+					if (this.analyserOptions.fftSize !== undefined) {
+						if (!Number.isInteger(this.analyserOptions.fftSize) || this.analyserOptions.fftSize <= 0) {
+							throw new TypeError("analyserOptions.fftSize must be a positive integer");
+						}
+						analyser.fftSize = this.analyserOptions.fftSize;
+					}
+					if (this.analyserOptions.maxDecibels !== undefined) {
+						if (!Number.isFinite(this.analyserOptions.maxDecibels)) {
+							throw new TypeError("analyserOptions.maxDecibels must be a finite number");
+						}
+						analyser.maxDecibels = this.analyserOptions.maxDecibels;
+					}
+					if (this.analyserOptions.minDecibels !== undefined) {
+						if (!Number.isFinite(this.analyserOptions.minDecibels)) {
+							throw new TypeError("analyserOptions.minDecibels must be a finite number");
+						}
+						analyser.minDecibels = this.analyserOptions.minDecibels;
+					}
+					if (this.analyserOptions.smoothingTimeConstant !== undefined) {
+						if (
+							!Number.isFinite(this.analyserOptions.smoothingTimeConstant) ||
+							this.analyserOptions.smoothingTimeConstant < 0 ||
+							this.analyserOptions.smoothingTimeConstant > 1
+						) {
+							throw new TypeError("analyserOptions.smoothingTimeConstant must be a number between 0 and 1");
+						}
+						analyser.smoothingTimeConstant = this.analyserOptions.smoothingTimeConstant;
+					}
+				}
+				this.analyserNode = analyser;
+				this.workletNode.connect(analyser);
+				analyser.connect(context.destination);
+			} else {
+				this.workletNode.connect(context.destination);
+			}
 			await context.resume();
 		} catch (error) {
 			await this.closeAudioOutput();
@@ -409,6 +662,8 @@ export class WebAudioClient extends EventTarget {
 	}
 
 	async closeAudioOutput() {
+		this.analyserNode?.disconnect();
+		this.analyserNode = null;
 		this.workletNode?.disconnect();
 		this.workletNode = null;
 		const context = this.audioContext;

@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodeOpusFrame, parseAudioConfig, OpusDecoderAdapter, WebAudioClient } from "../browser/index.js";
+import {
+	decodeOpusFrame,
+	parseAudioConfig,
+	OpusDecoderAdapter,
+	WebAudioClient,
+	getFrequencyBands,
+	getBassEnergy,
+} from "../browser/index.js";
 
 const config = {
 	v: 1,
@@ -462,5 +469,306 @@ test("Decoder strictly enforces flags and protocol version in Wire Format v1", (
 test("parseAudioConfig rejects unsupported or unknown codecs instead of interpreting as PCM", () => {
 	for (const badCodec of ["aac", "vorbis", "flac", "mp3", "unknown"]) {
 		assert.throws(() => parseAudioConfig({ ...config, codec: badCodec }), /unsupported audio configuration/i);
+	}
+});
+
+test("WebAudioClient creates AnalyserNode and connects worklet -> analyser -> destination by default", async () => {
+	const originalAudioWorkletNode = globalThis.AudioWorkletNode;
+	let connectedNode = null;
+	let analyserConnectedTo = null;
+	class FakeSocket extends EventTarget {
+		readyState = 1;
+		binaryType = "";
+		close() {
+			this.readyState = 3;
+		}
+	}
+	class FakeAudioWorkletNode {
+		port = { postMessage() {} };
+		connect(target) {
+			connectedNode = target;
+		}
+		disconnect() {}
+	}
+	class FakeAnalyserNode {
+		fftSize = 2048;
+		smoothingTimeConstant = 0.8;
+		minDecibels = -100;
+		maxDecibels = -30;
+		connect(target) {
+			analyserConnectedTo = target;
+		}
+		disconnect() {
+			this.disconnected = true;
+		}
+	}
+	globalThis.AudioWorkletNode = FakeAudioWorkletNode;
+	const fakeDestination = { id: "audio-destination" };
+	const client = new WebAudioClient({
+		audioContextFactory: () => ({
+			sampleRate: 48_000,
+			state: "running",
+			destination: fakeDestination,
+			audioWorklet: { async addModule() {} },
+			createAnalyser: () => new FakeAnalyserNode(),
+			async resume() {},
+			async close() {
+				this.state = "closed";
+			},
+		}),
+		webSocketFactory: () => {
+			const socket = new FakeSocket();
+			queueMicrotask(() => socket.dispatchEvent(new Event("open")));
+			return socket;
+		},
+	});
+
+	try {
+		await client.connect({ gatewayUrl: "ws://127.0.0.1:8080", sessionId: "analyser-test" });
+		assert.ok(client.analyser instanceof FakeAnalyserNode);
+		assert.equal(client.getAnalyser(), client.analyser);
+		assert.ok(client.audioContext);
+		assert.equal(client.getAudioContext(), client.audioContext);
+		assert.equal(connectedNode, client.analyser);
+		assert.equal(analyserConnectedTo, fakeDestination);
+		assert.equal(client.analyser.fftSize, 2048);
+	} finally {
+		const analyser = client.analyser;
+		await client.disconnect();
+		assert.equal(client.analyser, null);
+		assert.equal(client.getAnalyser(), null);
+		assert.equal(client.audioContext, null);
+		assert.equal(analyser.disconnected, true);
+		if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+		else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+	}
+});
+
+test("WebAudioClient customizes AnalyserNode via analyserOptions", async () => {
+	const originalAudioWorkletNode = globalThis.AudioWorkletNode;
+	class FakeSocket extends EventTarget {
+		readyState = 1;
+		binaryType = "";
+		close() {
+			this.readyState = 3;
+		}
+	}
+	class FakeAudioWorkletNode {
+		port = { postMessage() {} };
+		connect() {}
+		disconnect() {}
+	}
+	class FakeAnalyserNode {
+		fftSize = 2048;
+		smoothingTimeConstant = 0.8;
+		minDecibels = -100;
+		maxDecibels = -30;
+		connect() {}
+		disconnect() {}
+	}
+	globalThis.AudioWorkletNode = FakeAudioWorkletNode;
+	const client = new WebAudioClient({
+		analyserOptions: {
+			fftSize: 256,
+			smoothingTimeConstant: 0.85,
+			minDecibels: -90,
+			maxDecibels: -10,
+		},
+		audioContextFactory: () => ({
+			sampleRate: 48_000,
+			state: "running",
+			destination: {},
+			audioWorklet: { async addModule() {} },
+			createAnalyser: () => new FakeAnalyserNode(),
+			async resume() {},
+			async close() {
+				this.state = "closed";
+			},
+		}),
+		webSocketFactory: () => {
+			const socket = new FakeSocket();
+			queueMicrotask(() => socket.dispatchEvent(new Event("open")));
+			return socket;
+		},
+	});
+
+	try {
+		await client.connect({ gatewayUrl: "ws://127.0.0.1:8080", sessionId: "analyser-opts" });
+		assert.equal(client.analyser.fftSize, 256);
+		assert.equal(client.analyser.smoothingTimeConstant, 0.85);
+		assert.equal(client.analyser.minDecibels, -90);
+		assert.equal(client.analyser.maxDecibels, -10);
+	} finally {
+		await client.disconnect();
+		if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+		else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+	}
+});
+
+test("WebAudioClient skips AnalyserNode when analyserOptions is false", async () => {
+	const originalAudioWorkletNode = globalThis.AudioWorkletNode;
+	let connectedNode = null;
+	class FakeSocket extends EventTarget {
+		readyState = 1;
+		binaryType = "";
+		close() {
+			this.readyState = 3;
+		}
+	}
+	class FakeAudioWorkletNode {
+		port = { postMessage() {} };
+		connect(target) {
+			connectedNode = target;
+		}
+		disconnect() {}
+	}
+	globalThis.AudioWorkletNode = FakeAudioWorkletNode;
+	const fakeDestination = { id: "dest-only" };
+	const client = new WebAudioClient({
+		analyserOptions: false,
+		audioContextFactory: () => ({
+			sampleRate: 48_000,
+			state: "running",
+			destination: fakeDestination,
+			audioWorklet: { async addModule() {} },
+			createAnalyser: () => {
+				throw new Error("createAnalyser should not be called when analyserOptions is false");
+			},
+			async resume() {},
+			async close() {
+				this.state = "closed";
+			},
+		}),
+		webSocketFactory: () => {
+			const socket = new FakeSocket();
+			queueMicrotask(() => socket.dispatchEvent(new Event("open")));
+			return socket;
+		},
+	});
+
+	try {
+		await client.connect({ gatewayUrl: "ws://127.0.0.1:8080", sessionId: "no-analyser" });
+		assert.equal(client.analyser, null);
+		assert.equal(connectedNode, fakeDestination);
+	} finally {
+		await client.disconnect();
+		if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+		else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+	}
+});
+
+test("WebAudioClient validates analyserOptions parameter types", () => {
+	assert.throws(() => new WebAudioClient({ analyserOptions: "invalid" }), /analyserOptions must be an object or false/i);
+	assert.throws(() => new WebAudioClient({ analyserOptions: 123 }), /analyserOptions must be an object or false/i);
+});
+
+test("getFrequencyBands validates source and option types", () => {
+	assert.throws(() => getFrequencyBands(null), /source must be an AnalyserNode or a Uint8Array/i);
+	assert.throws(() => getFrequencyBands(new Uint8Array(10), { bands: 0 }), /bands must be a positive integer/i);
+	assert.throws(() => getFrequencyBands(new Uint8Array(10), { minHz: -5 }), /minHz must be a positive number/i);
+	assert.throws(
+		() => getFrequencyBands(new Uint8Array(10), { minHz: 1000, maxHz: 500 }),
+		/maxHz must be a finite number greater than minHz/i,
+	);
+});
+
+test("getFrequencyBands calculates smoothed normalized bands from Uint8Array", () => {
+	const binCount = 1024;
+	const dummyFreq = new Uint8Array(binCount);
+	// Fill with synthetic signal: sub-bass peak and mid peak
+	dummyFreq[2] = 200; // ~46 Hz
+	dummyFreq[3] = 220; // ~70 Hz
+	dummyFreq[50] = 180; // ~1170 Hz
+
+	const bands = getFrequencyBands(dummyFreq, {
+		bands: 16,
+		sampleRate: 48000,
+	});
+
+	assert.equal(bands.length, 16);
+	for (let i = 0; i < bands.length; i++) {
+		assert.ok(bands[i] >= 0 && bands[i] <= 1, `Band ${i} must be in [0, 1] range`);
+	}
+	// Bass bands should have substantial energy
+	assert.ok(bands[0] > 0 || bands[1] > 0);
+});
+
+test("getBassEnergy computes normalized sub-bass and kick drum energy", () => {
+	const dummyFreq = new Uint8Array(1024);
+	// Sub-bass bins: 45Hz to 120Hz at 48kHz (resolution 23.4Hz) corresponds to bins 2..5
+	dummyFreq[2] = 255;
+	dummyFreq[3] = 255;
+	dummyFreq[4] = 255;
+	dummyFreq[5] = 255;
+
+	const energy = getBassEnergy(dummyFreq, { sampleRate: 48000, minHz: 45, maxHz: 120 });
+	assert.ok(energy > 0.9, `Bass energy should be near 1.0, got ${energy}`);
+
+	const emptyEnergy = getBassEnergy(new Uint8Array(1024));
+	assert.equal(emptyEnergy, 0);
+});
+
+test("WebAudioClient getFrequencyBands and getBassEnergy delegates to active AnalyserNode", async () => {
+	const originalAudioWorkletNode = globalThis.AudioWorkletNode;
+	class FakeSocket extends EventTarget {
+		readyState = 1;
+		binaryType = "";
+		close() {
+			this.readyState = 3;
+		}
+	}
+	class FakeAudioWorkletNode {
+		port = { postMessage() {} };
+		connect() {}
+		disconnect() {}
+	}
+	class FakeAnalyserNode {
+		fftSize = 2048;
+		frequencyBinCount = 1024;
+		smoothingTimeConstant = 0.65;
+		minDecibels = -85;
+		maxDecibels = -10;
+		getByteFrequencyData(array) {
+			array.fill(128);
+		}
+		connect() {}
+		disconnect() {}
+	}
+	globalThis.AudioWorkletNode = FakeAudioWorkletNode;
+	const client = new WebAudioClient({
+		audioContextFactory: () => ({
+			sampleRate: 48_000,
+			state: "running",
+			destination: {},
+			audioWorklet: { async addModule() {} },
+			createAnalyser: () => new FakeAnalyserNode(),
+			async resume() {},
+			async close() {
+				this.state = "closed";
+			},
+		}),
+		webSocketFactory: () => {
+			const socket = new FakeSocket();
+			queueMicrotask(() => socket.dispatchEvent(new Event("open")));
+			return socket;
+		},
+	});
+
+	try {
+		assert.equal(client.getFrequencyBands(), null);
+		assert.equal(client.getBassEnergy(), 0);
+
+		await client.connect({ gatewayUrl: "ws://127.0.0.1:8080", sessionId: "helper-test" });
+
+		const bands = client.getFrequencyBands({ bands: 32 });
+		assert.ok(bands instanceof Float32Array);
+		assert.equal(bands.length, 32);
+
+		const bass = client.getBassEnergy();
+		assert.ok(bass > 0 && bass <= 1);
+	} finally {
+		await client.disconnect();
+		if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+		else globalThis.AudioWorkletNode = originalAudioWorkletNode;
 	}
 });
