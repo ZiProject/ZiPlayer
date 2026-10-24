@@ -1,5 +1,6 @@
 import type { AudioResource, StreamType } from "@discordjs/voice";
 import type { Bus, PlayerInput } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import type { BusRpcContext } from "../types";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlaybackSessionSnapshot, StreamInfo, Track } from "../types";
@@ -21,7 +22,9 @@ interface ResourceRefreshState {
 
 /** Shared resource-refresh controller with transient state isolated by playerId. */
 export class ResourceRefreshController {
-	private readonly states = new Map<string, ResourceRefreshState>();
+	private get states(): Map<string, ResourceRefreshState> {
+		return playerDataMap(this.bus, "controller.resourceRefresh.states");
+	}
 
 	constructor(
 		private readonly bus: Bus,
@@ -103,14 +106,19 @@ export class ResourceRefreshController {
 				import("../types").ActiveStream
 			>(playerId, CONTROLLER_RPC.streamReplace, { streamInfo: processed, session });
 			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
-			const resource = this.bus.requestRpcSync<
+			const resource = await this.bus.requestRpc<
 				{ stream: import("stream").Readable; track: Track; inputType?: StreamType },
 				AudioResource
-			>(playerId, PLAYER_RPC.resourceCreate, { stream: active.stream, track: session.track, inputType: active.inputType });
+			>(
+				playerId,
+				PLAYER_RPC.resourceCreate,
+				{ stream: active.stream, track: session.track, inputType: active.inputType },
+				{ signal },
+			);
 			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 			session.setResource(resource);
 			session.setPlaybackOffset(Math.max(0, position));
-			this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackPlay, { resource, session });
+			await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackPlay, { resource, session }, { signal });
 			session.markPlaying(Math.max(0, position));
 			this.bus.event(playerId, { type: BUS_EVENT.playbackStateChanged, session: session.snapshot() });
 			return session.snapshot();

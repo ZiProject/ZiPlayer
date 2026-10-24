@@ -1,6 +1,7 @@
 import { type Track, type StreamInfo, type StreamSlot, type PromotedPreload, normalizeStreamInfo } from "../types";
 import type { StreamManager } from "./StreamManager";
-import type { Bus } from "./Bus";
+import { Bus } from "./Bus";
+import { playerDataMap } from "./PlayerDataRegistry";
 import { PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
 
 /** Per-player resources handed to the shared `PreloadManager` via `attach(playerId, deps)`. */
@@ -39,16 +40,20 @@ const newStreamSlot = (): StreamSlot => ({
  * Owns every player's single "next track" preload slot.
  *
  * Shared, singleton — created once in `ensureSharedControllers()`. Each player's slot,
- * lock flags and StreamManager reference live in an internal `Map<playerId, ...>`,
+ * lock flags and StreamManager reference live in each player's `data` Map,
  * opened by `attach(playerId, deps)` and released by `detach(playerId)`.
  */
 export class PreloadManager {
 	private readonly bus?: Bus;
-	private readonly slots = new Map<string, PreloadPlayerSlot>();
+	private get slots(): Map<string, PreloadPlayerSlot> {
+		return playerDataMap(this.stateBus, "structure.preloadManager.slots");
+	}
+	private readonly stateBus: Bus;
 
 	/** `bus` is only needed by players that attach without `getNextTrack`/`getStream`/`removeTrackFromQueue` deps. */
 	public constructor(bus?: Bus) {
 		this.bus = bus;
+		this.stateBus = bus ?? new Bus();
 	}
 
 	public attach(playerId: string, deps: PreloadManagerDeps): void {
@@ -149,32 +154,32 @@ export class PreloadManager {
 		preloadSlot.loadPromise = null;
 		return { track, stream, streamInfo, streamId };
 	}
-	public async preloadNextTrack(id: string): Promise<void> {
+	public async preloadNextTrack(id: string): Promise<boolean> {
 		const slot = this.slots.get(id);
-		if (!slot) return;
+		if (!slot) return false;
 		const { debug, isDestroyed, isEnabled } = slot.deps;
 		const preloadSlot = slot.preloadSlot;
-		if (isDestroyed()) return;
+		if (isDestroyed()) return false;
 		if (!isEnabled()) {
 			debug(`[Preload] Disabled by options/runtime profile`);
-			return;
+			return false;
 		}
 		if (slot.preloadLock) {
 			debug(`[Preload] Already preloading, skipping`);
-			return;
+			return false;
 		}
 		const nextTrack = this.getNextTrack(slot);
 		if (!nextTrack) {
 			debug(`[Preload] No next track to preload`);
-			return;
+			return false;
 		}
 		if (this.slotHasValidPreload(slot, nextTrack)) {
 			debug(`[Preload] Already have valid preload for: ${nextTrack.title}`);
-			return;
+			return true;
 		}
 		if (preloadSlot.isLoading && this.trackMatches(preloadSlot.track, nextTrack)) {
 			if (preloadSlot.loadPromise) await preloadSlot.loadPromise;
-			return;
+			return this.slotHasValidPreload(slot, nextTrack);
 		}
 		if (preloadSlot.isValid && !this.trackMatches(preloadSlot.track, nextTrack)) await this.safeCancelPreload(id);
 		slot.preloadLock = true;
@@ -211,6 +216,7 @@ export class PreloadManager {
 			preloadSlot.loadPromise = null;
 		}
 		if (slot.preloadNext && !isDestroyed() && isEnabled()) await this.preloadNextTrack(slot.playerId);
+		return this.slotHasValidPreload(slot, nextTrack);
 	}
 	public async safeCancelPreload(id: string): Promise<void> {
 		const slot = this.slots.get(id);

@@ -18,3 +18,16 @@ test("SoundCloud validate and canHandle heuristics", () => {
 	// TTS pattern is ignored
 	assert.equal(sc.canHandle("tts: hello"), false);
 });
+
+test("SoundCloud search ignores queries it cannot handle", async () => {
+	const sc = Object.create(SoundCloudPlugin.prototype);
+	sc.ready = Promise.resolve();
+	sc.client = {
+		search: () => {
+			throw new Error("client.search should not be called for unhandled queries");
+		},
+	};
+
+	const result = await sc.search("tts:vi: Chỉ Bằng Cái Gật Đầu", "user123");
+	assert.deepEqual(result, { tracks: [] });
+});

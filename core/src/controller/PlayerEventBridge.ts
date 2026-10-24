@@ -1,5 +1,6 @@
 import type { Player } from "../structures/Player";
 import type { PlayerEventType, Bus, PlayerEvent } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { BUS_OUTPUT, CONTROLLER_RPC } from "../structures/BusContract";
 import { PlayerEventDebug } from "./PlayerEventDebug";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
@@ -66,7 +67,9 @@ interface PlayerEventBridgeSlot {
  * remain alive.
  */
 export class PlayerEventBridge {
-	private readonly slots = new Map<string, PlayerEventBridgeSlot>();
+	private get slots(): Map<string, PlayerEventBridgeSlot> {
+		return playerDataMap(this.bus, "controller.playerEventBridge.slots");
+	}
 
 	public constructor(private readonly bus: Bus) {
 		bus.registerRpc<{ track: any }, void>(CONTROLLER_RPC.playerEmitTtsStart, ({ track }, ctx) => {

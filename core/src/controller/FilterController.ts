@@ -3,10 +3,11 @@ import { PREDEFINED_FILTERS } from "../types";
 import type { Readable } from "stream";
 import { spawn, type ChildProcess } from "child_process";
 import ffmpegStaticPath from "ffmpeg-static";
+import { resolveFfmpegExecutable } from "../audio/ffmpegLimits";
 import type { Bus, PlayerAction } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { StreamType } from "@discordjs/voice";
 import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
-import fs from "node:fs";
 
 type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 import type { FilterControllerOptions } from "../types";
@@ -223,6 +224,9 @@ export class FilterEngine {
 		const sourceStream: Readable | string = source;
 		const wasRecreated = false;
 		if (generation !== this.ffmpegGeneration) throw new Error("FFmpeg generation outdated");
+		if (hasSeek && typeof sourceStream === "string" && streamInfo.stream && !streamInfo.stream.destroyed) {
+			streamInfo.stream.destroy();
+		}
 		const filterString = this.getFilterString();
 		const ffmpegSeekSeconds = hasSeek ? (position / 1000).toFixed(3) : null;
 		if (!hasSeek && !filterString) {
@@ -231,13 +235,7 @@ export class FilterEngine {
 			return result;
 		}
 
-		const candidates = [this.options.ffmpegPath, process.env.FFMPEG_PATH, ffmpegStaticPath, "ffmpeg"];
-		const executable =
-			candidates.find((path) => {
-				if (!path) return false;
-				if (path === "ffmpeg") return true;
-				return fs.existsSync(path);
-			}) || "ffmpeg";
+		const executable = resolveFfmpegExecutable(this.options.ffmpegPath, ffmpegStaticPath);
 
 		this.debug(`Using FFmpeg: ${executable}`);
 		this.debug(
@@ -256,9 +254,8 @@ export class FilterEngine {
 			if (ffmpegSeekSeconds !== null) args.push("-ss", ffmpegSeekSeconds);
 		}
 		if (filterString) args.push("-af", filterString);
-		const inputType = hasSeek ? StreamType.Raw : StreamType.OggOpus;
-		if (hasSeek) args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
-		else args.push("-c:a", "libopus", "-f", "opus", "-ar", "48000", "-ac", "2", "pipe:1");
+		const inputType = StreamType.OggOpus;
+		args.push("-c:a", "libopus", "-f", "opus", "-ar", "48000", "-ac", "2", "pipe:1");
 		const controller = new AbortController();
 		this.ffmpegAbortController = controller;
 		const proc = spawn(executable, args, { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
@@ -275,6 +272,7 @@ export class FilterEngine {
 			if (this.ffmpegAbortController === controller) this.ffmpegAbortController = null;
 		};
 		let processingFailed = false;
+		let outputClosedByConsumer = false;
 		const failProcessing = (error: Error) => {
 			if (processingFailed || generation !== this.ffmpegGeneration) return;
 			processingFailed = true;
@@ -302,7 +300,7 @@ export class FilterEngine {
 			cleanup();
 		});
 		proc.once("close", (code, signal) => {
-			if (hasSeek && !processingFailed && code !== 0)
+			if (hasSeek && !processingFailed && !outputClosedByConsumer && code !== 0)
 				failProcessing(new Error(`FFmpeg exited before seek completed (code=${code ?? "null"}, signal=${signal ?? "none"})`));
 			cleanup();
 		});
@@ -317,10 +315,12 @@ export class FilterEngine {
 			});
 		}
 		output.once("close", () => {
-			if (this.ffmpegProcess === proc)
+			if (this.ffmpegProcess === proc) {
+				outputClosedByConsumer = proc.exitCode === null && proc.signalCode === null;
 				try {
 					proc.kill("SIGKILL");
 				} catch {}
+			}
 			cleanup();
 		});
 		output.once("error", (error: Error) => {
@@ -354,27 +354,39 @@ export class FilterEngine {
 	}
 }
 
-/** Shared, singleton controller: owns the playback filter pipeline for every player
- *  (registered on the bus), keyed by playerId. */
-/** FFmpeg filters that read local files / URLs or open sockets. Never accepted from a bare string. */
-const UNSAFE_FILTER_NAMES =
-	"a?movie|a?sendcmd|a?zmq|ladspa|lv2|sofalizer|arnndn|dnn_processing|drawtext|subtitles|ass|lavfi|frei0r|ocr|geq|hls_playlist";
-const UNSAFE_FILTER_PATTERN = new RegExp(`(?<![A-Za-z0-9_])(?:${UNSAFE_FILTER_NAMES})(?![A-Za-z0-9_])`, "i");
-const MAX_CUSTOM_FILTER_LENGTH = 1000;
-
-/**
- * Validate a custom filter supplied as a raw string (e.g. from user input). Predefined filters and
- * explicit AudioFilter objects are developer-controlled and are not checked here.
- */
-export function isSafeCustomFilter(filter: string): boolean {
-	if (!filter || filter.length > MAX_CUSTOM_FILTER_LENGTH) return false;
-	// eslint-disable-next-line no-control-regex
-	if (/[\u0000-\u001f]/.test(filter)) return false;
-	return !UNSAFE_FILTER_PATTERN.test(filter);
+const ALLOWED = new Set([
+	"bass",
+	"treble",
+	"equalizer",
+	"volume",
+	"aecho",
+	"atempo",
+	"asetrate",
+	"tremolo",
+	"vibrato",
+	"loudnorm",
+	"highpass",
+	"lowpass",
+	"aresample",
+	"stereotools",
+]);
+export function isSafeCustomFilter(f: string) {
+	if (!f || f.length > 1000 || /[\\'"\u0000-\u001f]/.test(f)) return false;
+	return f.split(/[,;]/).every((p) =>
+		ALLOWED.has(
+			p
+				.replace(/^\s*\[[^\]]*\]/, "")
+				.split("=")[0]
+				.trim()
+				.toLowerCase(),
+		),
+	);
 }
 
 export class FilterController {
-	private readonly engines = new Map<string, FilterEngine>();
+	private get engines(): Map<string, FilterEngine> {
+		return playerDataMap(this.bus, "controller.filter.engines");
+	}
 
 	constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => {

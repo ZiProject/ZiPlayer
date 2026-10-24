@@ -9,6 +9,8 @@ import type {
 	StreamInfo,
 	ExtensionSearchRequest,
 	PlayerDebugLevel,
+	PlayerEvent,
+	PlayerEventType,
 } from "../types";
 import type { Player } from "../structures/Player";
 import { EventEmitter } from "events";
@@ -19,6 +21,45 @@ export abstract class BaseExtension extends EventEmitter implements SourceExtens
 	priority?: number; // Higher = run first
 	abstract player: Player | null;
 	abstract active(alas: any): boolean | Promise<boolean>;
+	private readonly busUnsubscribers = new Map<Player, Set<() => void>>();
+
+	/**
+	 * Subscribe to this extension's player's scoped Bus events. Subscriptions are
+	 * automatically released when the extension is detached from the player.
+	 */
+	protected subscribeBus<K extends PlayerEventType>(
+		type: K,
+		listener: (event: Extract<PlayerEvent, { type: K }>) => void,
+		player: Player | null = this.player,
+	): () => void {
+		if (!player || player.destroyed) {
+			throw new Error(`Cannot subscribe ${this.name} to Bus events without an attached player`);
+		}
+
+		const unsubscribe = player.bus.subscribe(player.playerId, type, listener);
+		let playerUnsubscribers = this.busUnsubscribers.get(player);
+		if (!playerUnsubscribers) {
+			playerUnsubscribers = new Set();
+			this.busUnsubscribers.set(player, playerUnsubscribers);
+		}
+		playerUnsubscribers.add(unsubscribe);
+		return () => {
+			unsubscribe();
+			playerUnsubscribers?.delete(unsubscribe);
+			if (playerUnsubscribers?.size === 0) this.busUnsubscribers.delete(player);
+		};
+	}
+
+	/** @internal Called by ExtensionManager when the extension is detached. */
+	releaseBusSubscriptions(player?: Player): void {
+		const players = player ? [player] : [...this.busUnsubscribers.keys()];
+		for (const attachedPlayer of players) {
+			const unsubscribers = this.busUnsubscribers.get(attachedPlayer);
+			if (!unsubscribers) continue;
+			for (const unsubscribe of [...unsubscribers]) unsubscribe();
+			this.busUnsubscribers.delete(attachedPlayer);
+		}
+	}
 
 	// Player event forwarders
 	protected forwardToPlayer(event: string, ...args: any[]): void {

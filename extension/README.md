@@ -18,6 +18,35 @@ npm install ziplayer @ziplayer/plugin @discordjs/voice discord.js
 
 ## Current Features
 
+### Player-scoped extensions and Bus events
+
+An extension is attached to a specific player and receives that `Player` in its `active()` context. `Player.attachExtension()`
+also runs activation and resolves after the extension is ready; `Player.detachExtension()` runs the extension cleanup hook. For
+core Bus events, extensions can use the protected `subscribeBus()` helper on `BaseExtension`. It scopes the listener to the
+attached player's ID and automatically removes the listener when detached, so event handlers can safely inspect or update event
+payloads and use the attached player without receiving another player's events.
+
+```ts
+import { BaseExtension, PlayerManager } from "ziplayer";
+
+class QueueObserver extends BaseExtension {
+	name = "QueueObserver";
+	version = "1.0.0";
+	player = null;
+
+	active({ player }) {
+		this.subscribeBus("queueAdd", ({ track }) => {
+			track.metadata = { ...track.metadata, observedByExtension: true };
+			console.log(`[${player.id}] queued ${track.title}`);
+		});
+		return true;
+	}
+}
+
+const player = await manager.create(guildId, { extensions: [] });
+await player.attachExtension(new QueueObserver());
+```
+
 ### Lavalink Process Extension
 
 Use `lavalinkExt` when you need ZiPlayer to manage an external Lavalink JVM node. The extension starts, stops, and optionally

@@ -1,6 +1,7 @@
 import { PlayerManager, getGlobalManager } from "./structures/PlayerManager";
 
 export { Player, assertVoiceChannel } from "./structures/Player";
+export type { PlayerWebAudioRegistration } from "./structures/Player";
 export { PlayerManager } from "./structures/PlayerManager";
 export { Bus } from "./structures/Bus";
 export {
@@ -27,6 +28,37 @@ export { PlayerAction } from "./structures/PlayerAction";
 export { PlaybackOrchestrator, createPlaybackOrchestrator } from "./structures/PlaybackOrchestrator";
 export { createSharedControllers } from "./structures/PlayerManager";
 export { PlaybackSession } from "./structures/PlaybackSession";
+export {
+	WebAudioConnection,
+	encodeWebAudioOpusFrame,
+	decodeWebAudioOpusFrame,
+	WEB_AUDIO_MAGIC_0,
+	WEB_AUDIO_MAGIC_1,
+	WEB_AUDIO_PROTOCOL_VERSION_V1,
+	WEB_AUDIO_FLAG_CODEC_OPUS,
+	WEB_AUDIO_OPUS_SAMPLE_RATE_HZ,
+	WEB_AUDIO_OPUS_CHANNELS,
+	WEB_AUDIO_OPUS_CODEC_ID,
+	WEB_AUDIO_MAX_MESSAGE_BYTES,
+	DEFAULT_MAX_BUFFERED_BYTES,
+	DEFAULT_MAX_QUEUED_PACKETS,
+} from "./output/WebAudioConnection";
+export type {
+	WebAudioConnectionOptions,
+	WebAudioConnectionStats,
+	WebAudioConnectionState,
+	WebSocketLike,
+} from "./output/WebAudioConnection";
+export {
+	createOpusAudioResource,
+	demuxOggOpusToPackets,
+	demuxWebmOpusToPackets,
+	getOpusPacketDurationMs,
+	validateOpusPacketDuration,
+	validateOpusPacketFraming,
+} from "./audio/OpusSourceAdapter";
+export type { CreateOpusAudioResourceOptions } from "./audio/OpusSourceAdapter";
+export type { AudioFrameFormat } from "./audio/AudioFrameFormat";
 export { TrackLoader } from "./structures/TrackLoader";
 export { PlaybackController } from "./controller/PlaybackController";
 export { ConnectionController } from "./controller/ConnectionController";
@@ -45,6 +77,28 @@ export { PlayerEventDebug, DEBUG_PRIORITY } from "./controller/PlayerEventDebug"
 export { GlobalControllerRegistry, globalControllerRegistry } from "./controller/GlobalControllerRegistry";
 export { FilterEngine, isSafeCustomFilter } from "./controller/FilterController";
 export { StreamManager } from "./structures/StreamManager";
+export {
+	createAudioProcessingEngine,
+	defaultAudioProcessingEngine,
+	FFmpegAudioProcessingEngine,
+} from "./audio/AudioProcessingEngine";
+export type {
+	AudioProcessingEngine,
+	AudioProcessingPipeline,
+	AudioProcessingOptions,
+	AudioProcessingContext,
+	AudioProcessingFormat,
+} from "./audio/AudioProcessingEngine";
+export { resolveAudioProcessingOptions, getFfmpegProcessStats, configureFfmpegConcurrency } from "./audio/AudioProcessingEngine";
+export { resolveFfmpegExecutable } from "./audio/ffmpegLimits";
+export {
+	isBlockedIpAddress,
+	parseMediaUrl,
+	resolvePublicAddresses,
+	assertSafeMediaUrl,
+	openSafeHttpStream,
+	UnsafeMediaUrlError,
+} from "./audio/urlSafety";
 
 export type {
 	PlayerAction as PlayerActionMessage,

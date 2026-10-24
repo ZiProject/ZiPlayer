@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { PlayerManager, PlaybackMode } = require("../core/dist");
+const { Bus, Player, PlayerManager, PlaybackMode, PLAYER_ACTION, PLAYER_QUERY } = require("../core/dist");
 
 test("player.filter exposes filter engine and queryState", async (t) => {
 	const mgr = new PlayerManager();
@@ -67,6 +67,40 @@ test("player pause/resume state verification returns boolean", async (t) => {
 	assert.equal(await player.pause(), false);
 	// Not paused, cannot resume
 	assert.equal(await player.resume(), false);
+});
+
+test("player pause and resume actions are dispatched when the facade state is stale", async (t) => {
+	const bus = new Bus();
+	let reportedState = "buffering";
+	let outputState = "playing";
+	const track = { id: "test-track", title: "Test track" };
+	const actions = [];
+	bus.registerQuery(PLAYER_QUERY.playbackMode, () => PlaybackMode.NATIVE);
+	bus.registerQuery(PLAYER_QUERY.currentTrack, () => track);
+	bus.registerQuery(PLAYER_QUERY.isPlaying, () => reportedState === "playing");
+	bus.registerQuery(PLAYER_QUERY.isPaused, () => reportedState === "paused");
+	bus.onAction((action) => {
+		actions.push(action.type);
+		if (action.type === PLAYER_ACTION.pause && outputState === "playing") {
+			outputState = "paused";
+			reportedState = "paused";
+		} else if (action.type === PLAYER_ACTION.resume && outputState === "paused") {
+			outputState = "playing";
+			reportedState = "playing";
+		}
+	});
+	const player = new Player("guild-stale-pause-resume", bus);
+	t.after(() => {
+		player.destroy();
+		bus.dispose();
+	});
+
+	assert.equal(await player.pause(), true);
+	assert.deepEqual(actions, [PLAYER_ACTION.pause]);
+
+	reportedState = "buffering";
+	assert.equal(await player.resume(), true);
+	assert.deepEqual(actions, [PLAYER_ACTION.pause, PLAYER_ACTION.resume]);
 });
 
 test("player saveSession, getSerializableState, and restoreState", async (t) => {

@@ -8,6 +8,7 @@ import {
 	normalizeStreamInfo,
 } from "../types";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { createPlayerRequestId } from "../structures/Bus";
 import type { TrackLoader } from "../structures/TrackLoader";
 import type { PreloadManager } from "../structures/PreloadManager";
@@ -32,7 +33,7 @@ export interface PreloadState {
  * Owns preload lifecycle for every player.
  *
  * Shared, singleton — created once in PlayerManager constructor. Attachment is tracked
- * in `states = new Map<string, PreloadState>()` (opened by `attach(playerId)`, released by `detach(playerId)`); the
+ * in each player's `data` Map (registered by `attach(playerId)`, released by `detach(playerId)`); the
  * actual preload slot lives in the (also shared) `PreloadManager` this controller was
  * constructed with. Every `preload.*` RPC/query below, plus the
  * `BUS_REQUEST.preloadRequest` ("[Player]->[Preload]:request" in `traceBusSignal` terms) input,
@@ -43,7 +44,9 @@ export class PreloadController {
 	private readonly bus?: Bus;
 	private readonly loader: TrackLoader;
 	private readonly manager: PreloadManager;
-	private readonly states = new Map<string, PreloadState>();
+	private get states(): Map<string, PreloadState> {
+		return playerDataMap(this.bus!, "controller.preload.states");
+	}
 	private readonly debug?: (message: string) => void;
 
 	public constructor(bus: Bus, options: PreloadControllerOptions) {
@@ -120,18 +123,17 @@ export class PreloadController {
 	// ---------------------------------------------------------------------
 
 	public promotePreload(playerId: string, track: Track): AudioResource | null {
-		if (!this.bus) return null;
-		const session = this.bus.querySync(playerId, PLAYER_QUERY.playbackSessionInternal);
+		const bus = this.bus;
+		if (!bus) return null;
+		const session = bus.querySync(playerId, PLAYER_QUERY.playbackSessionInternal);
 		if (!session) return null;
-		const promoted = this.bus.requestRpcSync<{ track: Track }, PromotedPreload | null>(playerId, PLAYER_RPC.preloadPromote, {
-			track,
-		});
+		const promoted = bus.requestRpcSync<{ track: Track }, PromotedPreload | null>(playerId, PLAYER_RPC.preloadPromote, { track });
 		if (!promoted) return null;
 		const streamInfo: StreamInfo =
 			promoted.streamInfo ?
 				normalizeStreamInfo(promoted.track, promoted.streamInfo)
 			:	normalizeStreamInfo(promoted.track, { stream: promoted.stream as any, type: "arbitrary" });
-		const resource = this.bus.requestRpcSync<
+		const resource = bus.requestRpcSync<
 			{ stream: import("stream").Readable; track: Track; inputType?: import("@discordjs/voice").StreamType },
 			AudioResource
 		>(playerId, PLAYER_RPC.resourceCreate, {
@@ -140,9 +142,18 @@ export class PreloadController {
 			inputType: streamInfo.inputType,
 		});
 		session.setResource(resource);
-		this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackPlay, { resource, session });
-		session.markPlaying(0);
-		this.bus.event(playerId, { type: BUS_EVENT.playbackStateChanged, session: session.snapshot() });
+		void bus
+			.requestRpc(playerId, CONTROLLER_RPC.playbackPlay, { resource, session }, { signal: session.signal })
+			.then(() => {
+				if (!session.isActive()) return;
+				session.markPlaying(0);
+				bus.event(playerId, { type: BUS_EVENT.playbackStateChanged, session: session.snapshot() });
+			})
+			.catch((error) => {
+				if (!session.isActive()) return;
+				const normalized = error instanceof Error ? error : new Error(String(error));
+				bus.event(playerId, { type: BUS_EVENT.trackError, session: session.snapshot(), error: normalized });
+			});
 		return resource;
 	}
 
@@ -187,9 +198,13 @@ export class PreloadController {
 		if (this.bus)
 			this.bus.emitOutput({ type: BUS_OUTPUT.preloadLoading, requestId: event.requestId, playerId, track: event.track });
 		try {
-			await this.loader.preloadNext(playerId);
-			const valid = this.loader.hasPreload(playerId, event.track);
-			if (!valid) throw new Error(`Preload did not produce the requested track: ${event.track.title}`);
+			const preloaded = await this.loader.preloadNext(playerId);
+			if (!preloaded || !this.loader.hasPreload(playerId, event.track)) {
+				this.debug?.(`[PreloadController] No preload available for ${event.track.title}; playback will resolve it on demand`);
+				if (this.bus)
+					this.bus.emitOutput({ type: BUS_OUTPUT.preloadReady, requestId: event.requestId, playerId, track: event.track });
+				return;
+			}
 			this.debug?.(`[PreloadController] ${traceBusSignal(BUS_OUTPUT.preloadReady)} guild=${playerId} track=${event.track.title}`);
 			if (this.bus)
 				this.bus.emitOutput({ type: BUS_OUTPUT.preloadReady, requestId: event.requestId, playerId, track: event.track });

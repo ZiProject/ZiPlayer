@@ -14,6 +14,7 @@ import type {
 } from "../types";
 
 import { BaseExtension } from "./BaseExtension";
+import { withTimeout } from "../utils/timeout";
 
 export { BaseExtension } from "./BaseExtension";
 
@@ -124,9 +125,7 @@ export class ExtensionManager {
 		}
 		this.disabledExtensions.delete(extension.name);
 
-		if (!extension.player) {
-			extension.player = this.player;
-		}
+		extension.player = this.player;
 
 		// Set default priority if not set
 		extension.priority ??= 0;
@@ -148,12 +147,39 @@ export class ExtensionManager {
 		this.debug(`Registered extension: ${extension.name} (priority: ${extension.priority})`);
 	}
 
+	async attach(extension: BaseExtension): Promise<boolean> {
+		const existing = this.extensions.get(extension.name);
+		if (existing) return existing === extension;
+
+		this.register(extension);
+		if (this.extensions.get(extension.name) !== extension) return false;
+
+		try {
+			const activated = await withTimeout(
+				Promise.resolve(extension.active({ manager: this.manager, player: this.player })),
+				this.player.options.extractorTimeout ?? 15000,
+				`Extension ${extension.name} activation timed out`,
+			);
+			if (this.extensions.get(extension.name) !== extension) return false;
+			if (activated === false) {
+				this.unregister(extension);
+				return false;
+			}
+			return true;
+		} catch (error) {
+			this.debug(`Extension activation error for ${extension.name}:`, error);
+			this.unregister(extension);
+			return false;
+		}
+	}
+
 	unregister(extension: BaseExtension): boolean {
 		const name = extension.name;
 		const result = this.extensions.delete(name);
 		if (result) {
 			this.extensionMetadata.delete(name);
 			this.invokeExtensionLifecycle(extension, "onDestroy");
+			extension.releaseBusSubscriptions?.(this.player);
 			if (!this.player || extension.player === this.player) extension.player = null;
 			this.debug(`Unregistered extension: ${name}`);
 		}

@@ -1,4 +1,5 @@
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { CONTROLLER_RPC } from "../structures/BusContract";
 
 export interface GlobalControllerEntry<T = unknown> {
@@ -16,6 +17,12 @@ export interface GlobalControllerRegistration<T = unknown> {
 	ping(): Promise<boolean>;
 }
 
+interface GlobalControllerSlot<T> {
+	entry: GlobalControllerEntry<T>;
+	cleanup: () => void | Promise<void>;
+	timer: ReturnType<typeof setInterval>;
+}
+
 /**
  * Process-wide controller registry.
  *
@@ -25,9 +32,9 @@ export interface GlobalControllerRegistration<T = unknown> {
  */
 export class GlobalControllerRegistry<T = unknown> {
 	private static readonly GLOBAL_KEY = Symbol.for("ziplayer.GlobalControllerRegistry");
-	private readonly entries = new Map<string, GlobalControllerEntry<T>>();
-	private readonly cleanups = new Map<string, () => void | Promise<void>>();
-	private readonly timers = new Map<string, ReturnType<typeof setInterval>>();
+	private static nextNamespace = 0;
+	private readonly buses = new Set<Bus>();
+	private readonly namespace = `controller.globalRegistry.${++GlobalControllerRegistry.nextNamespace}`;
 	private readonly heartbeatMs: number;
 	private readonly pingTimeoutMs: number;
 	private readonly staleAfterMs: number;
@@ -63,9 +70,16 @@ export class GlobalControllerRegistry<T = unknown> {
 			registeredAt: now,
 			lastPingAt: now,
 		};
-		this.entries.set(playerId, entry);
-		this.cleanups.set(playerId, dispose);
-		this.startHeartbeat(entry);
+		this.buses.add(bus);
+		const slot: GlobalControllerSlot<T> = {
+			entry,
+			cleanup: dispose,
+			timer: setInterval(() => {
+				void this.ping(playerId);
+			}, this.heartbeatMs),
+		};
+		slot.timer.unref?.();
+		this.slots(bus).set(playerId, slot);
 
 		let active = true;
 		return {
@@ -80,18 +94,25 @@ export class GlobalControllerRegistry<T = unknown> {
 	}
 
 	public get(playerId: string): GlobalControllerEntry<T> | undefined {
-		return this.entries.get(playerId);
+		return this.findSlot(playerId)?.entry;
 	}
 
 	public has(playerId: string): boolean {
-		return this.entries.has(playerId);
+		return this.findSlot(playerId) !== undefined;
 	}
 
 	public async ping(playerId: string): Promise<boolean> {
-		const entry = this.entries.get(playerId);
+		const slot = this.findSlot(playerId);
+		const entry = slot?.entry;
 		if (!entry) return false;
 		try {
-			await entry.bus.requestRpc(playerId, CONTROLLER_RPC.runtimePing, { playerId }, { timeoutMs: this.pingTimeoutMs });
+			const alive = await entry.bus.requestRpc<{ playerId: string }, boolean>(
+				playerId,
+				CONTROLLER_RPC.runtimePing,
+				{ playerId },
+				{ timeoutMs: this.pingTimeoutMs },
+			);
+			if (alive !== true) throw new Error(`runtime.ping did not confirm "${playerId}" is alive.`);
 			entry.lastPingAt = Date.now();
 			entry.unreachableSince = undefined;
 			return true;
@@ -106,42 +127,49 @@ export class GlobalControllerRegistry<T = unknown> {
 	}
 
 	public async dispose(playerId: string): Promise<void> {
-		const cleanup = this.cleanups.get(playerId);
-		this.stopHeartbeat(playerId);
-		this.entries.delete(playerId);
-		this.cleanups.delete(playerId);
-		if (cleanup) await cleanup();
+		const found = this.findSlot(playerId);
+		if (!found) return;
+		clearInterval(found.timer);
+		const slots = this.slots(found.entry.bus);
+		slots.delete(playerId);
+		if (slots.size === 0) this.buses.delete(found.entry.bus);
+		await found.cleanup();
 	}
 
 	public unregister(playerId: string): void {
-		this.stopHeartbeat(playerId);
-		this.entries.delete(playerId);
-		this.cleanups.delete(playerId);
+		for (const bus of [...this.buses]) {
+			const slots = this.slots(bus);
+			const slot = slots.get(playerId);
+			if (!slot) continue;
+			clearInterval(slot.timer);
+			slots.delete(playerId);
+			if (slots.size === 0) this.buses.delete(bus);
+		}
 	}
 
 	public clear(): void {
-		for (const timer of this.timers.values()) clearInterval(timer);
-		this.timers.clear();
-		this.entries.clear();
-		this.cleanups.clear();
+		for (const bus of [...this.buses]) {
+			const slots = this.slots(bus);
+			for (const [, slot] of slots) clearInterval(slot.timer);
+			slots.clear();
+		}
+		this.buses.clear();
 	}
 
-	private startHeartbeat(entry: GlobalControllerEntry<T>): void {
-		const timer = setInterval(() => {
-			void this.ping(entry.playerId);
-		}, this.heartbeatMs);
-		timer.unref?.();
-		this.timers.set(entry.playerId, timer);
+	private slots(bus: Bus): Map<string, GlobalControllerSlot<T>> {
+		return playerDataMap(bus, this.namespace);
 	}
 
-	private stopHeartbeat(playerId: string): void {
-		const timer = this.timers.get(playerId);
-		if (timer) clearInterval(timer);
-		this.timers.delete(playerId);
+	private findSlot(playerId: string): GlobalControllerSlot<T> | undefined {
+		for (const bus of this.buses) {
+			const slot = this.slots(bus).get(playerId);
+			if (slot) return slot;
+		}
+		return undefined;
 	}
 
 	private async disposeIfStale(playerId: string, expected: GlobalControllerEntry<T>): Promise<void> {
-		if (this.entries.get(playerId) !== expected) return;
+		if (this.findSlot(playerId)?.entry !== expected) return;
 		await this.dispose(playerId);
 	}
 }

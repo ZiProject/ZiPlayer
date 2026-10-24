@@ -1,6 +1,7 @@
 import { PlaybackMode, type Track, type ForwardHealthStatus } from "../types";
 import { AudioPlayerStatus } from "@discordjs/voice";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { PLAYER_QUERY, PLAYER_RPC, BUS_EVENT, PLAYER_ACTION, CONTROLLER_RPC } from "../structures/BusContract";
 
 interface ForwardState {
@@ -9,13 +10,17 @@ interface ForwardState {
 	mode: PlaybackMode;
 }
 
-/** Shared, singleton controller: owns leader/follower voice-subscription state for
- *  forward playback across every player, keyed by playerId. Since every player shares
+/** Shared singleton controller for leader/follower voice subscriptions; state lives
+ *  in each player's `data` Map. Since every player shares
  *  the same Bus, cross-player coordination is just a bus call addressed to
  *  the other player's id — no separate per-player bus lookup is needed. */
 export class ForwardController {
-	private readonly states = new Map<string, ForwardState>();
-	private readonly leaderSubscriptions = new Map<string, Array<() => void>>();
+	private get states(): Map<string, ForwardState> {
+		return playerDataMap(this.bus, "controller.forward.states");
+	}
+	private get leaderSubscriptions(): Map<string, Array<() => void>> {
+		return playerDataMap(this.bus, "controller.forward.leaderSubscriptions");
+	}
 	private disposed = false;
 	private readonly debug: (...args: any[]) => void;
 
@@ -102,7 +107,7 @@ export class ForwardController {
 		const issues: string[] = [];
 		if (role === "leader") {
 			for (const followerId of state.followers) {
-				if (!this.bus.querySync(followerId, PLAYER_QUERY.connection)) issues.push(followerId);
+				if (!this.bus.querySync(followerId, PLAYER_QUERY.voiceConnection)) issues.push(followerId);
 			}
 		} else if (role === "follower" && !state.leaderId) {
 			issues.push("missing leader");
@@ -149,7 +154,9 @@ export class ForwardController {
 	async subscribeTo(playerId: string, leader: any, options?: { forwardMode?: boolean }): Promise<boolean> {
 		const state = this.state(playerId);
 		if (this.disposed || !leader) return false;
-		const leaderId = typeof leader === "string" ? leader : (leader.guildId ?? leader.id ?? leader.playerId);
+		const rawLeaderId =
+			typeof leader === "string" ? leader : (leader.routingPlayerId ?? leader.guildId ?? leader.id ?? leader.playerId);
+		const leaderId = typeof rawLeaderId === "string" ? this.bus.resolvePlayerId(rawLeaderId) : rawLeaderId;
 		if (!leaderId || leaderId === playerId || !this.states.has(leaderId)) return false;
 
 		const leaderMode = this.bus.querySync(leaderId, PLAYER_QUERY.playbackMode);
@@ -157,8 +164,8 @@ export class ForwardController {
 			this.bus.querySync(leaderId, PLAYER_QUERY.forwardLeaderId) ?? this.bus.querySync(leaderId, PLAYER_QUERY.forwardLeader);
 		if (leaderMode === PlaybackMode.FORWARD || leaderLeader) return false;
 
-		const myConn = this.bus.querySync(playerId, PLAYER_QUERY.connection);
-		const leaderConn = this.bus.querySync(leaderId, PLAYER_QUERY.connection);
+		const myConn = this.bus.querySync(playerId, PLAYER_QUERY.voiceConnection);
+		const leaderConn = this.bus.querySync(leaderId, PLAYER_QUERY.voiceConnection);
 		if (!myConn || !leaderConn) return false;
 
 		const leaderAudioPlayer = this.bus.querySync(leaderId, PLAYER_QUERY.audioPlayer);

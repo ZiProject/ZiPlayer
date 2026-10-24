@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { PlayerManager } = require("../core/dist");
+const { PlayerManager, BaseExtension } = require("../core/dist");
 const { BasePlugin } = require("../core/dist/plugins/BasePlugin");
 
 class DummyPlugin extends BasePlugin {
@@ -133,6 +133,141 @@ test("PlayerManager extension activation by name and ctor", async (t) => {
 	t.after(() => mgr2.destroy());
 	await mgr2.create("g3", { extensions: ["dext"] });
 	assert.equal(activated, 1);
+});
+
+test("Player.attachExtension activates with its player and scoped Bus events", async (t) => {
+	class BusExtension extends BaseExtension {
+		constructor() {
+			super();
+			this.name = "bus-extension";
+			this.version = "1.0.0";
+			this.player = null;
+			this.events = [];
+			this.registeredPlayer = null;
+			this.destroyedPlayer = null;
+			this.activationCount = 0;
+		}
+
+		active(context) {
+			this.activationCount++;
+			assert.equal(context.player, this.player);
+			this.subscribeBus("queueAdd", (event) => {
+				this.events.push(event);
+				event.track.metadata = { ...event.track.metadata, handledByExtension: true };
+			});
+			return true;
+		}
+
+		onRegister(context) {
+			this.registeredPlayer = context.player;
+		}
+
+		onDestroy(context) {
+			this.destroyedPlayer = context.player;
+		}
+	}
+
+	const mgr = new PlayerManager({ autoCleanup: false });
+	t.after(() => mgr.destroy());
+	const player = await mgr.create("bus-extension-guild", { extensions: [] });
+	const otherPlayer = await mgr.create("bus-extension-other-guild", { extensions: [] });
+	const extension = new BusExtension();
+
+	await player.attachExtension(extension);
+	await player.attachExtension(extension);
+	assert.equal(extension.registeredPlayer, player);
+	assert.equal(extension.player, player);
+	assert.equal(extension.activationCount, 1, "attaching an existing extension should not reactivate it");
+
+	const track = makeTrack("bus-event-track");
+	player.queue.add(track);
+	assert.equal(extension.events.length, 1);
+	assert.equal(extension.events[0].track, track);
+	assert.equal(track.metadata.handledByExtension, true);
+
+	otherPlayer.queue.add(makeTrack("other-player-track"));
+	assert.equal(extension.events.length, 1, "the extension should only receive events for its attached player");
+
+	assert.equal(player.detachExtension(extension), true);
+	assert.equal(extension.destroyedPlayer, player);
+	player.queue.add(makeTrack("after-detach"));
+	assert.equal(extension.events.length, 1, "detaching should release the extension's scoped Bus subscription");
+});
+
+test("detaching a shared extension from one player preserves its other Bus subscriptions", async (t) => {
+	class SharedExtension extends BaseExtension {
+		constructor() {
+			super();
+			this.name = "shared-extension";
+			this.version = "1.0.0";
+			this.player = null;
+			this.receivedPlayerIds = [];
+			this.removedPlayerIds = [];
+		}
+
+		active(context) {
+			this.subscribeBus("queueAdd", () => this.receivedPlayerIds.push(context.player.playerId), context.player);
+			this.subscribeBus("queueRemove", () => this.removedPlayerIds.push(context.player.playerId), context.player);
+			return true;
+		}
+	}
+
+	const mgr = new PlayerManager({ autoCleanup: false });
+	t.after(() => mgr.destroy());
+	const first = await mgr.create("shared-extension-first", { extensions: [] });
+	const second = await mgr.create("shared-extension-second", { extensions: [] });
+	const extension = new SharedExtension();
+
+	await first.attachExtension(extension);
+	await second.attachExtension(extension);
+	first.queue.add(makeTrack("first-track"));
+	second.queue.add(makeTrack("second-track"));
+	assert.deepEqual(extension.receivedPlayerIds, [first.playerId, second.playerId]);
+
+	first.detachExtension(extension);
+	first.queue.add(makeTrack("first-after-detach"));
+	second.queue.add(makeTrack("second-after-first-detach"));
+	assert.deepEqual(extension.receivedPlayerIds, [first.playerId, second.playerId, second.playerId]);
+	first.queue.remove(0);
+	second.queue.remove(0);
+	assert.deepEqual(extension.removedPlayerIds, [second.playerId]);
+});
+
+test("PlayerManager activates multiple extensions concurrently", async (t) => {
+	let activeCount = 0;
+	let maxActiveCount = 0;
+	class ConcurrentExtension extends BaseExtension {
+		constructor(name) {
+			super();
+			this.name = name;
+			this.version = "1.0.0";
+			this.player = null;
+		}
+
+		async active() {
+			activeCount++;
+			maxActiveCount = Math.max(maxActiveCount, activeCount);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			activeCount--;
+			return true;
+		}
+	}
+
+	const mgr = new PlayerManager({
+		autoCleanup: false,
+		extensions: [
+			new ConcurrentExtension("concurrent-1"),
+			new ConcurrentExtension("concurrent-2"),
+			new ConcurrentExtension("concurrent-3"),
+		],
+	});
+	t.after(() => mgr.destroy());
+
+	const player = await mgr.create("concurrent-extension-guild", {
+		extensions: ["concurrent-1", "concurrent-2", "concurrent-3"],
+	});
+	assert.deepEqual(player.extensionNames.sort(), ["concurrent-1", "concurrent-2", "concurrent-3"]);
+	assert.equal(maxActiveCount, 3, "all extension activation hooks should overlap");
 });
 
 test("PlayerManager clears extension player references on destroy", async (t) => {

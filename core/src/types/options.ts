@@ -12,7 +12,7 @@ export interface PlaybackStartControllerOptions {
 	bus: Bus;
 	sessionController: PlaybackSessionController;
 	transitionEnabled: () => boolean;
-	stopPlayback: (signal: AbortSignal, cancelPreload?: boolean) => void;
+	stopPlayback: (signal: AbortSignal, cancelPreload?: boolean) => void | Promise<void>;
 	prepareTrack: (session: PlaybackSession, context: import("./bus").PlayerMessageContext) => Promise<void>;
 	adapters?: PlaybackOrchestratorAdapters;
 }
@@ -26,14 +26,14 @@ export interface PlaybackPreparationControllerOptions {
 export interface PlaybackSkipControllerOptions {
 	bus: Bus;
 	nextThroughBus: (ignoreLoop: boolean, context: import("./bus").PlayerMessageContext) => Promise<Track | null>;
-	stopPlayback: (signal: AbortSignal) => void;
+	stopPlayback: (signal: AbortSignal) => void | Promise<void>;
 	publishState: () => void;
 	setWaitingForQueue: (waiting: boolean) => void;
 }
 export interface PlaybackTrackEndControllerOptions {
 	bus: Bus;
 	nextThroughBus: (ignoreLoop: boolean, context: import("./bus").PlayerMessageContext) => Promise<Track | null>;
-	stopPlayback: (signal: AbortSignal) => void;
+	stopPlayback: (signal: AbortSignal) => void | Promise<void>;
 	publishState: () => void;
 	queueSnapshot: () => Track[];
 	lifecycleSignal: AbortSignal;

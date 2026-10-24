@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { LRUCache } from "lru-cache";
 import { Player } from "./Player";
 import { Bus } from "./Bus";
+import { PlayerData, PlayerDataRegistry } from "./PlayerDataRegistry";
 import {
 	PlaybackMode,
 	PlayerManagerOptions,
@@ -15,9 +16,10 @@ import {
 	type PlayerDebugLevel,
 	normalizeTrackMiddleware,
 	SharedControllerSet,
+	SourcePluginLike,
+	type TrackRequester,
 } from "../types";
 import type { BaseExtension } from "../extensions";
-import { withTimeout } from "../utils/timeout";
 import { PlayerEventDebug } from "../controller/PlayerEventDebug";
 import { BusLatencyTrace } from "../controller/BusLatencyTrace";
 import { TrackLoader } from "./TrackLoader";
@@ -41,7 +43,6 @@ import { ExtensionController } from "../controller/ExtensionController";
 import { SearchController } from "../controller/SearchController";
 import { StreamManager } from "./StreamManager";
 import { PreloadManager } from "./PreloadManager";
-import { PluginManager } from "../plugins";
 import { ExtensionManager } from "../extensions";
 import { PlaybackOrchestrator } from "./PlaybackOrchestrator";
 import { SaveController } from "../controller/SaveController";
@@ -49,12 +50,16 @@ import { PlaybackSessionController } from "../controller/PlaybackSessionControll
 import { GlobalControllerRegistry } from "../controller/GlobalControllerRegistry";
 import { BUS_EVENT, BUS_OUTPUT, CONTROLLER_RPC, PLAYER_RPC } from "./BusContract";
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
+import { getRequesterId, withTrackRequester } from "../utils/requester";
 
 export function createSharedControllers(params: {
 	options?: PlayerManagerOptions;
 	debugSink?: (...args: any[]) => void;
 	bus?: Bus;
 	busLatencyTrace?: BusLatencyTrace;
+	owner?: PlayerManager;
+	plugins?: readonly SourcePluginLike[];
+	pluginDebug?: (...args: any[]) => void;
 }): SharedControllerSet {
 	const bus = params.bus ?? new Bus(params.busLatencyTrace);
 	const sessionController = new PlaybackSessionController(bus);
@@ -89,7 +94,9 @@ export function createSharedControllers(params: {
 		forward: new ForwardController(bus),
 		resourceRefresh: new ResourceRefreshController(bus),
 		eventBridge: new PlayerEventBridge(bus),
-		plugin: new PluginController(bus),
+		plugin: new PluginController(bus, params.owner, params.plugins, params.pluginDebug, {
+			extractorTimeout: params.options?.extractorTimeout,
+		}),
 		extension: new ExtensionController(bus),
 		session: sessionController,
 	};
@@ -241,6 +248,7 @@ export class PlayerManager extends EventEmitter {
 		this.debugTracer.setDebugLevel(level);
 	}
 	private players: Map<string, Player> = new Map();
+	private readonly playersByRoutingId: Map<string, Player> = new Map();
 	public readonly bus: Bus;
 	private readonly controllers: SharedControllerSet;
 	private readonly monitoring: PlayerMonitoring;
@@ -286,8 +294,6 @@ export class PlayerManager extends EventEmitter {
 		return await globaldef.create("default", opt);
 	}
 
-	private plugins: SourcePlugin[];
-	private managerSearchPluginManager: PluginManager;
 	/**
 	 * Owns the "runtime.ping" heartbeat per attached playerId (own instance per manager, not the
 	 * process-wide {@link GlobalControllerRegistry.global}, so `dispose()` only ever clears this
@@ -313,6 +319,9 @@ export class PlayerManager extends EventEmitter {
 			options,
 			debugSink: this.debugSink,
 			busLatencyTrace: this.debugTracer.latencyTraceInstance,
+			owner: this,
+			plugins: options.plugins,
+			pluginDebug: (message, ...args) => this.debug(message, ...args),
 		});
 		this.bus = this.controllers.bus;
 
@@ -323,7 +332,7 @@ export class PlayerManager extends EventEmitter {
 		// *rejected* request as unreachable.
 		this.bus.registerRpc<{ playerId?: string }, true>(CONTROLLER_RPC.runtimePing, (_request, ctx) => {
 			const id = ctx.playerId;
-			const alive = this.players.get(id)?.destroyed === false;
+			const alive = this.playersByRoutingId.get(id)?.destroyed === false;
 			if (!alive) throw new Error(`runtime.ping: player "${id}" is not tracked by this PlayerManager`);
 			return true;
 		});
@@ -332,49 +341,24 @@ export class PlayerManager extends EventEmitter {
 				event.type === BUS_OUTPUT.connectionDisconnected &&
 				(event.reason === "destroyed" || event.reason === "leave-timeout")
 			) {
-				const player = this.players.get(event.playerId);
+				const player = this.playersByRoutingId.get(event.playerId);
 				if (player && !player.destroyed) {
 					void this.requestDestroy(player);
 				}
 			}
 		});
 		this.monitoring = new PlayerMonitoring(this.controllers);
-		this.plugins = [];
 		this.searchCache = new Map();
-
-		// Initialize plugins
-		const provided = options.plugins || [];
-		for (const p of provided as any[]) {
-			try {
-				let instance: SourcePlugin | null = null;
-
-				if (p && typeof p === "object") {
-					instance = p as SourcePlugin;
-				} else if (typeof p === "function") {
-					instance = new (p as any)();
-				}
-
-				if (instance) {
-					this.plugins.push(instance);
-				}
-				this.debug(`Registered plugin: ${p.name || "unnamed"}`);
-			} catch (e) {
-				this.debug(`Failed to init plugin:`, e);
-			}
-		}
 
 		this.extensions = options.extensions || [];
 		this.extractorTimeout = options.extractorTimeout ?? 10000;
 		this.autoCleanup = options.autoCleanup ?? true;
 		this.cleanupTimeout = options.cleanupInterval ?? 60000;
 		this.enableSearchCache = options.enableSearchCache ?? true;
-		this.managerSearchPluginManager = new PluginManager(null, this, {
-			extractorTimeout: this.extractorTimeout,
-			debug: (message, ...args) => this.debug(message, ...args),
-		});
-		for (const plugin of this.plugins) this.managerSearchPluginManager.register(plugin);
+		const pluginManager = this.controllers.plugin?.getSharedManager();
+		if (!pluginManager) throw new Error("PluginController is unavailable");
 		this.controllers.search?.attach(MANAGER_SEARCH_ID, {
-			pluginManager: this.managerSearchPluginManager,
+			pluginManager,
 			debug: (message, ...args) => this.debug(message, ...args),
 			cacheEnabled: false,
 		});
@@ -391,7 +375,9 @@ export class PlayerManager extends EventEmitter {
 		}
 
 		setGlobalManager(this);
-		this.debug(`Initialized with ${this.plugins.length} plugins, ${this.extensions.length} extensions`);
+		this.debug(
+			`Initialized with ${this.controllers.plugin?.getPlugins().length ?? 0} plugins, ${this.extensions.length} extensions`,
+		);
 	}
 
 	private resolveGuildId(guildOrId: string | { id: string }): string {
@@ -506,7 +492,12 @@ export class PlayerManager extends EventEmitter {
 		}
 	}
 
-	private attachPlayerControllers(playerId: string, options?: PlayerOptions): void {
+	private attachPlayerControllers(
+		playerId: string,
+		options?: PlayerOptions,
+		playerData: Map<string, unknown> = new PlayerData(),
+	): void {
+		PlayerDataRegistry.for(this.bus).attach(playerId, playerData);
 		const channel = (tag: string, level: PlayerDebugLevel = "debug") => this.debugTracer.channel(tag, level);
 		const middleware: TrackMiddleware[] = [
 			...this.getTrackMiddlewareChain(),
@@ -523,6 +514,7 @@ export class PlayerManager extends EventEmitter {
 		this.controllers.playback.attach(playerId, {
 			audioPlayer,
 			stuckTimeoutMs: options?.antiStuck?.stuckTimeoutMs,
+			audioProcessing: options?.audioProcessing ? { ffmpegPath: options.ffmpegPath, ...options.audioProcessing } : undefined,
 		});
 		this.controllers.preload.attach(playerId);
 
@@ -537,12 +529,11 @@ export class PlayerManager extends EventEmitter {
 		// Controllers own each manager as soon as it is created so partial attachment/
 		// creation failure and repeated attach calls still release all prior resources.
 		this.controllers.stream?.attach(playerId, streamManager);
-		const pluginManager = new PluginManager(null, this, {
+		const pluginController = this.controllers.plugin;
+		if (!pluginController) throw new Error("PluginController is unavailable");
+		const pluginManager = pluginController.attach(playerId, streamManager, {
 			extractorTimeout: options?.extractorTimeout,
-			debug: channel("Plugins"),
 		});
-		pluginManager.setStreamManager(streamManager);
-		this.controllers.plugin?.attach(playerId, pluginManager);
 		const extensionManager = new ExtensionManager(null as any, this, channel("Extensions"));
 		this.controllers.extension?.attach(playerId, extensionManager);
 		const isLowPerf = Boolean(options?.lowPerformance || options?.quality === "low");
@@ -604,11 +595,12 @@ export class PlayerManager extends EventEmitter {
 		this.controllers.save?.attach(playerId, {
 			middleware: [async (track) => this.controllers.trackLoader.applyMiddleware(playerId, track)],
 			middlewareContext: { playerId, manager: this } as any,
-			resolveStream: (track) => pluginManager.getStream(track),
-			resolveVideoStream: (track) => pluginManager.getVideo(track),
+			resolveStream: (track) => pluginManager.getStream(track, { context: { playerId } }),
+			resolveVideoStream: (track) => pluginManager.getVideo(track, { playerId }),
 			debug: channel("SaveController"),
 		});
 		this.controllers.filter?.attach(playerId, undefined, channel("FilterController"), {
+			ffmpegPath: options?.audioProcessing?.ffmpegPath ?? options?.ffmpegPath,
 			initialFilters: Array.isArray(options?.filters) ? options?.filters : [],
 			onFilterApplied: (filter) => this.bus.event(playerId, { type: BUS_EVENT.filterApplied, filter }),
 			onFilterRemoved: (filter) => this.bus.event(playerId, { type: BUS_EVENT.filterRemoved, filter }),
@@ -625,12 +617,13 @@ export class PlayerManager extends EventEmitter {
 			debug: channel("SearchController"),
 		});
 		this.controllers.eventBridge?.attach(playerId, this.debugTracer);
+	}
 
-		// A player that stops answering "runtime.ping" is torn down through the same path as an
-		// explicit destroy().
+	private registerPlayerHeartbeat(playerId: string): void {
 		this.controllerRegistry.register(playerId, this.bus, this.controllers, () => {
-			const player = this.players.get(playerId) ?? null;
-			this.players.delete(playerId);
+			const player = this.playersByRoutingId.get(playerId) ?? null;
+			this.playersByRoutingId.delete(playerId);
+			if (player) this.players.delete(player.playerId);
 			return this.runTeardown(playerId, player).catch((error) =>
 				this.debug(`Error disposing unreachable player ${playerId}:`, error),
 			);
@@ -656,33 +649,32 @@ export class PlayerManager extends EventEmitter {
 			this.debug(`Player already exists for guildId: ${guildId}, returning existing`);
 			return this.players.get(guildId)!;
 		}
-
 		// Check if a player is already being created for this guild
 		if (this.pendingPlayers.has(guildId)) {
 			this.debug(`Player creation already in progress for guildId: ${guildId}, awaiting...`);
 			return this.pendingPlayers.get(guildId)!;
 		}
+		if (this.controllerRegistry.has(guildId)) {
+			throw new Error(`Guild id "${guildId}" is still reserved by an active player.`);
+		}
 
 		const creationPromise = (async () => {
 			await Promise.resolve();
-			// What has been attached so far, so a failed or aborted creation can release exactly that.
 			let controllersAttached = false;
 			let created: Player | null = null;
 			try {
 				this.assertNotDisposed();
 				this.debug(`Creating player for guildId: ${guildId}`);
 				const playerId = guildId;
+				const playerData = new PlayerData();
 
 				controllersAttached = true;
-				this.attachPlayerControllers(playerId, options);
+				this.attachPlayerControllers(playerId, options, playerData);
 
-				const player = new Player(playerId, this.bus, options, this);
+				const player = new Player(playerId, this.bus, options, this, playerData);
 				created = player;
 				this.controllers.extension?.getManager(playerId)?.attachPlayer(player);
 				this.controllers.eventBridge?.attachPlayer(playerId, player);
-
-				// Add all registered plugins
-				this.plugins.forEach((plugin) => player.addPlugin(plugin));
 
 				// Activate extensions
 				let extsToActivate: any[] = [];
@@ -701,12 +693,12 @@ export class PlayerManager extends EventEmitter {
 						extsToActivate = optExts;
 					}
 				} else {
-					// Use all extensions by default
-					extsToActivate = this.extensions;
+					// No extensions specified in options
+					extsToActivate = [];
 				}
 
+				const extensionAttachments: Promise<void>[] = [];
 				for (const ext of extsToActivate) {
-					// Extension activation awaits: dispose() may have started in the meantime.
 					this.assertNotDisposed();
 					let instance = ext;
 					if (typeof ext === "function") {
@@ -718,32 +710,21 @@ export class PlayerManager extends EventEmitter {
 						}
 					}
 
-					if (instance && typeof instance === "object") {
-						const extInstance = instance as BaseExtension;
-						if ("player" in extInstance && !extInstance.player) extInstance.player = player;
-						player.attachExtension(extInstance);
-
-						if (typeof extInstance.active === "function") {
-							let activated: boolean | void = true;
-							try {
-								activated = await withTimeout(
-									Promise.resolve(extInstance.active({ manager: this, player })),
-									player.options.extractorTimeout ?? 15000,
-									`Extension ${extInstance?.name} activation timed out`,
-								);
-								this.debug(`Extension ${extInstance?.name} active check returned: ${activated}`);
-							} catch (e) {
-								activated = false;
-								this.debug(`Extension activation error for ${extInstance?.name}:`, e);
-							}
-
-							if (activated === false) {
-								player.detachExtension(extInstance);
-								continue;
-							}
+					if (typeof ext === "string") {
+						try {
+							instance = this.extensions.find((e) => (typeof e === "function" ? e.name : e?.name) === ext);
+						} catch (e) {
+							this.debug(`Extension constructor error for ${ext}:`, e);
+							continue;
 						}
 					}
+
+					if (instance && typeof instance === "object") {
+						const extInstance = instance as BaseExtension;
+						extensionAttachments.push(player.attachExtension(extInstance));
+					}
 				}
+				await Promise.all(extensionAttachments);
 
 				// Last check before the player becomes visible: from here on dispose() sees it and tears it down.
 				this.assertNotDisposed();
@@ -755,6 +736,8 @@ export class PlayerManager extends EventEmitter {
 				(player as any)._lastActivity = Date.now();
 
 				this.players.set(guildId, player);
+				this.playersByRoutingId.set(player.routingPlayerId, player);
+				this.registerPlayerHeartbeat(player.routingPlayerId);
 				this.debug(`Player created for guildId: ${guildId}`);
 				return player;
 			} catch (error) {
@@ -794,8 +777,8 @@ export class PlayerManager extends EventEmitter {
 		player.on("playerDestroy", () => {
 			// Forward links are released in teardownPlayer() (they need the controllers still attached).
 			// Safety net: a no-op when the manager already tore this player down.
-			void this.destroy(guildId).catch(() => undefined);
-			this.debug(`Player destroyed for guildId: ${guildId}`);
+			void this.destroy(player.playerId).catch(() => undefined);
+			this.debug(`Player destroyed for guildId: ${player.playerId}`);
 		});
 
 		player.on("trackStart", () => {
@@ -822,6 +805,43 @@ export class PlayerManager extends EventEmitter {
 	 */
 	getPlayer(guildOrId: string | { id: string }): Player | undefined {
 		return this.get(guildOrId);
+	}
+
+	/**
+	 * Change a managed player's public identifier without reattaching controllers or interrupting playback.
+	 * Controller state and in-flight work continue using the original internal routing key.
+	 */
+	public changePlayerId(currentPlayerId: string | { id: string }, newPlayerId: string | { id: string }): Player {
+		this.assertNotDisposed();
+		const currentId = this.resolveGuildId(currentPlayerId);
+		const player = this.players.get(currentId);
+		if (!player) throw new Error(`No player exists for id "${currentId}".`);
+		if (player.destroyed) throw new Error("Cannot change playerId on a destroyed player.");
+		const nextId =
+			typeof newPlayerId === "object" && newPlayerId && "id" in newPlayerId ? (newPlayerId as { id: string }).id : newPlayerId;
+		if (typeof nextId !== "string" || !nextId.trim()) {
+			throw new TypeError("newPlayerId must be a non-empty string.");
+		}
+		if (nextId === MANAGER_SEARCH_ID) {
+			throw new Error(`Guild id "${MANAGER_SEARCH_ID}" is reserved for manager search.`);
+		}
+		if (nextId === currentId) return player;
+		if (
+			this.players.has(nextId) ||
+			this.pendingPlayers.has(nextId) ||
+			(this.playersByRoutingId.has(nextId) && nextId !== player.routingPlayerId) ||
+			(this.controllerRegistry.has(nextId) && nextId !== player.routingPlayerId)
+		) {
+			throw new Error(`A player or active player state already exists for id "${nextId}".`);
+		}
+
+		this.bus.replacePlayerIdAlias(currentId, nextId, player.routingPlayerId);
+		this.players.delete(currentId);
+		this.players.set(nextId, player);
+		player.updatePlayerId(nextId);
+		player.emit("playerIdChange", nextId, currentId);
+		this.debug(`Changed player id from "${currentId}" to "${nextId}" without interrupting playback.`);
+		return player;
 	}
 
 	/**
@@ -1084,22 +1104,24 @@ export class PlayerManager extends EventEmitter {
 	/**
 	 * Destroy a specific player or all players / manager when called without arguments.
 	 */
-	public async destroy(playerId?: string): Promise<void> {
+	public async destroy(playerId?: string | { id: string }): Promise<void> {
 		if (!playerId) {
 			return this.dispose();
 		}
-		const player = this.players.get(playerId);
+		const resolvedId = this.resolveGuildId(playerId);
+		const player = this.players.get(resolvedId) ?? this.playersByRoutingId.get(resolvedId);
 
 		if (!player) {
 			// create() still running: let it finish, then destroy what it produced.
-			const creating = this.pendingPlayers.get(playerId);
+			const creating = this.pendingPlayers.get(resolvedId);
 			if (!creating) return;
 			const createdPlayer = await creating.catch(() => null);
-			return createdPlayer ? this.destroy(playerId) : undefined;
+			return createdPlayer ? this.destroy(resolvedId) : undefined;
 		}
 
-		this.players.delete(playerId);
-		return this.runTeardown(playerId, player);
+		this.players.delete(player.playerId);
+		this.playersByRoutingId.delete(player.routingPlayerId);
+		return this.runTeardown(player.routingPlayerId, player);
 	}
 
 	/** Starts {@link teardownPlayer} and tracks it until it settles. */
@@ -1130,7 +1152,7 @@ export class PlayerManager extends EventEmitter {
 	 *   2. Player.abortWorkflow()  (pending play()/actions)
 	 *   3. release per-player resources (stream/plugin/extension managers)
 	 *   4. detach shared controllers (orchestrator + lifecycle first, connection last)
-	 *   5. Player.completeDestroy() -> bus "destroyed" + Bus.disposePlayer(playerId)
+	 *   5. Player.completeDestroy() -> bus "destroyed" + subscription cleanup
 	 *
 	 * Steps 1-3 and the start of 4 run synchronously, so `players.has()` / `player.destroyed` are
 	 * already up to date when the caller gets the promise back.
@@ -1156,9 +1178,11 @@ export class PlayerManager extends EventEmitter {
 		} finally {
 			// Bus disposal is last, and must happen even if a detach failed.
 			try {
-				player?.completeDestroy();
+				player?.completeDestroy(true);
 			} catch (error) {
 				this.debug(`Error destroying player ${playerId}:`, error);
+			} finally {
+				this.bus.disposePlayer(playerId);
 			}
 			// Observes the final "destroyed" event, so it goes after completeDestroy().
 			try {
@@ -1166,6 +1190,7 @@ export class PlayerManager extends EventEmitter {
 			} catch (error) {
 				this.debug(`Error detaching eventBridge for ${playerId}:`, error);
 			}
+			PlayerDataRegistry.for(this.bus).disposePlayer(playerId);
 		}
 	}
 
@@ -1234,7 +1259,8 @@ export class PlayerManager extends EventEmitter {
 				for (const follower of followers) {
 					try {
 						if (typeof follower === "string") {
-							this.get(follower)?.unsubscribeForward("Leader destroyed");
+							const followerPlayer = this.get(follower) ?? this.playersByRoutingId.get(follower);
+							followerPlayer?.unsubscribeForward("Leader destroyed");
 						} else if (follower && typeof follower.unsubscribeForward === "function") {
 							follower.unsubscribeForward("Leader destroyed");
 						}
@@ -1286,16 +1312,18 @@ export class PlayerManager extends EventEmitter {
 
 		const playerEntries = [...this.players.entries()];
 		this.players.clear();
+		this.playersByRoutingId.clear();
 
-		for (const [playerId, player] of playerEntries) {
-			this.runTeardown(playerId, player).catch((err) => this.debug(`Error destroying player ${playerId}:`, err));
+		for (const [, player] of playerEntries) {
+			this.runTeardown(player.routingPlayerId, player).catch((err) =>
+				this.debug(`Error destroying player ${player.playerId}:`, err),
+			);
 		}
 		// Includes teardowns started earlier by destroy(playerId)/player.destroy(): none may still be
 		// running when the shared controllers and the Bus are disposed below.
 		await Promise.allSettled([...this.pendingTeardowns]);
 
 		this.controllers.search?.detach(MANAGER_SEARCH_ID);
-		this.managerSearchPluginManager.destroy();
 		this.searchCache.clear();
 		this.cache.clear();
 
@@ -1321,6 +1349,7 @@ export class PlayerManager extends EventEmitter {
 			["connection", () => c.connection.dispose()],
 			["trackLoader", () => c.trackLoader.dispose()],
 			["trackResolver", () => c.trackResolver.dispose()],
+			["plugin", () => c.plugin?.dispose()],
 		];
 		for (const [name, dispose] of steps) {
 			try {
@@ -1336,16 +1365,16 @@ export class PlayerManager extends EventEmitter {
 	 * playback/voice controller state.
 	 *
 	 * @param {string} query
-	 * @param {string} requestedBy
+	 * @param {TrackRequester} requestedBy
 	 * @returns {Promise<SearchResult>}
 	 */
-	async search(query: string, requestedBy: string): Promise<SearchResult> {
+	async search(query: string, requestedBy: TrackRequester): Promise<SearchResult> {
 		this.assertNotDisposed();
-		this.debug(`Search called with query: ${query}, requestedBy: ${requestedBy}`);
+		this.debug(`Search called with query: ${query}, requestedBy: ${getRequesterId(requestedBy) ?? "Unknown"}`);
 
 		const cached = this.getCachedSearch(query);
 		if (cached) {
-			return cached;
+			return withTrackRequester(cached, requestedBy);
 		}
 
 		try {
@@ -1359,7 +1388,7 @@ export class PlayerManager extends EventEmitter {
 
 			this.setCachedSearch(query, result);
 
-			return result;
+			return withTrackRequester(result, requestedBy);
 		} catch (error) {
 			this.debug(`Search error:`, error);
 			throw error as Error;
@@ -1381,14 +1410,10 @@ export class PlayerManager extends EventEmitter {
 	 * @param {SourcePlugin} plugin - Plugin to register
 	 */
 	registerPlugin(plugin: SourcePlugin): void {
-		this.plugins.push(plugin);
-		this.managerSearchPluginManager.register(plugin);
-
+		const pluginController = this.controllers.plugin;
+		if (!pluginController) throw new Error("PluginController is unavailable");
+		pluginController.registerSharedPlugin(plugin);
 		this.debug(`Registered plugin: ${plugin.name}`);
-
-		for (const player of this.players.values()) {
-			player.addPlugin(plugin);
-		}
 	}
 
 	/**
@@ -1398,12 +1423,8 @@ export class PlayerManager extends EventEmitter {
 	 * @returns {boolean} True if plugin was unregistered
 	 */
 	unregisterPlugin(name: string): boolean {
-		const index = this.plugins.findIndex((p) => p.name === name);
-		if (index === -1) return false;
-
-		this.plugins.splice(index, 1);
-		this.managerSearchPluginManager.unregister(name);
-
+		const pluginController = this.controllers.plugin;
+		if (!pluginController?.unregisterSharedPlugin(name)) return false;
 		this.debug(`Unregistered plugin: ${name}`);
 
 		return true;
@@ -1413,7 +1434,7 @@ export class PlayerManager extends EventEmitter {
 	 * Get all registered plugins
 	 */
 	getPlugins(): SourcePlugin[] {
-		return [...this.plugins];
+		return this.controllers.plugin?.getPlugins() ?? [];
 	}
 
 	/**
@@ -1421,14 +1442,12 @@ export class PlayerManager extends EventEmitter {
 	 *
 	 * @param {BaseExtension} extension - Extension to register
 	 */
-	registerExtension(extension: BaseExtension): void {
+	async registerExtension(extension: BaseExtension): Promise<void> {
 		this.extensions.push(extension);
 		this.debug(`Registered extension: ${extension.name}`);
 
 		// Register extension with all existing players
-		for (const player of this.players.values()) {
-			player.attachExtension(extension);
-		}
+		await Promise.all([...this.players.values()].map((player) => player.attachExtension(extension)));
 	}
 
 	/**
@@ -1440,7 +1459,7 @@ export class PlayerManager extends EventEmitter {
 			autoCleanup: this.autoCleanup,
 			cleanupTimeout: this.cleanupTimeout,
 			enableSearchCache: this.enableSearchCache,
-			pluginsCount: this.plugins.length,
+			pluginsCount: this.controllers.plugin?.getPlugins().length ?? 0,
 			extensionsCount: this.extensions.length,
 			playersCount: this.players.size,
 		};

@@ -70,6 +70,8 @@ import { YouTubePlugin } from "@ziplayer/plugin";
 const youtube = new YouTubePlugin();
 ```
 
+Set `preferYoutubei: true` to try youtubei.js before the SABR stream. The default is SABR first, with youtubei.js as a fallback.
+
 ### SoundCloudPlugin
 
 - Resolves tracks and sets. You may further tune streaming by combining with other plugins that provide fallbacks.

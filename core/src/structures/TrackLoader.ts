@@ -12,7 +12,8 @@ import {
 } from "../types";
 import type { PlaybackSession } from "./PlaybackSession";
 import type { PreloadManager } from "./PreloadManager";
-import type { Bus } from "./Bus";
+import { Bus } from "./Bus";
+import { playerDataMap } from "./PlayerDataRegistry";
 import { CONTROLLER_RPC, PLAYER_QUERY } from "./BusContract";
 
 const TRACK_LOADER_RPC = {
@@ -39,9 +40,9 @@ interface TrackLoaderSlot {
  * Loads (and, on failure, recovers) the stream for a track on behalf of every player.
  *
  * Shared, singleton — created once in `ensureSharedControllers()`. Each player's
- * middleware chain, resolver list, recovery policy and failure counters live in an
- * internal `Map<playerId, TrackLoaderSlot>` (opened by `attach(playerId, ...)`, released
- * by `detach(playerId)`). Every RPC below is registered exactly once, in the constructor,
+ * middleware chain, resolver list, recovery policy and failure counters live in the
+ * each player's `data` Map (registered by `attach(playerId, ...)`, released by
+ * `detach(playerId)`). Every RPC below is registered exactly once, in the constructor,
  * and routes by `ctx.playerId`.
  *
  * The only collaborator it holds is the (also shared) `PreloadManager`, used to reuse an
@@ -49,11 +50,15 @@ interface TrackLoaderSlot {
  */
 export class TrackLoader {
 	private readonly preloadManager?: PreloadManager;
-	private readonly slots = new Map<string, TrackLoaderSlot>();
+	private readonly stateBus: Bus;
+	private get slots(): Map<string, TrackLoaderSlot> {
+		return playerDataMap(this.stateBus, "structure.trackLoader.slots");
+	}
 	private disposed = false;
 
 	/** `bus` is what the per-player RPCs are registered on; `preloadManager` lets loads reuse a buffered stream. */
 	public constructor(bus?: Bus, preloadManager?: PreloadManager) {
+		this.stateBus = bus ?? new Bus();
 		this.preloadManager = preloadManager;
 
 		if (bus) {
@@ -172,9 +177,9 @@ export class TrackLoader {
 		return this.loadWithRecoverySlot(this.requireSlot(playerId), track, session);
 	}
 
-	public async preloadNext(playerId: string): Promise<void> {
+	public async preloadNext(playerId: string): Promise<boolean> {
 		this.requireSlot(playerId);
-		await this.preloadManager?.preloadNextTrack(playerId);
+		return (await this.preloadManager?.preloadNextTrack(playerId)) ?? false;
 	}
 
 	public async applyMiddleware(playerId: string, track: Track): Promise<Track> {

@@ -51,6 +51,13 @@ interface SpeechOptions {
 	resolveSpeech?: (monoBuffer: Buffer, opts: SpeechOptions) => Promise<string> | string;
 }
 
+interface VoicePlayerBinding {
+	speakingEmitter?: any;
+	speakingStart?: (userId: string) => void;
+	manager?: PlayerManager;
+	unsubscribers: Array<() => void>;
+}
+
 /**
  * Transform stream for processing PCM audio data.
  *
@@ -121,8 +128,7 @@ export class voiceExt extends BaseExtension {
 
 	private client?: any;
 	private speechOptions: SpeechOptions;
-	private _speakingEmitter?: any;
-	private _speakingAttached = false;
+	private readonly playerBindings = new Map<Player, VoicePlayerBinding>();
 	// private _activeSpeakers = new Set<string>();
 
 	/**
@@ -171,7 +177,7 @@ export class voiceExt extends BaseExtension {
 	 * This method handles the activation process:
 	 * - Sets up the player and manager references
 	 * - Binds the Discord client for voice events
-	 * - Wraps the player's connect method to auto-attach voice handling
+	 * - Observes this player's Bus connection lifecycle
 	 * - Attaches voice handling if already connected
 	 *
 	 * @param alas - Context object containing manager, client, and player references
@@ -186,37 +192,37 @@ export class voiceExt extends BaseExtension {
 	 *
 	 */
 	active(alas: any): boolean {
-		if (alas?.player && !this.player) this.player = alas.player;
-		const player = this.player;
+		const player = (alas?.player as Player | undefined) ?? this.player;
 		const manager = alas?.manager as PlayerManager | undefined;
 		if (manager) this.manager = manager;
+		if (player && !this.player) this.player = player;
 		const client = alas?.client ?? this.client;
 		if (client && !this.client) this.client = client;
 
 		if (!player) return false;
 
-		const anyPlayer: any = player as any;
-		if (!anyPlayer.__voiceExtWrappedConnect) {
-			anyPlayer.__voiceExtWrappedConnect = true;
-			const originalConnect = player.connect.bind(player);
-			(player as any).connect = async (channel: any) => {
-				const conn = await originalConnect(channel);
-				try {
-					this.attach(this.client);
-				} catch (e: any) {
-					this.debug(`attach error: ${e?.message || e}`);
-				}
-				return conn;
-			};
+		let binding = this.playerBindings.get(player);
+		if (!binding) {
+			binding = { manager, unsubscribers: [] };
+			this.playerBindings.set(player, binding);
+			binding.unsubscribers.push(
+				player.bus.onOutput("connection.connected", (event) => {
+					if (event.playerId === player.playerId) this.attachToPlayer(player, binding!);
+				}),
+				player.bus.onOutput("connection.disconnected", (event) => {
+					if (event.playerId === player.playerId) this.detachSpeakingListener(binding!);
+				}),
+			);
 		}
 
-		if ((player as any).connection) {
-			try {
-				this.attach(this.client);
-			} catch {}
-		}
+		binding.manager = manager ?? binding.manager;
+		if (player.connection) this.attachToPlayer(player, binding);
 
 		return true;
+	}
+
+	onDestroy(context: { player?: Player | null }): void {
+		if (context.player) this.detachPlayer(context.player);
 	}
 
 	/**
@@ -240,28 +246,43 @@ export class voiceExt extends BaseExtension {
 	attach(client?: any, opts?: Partial<SpeechOptions>) {
 		if (client) this.client = client;
 		if (opts) this.speechOptions = { ...this.speechOptions, ...opts } as SpeechOptions;
-		const connection = this.player?.connection as any;
-		if (!this.player || !connection) {
+		const player = this.player;
+		const connection = player?.connection as any;
+		const binding = player ? this.playerBindings.get(player) : undefined;
+		if (!player || !connection || !binding) {
 			throw new Error("voiceExt.attach requires a connected player");
 		}
 
-		// Set up speaking handler
-		this.handleSpeakingEvent();
-
-		// Auto-clean on destroy
-		this.player.on("playerDestroy", () => {
-			try {
-				const conn = (this.player as any)?.connection;
-				conn?.receiver?.speaking?.removeAllListeners?.();
-				this._speakingAttached = false;
-				this._speakingEmitter = undefined;
-				// this._activeSpeakers.clear();
-			} catch {}
-		});
+		this.handleSpeakingEvent(player, binding);
 	}
 
-	private handleSpeakingEvent() {
-		const connection = (this.player as any)?.connection;
+	private attachToPlayer(player: Player, binding: VoicePlayerBinding): void {
+		this.handleSpeakingEvent(player, binding);
+	}
+
+	private detachPlayer(player: Player): void {
+		const binding = this.playerBindings.get(player);
+		if (!binding) return;
+		for (const unsubscribe of binding.unsubscribers.splice(0)) unsubscribe();
+		this.detachSpeakingListener(binding);
+		this.playerBindings.delete(player);
+		if (this.player === player) this.player = this.playerBindings.keys().next().value ?? null;
+	}
+
+	private detachSpeakingListener(binding: VoicePlayerBinding): void {
+		if (binding.speakingEmitter && binding.speakingStart) {
+			if (typeof binding.speakingEmitter.off === "function") {
+				binding.speakingEmitter.off("start", binding.speakingStart);
+			} else {
+				binding.speakingEmitter.removeListener?.("start", binding.speakingStart);
+			}
+		}
+		binding.speakingEmitter = undefined;
+		binding.speakingStart = undefined;
+	}
+
+	private handleSpeakingEvent(player: Player, binding: VoicePlayerBinding) {
+		const connection = player.connection as any;
 		if (!connection) {
 			this.debug("No connection found on player to attach receiver");
 			return;
@@ -273,15 +294,20 @@ export class voiceExt extends BaseExtension {
 			return;
 		}
 
-		// Re-attach only if emitter changed; otherwise guard against duplicates
-		if (this._speakingEmitter !== speaking) {
-			this._speakingEmitter = speaking;
-			this._speakingAttached = false;
+		if (binding.speakingEmitter !== speaking) {
+			if (binding.speakingEmitter && binding.speakingStart) {
+				if (typeof binding.speakingEmitter.off === "function") {
+					binding.speakingEmitter.off("start", binding.speakingStart);
+				} else {
+					binding.speakingEmitter.removeListener?.("start", binding.speakingStart);
+				}
+			}
+			binding.speakingEmitter = speaking;
+			binding.speakingStart = undefined;
 		}
-		if (this._speakingAttached) return;
-		this._speakingAttached = true;
+		if (binding.speakingStart) return;
 
-		speaking.on("start", (userId: string) => {
+		const onStart = (userId: string) => {
 			this.debug(`User ${userId} started speaking`);
 
 			// Optional bot/user focus checks if client present
@@ -309,14 +335,14 @@ export class voiceExt extends BaseExtension {
 
 			// Prepare a per-session options override via onVoiceChange (non-blocking)
 			const channelId = String(connection?.joinConfig?.channelId ?? "");
-			const guildId = String(this.player?.guildId ?? "");
+			const guildId = String(player.guildId ?? "");
 			const pendingOverrides = Promise.resolve(
 				this.speechOptions?.onVoiceChange?.({
 					userId,
 					channelId,
 					guildId,
-					player: this.player,
-					manager: this.manager,
+					player,
+					manager: binding.manager ?? this.manager,
 					client: this.client,
 					current: this.speechOptions,
 				}),
@@ -362,12 +388,21 @@ export class voiceExt extends BaseExtension {
 					const effective = { ...this.speechOptions, ...overrides } as SpeechOptions;
 					const delay = effective.postSilenceDelayMs ?? 2000;
 					this.debug(`Stopped speaking. Waiting ${delay}ms before resolving speech`);
-					setTimeout(() => this.processVoice(userId, chunks, effective), delay);
+					setTimeout(() => void this.processVoice(userId, chunks, effective, player, binding), delay);
 				});
-		});
+		};
+		binding.speakingStart = onStart;
+		speaking.on("start", onStart);
 	}
 
-	private async processVoice(userId: string, bufferData: Buffer[], effective?: SpeechOptions) {
+	private async processVoice(
+		userId: string,
+		bufferData: Buffer[],
+		effective: SpeechOptions,
+		player: Player,
+		binding: VoicePlayerBinding,
+	) {
+		if (this.playerBindings.get(player) !== binding) return;
 		const opts = effective ?? this.speechOptions;
 		const pcm = Buffer.concat(bufferData);
 		const durationSec = pcm.length / 48000 / 4; // 48kHz, 2ch, 16-bit
@@ -384,14 +419,14 @@ export class voiceExt extends BaseExtension {
 
 		try {
 			const content = await this.resolveSpeech(pcm, opts);
-			if (!content) {
+			if (!content || this.playerBindings.get(player) !== binding) {
 				this.debug("No speech recognized or empty response");
 				return;
 			}
 
-			const connection = (this.player as any)?.connection;
+			const connection = player.connection as any;
 			const channelId = String(connection?.joinConfig?.channelId ?? "");
-			const guildId = String(this.player?.guildId ?? "");
+			const guildId = String(player.guildId ?? "");
 
 			const payload: any = {
 				content,
@@ -408,11 +443,11 @@ export class voiceExt extends BaseExtension {
 			}
 
 			// Emit directly via manager when available; fallback to player event
-			if (this.manager && typeof (this.manager as any).emit === "function") {
-				if (!this.player) throw new Error("Player not found");
-				this.manager.emit("voiceCreate", this.player, payload);
+			const manager = binding.manager ?? this.manager;
+			if (manager && typeof (manager as any).emit === "function") {
+				manager.emit("voiceCreate", player, payload);
 			} else {
-				(this.player as any)?.emit?.("voiceCreate", payload);
+				(player as any).emit?.("voiceCreate", payload);
 			}
 		} catch (err: any) {
 			this.debug(`Error processing voice: ${err?.message || err}`);

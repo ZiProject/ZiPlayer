@@ -23,6 +23,9 @@
  * @since 1.0.0
  */
 
+export { BaseExtension } from "ziplayer";
+export type { ExtensionContext } from "ziplayer";
+
 /**
  * Lavalink extension for high-performance audio streaming.
  *

@@ -28,7 +28,7 @@ const ERROR_LIKE = /\b(error|failed|failure|exception|timeout|aborted)\b|⚠️|
  * Everything that used to poke `manager.emit("debug", ...)` or
  * `this.emit("debug", ...)` directly - controllers, PluginManager,
  * ExtensionManager, extensions - should instead obtain a leveled logger via
- * {@link PlayerEventDebug.channel} (or call {@link PlayerEventDebug.log}
+//  * {@link PlayerEventDebug.channel} (or call {@link PlayerEventDebug.log}
  * directly) so every message is gated by the same PRIORITY threshold
  * (`debugLevel` / `PlayerManagerOptions.debugLevel`), and tagged consistently.
  *

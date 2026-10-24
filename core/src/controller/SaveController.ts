@@ -2,6 +2,7 @@ import { Readable } from "stream";
 import type { AudioFilter, SaveOptions, SaveVideoOptions, Track, TrackMiddleware, TrackMiddlewareContext } from "../types";
 import { FilterEngine } from "./FilterController";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { PLAYER_RPC } from "../structures/BusContract";
 import type { SaveControllerOptions } from "../types";
 
@@ -19,7 +20,9 @@ interface SaveState {
 
 /** Shared non-playback export pipeline with active operations tracked per playerId. */
 export class SaveController {
-	public readonly states = new Map<string, SaveState>();
+	public get states(): Map<string, SaveState> {
+		return playerDataMap(this.bus, "controller.save.states");
+	}
 
 	public constructor(private readonly bus: Bus) {
 		bus.registerRpc<{ track: Track; options?: SaveOptions | string }, Readable>(
@@ -89,7 +92,7 @@ export class SaveController {
 		}
 
 		if (!saveOptions.filter?.length && (!saveOptions.seek || saveOptions.seek <= 0)) {
-			return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions);
+			return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions, streamInfo.metadata);
 		}
 
 		const filterController = new FilterEngine({ refreshPlayerResource: async () => true }, state.debug, undefined, {
@@ -110,7 +113,7 @@ export class SaveController {
 			this.throwIfAborted(state, operationSignal);
 			this.disposeFilterOnStreamEnd(state, filterController, output);
 			cleanupAbort();
-			return this.decorateStream(this.bindAbortToStream(output, operationSignal), saveOptions);
+			return this.decorateStream(this.bindAbortToStream(output, operationSignal), saveOptions, streamInfo.metadata);
 		} catch (error) {
 			cleanupAbort();
 			state.activeFilterEngines.delete(filterController);
@@ -145,7 +148,7 @@ export class SaveController {
 		if (saveOptions.filename) {
 			state.debug(`[SaveController] filename=${saveOptions.filename}, quality=${saveOptions.quality ?? "default"}`);
 		}
-		return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions);
+		return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions, streamInfo.metadata);
 	}
 
 	private prepareExportTrack(track: Track, options: SaveOptions): Track {
@@ -191,10 +194,10 @@ export class SaveController {
 		}
 	}
 
-	private decorateStream<T extends Readable>(stream: T, options: SaveOptions): T {
+	private decorateStream<T extends Readable>(stream: T, options: SaveOptions, streamInfoMetadata?: Record<string, any>): T {
 		const exportStream = stream as T & { filename?: string; metadata?: Record<string, any>; quality?: SaveOptions["quality"] };
 		if (options.filename) exportStream.filename = options.filename;
-		if (options.metadata) exportStream.metadata = { ...options.metadata };
+		exportStream.metadata = { ...(streamInfoMetadata ?? {}), ...(options.metadata ?? {}) };
 		if (options.quality) exportStream.quality = options.quality;
 		return exportStream;
 	}

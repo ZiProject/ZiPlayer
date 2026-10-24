@@ -5,10 +5,12 @@ import type { StreamInfo, Track } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { CONTROLLER_RPC, PLAYER_QUERY, type TtsIsTTSRequest, type TtsPlayRequest } from "../structures/BusContract";
 import type { TTSControllerOptions } from "../types";
 
 interface TTSState {
+	playerId: string;
 	ttsPlayer: AudioPlayer;
 	pluginManager: PluginManager;
 	extensionManager?: ExtensionManager;
@@ -26,7 +28,9 @@ interface TTSState {
 
 /** Shared TTS controller with audio and playback state isolated per playerId. */
 export class TTSController {
-	public readonly states = new Map<string, TTSState>();
+	public get states(): Map<string, TTSState> {
+		return playerDataMap(this.bus, "controller.tts.states");
+	}
 
 	constructor(private readonly bus: Bus) {
 		bus.registerQuery(PLAYER_QUERY.ttsHasPlayer, (playerId) => Boolean(this.states.get(playerId)?.ttsPlayer));
@@ -42,6 +46,7 @@ export class TTSController {
 	attach(playerId: string, options: Omit<TTSControllerOptions, "bus"> & { bus?: never }): void {
 		this.detach(playerId);
 		const state = {
+			playerId,
 			pluginManager: options.pluginManager,
 			extensionManager: options.extensionManager,
 			audioPlayer: options.audioPlayer,
@@ -77,7 +82,12 @@ export class TTSController {
 	}
 
 	private isTTS(track: Track): boolean {
-		return track.source?.toLowerCase() === "tts" || track.id?.toLowerCase().startsWith("tts-") || !!track.metadata?.tts;
+		return (
+			track.source?.toLowerCase() === "tts" ||
+			track.id?.toLowerCase().startsWith("tts-") ||
+			track.url?.toLowerCase().startsWith("tts://") ||
+			!!track.metadata?.tts
+		);
 	}
 
 	private async resolve(state: TTSState, track: Track): Promise<StreamInfo> {
@@ -85,7 +95,7 @@ export class TTSController {
 		try {
 			const extensionStream = state.extensionManager ? await state.extensionManager.provideStream(track) : null;
 			if (extensionStream?.stream || extensionStream?.remote) return extensionStream;
-			const stream = await state.pluginManager.getStream(track);
+			const stream = await state.pluginManager.getStream(track, { context: { playerId: state.playerId } });
 			if (!stream) throw new Error(`No TTS stream available for track: ${track.title}`);
 			return stream;
 		} catch (error) {
@@ -107,7 +117,7 @@ export class TTSController {
 	}
 
 	private getConnection(playerId: string): VoiceConnection | null {
-		return (this.bus.querySync(playerId, PLAYER_QUERY.connection) as VoiceConnection | null) ?? null;
+		return this.bus.querySync(playerId, PLAYER_QUERY.voiceConnection) ?? null;
 	}
 
 	private async playInternal(playerId: string, state: TTSState, track: Track): Promise<void> {
