@@ -676,6 +676,17 @@ export class PluginManager {
 		let plugins = this.getAll(playerId).filter((p) => typeof p.search === "function");
 		if (selectedPluginNames !== null && selectedPluginNames !== undefined) {
 			plugins = plugins.filter((p) => selectedPluginNames.includes(p.name.toLowerCase()));
+		} else {
+			plugins = plugins.filter((p) => {
+				if (typeof p.canHandle === "function") {
+					try {
+						return p.canHandle(query) !== false;
+					} catch {
+						return false;
+					}
+				}
+				return true;
+			});
 		}
 
 		if (!plugins.length) return null;
@@ -757,6 +768,17 @@ export class PluginManager {
 			const media = extractMediaId(track.url || "");
 
 			if (!shouldPrioritize && queryMedia && media && queryMedia.platform === media.platform && queryMedia.id === media.id) {
+				shouldPrioritize = true;
+			}
+
+			if (
+				!shouldPrioritize &&
+				query.trim().toLowerCase().startsWith("tts:") &&
+				(track.source?.toLowerCase() === "tts" ||
+					track.id?.toLowerCase().startsWith("tts-") ||
+					track.url?.toLowerCase().startsWith("tts://") ||
+					Boolean(track.metadata?.tts))
+			) {
 				shouldPrioritize = true;
 			}
 

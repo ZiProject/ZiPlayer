@@ -82,7 +82,12 @@ export class TTSController {
 	}
 
 	private isTTS(track: Track): boolean {
-		return track.source?.toLowerCase() === "tts" || track.id?.toLowerCase().startsWith("tts-") || !!track.metadata?.tts;
+		return (
+			track.source?.toLowerCase() === "tts" ||
+			track.id?.toLowerCase().startsWith("tts-") ||
+			track.url?.toLowerCase().startsWith("tts://") ||
+			!!track.metadata?.tts
+		);
 	}
 
 	private async resolve(state: TTSState, track: Track): Promise<StreamInfo> {

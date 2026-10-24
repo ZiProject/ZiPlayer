@@ -196,24 +196,40 @@ export class PlaybackPlayController {
 			const isTTS = (t: Track | undefined) => {
 				if (!t) return false;
 				try {
-					return typeof t.source === "string" && t.source.toLowerCase().includes("tts");
+					return (
+						(typeof t.source === "string" && t.source.toLowerCase().includes("tts")) ||
+						(typeof t.id === "string" && t.id.toLowerCase().startsWith("tts-")) ||
+						(typeof t.url === "string" && t.url.toLowerCase().startsWith("tts://")) ||
+						Boolean(t.metadata?.tts)
+					);
 				} catch {
 					return false;
 				}
 			};
-			const queryLooksTTS =
-				typeof effectiveRequest.query === "string" && effectiveRequest.query.trim().toLowerCase().startsWith("tts");
+			const checkIsTTS = (t: Track | undefined): boolean => {
+				if (!t) return false;
+				if (this.bus.hasRpc(CONTROLLER_RPC.ttsIsTTS)) {
+					return Boolean(
+						this.bus.requestRpcSync<{ track: Track }, boolean>(this.playerId, CONTROLLER_RPC.ttsIsTTS, {
+							track: t,
+						}),
+					);
+				}
+				return Boolean(this.adapters?.isTTS?.(t) ?? isTTS(t));
+			};
 
-			const isTTSTrack =
-				!isPlaylist &&
-				tracksToAdd.length > 0 &&
-				ttsInterruptEnabled &&
-				((this.bus.hasRpc(CONTROLLER_RPC.ttsIsTTS) ?
-					this.bus.requestRpcSync<{ track: Track }, boolean>(this.playerId, CONTROLLER_RPC.ttsIsTTS, {
-						track: tracksToAdd[0],
-					})
-				:	(this.adapters?.isTTS?.(tracksToAdd[0]) ?? isTTS(tracksToAdd[0]))) ||
-					queryLooksTTS);
+			const rawQuery = typeof effectiveRequest.query === "string" ? effectiveRequest.query.trim().toLowerCase() : "";
+			const queryLooksTTS = rawQuery.startsWith("tts:");
+
+			if (queryLooksTTS && tracksToAdd.length > 0 && !checkIsTTS(tracksToAdd[0])) {
+				const ttsIdx = tracksToAdd.findIndex(checkIsTTS);
+				if (ttsIdx > 0) {
+					const [ttsTrack] = tracksToAdd.splice(ttsIdx, 1);
+					tracksToAdd.unshift(ttsTrack);
+				}
+			}
+
+			const isTTSTrack = !isPlaylist && tracksToAdd.length > 0 && ttsInterruptEnabled && checkIsTTS(tracksToAdd[0]);
 
 			if (isTTSTrack) {
 				if (this.bus.hasRpc(CONTROLLER_RPC.ttsPlay)) {

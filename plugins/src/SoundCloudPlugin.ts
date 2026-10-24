@@ -135,15 +135,9 @@ export class SoundCloudPlugin extends BasePlugin {
 	async search(query: string, requestedBy: TrackRequester): Promise<SearchResult> {
 		await this.ready;
 
-		// If the query is a URL but not a SoundCloud URL, do not handle it here
-		// This prevents hijacking e.g. YouTube/Spotify links as free-text searches.
-		try {
-			const q = (query || "").trim().toLowerCase();
-			const isUrl = q.startsWith("http://") || q.startsWith("https://");
-			if (isUrl && !this.validate(query)) {
-				return { tracks: [] };
-			}
-		} catch {}
+		if (!this.canHandle(query)) {
+			return { tracks: [] };
+		}
 
 		try {
 			if (isValidSoundCloudHost(query)) {
