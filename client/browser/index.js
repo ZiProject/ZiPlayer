@@ -409,6 +409,7 @@ export class WebAudioClient extends EventTarget {
 		maxBufferSeconds = 2,
 		connectTimeoutMs = 5000,
 		analyserOptions = null,
+		workletUrl = null,
 	} = {}) {
 		super();
 		if (!Number.isFinite(startupBufferMs) || startupBufferMs < 0) {
@@ -436,9 +437,14 @@ export class WebAudioClient extends EventTarget {
 		this.opusDecoderFactory = opusDecoderFactory;
 		this.startupBufferMs = startupBufferMs;
 		this.maxBufferSeconds = maxBufferSeconds;
+		if (workletUrl !== null && workletUrl !== undefined && typeof workletUrl !== "string") {
+			throw new TypeError("workletUrl must be a string or null when provided");
+		}
 		this.connectTimeoutMs = connectTimeoutMs;
 		this.analyserOptions = analyserOptions;
+		this.workletUrl = workletUrl;
 		this.socket = null;
+		this.socketCleanup = null;
 		this.audioContext = null;
 		this.workletNode = null;
 		this.analyserNode = null;
@@ -463,6 +469,32 @@ export class WebAudioClient extends EventTarget {
 
 	getAudioContext() {
 		return this.audioContext;
+	}
+
+	async resume() {
+		if (this.audioContext && this.audioContext.state === "suspended") {
+			await this.audioContext.resume();
+			if (this.state === "paused" && this.config) {
+				this.setState("playing");
+			}
+		}
+		return this;
+	}
+
+	async unlockAudio() {
+		if (this.audioContext) {
+			if (this.audioContext.state === "suspended") {
+				await this.audioContext.resume();
+			}
+			try {
+				const buffer = this.audioContext.createBuffer(1, 1, this.audioContext.sampleRate || WEB_AUDIO_SAMPLE_RATE_HZ);
+				const source = this.audioContext.createBufferSource();
+				source.buffer = buffer;
+				source.connect(this.audioContext.destination);
+				source.start(0);
+			} catch {}
+		}
+		return this;
 	}
 
 	getFrequencyBands(options = {}) {
@@ -502,7 +534,7 @@ export class WebAudioClient extends EventTarget {
 		}
 		this.socket = socket;
 		socket.binaryType = "arraybuffer";
-		socket.addEventListener("message", (event) => {
+		const onMessage = (event) => {
 			if (this.socket !== socket) return;
 			try {
 				if (typeof event.data === "string") this.receiveControlMessage(event.data);
@@ -511,7 +543,8 @@ export class WebAudioClient extends EventTarget {
 				this.reportError(error);
 				socket.close(1002, "Invalid audio protocol message");
 			}
-		});
+		};
+		socket.addEventListener("message", onMessage);
 
 		try {
 			await new Promise((resolve, reject) => {
@@ -547,9 +580,9 @@ export class WebAudioClient extends EventTarget {
 			throw error;
 		}
 
-		socket.addEventListener("close", (event) => {
+		const onClose = (event) => {
 			if (this.socket !== socket) return;
-			this.socket = null;
+			this.detachSocket(socket);
 			this.config = null;
 			this.expectedSequence = null;
 			this.acceptNextSession = false;
@@ -564,18 +597,35 @@ export class WebAudioClient extends EventTarget {
 					this.setState("disconnected");
 					dispatchDetail(this, "close", { code: event.code, reason: event.reason });
 				});
-		});
-		socket.addEventListener("error", () => {
+		};
+		const onError = () => {
 			if (this.socket === socket) this.reportError(new Error("WebSocket transport error"));
-		});
+		};
+		this.socketCleanup = () => {
+			socket.removeEventListener("message", onMessage);
+			socket.removeEventListener("close", onClose);
+			socket.removeEventListener("error", onError);
+		};
+		socket.addEventListener("close", onClose);
+		socket.addEventListener("error", onError);
 		this.setState("connected");
 		dispatchDetail(this, "connected", { sessionId: this.sessionId, nextPublisher });
 		return this;
 	}
 
+	detachSocket(socket) {
+		if (this.socket === socket) {
+			this.socket = null;
+		}
+		if (this.socketCleanup) {
+			this.socketCleanup();
+			this.socketCleanup = null;
+		}
+	}
+
 	async disconnect() {
 		const socket = this.socket;
-		this.socket = null;
+		this.detachSocket(socket);
 		this.config = null;
 		this.expectedSequence = null;
 		this.acceptNextSession = false;
@@ -597,7 +647,12 @@ export class WebAudioClient extends EventTarget {
 			await this.closeAudioOutput();
 			throw new Error(`Browser audio device must support ${WEB_AUDIO_SAMPLE_RATE_HZ} Hz output`);
 		}
-		const moduleUrl = URL.createObjectURL(new Blob([createWorkletSource()], { type: "text/javascript" }));
+		let moduleUrl = this.workletUrl;
+		let isBlob = false;
+		if (!moduleUrl) {
+			moduleUrl = URL.createObjectURL(new Blob([createWorkletSource()], { type: "text/javascript" }));
+			isBlob = true;
+		}
 		try {
 			await context.audioWorklet.addModule(moduleUrl);
 			const startupBufferFrames = Math.round((this.startupBufferMs / 1000) * WEB_AUDIO_SAMPLE_RATE_HZ);
@@ -652,12 +707,21 @@ export class WebAudioClient extends EventTarget {
 			} else {
 				this.workletNode.connect(context.destination);
 			}
-			await context.resume();
+			try {
+				await context.resume();
+			} catch (resumeError) {
+				if (context.state !== "suspended") {
+					throw resumeError;
+				}
+				dispatchDetail(this, "suspended", { reason: "autoplay", error: resumeError });
+			}
 		} catch (error) {
 			await this.closeAudioOutput();
 			throw error;
 		} finally {
-			URL.revokeObjectURL(moduleUrl);
+			if (isBlob && moduleUrl) {
+				URL.revokeObjectURL(moduleUrl);
+			}
 		}
 	}
 
@@ -763,8 +827,6 @@ export class WebAudioClient extends EventTarget {
 				this.pendingOpusFrames.shift();
 			}
 			this.pendingOpusFrames.push(frame);
-			return;
-			dispatchDetail(this, "opus", frame);
 			return;
 		}
 		if (!this.opusDecoderReady) {

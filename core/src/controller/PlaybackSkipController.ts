@@ -2,7 +2,14 @@ import type { Bus } from "../structures/Bus";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext } from "../types";
 import type { PlaybackSkipControllerOptions } from "../types";
-import { BUS_EVENT, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
+import {
+	BUS_EVENT,
+	CONTROLLER_RPC,
+	PLAYER_QUERY,
+	PLAYER_RPC,
+	type TtsSkipRequest,
+	type TtsSkipResponse,
+} from "../structures/BusContract";
 
 /** Owns manual skip and its autoplay/queue fallback workflow. Talks to sibling
  * playback controllers only through Bus queries/RPCs — never by holding
@@ -53,6 +60,32 @@ export class PlaybackSkipController {
 
 	private async doSkip(context: PlayerMessageContext, index?: number): Promise<boolean> {
 		if (context.signal.aborted) return false;
+
+		// 1. If an utterance is actively playing, preparing, or queued for TTS,
+		// invoking skip must skip that TTS utterance without affecting underlying music.
+		if (typeof index !== "number" && this.bus.hasRpc(CONTROLLER_RPC.ttsSkip)) {
+			try {
+				const ttsResult = await this.bus.requestRpc<TtsSkipRequest, TtsSkipResponse>(
+					this.playerId,
+					CONTROLLER_RPC.ttsSkip,
+					{},
+					{ signal: context.signal },
+				);
+				if (ttsResult?.skipped) {
+					return true;
+				}
+			} catch (error) {
+				if (context.signal.aborted) return false;
+				// If ttsSkip failed unexpectedly, proceed only if TTS is genuinely inactive
+				const ttsActive = Boolean(this.bus.querySync(this.playerId, PLAYER_QUERY.ttsIsActive));
+				if (ttsActive) {
+					return true;
+				}
+			}
+		}
+
+		if (context.signal.aborted) return false;
+
 		const oldSession = this.currentSession();
 		const from = oldSession?.track ?? null;
 		if (oldSession && context.sessionId && oldSession.sessionId !== context.sessionId) return false;

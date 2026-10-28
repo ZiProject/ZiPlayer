@@ -71,6 +71,8 @@ export { PlaybackSessionController } from "./controller/PlaybackSessionControlle
 export { TransitionController } from "./controller/TransitionController";
 export { PreloadController } from "./controller/PreloadController";
 export { SaveController } from "./controller/SaveController";
+export { TTSController } from "./controller/TTSController";
+export { PlaybackSkipController } from "./controller/PlaybackSkipController";
 export { BusLatencyTrace } from "./controller/BusLatencyTrace";
 export { PlayerEventBridge } from "./controller/PlayerEventBridge";
 export { PlayerEventDebug, DEBUG_PRIORITY } from "./controller/PlayerEventDebug";

@@ -403,10 +403,27 @@ export class Player extends EventEmitter {
 
 		if (options.signal?.aborted) return false;
 
+		const isTTSQuery = (q: unknown): boolean => {
+			if (typeof q === "string" && q.trim().toLowerCase().startsWith("tts:")) return true;
+			if (q && typeof q === "object") {
+				const t = q as Track;
+				return Boolean(
+					(typeof t.source === "string" && t.source.toLowerCase().includes("tts")) ||
+					(typeof t.id === "string" && t.id.toLowerCase().startsWith("tts-")) ||
+					(typeof t.url === "string" && t.url.toLowerCase().startsWith("tts://")) ||
+					t.metadata?.tts,
+				);
+			}
+			return false;
+		};
+		const isTTS = isTTSQuery(query);
+
 		const generation = ++this.playGeneration;
 		const controller = new AbortController();
-		this.playAbortController?.abort();
-		this.playAbortController = controller;
+		if (!isTTS) {
+			this.playAbortController?.abort();
+			this.playAbortController = controller;
+		}
 
 		const combinedSignal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
 
@@ -415,10 +432,11 @@ export class Player extends EventEmitter {
 		const isResource =
 			query && typeof query === "object" && ("playStream" in query || ("readable" in query && "playbackDuration" in query));
 
-		const operation = this.playOperation
+		const operation = (isTTS ? Promise.resolve() : this.playOperation)
 			.catch(() => false as const)
 			.then(async () => {
-				if (generation !== this.playGeneration || combinedSignal.aborted) return false;
+				if (!isTTS && generation !== this.playGeneration) return false;
+				if (combinedSignal.aborted) return false;
 
 				if (isResource) {
 					const resource = query as AudioResource;
@@ -485,7 +503,9 @@ export class Player extends EventEmitter {
 				return playResult;
 			});
 
-		this.playOperation = operation.then((res) => Boolean(res));
+		if (!isTTS) {
+			this.playOperation = operation.then((res) => Boolean(res));
+		}
 		return operation.finally(() => {
 			if (this.playAbortController === controller) this.playAbortController = null;
 		});
@@ -579,7 +599,10 @@ export class Player extends EventEmitter {
 				return false;
 			}
 		}
-		this.invalidatePlay();
+		const ttsActive = Boolean(this.bus.querySync(this.playerId, PLAYER_QUERY.ttsIsActive));
+		if (!ttsActive) {
+			this.invalidatePlay();
+		}
 		return this.action({ type: PLAYER_ACTION.skip, index, signal } as any)
 			.then(() => !signal?.aborted)
 			.catch(() => false);

@@ -401,6 +401,7 @@ export interface PlayerQueryMap {
 	"stream.state": any;
 	"stream.current": any;
 	ttsInterrupt: boolean;
+	"tts.isActive": boolean;
 	currentTrack: Track | null;
 	queueCurrent: Track | null;
 	playerState: PlaybackSessionSnapshot["status"];

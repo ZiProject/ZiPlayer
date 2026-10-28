@@ -179,3 +179,8 @@ export interface TtsIsTTSRequest {
 export interface TtsPlayRequest {
 	track: Track;
 }
+export interface TtsSkipRequest {}
+export interface TtsSkipResponse {
+	skipped: boolean;
+}
+export interface TtsStopRequest {}

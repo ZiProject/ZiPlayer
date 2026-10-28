@@ -98,23 +98,13 @@ export interface FrequencyBandOptions {
 	weighting?: boolean;
 
 	/**
-	 * Apply 5-point Gaussian spatial smoothing across adjacent bands (like After Effects)
-	 * to create continuous, organic curves instead of jagged isolated spikes.
-	 * Set to false to disable.
-	 * @default true
-	 */
-	spatialSmoothing?: boolean;
-
-	/**
-	 * Soft-knee compression threshold (0 to 1). When amplitudes exceed this threshold,
-	 * a non-linear tanh curve smoothly compresses the peak to prevent flat table-top clipping.
-	 * Set to false to disable.
+	 * Soft-knee compression exponent for visual appeal.
 	 * @default 0.7
 	 */
-	softKnee?: number | false;
+	softKnee?: number;
 
 	/**
-	 * Target Float32Array to write output into. If provided, reuses this buffer to avoid GC allocations.
+	 * Pre-allocated Float32Array of length >= bands to write results into without allocation.
 	 */
 	outputBuffer?: Float32Array;
 
@@ -126,7 +116,7 @@ export interface FrequencyBandOptions {
 
 export interface BassEnergyOptions {
 	/**
-	 * Minimum sub-bass frequency in Hz.
+	 * Minimum kick/sub-bass frequency in Hz.
 	 * @default 45
 	 */
 	minHz?: number;
@@ -161,6 +151,11 @@ export interface WebAudioClientOptions {
 	maxBufferSeconds?: number;
 	connectTimeoutMs?: number;
 	analyserOptions?: WebAudioAnalyserOptions | false;
+	/**
+	 * Custom URL for the AudioWorklet script processor.
+	 * Useful in Electron / Tauri environments with strict CSP where blob: URLs are disallowed.
+	 */
+	workletUrl?: string | null;
 }
 
 export interface WebAudioConnectOptions {
@@ -182,6 +177,7 @@ export interface WebAudioClientEventMap {
 	control: CustomEvent<Record<string, unknown>>;
 	error: CustomEvent<{ error: Error }>;
 	close: CustomEvent<{ code: number; reason: string }>;
+	suspended: CustomEvent<{ reason: string; error: unknown }>;
 }
 
 export declare class WebAudioClient extends EventTarget {
@@ -197,6 +193,8 @@ export declare class WebAudioClient extends EventTarget {
 	getBassEnergy(options?: BassEnergyOptions): number;
 	connect(options: WebAudioConnectOptions): Promise<this>;
 	disconnect(): Promise<void>;
+	resume(): Promise<this>;
+	unlockAudio(): Promise<this>;
 	addEventListener<K extends keyof WebAudioClientEventMap>(
 		type: K,
 		callback: (this: WebAudioClient, event: WebAudioClientEventMap[K]) => unknown,

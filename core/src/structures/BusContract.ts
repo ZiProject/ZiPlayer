@@ -51,6 +51,9 @@ export type {
 	TrackGetRecoveryCountRequest,
 	TtsIsTTSRequest,
 	TtsPlayRequest,
+	TtsSkipRequest,
+	TtsSkipResponse,
+	TtsStopRequest,
 } from "../types";
 
 // ---------------------------------------------------------------------
@@ -173,6 +176,8 @@ export const CONTROLLER_RPC = {
 	playerEmitTtsEnd: "player.emitTtsEnd",
 	ttsIsTTS: "controller.tts.isTTS",
 	ttsPlay: "controller.tts.play",
+	ttsSkip: "controller.tts.skip",
+	ttsStop: "controller.tts.stop",
 	extensionBeforePlay: "extension.beforePlay",
 	extensionAfterPlay: "extension.afterPlay",
 	playbackRemoteAttach: "controller.playback.remote.attach",
@@ -357,6 +362,7 @@ export const PLAYER_QUERY = {
 	streamState: "stream.state",
 	streamCurrent: "stream.current",
 	ttsInterrupt: "ttsInterrupt",
+	ttsIsActive: "tts.isActive",
 	currentTrack: "currentTrack",
 	queueCurrent: "queueCurrent",
 	playerState: "playerState",

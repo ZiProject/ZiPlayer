@@ -173,6 +173,78 @@ Options default to a 100 ms startup buffer, a two-second maximum AudioWorklet FI
 The AudioContext must support 48 kHz output. Browsers require HTTPS/WSS outside localhost. Because browser WebSocket clients
 cannot set authorization headers, the gateway URL carries the listener token in a query parameter; use short-lived credentials.
 
+## Desktop Audio Support (Electron and Tauri)
+
+`@ziplayer/client` is fully compatible with desktop applications running Electron renderer processes and Tauri WebViews without
+needing Node.js integration or custom native C/Rust audio backends.
+
+### Electron Integration
+
+In Electron, use the client directly within the renderer process. Maintain Electron security best practices
+(`contextIsolation: true`, `nodeIntegration: false`):
+
+```js
+// In Electron Renderer process (e.g. renderer.js)
+import { WebAudioClient } from "@ziplayer/client";
+
+const client = new WebAudioClient();
+
+// Handle Autoplay restrictions / suspended AudioContext:
+client.addEventListener("suspended", () => {
+	console.log("Audio suspended awaiting user interaction. Click anywhere to resume.");
+});
+
+// Bind to user click/gesture:
+document.getElementById("play-button").addEventListener("click", async () => {
+	await client.unlockAudio(); // Resumes AudioContext
+	await client.connect({
+		gatewayUrl: "ws://127.0.0.1:8080",
+		sessionId: "electron-player",
+	});
+});
+
+// Clean up on window unload:
+window.addEventListener("beforeunload", async () => {
+	await client.disconnect();
+});
+```
+
+### Tauri Integration
+
+In Tauri (Wry/WebView2 on Windows, WebKitGTK on Linux, WebKit on macOS), ensure your Content Security Policy (CSP) in
+`tauri.conf.json` permits WebSocket connections and WASM execution:
+
+```json
+{
+	"tauri": {
+		"security": {
+			"csp": "default-src 'self'; connect-src 'self' ws: wss:; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:;"
+		}
+	}
+}
+```
+
+If your Tauri CSP disallows `blob:` in `script-src`, supply a pre-bundled `workletUrl`:
+
+```js
+const client = new WebAudioClient({
+	workletUrl: "./audio-worklet-processor.js",
+});
+```
+
+To handle mobile/desktop WebView autoplay policy, call `client.unlockAudio()` or `client.resume()` from a UI click handler:
+
+```js
+// React / Svelte / Vue click handler
+async function handleUserPlay() {
+	await client.unlockAudio();
+	await client.connect({
+		gatewayUrl: "ws://127.0.0.1:8080",
+		sessionId: "tauri-player",
+	});
+}
+```
+
 ## TypeScript
 
 Declarations are included. The browser APIs require the TypeScript `DOM` library.
