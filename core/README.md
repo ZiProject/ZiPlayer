@@ -144,8 +144,8 @@ client.login(process.env.DISCORD_TOKEN);
 ## 🌐 Browser Playback with `@ziplayer/client`
 
 Browser playback uses `WebAudioConnection` to subscribe to the shared `AudioPlayer` and publish Opus packets. It can fan out the
-same server-volume-adjusted Opus packets as Discord Voice. The WebSocket gateway is application-provided; ZiPlayer does not
-create or host it.
+same server-volume-adjusted Opus packets as Discord Voice. The WebSocket gateway is application-provided; ZiPlayer does not create
+or host it.
 
 Install the browser receiver separately:
 
@@ -232,26 +232,41 @@ Replace `index.html` with a small page containing the gateway URL and the exact 
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1.0" />
 		<title>ZiPlayer listener</title>
 	</head>
 	<body>
 		<label>
 			Gateway WebSocket URL
-			<input id="gateway" value="ws://127.0.0.1:8080" />
+			<input
+				id="gateway"
+				value="ws://127.0.0.1:8080" />
 		</label>
 		<label>
 			Player ID
-			<input id="session" value="web-audio-demo" />
+			<input
+				id="session"
+				value="web-audio-demo" />
 		</label>
 		<label>
 			Token (if required by your gateway)
-			<input id="token" type="password" autocomplete="off" />
+			<input
+				id="token"
+				type="password"
+				autocomplete="off" />
 		</label>
 		<button id="connect">Listen</button>
-		<button id="disconnect" disabled>Disconnect</button>
+		<button
+			id="disconnect"
+			disabled>
+			Disconnect
+		</button>
 		<p id="status">Disconnected</p>
-		<script type="module" src="/src/main.js"></script>
+		<script
+			type="module"
+			src="/src/main.js"></script>
 	</body>
 </html>
 ```
@@ -637,11 +652,10 @@ const subscription = await player.connect(webConnection);
 await subscription.disconnect(); // Discord playback continues
 ```
 
-The source `Readable` is wrapped in an inline-volume Discord `AudioResource` and played once through the shared
-`@discordjs/voice` `AudioPlayer`. The player applies volume and fans out Opus packets directly to the Discord Voice and
-`WebAudioConnection` subscribers. Remove a browser subscriber by its registration handle or with
-`player.disconnectWebAudio(id)`. Generic stream-output backends and output factories are not part of the player API.
-The shared `ConnectionController` owns each player's voice and WebAudio connection state; `Player` delegates WebAudio
-registration, lookup, and teardown through the Bus. `player.connections` (also exposed through
-`PLAYER_QUERY.connection`) returns all currently subscribed Voice and WebAudio connections; each WebAudio connection can be
-removed through its registration handle or destroyed during player teardown.
+The source `Readable` is wrapped in an inline-volume Discord `AudioResource` and played once through the shared `@discordjs/voice`
+`AudioPlayer`. The player applies volume and fans out Opus packets directly to the Discord Voice and `WebAudioConnection`
+subscribers. Remove a browser subscriber by its registration handle or with `player.disconnectWebAudio(id)`. Generic stream-output
+backends and output factories are not part of the player API. The shared `ConnectionController` owns each player's voice and
+WebAudio connection state; `Player` delegates WebAudio registration, lookup, and teardown through the Bus. `player.connections`
+(also exposed through `PLAYER_QUERY.connection`) returns all currently subscribed Voice and WebAudio connections; each WebAudio
+connection can be removed through its registration handle or destroyed during player teardown.

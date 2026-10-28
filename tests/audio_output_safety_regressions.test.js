@@ -70,8 +70,5 @@ test("per-engine concurrency validation does not mutate the process-wide FFmpeg 
 });
 
 test("FFmpeg cannot bypass redirect-safe URL input using direct URL mode", () => {
-	assert.throws(
-		() => resolveAudioProcessingOptions({ allowFfmpegUrlInput: true }),
-		/disabled.*redirect-by-redirect/i,
-	);
+	assert.throws(() => resolveAudioProcessingOptions({ allowFfmpegUrlInput: true }), /disabled.*redirect-by-redirect/i);
 });

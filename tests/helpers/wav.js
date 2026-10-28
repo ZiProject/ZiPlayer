@@ -57,7 +57,7 @@ function wavSource({
 	return (async function* () {
 		try {
 			yield wavHeader({ dataBytes: totalFrames * channels * 2, sampleRate, channels });
-			for (let frame = 0; frame < totalFrames;) {
+			for (let frame = 0; frame < totalFrames; ) {
 				if (hangAfter != null && stats.pulled >= hangAfter) await new Promise(() => {});
 				if (errorAfter != null && stats.pulled >= errorAfter) throw new Error("ECONNRESET");
 				const frames = Math.min(framesPerChunk, totalFrames - frame);

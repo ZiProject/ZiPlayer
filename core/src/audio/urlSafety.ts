@@ -29,7 +29,7 @@ function ipv4ToInt(address: string): number | null {
 }
 
 function inV4Cidr(value: number, network: number, mask: number): boolean {
-	return ((value & mask) >>> 0) === (network >>> 0);
+	return (value & mask) >>> 0 === network >>> 0;
 }
 
 function isBlockedIPv4(address: string): boolean {
@@ -67,7 +67,7 @@ function parseIPv6Words(address: string): number[] | null {
 	if (halves.length > 2) return null;
 	const left = halves[0] ? halves[0].split(":") : [];
 	const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
-	const parse = (parts: string[]) => parts.map((part) => /^[0-9a-f]{1,4}$/.test(part) ? Number.parseInt(part, 16) : -1);
+	const parse = (parts: string[]) => parts.map((part) => (/^[0-9a-f]{1,4}$/.test(part) ? Number.parseInt(part, 16) : -1));
 	const lhs = parse(left);
 	const rhs = parse(right);
 	if ([...lhs, ...rhs].some((word) => word < 0)) return null;

@@ -1,6 +1,5 @@
-export type AudioFrameFormat =
-	| {
-			kind: "encoded";
-			codec?: string;
-			container?: string;
-	  };
+export type AudioFrameFormat = {
+	kind: "encoded";
+	codec?: string;
+	container?: string;
+};

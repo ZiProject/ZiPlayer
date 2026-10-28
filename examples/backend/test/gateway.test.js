@@ -141,10 +141,7 @@ test("a next-track listener receives the publisher config and first PCM frame", 
 		replacementPublisher.send(encodeWebAudioOpusFrame(Buffer.from([0xf8, 0xff, 0xfe, 1]), 0, 0), { binary: true });
 		const replacementFrame = await replacementFrameMessage;
 		assert.equal(replacementFrame.isBinary, true);
-		assert.deepEqual(
-			Buffer.from(replacementFrame.data),
-			encodeWebAudioOpusFrame(Buffer.from([0xf8, 0xff, 0xfe, 1]), 0, 0),
-		);
+		assert.deepEqual(Buffer.from(replacementFrame.data), encodeWebAudioOpusFrame(Buffer.from([0xf8, 0xff, 0xfe, 1]), 0, 0));
 	} finally {
 		listener?.close();
 		publisher?.close();
@@ -573,9 +570,7 @@ test("queue, loop, autoplay, and filter controls are validated and routed", asyn
 
 test("audio output controls and /outputs endpoint query and route correctly", async () => {
 	const controlCalls = [];
-	const outputs = [
-		{ id: "webaudio-p1", name: "Web Audio (p1)", state: "playing" },
-	];
+	const outputs = [{ id: "webaudio-p1", name: "Web Audio (p1)", state: "playing" }];
 	const gateway = createWebAudioGateway({
 		host: "127.0.0.1",
 		port: 0,

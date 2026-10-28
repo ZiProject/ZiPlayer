@@ -10,8 +10,8 @@
   `AudioResource`.
 - There is no server-side PCM output path, `AudioOutputBackend`, `DiscordVoiceOutputBackend`, `MultiAudioOutputBackend`, or
   output-backend factory. Generic stream-output backends are not accepted by `Player.connect()`.
-- PCM remains an internal DSP/codec representation and is produced locally by browser Opus decoding for AudioWorklet playback;
-  PCM is not sent over the WebSocket protocol.
+- PCM remains an internal DSP/codec representation and is produced locally by browser Opus decoding for AudioWorklet playback; PCM
+  is not sent over the WebSocket protocol.
 - FFmpeg protections remain in place, including executable selection, concurrency limits, redirect-by-redirect URL validation with
   DNS address pinning, and rejection of unsafe direct FFmpeg URL input.
 

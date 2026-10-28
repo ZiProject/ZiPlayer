@@ -123,10 +123,16 @@ export function resolveAudioProcessingOptions(...layers: AudioProcessingOptions[
 		throw new TypeError("Audio processing gainDb and gainLinear cannot both be configured");
 	}
 	const nyquist = (resolved.resampleRate ?? resolved.sampleRate) / 2;
-	if (resolved.highpassHz != null && (!isFiniteNumber(resolved.highpassHz) || resolved.highpassHz <= 0 || resolved.highpassHz > nyquist)) {
+	if (
+		resolved.highpassHz != null &&
+		(!isFiniteNumber(resolved.highpassHz) || resolved.highpassHz <= 0 || resolved.highpassHz > nyquist)
+	) {
 		throw new TypeError("Audio processing highpassHz must be a positive finite number no greater than Nyquist");
 	}
-	if (resolved.lowpassHz != null && (!isFiniteNumber(resolved.lowpassHz) || resolved.lowpassHz <= 0 || resolved.lowpassHz > nyquist)) {
+	if (
+		resolved.lowpassHz != null &&
+		(!isFiniteNumber(resolved.lowpassHz) || resolved.lowpassHz <= 0 || resolved.lowpassHz > nyquist)
+	) {
 		throw new TypeError("Audio processing lowpassHz must be a positive finite number no greater than Nyquist");
 	}
 	if (resolved.resampleRate != null && (!isFiniteNumber(resolved.resampleRate) || !isAllowedSampleRate(resolved.resampleRate))) {
@@ -157,9 +163,10 @@ export function resolveAudioProcessingOptions(...layers: AudioProcessingOptions[
 	if (resolved.encodedBitrate != null) {
 		const bitrate = resolved.encodedBitrate;
 		if (typeof bitrate === "number") {
-			if (!Number.isFinite(bitrate) || bitrate <= 0) throw new TypeError("Audio processing encodedBitrate must be a positive number");
+			if (!Number.isFinite(bitrate) || bitrate <= 0)
+				throw new TypeError("Audio processing encodedBitrate must be a positive number");
 		} else if (typeof bitrate !== "string" || !/^\d+k?$/i.test(bitrate)) {
-			throw new TypeError("Audio processing encodedBitrate must be a positive bitrate such as 128000 or \"128k\"");
+			throw new TypeError('Audio processing encodedBitrate must be a positive bitrate such as 128000 or "128k"');
 		}
 	}
 	if (resolved.maxInputBytes != null && (!isFiniteNumber(resolved.maxInputBytes) || resolved.maxInputBytes <= 0)) {
@@ -171,14 +178,22 @@ export function resolveAudioProcessingOptions(...layers: AudioProcessingOptions[
 	if (resolved.stallTimeoutMs != null && (!isFiniteNumber(resolved.stallTimeoutMs) || resolved.stallTimeoutMs <= 0)) {
 		throw new TypeError("Audio processing stallTimeoutMs must be a positive finite number or null");
 	}
-	if (resolved.ffmpegThreads != null && (!Number.isInteger(resolved.ffmpegThreads) || resolved.ffmpegThreads < 1 || resolved.ffmpegThreads > 8)) {
+	if (
+		resolved.ffmpegThreads != null &&
+		(!Number.isInteger(resolved.ffmpegThreads) || resolved.ffmpegThreads < 1 || resolved.ffmpegThreads > 8)
+	) {
 		throw new TypeError("Audio processing ffmpegThreads must be an integer from 1 to 8");
 	}
-	if (resolved.maxConcurrentProcesses != null && (!Number.isInteger(resolved.maxConcurrentProcesses) || resolved.maxConcurrentProcesses <= 0)) {
+	if (
+		resolved.maxConcurrentProcesses != null &&
+		(!Number.isInteger(resolved.maxConcurrentProcesses) || resolved.maxConcurrentProcesses <= 0)
+	) {
 		throw new TypeError("maxConcurrentProcesses must be a positive integer");
 	}
 	if (resolved.allowFfmpegUrlInput) {
-		throw new TypeError("allowFfmpegUrlInput is disabled: FFmpeg cannot safely enforce redirect-by-redirect URL validation; use safe Node HTTP input instead");
+		throw new TypeError(
+			"allowFfmpegUrlInput is disabled: FFmpeg cannot safely enforce redirect-by-redirect URL validation; use safe Node HTTP input instead",
+		);
 	}
 	return resolved;
 }
@@ -325,15 +340,7 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 					source = fetched;
 				}
 
-				const args = [
-					"-hide_banner",
-					"-loglevel",
-					"error",
-					"-threads",
-					String(threads),
-					"-protocol_whitelist",
-					PIPE_PROTOCOLS,
-				];
+				const args = ["-hide_banner", "-loglevel", "error", "-threads", String(threads), "-protocol_whitelist", PIPE_PROTOCOLS];
 				args.push(...buildInputArgs(options));
 				args.push("-i", "pipe:0", "-vn");
 				if (typeof context.seekMs === "number" && context.seekMs > 0) {
@@ -417,14 +424,17 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 
 			let stallTimer: ReturnType<typeof setInterval> | null = null;
 			if (stallTimeoutMs != null) {
-				stallTimer = setInterval(() => {
-					if (aborted || waitingForDrain || waitingForConsumer) return;
-					if (Date.now() - lastActivity < stallTimeoutMs) return;
-					stallError = new Error(`FFmpeg stalled for ${stallTimeoutMs}ms with no input or output`);
-					aborted = true;
-					kill();
-					releaseInput();
-				}, Math.min(1000, stallTimeoutMs));
+				stallTimer = setInterval(
+					() => {
+						if (aborted || waitingForDrain || waitingForConsumer) return;
+						if (Date.now() - lastActivity < stallTimeoutMs) return;
+						stallError = new Error(`FFmpeg stalled for ${stallTimeoutMs}ms with no input or output`);
+						aborted = true;
+						kill();
+						releaseInput();
+					},
+					Math.min(1000, stallTimeoutMs),
+				);
 				stallTimer.unref?.();
 			}
 
@@ -455,8 +465,7 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 				})();
 			}
 
-			const failMessage = (prefix: string, detail?: string) =>
-				`${prefix}${detail ? `: ${sanitizeFfmpegLog(detail)}` : ""}`;
+			const failMessage = (prefix: string, detail?: string) => `${prefix}${detail ? `: ${sanitizeFfmpegLog(detail)}` : ""}`;
 
 			try {
 				for await (const raw of stdout) {
@@ -487,7 +496,10 @@ class FFmpegAudioProcessingPipeline implements AudioProcessingPipeline {
 				}
 				if (exitCode !== 0) {
 					throw new Error(
-						failMessage(`FFmpeg exited with code ${exitCode ?? "null"}${exitSignal ? ` (${exitSignal})` : ""}`, stderrTail || "no stderr"),
+						failMessage(
+							`FFmpeg exited with code ${exitCode ?? "null"}${exitSignal ? ` (${exitSignal})` : ""}`,
+							stderrTail || "no stderr",
+						),
 					);
 				}
 			} finally {
