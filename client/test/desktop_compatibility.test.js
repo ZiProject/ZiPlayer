@@ -142,6 +142,46 @@ test("Desktop WebAudioClient: AudioContext starting suspended by Autoplay policy
 	}
 });
 
+test("Desktop WebAudioClient: unlockAudio() called before connect() initializes and unlocks AudioContext without recreation", async () => {
+	const originalNode = globalThis.AudioWorkletNode;
+	globalThis.AudioWorkletNode = MockAudioWorkletNode;
+
+	let socketInstance;
+	let contextInstance;
+	let contextCreatedCount = 0;
+
+	const client = new WebAudioClient({
+		audioContextFactory: () => {
+			contextCreatedCount++;
+			contextInstance = createMockAudioContext({ state: "suspended" });
+			return contextInstance;
+		},
+		webSocketFactory: (url) => {
+			socketInstance = new MockSocket(url);
+			queueMicrotask(() => socketInstance.open());
+			return socketInstance;
+		},
+		analyserOptions: false,
+	});
+
+	try {
+		// 1. Call unlockAudio() BEFORE connect()
+		await client.unlockAudio();
+		assert.equal(contextCreatedCount, 1, "unlockAudio() should create AudioContext if not present");
+		assert.equal(contextInstance.state, "running", "unlockAudio() should resume the AudioContext");
+
+		// 2. Call connect() - should reuse the already unlocked AudioContext
+		await client.connect({ gatewayUrl: "ws://127.0.0.1:8080", sessionId: "sess-pre-unlocked" });
+		assert.equal(client.state, "connected");
+		assert.equal(contextCreatedCount, 1, "connect() must not destroy or recreate the AudioContext");
+		assert.equal(client.getAudioContext(), contextInstance);
+		assert.equal(contextInstance.state, "running");
+	} finally {
+		await client.disconnect();
+		globalThis.AudioWorkletNode = originalNode;
+	}
+});
+
 test("Desktop WebAudioClient: custom workletUrl bypasses blob URL creation for strict CSP", async () => {
 	const originalNode = globalThis.AudioWorkletNode;
 	globalThis.AudioWorkletNode = MockAudioWorkletNode;

@@ -40,6 +40,30 @@
   from audio suspension upon user click without tearing down and reconnecting the entire WebSocket connection.
 - **Defect**: Unreachable dead code in `receiveOpusFrame()` (dispatch after return).
 
+### 5. `Player.play()` False-Negative Return on Concurrent TTS Requests
+
+- **Component**: `core/src/structures/Player.ts`
+- **Defect**: `Player.play()` incremented `this.playGeneration` unconditionally (`const generation = ++this.playGeneration;`) and
+  checked `if (generation !== this.playGeneration || combinedSignal.aborted) return false;` after RPC completion.
+- **Reproduction**: Calling `player.play("tts:A")` immediately followed by `player.play("tts:B")` caused request B to increment
+  `this.playGeneration`. When request A completed playing via the FIFO queue, its `generation` no longer matched
+  `this.playGeneration`, causing `player.play("tts:A")` to return `false` despite audio having played successfully.
+
+### 6. `WebAudioClient` TypeScript Declaration Incompatibility with `EventTarget`
+
+- **Component**: `client/index.d.ts`
+- **Defect**: `WebAudioClient` declared generic `addEventListener` and `removeEventListener` signatures without overload
+  declarations matching base `EventTarget` (`(type: string, callback: EventListenerOrEventListenerObject | null, ...)`).
+- **Reproduction**: Compiling TypeScript projects importing `WebAudioClient` with strict types triggered `error TS2416` and
+  `error TS2322`.
+
+### 7. `unlockAudio()` Ineffective When Called Prior to `connect()`
+
+- **Component**: `client/browser/index.js`
+- **Defect**: `unlockAudio()` only checked `if (this.audioContext)` and was a no-op if called before `connect()`. Furthermore,
+  `connect()` unconditionally ran `if (this.socket || this.audioContext) await this.disconnect();`, closing any existing unlocked
+  `AudioContext` and creating a new one outside the synchronous user interaction gesture.
+
 ---
 
 ## B. Implementation Decisions
@@ -86,9 +110,14 @@
 
 - In `Player.play()`:
   - Queries are inspected with `isTTSQuery()`.
-  - For music queries, `this.playAbortController` is aborted to cancel superseded track loads.
-  - For TTS queries, `this.playAbortController` is NOT aborted, allowing sequential and concurrent `player.play("tts:...")`
-    requests to enter the `TTSController` queue without mutual cancellation.
+  - For music queries, `this.playAbortController` is aborted to cancel superseded track loads, and `this.playGeneration` is
+    incremented.
+  - For TTS queries:
+    - `this.playAbortController` is NOT aborted, allowing sequential and concurrent `player.play("tts:...")` requests to enter the
+      `TTSController` queue without mutual cancellation.
+    - `this.playGeneration` is NOT incremented (`const generation = isTTS ? 0 : ++this.playGeneration;`), and completion checks
+      skip generation matching (`if ((!isTTS && generation !== this.playGeneration) || combinedSignal.aborted) return false;`),
+      ensuring that all queued TTS requests return their valid `PlayResult` once spoken.
 - In `Player.skip()`:
   - Skip checks `PLAYER_QUERY.ttsIsActive`. If active, `this.invalidatePlay()` is skipped so subsequent queued TTS utterances are
     preserved.
@@ -98,10 +127,15 @@
 - Added `workletUrl` option to `WebAudioClient` to allow loading AudioWorklet processor files directly in strict CSP environments
   where `blob:` is disallowed.
 - Added `resume()` and `unlockAudio()` methods on `WebAudioClient` to recover from `suspended` state following user gesture.
+- `unlockAudio()` initializes and resumes the `AudioContext` and plays a silent buffer if called prior to `connect()`.
+- `connect()` reuses any existing, active `AudioContext` instead of tearing it down, flushing pending worklet frames and ensuring
+  pre-unlocked audio state remains intact.
 - In `createAudioOutput()`, catch Autoplay `NotAllowedError` / suspended state during initial connect, dispatching a `"suspended"`
   event rather than terminating `connect()`.
 - Implemented socket listener cleanup on `disconnect()` and socket closure to prevent listener accumulation on repeated
   connect/disconnect cycles.
+- Added base `EventTarget` overloads to `addEventListener` and `removeEventListener` in `client/index.d.ts` for strict TypeScript
+  compilation.
 
 ---
 
@@ -157,9 +191,9 @@
 - `npm run build:core:fast`: Built core TypeScript into `dist/` (passed, 180ms).
 - `node --test tests/tts_queue_skip_lifecycle.test.js`: Ran all 9 new TTS queue, skip, and lifecycle regression tests (passed,
   10.8s).
-- `npm test --prefix client`: Ran all 28 browser and desktop compatibility tests in client package (passed, 229ms).
+- `npm test --prefix client`: Ran all 29 browser and desktop compatibility tests in client package (passed, 241ms).
 - `npm run test:integration`: Ran all 13 plugin and extension integration tests (passed, 4.3s).
-- `node --test tests/*.test.js`: Ran all root test suites (235 passed, 0 failed, 2 skipped across 44 test files).
+- `node --test tests/*.test.js`: Ran all root test suites (236 passed, 0 failed, 2 skipped across 44 test files).
 - `git diff --check`: Verified no whitespace errors or leftover markers.
 
 ### 2. Real-Runtime Desktop Checks Not Performed

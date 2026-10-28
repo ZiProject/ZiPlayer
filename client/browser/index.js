@@ -482,9 +482,14 @@ export class WebAudioClient extends EventTarget {
 	}
 
 	async unlockAudio() {
+		if (!this.audioContext || this.audioContext.state === "closed") {
+			await this.createAudioOutput();
+		}
 		if (this.audioContext) {
 			if (this.audioContext.state === "suspended") {
-				await this.audioContext.resume();
+				try {
+					await this.audioContext.resume();
+				} catch {}
 			}
 			try {
 				const buffer = this.audioContext.createBuffer(1, 1, this.audioContext.sampleRate || WEB_AUDIO_SAMPLE_RATE_HZ);
@@ -513,8 +518,35 @@ export class WebAudioClient extends EventTarget {
 		if (!nextPublisher && (typeof sessionId !== "string" || !sessionId || sessionId.length > 128)) {
 			throw new TypeError("sessionId is required unless nextPublisher is enabled");
 		}
-		if (this.socket || this.audioContext) await this.disconnect();
-		await this.createAudioOutput();
+		if (this.socket) {
+			const socket = this.socket;
+			this.detachSocket(socket);
+			if (socket.readyState < 2) socket.close(1000, "Listener reconnecting");
+		}
+		this.config = null;
+		this.expectedSequence = null;
+		this.acceptNextSession = false;
+		this.opusDecoderGeneration++;
+		this.opusDecoder?.free();
+		this.opusDecoder = null;
+		this.opusDecoderReady = false;
+		this.pendingOpusFrames = [];
+
+		if (!this.audioContext || this.audioContext.state === "closed") {
+			await this.createAudioOutput();
+		} else {
+			this.workletNode?.port.postMessage({ type: "flush" });
+			if (this.audioContext.state === "suspended") {
+				try {
+					await this.audioContext.resume();
+				} catch (resumeError) {
+					if (this.audioContext.state !== "suspended") {
+						throw resumeError;
+					}
+					dispatchDetail(this, "suspended", { reason: "autoplay", error: resumeError });
+				}
+			}
+		}
 
 		const url = new URL(nextPublisher ? "/listen-next" : "/listen", gatewayUrl);
 		if (typeof sessionId === "string" && sessionId) url.searchParams.set("sessionId", sessionId);

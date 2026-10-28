@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { PlayerManager, BasePlugin, CONTROLLER_RPC, PLAYER_RPC } = require("../core/dist");
+const { Readable } = require("node:stream");
+const { PlayerManager, BasePlugin, CONTROLLER_RPC, PLAYER_RPC, PLAYER_QUERY } = require("../core/dist");
 
 class MockTTSPlugin extends BasePlugin {
 	name = "tts";
@@ -199,4 +200,57 @@ test("PlaybackPlayController does not call ttsPlay with a non-TTS track", async 
 	assert.equal(ttsPlayCalled, false, "ttsPlay should NOT be called for a non-TTS track");
 	assert.ok(res);
 	assert.equal(res.track.id, "regular-song");
+});
+
+test("Concurrent player.play() for TTS A and B both return valid PlayResult in FIFO order", async (t) => {
+	const executionOrder = [];
+
+	class StreamingTTSPlugin extends MockTTSPlugin {
+		async getStream(track) {
+			executionOrder.push({ id: track.id, title: track.title, status: "stream_requested" });
+			const s = new Readable({
+				read() {
+					this.push(Buffer.alloc(100));
+					this.push(null);
+				},
+			});
+			return { stream: s, remote: false };
+		}
+	}
+
+	const mgr = new PlayerManager({
+		autoCleanup: false,
+		plugins: [new StreamingTTSPlugin()],
+	});
+	t.after(() => mgr.destroy());
+
+	const player = await mgr.create("tts-guild-concurrency");
+
+	// Provide a mock voice connection on ConnectionController for TTS playback
+	const mockVoiceConnection = {
+		state: { status: "ready" },
+		subscribe: () => ({ unsubscribe: () => {} }),
+	};
+	mgr.controllers.connection.slots.get("tts-guild-concurrency").connection = mockVoiceConnection;
+
+	// Fire A and B concurrently before A finishes
+	const promiseA = player.play("tts:Message A", "user-1");
+	const promiseB = player.play("tts:Message B", "user-2");
+
+	const [resA, resB] = await Promise.all([promiseA, promiseB]);
+
+	// Both must return truthy PlayResult objects (not false)
+	assert.ok(resA, "First TTS request (A) must return truthy PlayResult, not false");
+	assert.equal(typeof resA, "object");
+	assert.ok(resA.track.title.includes("Message A"));
+
+	assert.ok(resB, "Second TTS request (B) must return truthy PlayResult, not false");
+	assert.equal(typeof resB, "object");
+	assert.ok(resB.track.title.includes("Message B"));
+
+	// Check stream resolution order: Message A stream requested first, then Message B
+	const streamsRequested = executionOrder.filter((e) => e.status === "stream_requested");
+	assert.equal(streamsRequested.length, 2);
+	assert.ok(streamsRequested[0].title.includes("Message A"));
+	assert.ok(streamsRequested[1].title.includes("Message B"));
 });

@@ -418,7 +418,7 @@ export class Player extends EventEmitter {
 		};
 		const isTTS = isTTSQuery(query);
 
-		const generation = ++this.playGeneration;
+		const generation = isTTS ? 0 : ++this.playGeneration;
 		const controller = new AbortController();
 		if (!isTTS) {
 			this.playAbortController?.abort();
@@ -483,7 +483,7 @@ export class Player extends EventEmitter {
 					{ ok: boolean; track: Track | null } | boolean
 				>(this.playerId, PLAYER_RPC.play, { query, requestedBy: reqBy, plugin: options.plugin }, { signal: combinedSignal });
 
-				if (generation !== this.playGeneration || combinedSignal.aborted) return false;
+				if ((!isTTS && generation !== this.playGeneration) || combinedSignal.aborted) return false;
 
 				const ok = typeof rpcResult === "object" ? rpcResult.ok : Boolean(rpcResult);
 				if (!ok) return false;
@@ -507,7 +507,7 @@ export class Player extends EventEmitter {
 			this.playOperation = operation.then((res) => Boolean(res));
 		}
 		return operation.finally(() => {
-			if (this.playAbortController === controller) this.playAbortController = null;
+			if (!isTTS && this.playAbortController === controller) this.playAbortController = null;
 		});
 	}
 	public async playNext(): Promise<boolean> {

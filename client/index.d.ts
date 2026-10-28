@@ -200,9 +200,19 @@ export declare class WebAudioClient extends EventTarget {
 		callback: (this: WebAudioClient, event: WebAudioClientEventMap[K]) => unknown,
 		options?: boolean | AddEventListenerOptions,
 	): void;
+	addEventListener(
+		type: string,
+		callback: EventListenerOrEventListenerObject | null,
+		options?: boolean | AddEventListenerOptions,
+	): void;
 	removeEventListener<K extends keyof WebAudioClientEventMap>(
 		type: K,
 		callback: (this: WebAudioClient, event: WebAudioClientEventMap[K]) => unknown,
+		options?: boolean | EventListenerOptions,
+	): void;
+	removeEventListener(
+		type: string,
+		callback: EventListenerOrEventListenerObject | null,
 		options?: boolean | EventListenerOptions,
 	): void;
 }
