@@ -21,7 +21,7 @@ export class FilterEngine {
 	private ffmpegAbortController: AbortController | null = null;
 	private ffmpegGeneration = 0;
 	private seekStartupTimer: ReturnType<typeof setTimeout> | null = null;
-	private lastFilteredStream: StreamInfo | null = null;
+	private lastFilteredStream: (StreamInfo & { wasRecreated?: boolean }) | null = null;
 	public StreamType: FilterControllerStreamType = "arbitrary";
 
 	constructor(
@@ -32,9 +32,18 @@ export class FilterEngine {
 		private readonly playerId?: string,
 	) {
 		if (options.initialFilters?.length) {
-			void this.applyFilters(options.initialFilters).catch((error) =>
-				this.debug("[FilterController] Initial filter error:", error),
-			);
+			this.registerInitialFilters(options.initialFilters);
+		}
+	}
+
+	private registerInitialFilters(filters: (string | AudioFilter)[]): void {
+		for (const filter of filters) {
+			const audioFilter = this.resolveFilter(filter);
+			if (!audioFilter) continue;
+			if (this.hasFilter(audioFilter.name)) continue;
+			this.activeFilters.push(audioFilter);
+			this.options.onFilterApplied?.(audioFilter);
+			this.debug(`[FilterController] Initial filter registered: ${audioFilter.name}`);
 		}
 	}
 
@@ -85,7 +94,7 @@ export class FilterEngine {
 		}
 	}
 
-	public get lastFilteredStreamValue(): StreamInfo | null {
+	public get lastFilteredStreamValue(): (StreamInfo & { wasRecreated?: boolean }) | null {
 		return this.lastFilteredStream;
 	}
 	public getFilterString(): string {
@@ -184,19 +193,30 @@ export class FilterEngine {
 		return this.clearAll();
 	}
 
-	private refreshPlayerResource(): Promise<boolean> {
-		if (this.bus && this.playerId)
+	private async refreshPlayerResource(): Promise<boolean> {
+		if (this.bus && this.playerId) {
+			const hasActiveResource = Boolean(this.bus.querySync(this.playerId, PLAYER_QUERY.currentResource));
+			if (!hasActiveResource) {
+				return true;
+			}
 			return this.bus
 				.requestRpc(this.playerId, PLAYER_RPC.playbackRefreshResource, { position: 0 })
 				.then(() => true)
 				.catch(() => false);
-		return this.resourcePort?.refreshPlayerResource() ?? Promise.resolve(false);
+		}
+		if (!this.resourcePort) return true;
+		return this.resourcePort.refreshPlayerResource();
 	}
 
 	public async applyFiltersAndSeek(streamInfo: StreamInfo, position = -1): Promise<StreamInfo & { wasRecreated?: boolean }> {
 		this.teardownFFmpeg();
 		const generation = ++this.ffmpegGeneration;
 		const hasSeek = position >= 0;
+		const filterString = this.getFilterString();
+
+		let currentStreamInfo: StreamInfo & { wasRecreated?: boolean } = streamInfo;
+		let wasRecreated = false;
+		let needsFfmpegSeek = hasSeek;
 
 		if (hasSeek && streamInfo.recreate) {
 			const recreated = await streamInfo.recreate(position);
@@ -205,9 +225,21 @@ export class FilterEngine {
 				recreated.destroy();
 				throw new Error("FFmpeg generation outdated");
 			}
-			const result = { ...streamInfo, stream: recreated, url: undefined, inputType: StreamType.Arbitrary, wasRecreated: true };
-			this.lastFilteredStream = result;
-			return result;
+			wasRecreated = true;
+			currentStreamInfo = {
+				...streamInfo,
+				stream: recreated,
+				url: undefined,
+				inputType: StreamType.Arbitrary,
+				wasRecreated: true,
+			};
+			if (!filterString) {
+				this.lastFilteredStream = currentStreamInfo;
+				return currentStreamInfo;
+			}
+			// recreate(position) already positioned the stream at `position`,
+			// so FFmpeg only needs to apply active filters without seeking again.
+			needsFfmpegSeek = false;
 		}
 
 		// Prefer a seekable URL when one exists. If the resolver only exposes a
@@ -215,22 +247,23 @@ export class FilterEngine {
 		// A pipe cannot seek at the input level, so FFmpeg must receive the stream
 		// from the beginning and seek after input processing, as the old implementation did.
 		const source: Readable | string | null =
-			hasSeek ? streamInfo.url || streamInfo.stream || null : streamInfo.stream || streamInfo.url || null;
+			needsFfmpegSeek ?
+				currentStreamInfo.url || currentStreamInfo.stream || null
+			:	currentStreamInfo.stream || currentStreamInfo.url || null;
 		if (!source) {
-			if (hasSeek) throw new Error("Cannot seek stream: resolver did not provide a stream, seekable URL, or recreate(position)");
+			if (needsFfmpegSeek)
+				throw new Error("Cannot seek stream: resolver did not provide a stream, seekable URL, or recreate(position)");
 			throw new Error("No source stream or URL available");
 		}
 
 		const sourceStream: Readable | string = source;
-		const wasRecreated = false;
 		if (generation !== this.ffmpegGeneration) throw new Error("FFmpeg generation outdated");
-		if (hasSeek && typeof sourceStream === "string" && streamInfo.stream && !streamInfo.stream.destroyed) {
-			streamInfo.stream.destroy();
+		if (needsFfmpegSeek && typeof sourceStream === "string" && currentStreamInfo.stream && !currentStreamInfo.stream.destroyed) {
+			currentStreamInfo.stream.destroy();
 		}
-		const filterString = this.getFilterString();
-		const ffmpegSeekSeconds = hasSeek ? (position / 1000).toFixed(3) : null;
-		if (!hasSeek && !filterString) {
-			const result = { ...streamInfo, stream: typeof sourceStream === "string" ? undefined : sourceStream, wasRecreated };
+		const ffmpegSeekSeconds = needsFfmpegSeek ? (position / 1000).toFixed(3) : null;
+		if (!needsFfmpegSeek && !filterString) {
+			const result = { ...currentStreamInfo, stream: typeof sourceStream === "string" ? undefined : sourceStream, wasRecreated };
 			this.lastFilteredStream = result;
 			return result;
 		}
@@ -239,7 +272,7 @@ export class FilterEngine {
 
 		this.debug(`Using FFmpeg: ${executable}`);
 		this.debug(
-			`FFmpeg input: ${typeof sourceStream === "string" ? "seekable URL" : "readable stream"}${hasSeek ? `, seek=${ffmpegSeekSeconds}s` : ""}`,
+			`FFmpeg input: ${typeof sourceStream === "string" ? "seekable URL" : "readable stream"}${needsFfmpegSeek ? `, seek=${ffmpegSeekSeconds}s` : ""}`,
 		);
 
 		const args = ["-hide_banner", "-loglevel", "error"];

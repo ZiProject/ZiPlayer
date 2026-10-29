@@ -232,6 +232,12 @@ every track played when enabled. This had several architectural issues:
   (`filterString` query) and routes the stream through `FilterController` (`FilterEngine.applyFiltersAndSeek()`).
   - `FilterController` spawns a single FFmpeg process executing the requested filter graph (`-af <graph>`).
   - Output is encoded to Opus in an Ogg container (`-c:a libopus -f opus -ar 48000 -ac 2`) with `inputType: StreamType.OggOpus`.
+  - When seeking on a stream providing `streamInfo.recreate(position)`:
+    - If no filters are active, the recreated stream is passed directly without spawning FFmpeg (`wasRecreated: true`).
+    - If filters are active, the recreated stream is processed through FFmpeg with `-af <graph>` but omitting redundant `-ss`
+      (since `recreate` already starts at the target offset).
+  - Initial filters (`PlayerOptions.filters`) are registered synchronously at player creation without requiring an active audio
+    resource, ensuring filters persist before the first track plays.
   - The filtered stream enters `StreamController` and is handed to `PlaybackController.createResource()`, which creates an
     `AudioResource` without any second FFmpeg stage.
 - **Save / Export Operations**:
