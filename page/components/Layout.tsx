@@ -33,6 +33,9 @@ export function Layout({ children }: PropsWithChildren) {
 
 	return (
 		<div className='min-h-screen flex flex-col bg-transparent'>
+			<div className='border-b border-brand-300/10 bg-brand-300/[0.04] px-4 py-2 text-center text-xs text-white/60'>
+				<span className='text-brand-200'>ZiPlayer v2</span> · A reliable, extensible audio engine for Discord and the browser
+			</div>
 			{/* Header */}
 			<motion.header
 				initial={{ y: -100 }}
@@ -41,7 +44,7 @@ export function Layout({ children }: PropsWithChildren) {
 				className={`sticky top-0 z-50 transition-all duration-300 ${
 					isScrolled ? "glass-strong backdrop-blur-xl" : "glass-subtle backdrop-blur-sm"
 				}`}>
-				<div className='mx-auto max-w-7xl px-4 py-4'>
+				<div className='mx-auto max-w-7xl px-4 py-3 sm:px-6'>
 					<div className='flex items-center justify-between'>
 						{/* Logo */}
 						<Link
@@ -217,7 +220,7 @@ export function Layout({ children }: PropsWithChildren) {
 
 					<div className='border-t border-white/10 mt-8 pt-8 flex flex-col md:flex-row items-center justify-between'>
 						<span className='text-white/60 text-sm'>© {new Date().getFullYear()} ZiPlayer. All rights reserved.</span>
-						<span className='text-white/60 text-sm mt-2 md:mt-0'>Built for reliable playback at scale</span>
+						<span className='text-white/60 text-sm mt-2 md:mt-0'>Engineered for predictable playback at scale</span>
 					</div>
 				</div>
 			</motion.footer>

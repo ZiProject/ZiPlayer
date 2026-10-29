@@ -40,7 +40,7 @@ body {
 }
 
 ::selection {
-	background: rgba(99, 230, 194, 0.28);
+	background: rgba(99, 230, 194, 0.38);
 	color: #fff;
 }
 ::-webkit-scrollbar {
@@ -94,13 +94,17 @@ body {
 	@apply rounded-lg px-3 py-2 font-medium text-white/65 transition hover:bg-white/[0.07] hover:text-white;
 }
 .card {
-	@apply rounded-2xl border border-white/10 bg-white/[0.04] p-6 transition duration-300;
+	@apply rounded-2xl border border-white/10 bg-white/[0.04] p-6 shadow-xl shadow-black/10 transition duration-300;
+}
+.card h2,
+.card h3 {
+	font-family: "Space Grotesk", sans-serif;
 }
 .card-hover {
 	@apply card hover:-translate-y-1 hover:border-brand-300/30 hover:bg-white/[0.07] hover:shadow-2xl hover:shadow-black/20;
 }
 .code-block {
-	@apply overflow-x-auto rounded-xl border border-white/10 bg-[#061018] p-4 font-mono text-sm;
+	@apply overflow-x-auto rounded-xl border border-brand-300/10 bg-[#061018] p-4 font-mono text-sm shadow-2xl shadow-black/20;
 }
 .prose {
 	@apply leading-relaxed text-white/80;
