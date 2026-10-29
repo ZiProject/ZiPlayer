@@ -10,6 +10,7 @@
 		"start": "next start -p 3030",
 		"lint": "echo 'No lint configured'",
 		"docs:generate": "node scripts/generateApiContent.js",
+		"architecture:sync": "node scripts/syncArchitecture.js",
 		"docs:check": "typedoc --options typedoc.json --treatWarningsAsErrors"
 	},
 	"dependencies": {

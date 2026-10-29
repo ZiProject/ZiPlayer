@@ -26,7 +26,10 @@ const sections = [
 	},
 	{
 		title: "Reference",
-		links: [{ href: "/api-reference", label: "API Reference" }],
+		links: [
+			{ href: "/architecture", label: "Architecture" },
+			{ href: "/api-reference", label: "API Reference" },
+		],
 	},
 ];
 

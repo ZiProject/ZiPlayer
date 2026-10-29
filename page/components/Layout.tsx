@@ -5,7 +5,7 @@ import { Sidebar } from "./Sidebar";
 import { Logo } from "./Logo";
 import { PropsWithChildren, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Menu, X, Github, BookOpen, Home, Code, Star } from "lucide-react";
+import { Menu, X, Github, BookOpen, Home, Code, Star, GitBranch } from "lucide-react";
 import { useRouter } from "next/router";
 
 export function Layout({ children }: PropsWithChildren) {
@@ -27,6 +27,7 @@ export function Layout({ children }: PropsWithChildren) {
 		{ href: "/showcase", label: "Showcase", icon: Star },
 		{ href: "/docs", label: "Documentation", icon: BookOpen },
 		{ href: "/api-reference", label: "API Reference", icon: Code },
+		{ href: "/architecture", label: "Architecture", icon: GitBranch },
 		{ href: "https://github.com/ZiProject/ZiPlayer", label: "GitHub", icon: Github, external: true },
 	];
 
