@@ -13,9 +13,7 @@ export default function Home() {
 				<AnimatedBackground />
 				<HeroSection />
 				<FeaturesSection />
-				<AdvancedFeaturesSection />
 				<PluginsSection />
-				<VoiceFeaturesSection />
 			</div>
 		</Layout>
 	);
