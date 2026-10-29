@@ -25,10 +25,10 @@ Read the root [`README.md`](README.md) for public setup and player workflows. Fo
   `AudioPlayer`; attach browser output with `player.connect(webConnection)`.
 - The current player stack supports queue orchestration, smart preloading, crossfade/transition flow, loudness normalization,
   anti-stuck recovery, filter chains, and browser/WebSocket publishing in addition to standard voice playback.
-- The DSP pipeline (`FFmpegAudioProcessingEngine`) runs FFmpeg as a child process and emits PCM. `audioProcessing.inputFormat`
-  stays `"encoded"`; a PCM stream (for example the output of a seek) is declared per stream through
-  `AudioProcessingContext.inputFormat` because FFmpeg cannot probe raw PCM and would guess it as noise. Downstream output must
-  follow the registered output's format contract.
+- Normal playback feeds the source stream directly to `createAudioResource` (with inline volume enabled) without running FFmpeg.
+  When filters are active or seeking on a non-seekable stream is performed, `FilterController` runs FFmpeg as a single-pass filter
+  child process emitting Ogg Opus, which is consumed directly by the resource pipeline. PCM remains internal to codec/DSP
+  processing and browser decoding, not an intermediate pipeline or WebSocket transport format.
 - Keep public documentation and the package `AGENTS.md` guides aligned with changes to exported APIs and expected workflows.
 
 ## Validation

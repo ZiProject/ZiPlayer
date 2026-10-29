@@ -201,3 +201,95 @@
 - Unit and integration tests validate the browser client using mock Web Audio and WebSocket environments.
 - Real-runtime end-to-end testing with a live GUI window in Electron binary packaging or compiled `cargo tauri dev` was not
   executed in this headless CLI environment; verification procedures are documented in `examples/desktop/README.md`.
+
+---
+
+## F. Removal of FFmpegAudioProcessingEngine and Architectural Simplification
+
+### 1. Reason for Removal
+
+`FFmpegAudioProcessingEngine` previously introduced an intermediate child-process FFmpeg pipeline in `PlaybackController` for
+every track played when enabled. This had several architectural issues:
+
+- **Redundant transcoding**: Even when tracks were already encoded Opus or were already processed by `FilterController`, they were
+  piped through a second FFmpeg child process before reaching `createAudioResource`.
+- **Process overhead and latency**: Normal playback required spawning child processes, setting up IPC pipes, and managing process
+  concurrency limits.
+- **Architectural duplication**: `FilterController` already owns the FFmpeg-based audio filtering capabilities and real-time
+  filter chains, making a second general-purpose FFmpeg processing engine redundant.
+- **Complexity and failure modes**: Stalled stdin/stdout pipes, orphan process tracking, and generator abort races added
+  significant operational fragility.
+
+### 2. Ownership of Filtering and Resource Creation
+
+- **Normal Playback (No Filter)**: `Track / StreamInfo` → `TrackLoader / Plugin` → `PlaybackStartController` → `StreamController`
+  → `PlaybackController.createResource()` → `@discordjs/voice` `createAudioResource()` → `AudioPlayer` → Subscribers (Discord
+  Voice, `WebAudioConnection`).
+  - No FFmpeg process is spawned solely for audio playback.
+  - The original stream feeds directly into the resource pipeline.
+  - Inline volume handling is managed by `@discordjs/voice` via its native Opus / PCM transformation.
+- **Filtered Playback (Filter Active or Non-Seekable Stream Seek)**: `PlaybackStartController` detects active filters
+  (`filterString` query) and routes the stream through `FilterController` (`FilterEngine.applyFiltersAndSeek()`).
+  - `FilterController` spawns a single FFmpeg process executing the requested filter graph (`-af <graph>`).
+  - Output is encoded to Opus in an Ogg container (`-c:a libopus -f opus -ar 48000 -ac 2`) with `inputType: StreamType.OggOpus`.
+  - The filtered stream enters `StreamController` and is handed to `PlaybackController.createResource()`, which creates an
+    `AudioResource` without any second FFmpeg stage.
+- **Save / Export Operations**:
+  - `SaveController` maintains its own isolated `FilterEngine` instance for offline stream filtering and export, completely
+    independent of the live playback resource path.
+
+### 3. Removed Public Configuration Options and APIs
+
+- **Removed Public APIs**:
+  - `createAudioProcessingEngine`
+  - `defaultAudioProcessingEngine`
+  - `FFmpegAudioProcessingEngine`
+  - `resolveAudioProcessingOptions`
+  - `getFfmpegProcessStats`
+  - `configureFfmpegConcurrency`
+  - `AudioFrameFormat`
+  - Types: `AudioProcessingEngine`, `AudioProcessingPipeline`, `AudioProcessingOptions`, `AudioProcessingContext`,
+    `AudioProcessingFormat`, `AudioProcessingInputFormat`, `AudioProcessingOutputFormat`, `AudioProcessingHint`
+- **Removed Configuration Options**:
+  - `PlayerOptions.audioProcessing` (and `PlaybackControllerOptions.audioProcessing`)
+  - Sub-options: `audioProcessing.enabled`, `audioProcessing.inputFormat`, `audioProcessing.outputFormat`,
+    `audioProcessing.sampleRate`, `audioProcessing.channels`, `audioProcessing.gainDb`, `audioProcessing.gainLinear`,
+    `audioProcessing.highpassHz`, `audioProcessing.lowpassHz`, `audioProcessing.normalize`, `audioProcessing.resampleRate`,
+    `audioProcessing.maxBufferBytes`, `audioProcessing.ffmpegInputFormats`, `audioProcessing.encodedBitrate`,
+    `audioProcessing.encodedApplication`, `audioProcessing.maxInputBytes`, `audioProcessing.maxDurationMs`,
+    `audioProcessing.stallTimeoutMs`, `audioProcessing.ffmpegThreads`, `audioProcessing.maxConcurrentProcesses`.
+- **Preserved Options**:
+  - `PlayerOptions.ffmpegPath`: Shared setting used by `FilterController` and `SaveController` to locate the FFmpeg executable.
+  - `PlayerOptions.loudnessNormalization`: High-level volume leveling managed entirely in software by `VolumeController` (inline
+    volume target scaling), independent of FFmpeg.
+  - `PlayerOptions.volume`: Shared player volume.
+
+### 4. DSP Features and Behavior Changes
+
+- Static DSP flags on the removed engine (`gainDb`, `gainLinear`, `highpassHz`, `lowpassHz`, `normalize`) are no longer configured
+  via `audioProcessing`.
+- Equivalent filtering is available dynamically through `player.filter.applyFilter()` / `player.filter.applyFilters()` (e.g.
+  `bassboost`, `loudnorm`, `highpass`, `equalizer`, custom filter graphs validated by `isSafeCustomFilter`).
+
+### 5. When FFmpeg Starts
+
+FFmpeg processes are started **only** in the following circumstances:
+
+1. When active filters are applied to a player (`player.filter.applyFilter()` or initial filters specified in
+   `PlayerOptions.filters`).
+2. When seeking on a non-seekable Readable stream where the plugin does not provide `recreate(position)`.
+3. When saving/exporting audio with active filters via `SaveController`.
+4. When `@discordjs/voice` internally transcodes an arbitrary non-Opus stream (e.g. raw MP3) to PCM via `prism-media` during
+   inline-volume resource creation.
+
+FFmpeg is **never** started for standard playback of Opus streams without filters.
+
+### 6. Format Compatibility and Resource Contract
+
+- Direct encoded streams (`StreamType.Opus`, `StreamType.WebmOpus`, `StreamType.OggOpus`, `StreamType.Arbitrary`) retain their
+  source type.
+- Raw audio inputs (`StreamType.Raw`) are explicitly rejected before resource creation with
+  `TypeError("Raw audio input is unsupported; provide encoded audio")`, destroying the input stream.
+- Filter output is consistently formatted as `StreamType.OggOpus` (48 kHz, stereo) via FFmpeg `libopus`, allowing downstream
+  `@discordjs/voice` demuxing and inline volume transformation without further conversion.
+- Both Discord Voice and `WebAudioConnection` subscribe directly to `@discordjs/voice` `AudioPlayer` and receive Opus packets.

@@ -3,13 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const {
-	isBlockedIpAddress,
-	parseMediaUrl,
-	resolveFfmpegExecutable,
-	resolveAudioProcessingOptions,
-	getFfmpegProcessStats,
-} = require("../core/dist");
+const { isBlockedIpAddress, parseMediaUrl, resolveFfmpegExecutable } = require("../core/dist");
 
 test("URL safety distinguishes domain names from IP literals and blocks private address ranges", () => {
 	assert.equal(isBlockedIpAddress("example.com"), false);
@@ -63,12 +57,11 @@ test("FFmpeg executable resolution honors explicit path, environment path, bundl
 	}
 });
 
-test("per-engine concurrency validation does not mutate the process-wide FFmpeg limit", () => {
-	const before = getFfmpegProcessStats();
-	resolveAudioProcessingOptions({ maxConcurrentProcesses: 1 });
-	assert.equal(getFfmpegProcessStats().max, before.max);
-});
-
-test("FFmpeg cannot bypass redirect-safe URL input using direct URL mode", () => {
-	assert.throws(() => resolveAudioProcessingOptions({ allowFfmpegUrlInput: true }), /disabled.*redirect-by-redirect/i);
+test("removed audio processing engine exports are not exposed", () => {
+	const core = require("../core/dist");
+	assert.equal(core.createAudioProcessingEngine, undefined);
+	assert.equal(core.FFmpegAudioProcessingEngine, undefined);
+	assert.equal(core.resolveAudioProcessingOptions, undefined);
+	assert.equal(core.getFfmpegProcessStats, undefined);
+	assert.equal(core.configureFfmpegConcurrency, undefined);
 });

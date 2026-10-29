@@ -14,14 +14,6 @@ import type { Track, PlaybackControllerOptions } from "../types";
 import { PlaybackMode } from "../types";
 import type { AntiStuckRetryHandlers } from "../types";
 import {
-	createAudioProcessingEngine,
-	describeOutputFormat,
-	readAudioProcessingHint,
-	resolveAudioProcessingOptions,
-	type AudioProcessingOptions,
-	type AudioProcessingEngine,
-} from "../audio/AudioProcessingEngine";
-import {
 	BUS_EVENT,
 	CONTROLLER_RPC,
 	PLAYER_QUERY,
@@ -70,12 +62,6 @@ export class PlaybackController {
 	private readonly bus: Bus;
 	private get slots(): Map<string, PlaybackSlot> {
 		return playerDataMap(this.bus, "controller.playback.slots");
-	}
-	private get processingOptions(): Map<string, AudioProcessingOptions> {
-		return playerDataMap(this.bus, "controller.playback.processingOptions");
-	}
-	private get processingEngines(): Map<string, AudioProcessingEngine> {
-		return playerDataMap(this.bus, "controller.playback.processingEngines");
 	}
 	private get remoteStopPromises(): Map<string, Promise<boolean>> {
 		return playerDataMap(this.bus, "controller.playback.remoteStopPromises");
@@ -136,9 +122,6 @@ export class PlaybackController {
 	/** Opens a slot for `playerId` around its `AudioPlayer`. Re-attaching replaces (and releases) the old slot. */
 	public attach(playerId: string, options: PlaybackControllerOptions): void {
 		if (this.slots.has(playerId)) this.detach(playerId);
-		if (options.audioProcessing) this.processingOptions.set(playerId, options.audioProcessing);
-		else this.processingOptions.delete(playerId);
-		this.processingEngines.delete(playerId);
 		if (!options.audioPlayer) {
 			throw new TypeError("An audioPlayer is required");
 		}
@@ -227,8 +210,6 @@ export class PlaybackController {
 	public detach(playerId: string): void {
 		const slot = this.slots.get(playerId);
 		if (!slot) return;
-		this.processingOptions.delete(playerId);
-		this.processingEngines.delete(playerId);
 		this.slots.delete(playerId);
 		slot.resourceRefreshInProgress = false;
 		slot.disposed = true;
@@ -469,83 +450,12 @@ export class PlaybackController {
 		signal?: AbortSignal,
 	): AudioResource {
 		const resolvedInputType = inputType ?? (stream as Readable & { inputType?: StreamType }).inputType;
-		const processingOptions = this.processingOptions.get(playerId) ?? {};
 		const slot = this.slots.get(playerId);
 		if (!slot) throw new Error("No AudioPlayer is attached for this player");
 		const outputSignal = signal ? AbortSignal.any([slot.lifecycleAbort.signal, signal]) : slot.lifecycleAbort.signal;
 		if (resolvedInputType === StreamType.Raw) {
 			if (!stream.destroyed) stream.destroy();
 			throw new TypeError("Raw audio input is unsupported; provide encoded audio");
-		}
-		const shouldProcess = Boolean(processingOptions.enabled);
-		if (shouldProcess) {
-			let effectiveProcessingOptions: AudioProcessingOptions;
-			try {
-				effectiveProcessingOptions = {
-					...processingOptions,
-					enabled: true,
-					outputFormat: "encoded",
-				};
-			} catch (error) {
-				if (!stream.destroyed) stream.destroy();
-				throw error;
-			}
-			let engine: AudioProcessingEngine;
-			try {
-				engine = this.processingEngines.get(playerId) ?? createAudioProcessingEngine(processingOptions);
-				this.processingEngines.set(playerId, engine);
-			} catch (error) {
-				if (!stream.destroyed) stream.destroy();
-				throw error;
-			}
-			let processedStream: Readable;
-			// Destroying the output aborts FFmpeg and the source even when the upstream stream is silent.
-			const processingAbort = new AbortController();
-			const pipelineSignal = AbortSignal.any([outputSignal, processingAbort.signal]);
-			const abortProcessing = () => {
-				if (!stream.destroyed) stream.destroy();
-				if (!processedStream.destroyed) processedStream.destroy();
-			};
-			processedStream = Readable.from(
-				(async function* () {
-					let pipeline: Awaited<ReturnType<typeof engine.createPipeline>> | null = null;
-					let completed = false;
-					try {
-						pipeline = await engine.createPipeline(effectiveProcessingOptions, {
-							playerId,
-							track,
-							signal: pipelineSignal,
-						});
-						for await (const chunk of pipeline.process(stream, pipelineSignal)) {
-							if (pipelineSignal.aborted) return;
-							yield chunk;
-						}
-						completed = true;
-					} catch (error) {
-						if (pipelineSignal.aborted) return;
-						if (!stream.destroyed) stream.destroy();
-						throw new Error(
-							`Audio processing failed for ${track.title}: ${error instanceof Error ? error.message : String(error)}`,
-							{ cause: error },
-						);
-					} finally {
-						outputSignal.removeEventListener("abort", abortProcessing);
-						await pipeline?.dispose();
-						if (!completed && !stream.destroyed) stream.destroy();
-					}
-				})(),
-				{ objectMode: false },
-			);
-			if (outputSignal.aborted) abortProcessing();
-			else outputSignal.addEventListener("abort", abortProcessing, { once: true });
-			const baseDestroy = processedStream._destroy;
-			processedStream._destroy = function (this: Readable, error: Error | null, callback: (error?: Error | null) => void) {
-				processingAbort.abort();
-				if (!stream.destroyed) stream.destroy();
-				baseDestroy.call(this, error, callback);
-			};
-			processedStream.once("close", () => outputSignal.removeEventListener("abort", abortProcessing));
-			return this.createInlineVolumeResource(processedStream, track, StreamType.OggOpus, outputSignal);
 		}
 		return this.createInlineVolumeResource(stream, track, resolvedInputType, outputSignal);
 	}

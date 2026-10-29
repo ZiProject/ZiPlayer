@@ -198,9 +198,8 @@ ZiPlayer plays through one Discord `AudioPlayer`. Discord Voice connections and 
 to that player; browser subscriptions publish its Opus packets through an application-owned WebSocket gateway. There is no
 separate stream-output backend or output factory.
 
-The audio DSP engine may use PCM internally for decoding, filters, resampling, and inline volume; this is not a browser transport
-format. `audioProcessing.inputFormat` remains `"encoded"` for player-level configuration because raw PCM input metadata is
-declared per stream.
+PCM remains internal to codec processing, inline volume transformation, and browser decoding; it is not a WebSocket transport
+format.
 
 ### Unified Browser and Discord Audio Output (Shared Server Volume)
 
@@ -266,15 +265,6 @@ const player = await manager.create(guildId, {
 		maxRetries: 2,
 		retryDelayMs: 800,
 	},
-	audioProcessing: {
-		enabled: true,
-		inputFormat: "encoded",
-		outputFormat: "pcm16le",
-		sampleRate: 48_000,
-		channels: 2,
-		normalize: "streaming",
-		maxBufferBytes: 64 * 1024,
-	},
 	userdata: { customField: "value" },
 });
 ```
@@ -299,10 +289,6 @@ const player = await manager.create(guildId, {
 - Add a browser Opus subscriber with `player.connect(webAudioConnection)` and remove it with the returned handle or
   `player.disconnectWebAudio(id)`.
 - Prefer `PlayerManager`/`Player` exports over bus/controller internals for application code.
-- Keep `audioProcessing.inputFormat` set to `"encoded"`; raw PCM is an internal processing/codec format, not a WebSocket
-  transport.
-- `audioProcessing.normalize` accepts `true` or the presets `streaming` (-14 LUFS), `podcast` (-16), `broadcast` (-23); numeric
-  targets are not supported.
 
 ---
 

@@ -5,7 +5,6 @@ import type { AudioFilter } from "./filter";
 import type { SourcePluginLike } from "./plugin";
 import type { AudioResource, StreamType } from "@discordjs/voice";
 import type { PlayerDebugLevel } from "./debug";
-import type { AudioProcessingOptions } from "../audio/AudioProcessingEngine";
 
 export enum PlaybackMode {
 	NATIVE = "native",
@@ -197,7 +196,6 @@ export interface PlayerOptions {
 		autoDisableInLowPerformance?: boolean;
 	};
 	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
-	audioProcessing?: AudioProcessingOptions;
 	maxStreamStore?: number;
 }
 

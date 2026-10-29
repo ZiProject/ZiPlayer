@@ -29,7 +29,6 @@ export interface LifecycleControllerOptions {
 export interface PlaybackControllerOptions {
 	audioPlayer?: AudioPlayer;
 	stuckTimeoutMs?: number;
-	audioProcessing?: import("../audio/AudioProcessingEngine").AudioProcessingOptions;
 }
 
 export interface ActiveStream {

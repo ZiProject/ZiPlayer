@@ -58,7 +58,6 @@ export {
 	validateOpusPacketFraming,
 } from "./audio/OpusSourceAdapter";
 export type { CreateOpusAudioResourceOptions } from "./audio/OpusSourceAdapter";
-export type { AudioFrameFormat } from "./audio/AudioFrameFormat";
 export { TrackLoader } from "./structures/TrackLoader";
 export { PlaybackController } from "./controller/PlaybackController";
 export { ConnectionController } from "./controller/ConnectionController";
@@ -79,19 +78,6 @@ export { PlayerEventDebug, DEBUG_PRIORITY } from "./controller/PlayerEventDebug"
 export { GlobalControllerRegistry, globalControllerRegistry } from "./controller/GlobalControllerRegistry";
 export { FilterEngine, isSafeCustomFilter } from "./controller/FilterController";
 export { StreamManager } from "./structures/StreamManager";
-export {
-	createAudioProcessingEngine,
-	defaultAudioProcessingEngine,
-	FFmpegAudioProcessingEngine,
-} from "./audio/AudioProcessingEngine";
-export type {
-	AudioProcessingEngine,
-	AudioProcessingPipeline,
-	AudioProcessingOptions,
-	AudioProcessingContext,
-	AudioProcessingFormat,
-} from "./audio/AudioProcessingEngine";
-export { resolveAudioProcessingOptions, getFfmpegProcessStats, configureFfmpegConcurrency } from "./audio/AudioProcessingEngine";
 export { resolveFfmpegExecutable } from "./audio/ffmpegLimits";
 export {
 	isBlockedIpAddress,
