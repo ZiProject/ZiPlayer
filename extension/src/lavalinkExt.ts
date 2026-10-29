@@ -1,4 +1,4 @@
-import { BaseExtension, Player, PlayerManager, Track, SearchResult } from "ziplayer";
+import { BaseExtension, Player, PlayerManager, Track, SearchResult, TrackRequester } from "ziplayer";
 import axios from "axios";
 
 import type {
@@ -901,7 +901,7 @@ export class TrackResolver {
 		};
 	}
 
-	mapToTrack(raw: LavalinkRawTrack, requestedBy: string): Track {
+	mapToTrack(raw: LavalinkRawTrack, requestedBy: TrackRequester): Track {
 		const track: Track = {
 			id: raw.info.identifier,
 			title: raw.info.title,
@@ -936,7 +936,7 @@ export class TrackResolver {
 			url: raw.info.uri ?? raw.info.identifier,
 			duration: raw.info.length ?? 0,
 			thumbnail: raw.info.artworkUrl ?? undefined,
-			requestedBy: current?.requestedBy ?? "Unknown",
+			requestedBy: current?.requestedBy ?? { id: "Unknown", username: "Unknown" },
 			source: raw.info.sourceName ?? "lavalink",
 			metadata: {
 				...(current?.metadata ?? {}),
@@ -950,7 +950,7 @@ export class TrackResolver {
 		};
 	}
 
-	async ensureTrackEncoded(player: any, track: Track, requestedBy: string, nodeManager: any): Promise<void> {
+	async ensureTrackEncoded(player: any, track: Track, requestedBy: TrackRequester, nodeManager: any): Promise<void> {
 		if (getEncoded(track)) return;
 		const node = nodeManager.selectNode();
 		if (!node) throw new Error("No Lavalink nodes available");
@@ -994,7 +994,7 @@ export class TrackResolver {
 	async resolvePlayRequest(
 		player: any,
 		query: string | Track,
-		requestedBy: string,
+		requestedBy: TrackRequester,
 		nodeManager: any,
 		searchPrefix: string = "ytsearch",
 	): Promise<{ tracks: Track[]; isPlaylist: boolean }> {
@@ -1023,7 +1023,7 @@ export class TrackResolver {
 
 	async searchLavalink(
 		query: string,
-		requestedBy: string,
+		requestedBy: TrackRequester,
 		nodeManager: any,
 		searchPrefix: string = "ytsearch",
 	): Promise<SearchResult> {
@@ -1228,6 +1228,7 @@ export class lavalinkExt extends BaseExtension {
 	private client?: Client;
 	private readonly options: LavalinkExtOptions;
 	private userId?: string;
+	private rawListener?: (packet: any) => void;
 	private readonly originalMethods = new WeakMap<
 		Player,
 		{
@@ -1290,8 +1291,8 @@ export class lavalinkExt extends BaseExtension {
 		const providedClient = alas?.client as Client | undefined;
 		if (providedClient && !this.client) {
 			this.client = providedClient;
-			this.bindClient(providedClient);
 		}
+		if (this.client) this.bindClient(this.client);
 		const player = (alas?.player as Player | undefined) || this.player;
 		if (player) {
 			this.attachToPlayer(player);
@@ -1306,25 +1307,26 @@ export class lavalinkExt extends BaseExtension {
 	}
 
 	async onDestroy(context: ExtensionContext): Promise<void> {
+		if (context.player) await this.detachFromPlayer(context.player);
+		if (this.playerStateManager.getAllPlayers().length > 0) return;
+
 		this.stopUpdateLoop();
-
-		for (const [player] of this.playerStateManager.getAllStates()) {
-			await this.destroyLavalinkPlayer(player).catch(() => {});
-		}
-
-		if (context.player) this.detachFromPlayer(context.player);
+		if (this.client && this.rawListener) this.client.off("raw", this.rawListener);
+		this.rawListener = undefined;
 		this.nodeManager.closeAllConnections();
 	}
 
 	private bindClient(client: Client): void {
 		if (this.client && this.client !== client) return;
 		this.client = client;
+		if (this.rawListener) return;
 		if (!this.userId && client.user?.id) {
 			this.userId = client.user.id;
 		}
-		client.on("raw", (packet) =>
-			this.voiceHandler.handleRawEvent(packet, this.userId!, this.playerStateManager, this.nodeManager),
-		);
+		this.rawListener = (packet) => {
+			this.voiceHandler.handleRawEvent(packet, this.userId!, this.playerStateManager, this.nodeManager);
+		};
+		client.on("raw", this.rawListener);
 	}
 
 	private setupWebSocketEventHandlers(): void {
@@ -1544,28 +1546,29 @@ export class lavalinkExt extends BaseExtension {
 			this.manager = (player as any).manager as PlayerManager | undefined;
 		}
 
-		// Only wire the destroy hook once
-		if (!(player as any).__lavalinkExtDestroyHooked) {
-			(player as any).__lavalinkExtDestroyHooked = true;
-			player.once("playerDestroy", () => {
-				this.playerStateManager.detachPlayer(player);
-			});
-		}
-
 		if (this.options.sendGatewayPayload && !(player as any).__lavalinkConnectWrapped) {
 			(player as any).__lavalinkConnectWrapped = true;
 			(player as any).__originalConnect = player.connect.bind(player);
-			(player as any).connect = (channel: any) => this.connect(player, channel);
+			const wrappedConnect = (channel: any) => this.connect(player, channel);
+			(player as any).__lavalinkWrappedConnect = wrappedConnect;
+			player.connect = wrappedConnect;
 		}
 	}
 
-	private detachFromPlayer(player: Player): void {
-		(player as any).__lavalinkExtDestroyHooked = false;
+	private async detachFromPlayer(player: Player): Promise<void> {
 		const state = this.playerStateManager.getState(player);
 		if (state) {
-			void this.destroyLavalinkPlayer(player).catch(() => {});
+			await this.destroyLavalinkPlayer(player);
 		}
 		this.playerStateManager.detachPlayer(player);
+		const wrappedConnect = (player as any).__lavalinkWrappedConnect;
+		const originalConnect = (player as any).__originalConnect;
+		if (wrappedConnect && originalConnect && player.connect === wrappedConnect) {
+			player.connect = originalConnect;
+			delete (player as any).__lavalinkWrappedConnect;
+			delete (player as any).__originalConnect;
+			(player as any).__lavalinkConnectWrapped = false;
+		}
 		// Signal Player to leave REMOTE mode and restore preload
 		(player as any).exitRemoteMode?.();
 	}
@@ -1576,7 +1579,7 @@ export class lavalinkExt extends BaseExtension {
 		this.attachToPlayer(player);
 		await this.initializeNodes();
 
-		const requestedBy = payload.requestedBy ?? "Unknown";
+		const requestedBy = payload.requestedBy ?? { id: "Unknown", username: "Unknown" };
 		try {
 			const { tracks, isPlaylist } = await this.trackResolver.resolvePlayRequest(
 				player,

@@ -7,9 +7,11 @@ import {
 	type AudioPlayer,
 	type PlayerSubscription,
 } from "@discordjs/voice";
-import type { VoiceChannel, PlayerConnectionInput, ConnectionControllerOptions } from "../types";
-import { createPlayerSessionId, type Bus, type PlayerRequestId, type PlayerSessionId } from "../structures/Bus";
+import type { VoiceChannel, PlayerConnectionInput, ConnectionControllerOptions, WebAudioSubscriberInfo } from "../types";
+import { Bus, createPlayerSessionId, type PlayerRequestId, type PlayerSessionId } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { BUS_OUTPUT, BUS_REQUEST, PLAYER_QUERY, PLAYER_RPC, traceBusSignal } from "../structures/BusContract";
+import type { WebAudioConnection } from "../output/WebAudioConnection";
 
 interface ConnectionSlot {
 	group?: string;
@@ -23,6 +25,7 @@ interface ConnectionSlot {
 	requestId: PlayerRequestId | null;
 	audioPlayer: AudioPlayer | null;
 	subscription: PlayerSubscription | null;
+	webAudioOutputs: Map<string, { connection: WebAudioConnection; name: string }>;
 	disposed: boolean;
 	operation: Promise<void>;
 }
@@ -33,8 +36,8 @@ interface ConnectionSlot {
  * Singleton — created exactly once in `ensureSharedControllers()` and shared by every
  * player in the process (see `SharedControllerGraph`). A Discord voice connection is
  * inherently per-guild (one `VoiceConnection`/`AudioPlayer` can only ever serve one
- * guild), so that per-guild resource still exists once per player — it just lives as an
- * entry in this controller's internal `Map<playerId, ConnectionSlot>` (via
+ * guild), so that per-guild resource still exists once per player — it lives in the
+ * player.data under this controller's namespace (via
  * `attach(playerId, ...)`/`detach(playerId)`) instead of a whole separate
  * `ConnectionController` instance. `connection.setAudioPlayer`/`connection`/
  * `connection.state` and the three `onInput` listeners below are registered exactly
@@ -46,20 +49,37 @@ interface ConnectionSlot {
  */
 export class ConnectionController {
 	private readonly bus?: Bus;
-	private readonly slots = new Map<string, ConnectionSlot>();
+	private readonly stateBus: Bus;
+	private get slots(): Map<string, ConnectionSlot> {
+		return playerDataMap(this.stateBus, "controller.connection.slots");
+	}
 	/** Process-wide debug sink (separate from each slot's own `debug` set at `attach()` time). */
 	private readonly debugSink?: (message: string) => void;
 
 	public constructor(bus?: Bus, debugSink?: (message: string) => void) {
 		this.bus = bus;
+		this.stateBus = bus ?? new Bus();
 		this.debugSink = debugSink;
 
 		if (bus) {
 			bus.registerRpc<{ audioPlayer: AudioPlayer | null }, void>(PLAYER_RPC.connectionSetAudioPlayer, ({ audioPlayer }, ctx) =>
 				this.setAudioPlayer(ctx.playerId, audioPlayer),
 			);
-			bus.registerQuery(PLAYER_QUERY.connection, (playerId) => this.slots.get(playerId)?.connection ?? null);
+			bus.registerRpc<{ id: string; name: string; connection: WebAudioConnection }, void>(
+				PLAYER_RPC.connectionWebAudioRegister,
+				({ id, name, connection }, ctx) => this.registerWebAudioOutput(ctx.playerId, id, name, connection),
+			);
+			bus.registerRpc<{ id: string }, boolean>(PLAYER_RPC.connectionWebAudioDisconnect, ({ id }, ctx) =>
+				this.disconnectWebAudio(ctx.playerId, id),
+			);
+			bus.registerRpc<void, void>(PLAYER_RPC.connectionWebAudioClear, (_request, ctx) => this.clearWebAudioOutputs(ctx.playerId));
+			bus.registerRpc<void, WebAudioSubscriberInfo[]>(PLAYER_RPC.connectionWebAudioList, (_request, ctx) =>
+				this.getWebAudioSubscribers(ctx.playerId),
+			);
+			bus.registerQuery(PLAYER_QUERY.connection, (playerId) => this.getConnections(playerId));
+			bus.registerQuery(PLAYER_QUERY.voiceConnection, (playerId) => this.slots.get(playerId)?.connection ?? null);
 			bus.registerQuery(PLAYER_QUERY.connectionState, (playerId) => this.slots.get(playerId)?.connection?.state.status);
+			bus.registerQuery(PLAYER_QUERY.hasOutput, (playerId) => this.hasOutput(playerId));
 			bus.onInput(BUS_REQUEST.connectionConnect, (event) => {
 				this.trace(event.playerId, BUS_REQUEST.connectionConnect, `channel=${event.channel.id}`);
 				this.enqueue(event.playerId, () => this.connect(event.playerId, event));
@@ -102,6 +122,7 @@ export class ConnectionController {
 			this.cleanupSubscription(playerId);
 			existing.connection?.destroy();
 			existing.connection = null;
+			this.clearWebAudioOutputs(playerId);
 		}
 		const opt = options.options ?? {};
 		this.slots.set(playerId, {
@@ -116,6 +137,7 @@ export class ConnectionController {
 			requestId: null,
 			audioPlayer: options.audioPlayer ?? null,
 			subscription: null,
+			webAudioOutputs: new Map(),
 			disposed: false,
 			operation: Promise.resolve(),
 		});
@@ -133,6 +155,76 @@ export class ConnectionController {
 	}
 	public getActive(playerId: string): VoiceConnection | null {
 		return this.slots.get(playerId)?.connection ?? null;
+	}
+	public getConnections(playerId: string): Array<VoiceConnection | WebAudioConnection> {
+		const slot = this.slots.get(playerId);
+		if (!slot) return [];
+		this.pruneDestroyedWebAudioOutputs(slot);
+		const connections: Array<VoiceConnection | WebAudioConnection> = [];
+		if (slot.connection && slot.subscription) connections.push(slot.connection);
+		for (const { connection } of slot.webAudioOutputs.values()) {
+			if (connection.state.subscription) connections.push(connection);
+		}
+		return connections;
+	}
+	public hasOutput(playerId: string): boolean {
+		const slot = this.slots.get(playerId);
+		return (
+			Boolean(slot?.connection) ||
+			Boolean(slot && [...slot.webAudioOutputs.values()].some(({ connection }) => connection.isReady))
+		);
+	}
+	public getWebAudioSubscribers(playerId: string): WebAudioSubscriberInfo[] {
+		const slot = this.slots.get(playerId);
+		if (!slot) return [];
+		this.pruneDestroyedWebAudioOutputs(slot);
+		return [...slot.webAudioOutputs].map(([id, { connection, name }]) => {
+			const stats = connection.getStats();
+			return {
+				id,
+				name,
+				state:
+					connection.isSpeaking ? "playing"
+					: connection.isReady ? "ready"
+					: "stopped",
+				activeSessions: connection.isSpeaking ? 1 : 0,
+				droppedChunks: stats.droppedPackets,
+				droppedBytes: stats.droppedBytes,
+			};
+		});
+	}
+	public registerWebAudioOutput(playerId: string, id: string, name: string, connection: WebAudioConnection): void {
+		const slot = this.slots.get(playerId);
+		if (!slot || slot.disposed || !slot.audioPlayer) {
+			throw new Error(`Audio output cannot be attached to player "${playerId}" without an active AudioPlayer`);
+		}
+		this.pruneDestroyedWebAudioOutputs(slot);
+		if (slot.webAudioOutputs.has(id)) {
+			throw new Error(`Audio output id already exists: ${id}`);
+		}
+		if (!connection.subscribe(slot.audioPlayer)) {
+			throw new Error(`WebAudio connection "${connection.sessionId}" cannot subscribe to player "${playerId}"`);
+		}
+		slot.webAudioOutputs.set(id, { connection, name });
+	}
+	public disconnectWebAudio(playerId: string, id: string): boolean {
+		const slot = this.slots.get(playerId);
+		const output = slot?.webAudioOutputs.get(id);
+		if (!slot || !output) return false;
+		slot.webAudioOutputs.delete(id);
+		output.connection.unsubscribe();
+		output.connection.destroy();
+		return true;
+	}
+	public clearWebAudioOutputs(playerId: string): void {
+		const slot = this.slots.get(playerId);
+		if (!slot) return;
+		for (const [id] of slot.webAudioOutputs) this.disconnectWebAudio(playerId, id);
+	}
+	private pruneDestroyedWebAudioOutputs(slot: ConnectionSlot): void {
+		for (const [id, { connection }] of slot.webAudioOutputs) {
+			if (connection.getStats().status === VoiceConnectionStatus.Destroyed) slot.webAudioOutputs.delete(id);
+		}
 	}
 	public getActiveChannel(playerId: string): VoiceChannel | null {
 		return this.slots.get(playerId)?.channel ?? null;
@@ -214,6 +306,7 @@ export class ConnectionController {
 		slot.disposed = true;
 		await slot.operation.catch(() => undefined);
 		this.cleanupSubscription(playerId);
+		this.clearWebAudioOutputs(playerId);
 		const connection = slot.connection;
 		slot.connection = null;
 		slot.channel = null;

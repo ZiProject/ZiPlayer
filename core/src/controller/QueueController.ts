@@ -1,8 +1,9 @@
-import type { LoopMode, SearchResult, Track } from "../types";
+import type { LoopMode, SearchResult, Track, TrackRequester } from "../types";
 import type { Bus, PlayerAction, PlayerActionExecutionContext } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { BUS_EVENT, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 
-type QueueInsertRequest = { query: string | Track | Track[]; index?: number; requestedBy?: string };
+type QueueInsertRequest = { query: string | Track | Track[]; index?: number; requestedBy?: TrackRequester };
 
 /** Per-player queue state and operations, owned by the shared `QueueController`
  *  below. Talks to the bus only to publish "queueChanged" and to loop back through
@@ -376,10 +377,14 @@ export class QueueState {
 			const tracks =
 				typeof request.query === "string" ?
 					(
-						await this.bus.requestRpc<{ query: string; requestedBy: string }, SearchResult>(this.playerId!, PLAYER_RPC.search, {
-							query: request.query,
-							requestedBy: request.requestedBy || "Unknown",
-						})
+						await this.bus.requestRpc<{ query: string; requestedBy?: TrackRequester }, SearchResult>(
+							this.playerId!,
+							PLAYER_RPC.search,
+							{
+								query: request.query,
+								requestedBy: request.requestedBy,
+							},
+						)
 					).tracks
 				: Array.isArray(request.query) ? request.query
 				: [request.query];
@@ -434,9 +439,11 @@ export type PlayerQueue = Omit<
 	"dispose" | "handleAction" | "insertRequest" | "setCurrentInternal" | "serializeInternal" | "restoreInternal"
 >;
 
-/** Shared, singleton controller: owns queue state for every player, keyed by playerId. */
+/** Shared singleton queue controller; queue state lives in each player's `data` Map. */
 export class QueueController {
-	private readonly states = new Map<string, QueueState>();
+	public get states(): Map<string, QueueState> {
+		return playerDataMap(this.bus, "controller.queue.states");
+	}
 
 	public constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => {

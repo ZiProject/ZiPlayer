@@ -1,4 +1,5 @@
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import type { ExtensionManager } from "../extensions";
 import type { BaseExtension } from "../extensions/BaseExtension";
@@ -16,9 +17,11 @@ import type {
  * `attach`/`detach`.
  */
 export class ExtensionController {
-	private readonly managers = new Map<string, ExtensionManager>();
+	private get managers(): Map<string, ExtensionManager> {
+		return playerDataMap(this.bus, "controller.extension.managers");
+	}
 
-	constructor(bus: Bus) {
+	constructor(private readonly bus: Bus) {
 		bus.registerQuery(PLAYER_QUERY.extensions, (playerId) => this.manager(playerId)?.getAll() ?? []);
 		bus.registerQuery(PLAYER_QUERY.extensionList, (playerId) => this.manager(playerId)?.getAll() ?? []);
 		bus.registerRpc<Record<string, never> | undefined, BaseExtension[]>(
@@ -36,9 +39,9 @@ export class ExtensionController {
 			PLAYER_RPC.extensionDisable,
 			({ name }, ctx) => this.manager(ctx.playerId)?.disable(name) ?? false,
 		);
-		bus.registerRpc<{ extension: BaseExtension }, void>(PLAYER_RPC.extensionAdd, ({ extension }, ctx) =>
-			this.manager(ctx.playerId)?.register(extension),
-		);
+		bus.registerRpc<{ extension: BaseExtension }, void>(PLAYER_RPC.extensionAdd, async ({ extension }, ctx) => {
+			await this.manager(ctx.playerId)?.attach(extension);
+		});
 		bus.registerRpc<{ extension: BaseExtension }, boolean>(
 			PLAYER_RPC.extensionRemove,
 			({ extension }, ctx) => this.manager(ctx.playerId)?.unregister(extension) ?? false,

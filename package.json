@@ -3,8 +3,9 @@
 	"private": true,
 	"scripts": {
 		"build:core": "npm run build --prefix core",
-		"pretest": "npm run build:core",
-		"test": "node --test tests/*.test.js",
+		"build:core:fast": "npm run build:fast --prefix core",
+		"pretest": "node scripts/ensure-core-build.js",
+		"test": "node --test --test-concurrency=4 tests/*.test.js",
 		"test:integration": "node --test tests/plugins/*.test.js tests/extensions/*.test.js",
 		"format": "npx prettier --ignore-path .gitignore --write .",
 		"format:check": "npx prettier --ignore-path .gitignore -l .",
@@ -16,6 +17,7 @@
 		"dotenv": "^17.2.2"
 	},
 	"dependencies": {
+		"@discordjs/voice": "^0.19.2",
 		"@ziplayer/plugin": "file:plugins",
 		"isomorphic-unfetch": "^4.0.2",
 		"spotify-url-info": "^3.3.0"

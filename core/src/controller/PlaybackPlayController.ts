@@ -8,8 +8,17 @@ import type {
 	ExtensionPlayRequest,
 	ExtensionPlayResponse,
 	ExtensionAfterPlayPayload,
+	TrackRequester,
 } from "../types";
 import { BUS_EVENT, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, PLAYER_ACTION } from "../structures/BusContract";
+
+function selectPlaybackTracks(result: SearchResult): { tracks: Track[]; isPlaylist: boolean } {
+	const isPlaylist = Boolean(result.playlist);
+	return {
+		tracks: isPlaylist ? result.tracks : result.tracks.slice(0, 1),
+		isPlaylist,
+	};
+}
 
 /**
  * Owns the public play RPC: search, queue insertion, TTS interrupt, and initial skip.
@@ -77,7 +86,7 @@ export class PlaybackPlayController {
 
 	public async play(
 		query: string | Track | SearchResult | null,
-		requestedBy: string | undefined,
+		requestedBy: TrackRequester | undefined,
 		rpcContext: BusRpcContext,
 		pluginSelection?: string | string[],
 	): Promise<{ ok: boolean; track: Track | null } | boolean> {
@@ -109,8 +118,9 @@ export class PlaybackPlayController {
 
 			if (query && typeof query === "object" && "tracks" in query && Array.isArray((query as SearchResult).tracks)) {
 				const sr = query as SearchResult;
-				tracksToAdd = sr.tracks;
-				isPlaylist = !!sr.playlist || sr.tracks.length > 1;
+				const selection = selectPlaybackTracks(sr);
+				tracksToAdd = selection.tracks;
+				isPlaylist = selection.isPlaylist;
 			} else {
 				const hookOutcome = await this.beforePlayHooks(effectiveRequest);
 				effectiveRequest = hookOutcome.request;
@@ -154,7 +164,7 @@ export class PlaybackPlayController {
 					isPlaylist = hookResponse.isPlaylist ?? hookTracks.length > 1;
 				} else if (typeof effectiveRequest.query === "string") {
 					const result = await this.bus.requestRpc<
-						{ query: string; requestedBy: string; plugin?: string | string[] },
+						{ query: string; requestedBy: TrackRequester; plugin?: string | string[] },
 						SearchResult
 					>(
 						this.playerId,
@@ -166,11 +176,16 @@ export class PlaybackPlayController {
 						},
 						{ signal: context.signal },
 					);
-					tracksToAdd = result.tracks;
-					isPlaylist = !!result.playlist || result.tracks.length > 1;
+					const selection = selectPlaybackTracks(result);
+					tracksToAdd = selection.tracks;
+					isPlaylist = selection.isPlaylist;
 				} else if (effectiveRequest.query) {
 					tracksToAdd = [effectiveRequest.query as Track];
 				}
+			}
+
+			if (requestedBy && typeof requestedBy === "object") {
+				tracksToAdd = tracksToAdd.map((track) => ({ ...track, requestedBy }));
 			}
 
 			if (tracksToAdd.length === 0 || context.signal.aborted) {
@@ -181,24 +196,40 @@ export class PlaybackPlayController {
 			const isTTS = (t: Track | undefined) => {
 				if (!t) return false;
 				try {
-					return typeof t.source === "string" && t.source.toLowerCase().includes("tts");
+					return (
+						(typeof t.source === "string" && t.source.toLowerCase().includes("tts")) ||
+						(typeof t.id === "string" && t.id.toLowerCase().startsWith("tts-")) ||
+						(typeof t.url === "string" && t.url.toLowerCase().startsWith("tts://")) ||
+						Boolean(t.metadata?.tts)
+					);
 				} catch {
 					return false;
 				}
 			};
-			const queryLooksTTS =
-				typeof effectiveRequest.query === "string" && effectiveRequest.query.trim().toLowerCase().startsWith("tts");
+			const checkIsTTS = (t: Track | undefined): boolean => {
+				if (!t) return false;
+				if (this.bus.hasRpc(CONTROLLER_RPC.ttsIsTTS)) {
+					return Boolean(
+						this.bus.requestRpcSync<{ track: Track }, boolean>(this.playerId, CONTROLLER_RPC.ttsIsTTS, {
+							track: t,
+						}),
+					);
+				}
+				return Boolean(this.adapters?.isTTS?.(t) ?? isTTS(t));
+			};
 
-			const isTTSTrack =
-				!isPlaylist &&
-				tracksToAdd.length > 0 &&
-				ttsInterruptEnabled &&
-				((this.bus.hasRpc(CONTROLLER_RPC.ttsIsTTS) ?
-					this.bus.requestRpcSync<{ track: Track }, boolean>(this.playerId, CONTROLLER_RPC.ttsIsTTS, {
-						track: tracksToAdd[0],
-					})
-				:	(this.adapters?.isTTS?.(tracksToAdd[0]) ?? isTTS(tracksToAdd[0]))) ||
-					queryLooksTTS);
+			const rawQuery = typeof effectiveRequest.query === "string" ? effectiveRequest.query.trim().toLowerCase() : "";
+			const queryLooksTTS = rawQuery.startsWith("tts:");
+
+			if (queryLooksTTS && tracksToAdd.length > 0 && !checkIsTTS(tracksToAdd[0])) {
+				const ttsIdx = tracksToAdd.findIndex(checkIsTTS);
+				if (ttsIdx > 0) {
+					const [ttsTrack] = tracksToAdd.splice(ttsIdx, 1);
+					tracksToAdd.unshift(ttsTrack);
+				}
+			}
+
+			const isTTSTrack = !isPlaylist && tracksToAdd.length > 0 && ttsInterruptEnabled && checkIsTTS(tracksToAdd[0]);
 
 			if (isTTSTrack) {
 				if (this.bus.hasRpc(CONTROLLER_RPC.ttsPlay)) {

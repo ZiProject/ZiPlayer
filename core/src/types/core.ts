@@ -14,13 +14,16 @@ export enum PlaybackMode {
 /**
  * Represents a music track with metadata and streaming information.
  */
+export type TrackRequester = string | object;
+
 export interface Track {
 	id: string;
 	title: string;
 	url: string;
 	duration: number;
 	thumbnail?: string;
-	requestedBy: string;
+	/** User object or identifier who requested this track. */
+	requestedBy: TrackRequester;
 	source: string;
 	metadata?: Record<string, any>;
 	isLive?: boolean;
@@ -28,7 +31,9 @@ export interface Track {
 }
 
 export interface SearchResult {
+	/** Search candidates; play() uses the first unless this result represents a playlist. */
 	tracks: Track[];
+	/** Present only when all tracks belong to a playlist. */
 	playlist?: {
 		name: string;
 		url?: string;
@@ -79,8 +84,8 @@ export interface RawStreamInfo {
  */
 export interface StreamInfo extends RawStreamInfo {
 	stream?: Readable;
-	track: Track;
-	streamType: StreamType;
+	track?: Track;
+	streamType?: StreamType;
 	/** @deprecated Use streamType */
 	inputType?: StreamType;
 	/** @deprecated Use streamType */
@@ -100,6 +105,9 @@ export function inferStreamType(info: Partial<RawStreamInfo>): StreamType {
 
 export function normalizeStreamInfo(requestedTrack: Track, info: RawStreamInfo): StreamInfo {
 	const streamType = info.streamType ?? info.inputType ?? (info.type as StreamType) ?? inferStreamType(info);
+	if (String(streamType).toLowerCase() === "raw") {
+		throw new TypeError("Raw audio input is unsupported; provide encoded audio");
+	}
 	return {
 		...info,
 		track: info.track ?? requestedTrack,
@@ -313,8 +321,8 @@ export interface PlayerRuntimeState {
 }
 
 export interface PlayOptions {
-	/** User or identifier who requested playback. */
-	requestedBy?: any;
+	/** User object or identifier who requested playback. Track metadata preserves the supplied value. */
+	requestedBy?: TrackRequester;
 	/** Guild voice channel to connect to automatically before playback. */
 	voiceChannel?: VoiceChannel;
 	/** Target plugin or list of plugins to search/play from. */
@@ -325,8 +333,8 @@ export interface PlayOptions {
 }
 
 export interface SearchOptions {
-	/** User or identifier who requested the search. */
-	requestedBy?: any;
+	/** User object or identifier who requested the search. Track metadata preserves the supplied value. */
+	requestedBy?: TrackRequester;
 	/** Restrict search to this plugin or list of plugins. */
 	plugin?: string | string[];
 	/** AbortSignal to cancel the search. */
@@ -336,7 +344,7 @@ export interface SearchOptions {
 export interface PlayResult {
 	track: Track;
 	query: string;
-	requestedBy?: any;
+	requestedBy?: TrackRequester;
 	voiceConnection?: any;
 	player: Player;
 }
@@ -385,4 +393,5 @@ export interface ManagerEvents {
 	forwardModeEnd: [player: Player, leader: Player, reason: string | undefined];
 	seek: [player: Player, payload: { track: Track; position: number }];
 	trackStuck: [player: Player, track: Track | null];
+	playerIdChange: [player: Player, newPlayerId: string, oldPlayerId: string];
 }

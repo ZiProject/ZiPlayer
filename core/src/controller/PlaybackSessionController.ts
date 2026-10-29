@@ -1,4 +1,5 @@
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track } from "../types";
 import { CONTROLLER_RPC, PLAYER_QUERY } from "../structures/BusContract";
@@ -11,10 +12,12 @@ interface SessionState {
 /** Shared, singleton controller: owns the active PlaybackSession per player, exposed
  *  only through the internal Bus capability. */
 export class PlaybackSessionController {
-	private readonly states = new Map<string, SessionState>();
+	private get states(): Map<string, SessionState> {
+		return playerDataMap(this.bus, "controller.playbackSession.states");
+	}
 	private disposed = false;
 
-	public constructor(bus: Bus) {
+	public constructor(private readonly bus: Bus) {
 		bus.registerQuery(PLAYER_QUERY.playbackSessionInternal, (playerId) => this.states.get(playerId)?.session ?? null);
 		bus.registerRpc<void, void>(CONTROLLER_RPC.playbackSessionRetirePending, (_req, ctx) =>
 			this.retirePendingPrevious(ctx.playerId),

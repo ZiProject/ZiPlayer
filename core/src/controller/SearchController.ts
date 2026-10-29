@@ -1,9 +1,12 @@
 import { LRUCache } from "lru-cache";
 import type { SearchResult, SearchRequest, SearchDebugResult } from "../types";
+import type { TrackRequester } from "../types";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { PLAYER_RPC } from "../structures/BusContract";
+import { getRequesterId, withTrackRequester } from "../utils/requester";
 
 interface SearchControllerOptions {
 	pluginManager: PluginManager;
@@ -19,10 +22,12 @@ interface SearchState {
 	cache: LRUCache<string, SearchResult>;
 }
 
-/** Shared search orchestration; player-specific options and cache are keyed by playerId. */
+/** Shared search orchestration; player-specific options and cache live in each player's `data` Map. */
 export class SearchController {
 	private static readonly CACHE_TTL = 2 * 60 * 1000;
-	private readonly states = new Map<string, SearchState>();
+	private get states(): Map<string, SearchState> {
+		return playerDataMap(this.bus, "controller.search.states");
+	}
 
 	public constructor(private readonly bus: Bus) {
 		bus.registerRpc<SearchRequest, SearchResult>(PLAYER_RPC.search, (request, context) =>
@@ -74,7 +79,7 @@ export class SearchController {
 	private async search(
 		playerId: string,
 		query: string,
-		requestedBy: string,
+		requestedBy: TrackRequester,
 		signal?: AbortSignal,
 		plugin?: string | string[],
 	): Promise<SearchResult> {
@@ -83,7 +88,9 @@ export class SearchController {
 		const { options } = state;
 		const operationSignal = signal ? AbortSignal.any([signal, state.lifecycleAbort.signal]) : state.lifecycleAbort.signal;
 		this.throwIfAborted(operationSignal);
-		options.debug(`[SearchController] Search called with query: ${query}, requestedBy: ${requestedBy}, plugin: ${plugin}`);
+		const requester = requestedBy ?? "Unknown";
+		const requesterId = getRequesterId(requester) ?? "Unknown";
+		options.debug(`[SearchController] Search called with query: ${query}, requestedBy: ${requesterId}, plugin: ${plugin}`);
 		const cacheKey =
 			plugin !== undefined ?
 				`${this.key(query)}:${Array.isArray(plugin) ? plugin.slice().sort().join(",") : plugin}`
@@ -91,24 +98,29 @@ export class SearchController {
 		const cached = options.cacheEnabled === false ? undefined : state.cache.get(cacheKey);
 		if (cached) {
 			options.debug(`[SearchCache] Using cached search result for: ${query}`);
-			return cached;
+			return withTrackRequester(cached, requester);
 		}
 
 		this.throwIfAborted(operationSignal);
 		if (plugin === undefined) {
-			const extensionResult = await options.extensionManager?.provideSearch(query, requestedBy, operationSignal);
+			const extensionResult = await options.extensionManager?.provideSearch(query, requesterId, operationSignal);
 			this.throwIfAborted(operationSignal);
 			if (extensionResult?.tracks?.length) {
 				options.debug(`[SearchController] Extension handled search for query: ${query}`);
 				this.storeResult(state, cacheKey, extensionResult);
-				return extensionResult;
+				return withTrackRequester(extensionResult, requester);
 			}
 		}
 
 		this.throwIfAborted(operationSignal);
 		const pluginResult = await options.pluginManager.search(
 			query,
-			{ requestedBy, plugins: plugin, signal: operationSignal },
+			{
+				requestedBy: requesterId,
+				plugins: plugin,
+				signal: operationSignal,
+				playerId: options.pluginManager.hasPlayerRuntime(playerId) ? playerId : undefined,
+			},
 			operationSignal,
 		);
 		this.throwIfAborted(operationSignal);
@@ -118,7 +130,7 @@ export class SearchController {
 			);
 			if (pluginResult.score) options.debug(`[SearchController] Search evaluation - ${pluginResult.score.reason}`);
 			this.storeResult(state, cacheKey, pluginResult);
-			return pluginResult;
+			return withTrackRequester(pluginResult, requester);
 		}
 
 		options.debug(`[SearchController] No search results for query: ${query}`);
@@ -146,7 +158,7 @@ export class SearchController {
 			return { isCached: false, cacheAge: undefined, pluginCount: 0, ttsFiltered: false };
 		}
 		const isCached = state.options.cacheEnabled !== false && state.cache.has(this.key(query));
-		const allPlugins = state.options.pluginManager.getAll();
+		const allPlugins = state.options.pluginManager.getAll(playerId);
 		const plugins = allPlugins.filter(
 			(plugin) => !(plugin.name.toLowerCase() === "tts" && !query.toLowerCase().startsWith("tts:")),
 		);

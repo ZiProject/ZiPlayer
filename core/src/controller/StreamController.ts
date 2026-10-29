@@ -3,6 +3,7 @@ import { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
 import type { Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, BUS_EVENT } from "../structures/BusContract";
 
 const STREAM_RPC_REPLACE = "controller.stream.replace";
@@ -17,7 +18,9 @@ interface StreamState {
 
 /** Shared stream controller with active and remote stream state isolated by playerId. */
 export class StreamController {
-	public readonly states = new Map<string, StreamState>();
+	public get states(): Map<string, StreamState> {
+		return playerDataMap(this.bus, "controller.stream.states");
+	}
 
 	constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => {
@@ -253,7 +256,7 @@ export class StreamController {
 			}
 			return stream;
 		}
-		throw new Error("StreamInfo does not contain a readable stream, url, or recreate factory");
+		throw new Error("StreamInfo does not contain a readable stream, url, or recreation callback");
 	}
 
 	private async replace(playerId: string, state: StreamState, info: StreamInfo, session: PlaybackSession): Promise<ActiveStream> {

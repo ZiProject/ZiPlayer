@@ -1,4 +1,4 @@
-﻿import { BasePlugin, Track, SearchResult, StreamInfo } from "ziplayer";
+import { BasePlugin, Track, SearchResult, StreamInfo } from "ziplayer";
 import { Readable } from "stream";
 import { getTTSUrls, getEdgeTTS, getEdgeTTSVoices, EdgeTTSOptions } from "@ziplayer/tts";
 import axios from "axios";
@@ -93,6 +93,7 @@ interface TTSConfig {
 export class TTSPlugin extends BasePlugin {
 	name = "tts";
 	version = "1.0.0";
+	priority = 20;
 	private opts: {
 		defaultLang: string;
 		slow: boolean;

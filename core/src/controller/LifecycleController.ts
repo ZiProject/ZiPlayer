@@ -1,5 +1,6 @@
 import { AudioPlayerStatus } from "@discordjs/voice";
 import { createPlayerRequestId, type Bus } from "../structures/Bus";
+import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import { PlaybackMode, type LifecycleControllerOptions } from "../types";
 
@@ -23,7 +24,9 @@ interface LifecycleState {
 
 /** Shared lifecycle controller with timers and subscriptions partitioned by playerId. */
 export class LifecycleController {
-	public readonly states = new Map<string, LifecycleState>();
+	public get states(): Map<string, LifecycleState> {
+		return playerDataMap(this.bus, "controller.lifecycle.states");
+	}
 
 	public constructor(private readonly bus: Bus) {
 		bus.registerRpc<{ reason?: "track-end" | "queue-empty" | "manual" }, void>(

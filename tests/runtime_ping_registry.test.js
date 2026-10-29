@@ -3,10 +3,6 @@ const assert = require("node:assert/strict");
 
 const { PlayerManager, CONTROLLER_RPC } = require("../core/dist");
 
-// Before this fix, `GlobalControllerRegistry` (heartbeat + stale-dispose based on "runtime.ping")
-// was never wired into `PlayerManager` at all, and nothing answered the "runtime.ping" RPC — so
-// enabling it as originally written would have marked every player unreachable and disposed it
-// almost immediately. See core/todo.md "Phát hiện 1" and "Định hướng đề xuất" / "✅ Đã code + verify".
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test('bus answers "runtime.ping" for a tracked, live player', async (t) => {
@@ -18,6 +14,36 @@ test('bus answers "runtime.ping" for a tracked, live player', async (t) => {
 
 	const ok = await mgr.bus.requestRpc("g-ping", CONTROLLER_RPC.runtimePing, { playerId: "g-ping" }, { timeoutMs: 500 });
 	assert.equal(ok, true);
+	assert.equal(await mgr.controllerRegistry.ping("g-ping"), true, "the heartbeat must accept an explicit alive response");
+});
+
+test("a player is not heartbeat-monitored until PlayerManager tracks it", async (t) => {
+	const mgr = new PlayerManager({ autoCleanup: false });
+	t.after(() => mgr.destroy());
+
+	mgr.attachPlayerControllers("g-initializing", {});
+	assert.equal(mgr.controllerRegistry.has("g-initializing"), false);
+	await mgr.detachControllers("g-initializing");
+
+	const player = await mgr.create("g-initialized");
+	assert.equal(mgr.playersByRoutingId.get(player.routingPlayerId), player);
+	assert.equal(mgr.controllerRegistry.has(player.routingPlayerId), true);
+});
+
+test("runtime.ping response false is not treated as alive", async (t) => {
+	const mgr = new PlayerManager({ autoCleanup: false });
+	t.after(() => mgr.destroy());
+
+	await mgr.create("g-ping-false");
+	mgr.bus.registerRpc(CONTROLLER_RPC.runtimePing, () => false);
+
+	assert.equal(await mgr.controllerRegistry.ping("g-ping-false"), false);
+	const entry = mgr.controllerRegistry.get("g-ping-false");
+	assert.ok(entry.unreachableSince, "false response must start unreachable tracking");
+
+	mgr.bus.registerRpc(CONTROLLER_RPC.runtimePing, () => true);
+	assert.equal(await mgr.controllerRegistry.ping("g-ping-false"), true);
+	assert.equal(entry.unreachableSince, undefined, "a later explicit alive response must clear unreachable tracking");
 });
 
 test('"runtime.ping" rejects for a playerId the manager no longer tracks', async (t) => {
@@ -53,7 +79,7 @@ test("a player that becomes untrackable (e.g. its facade is lost) is auto-detect
 
 	// Simulate the player becoming unreachable from PlayerManager's point of view without an
 	// explicit destroy() — this is the scenario "runtime.ping" is meant to catch.
-	mgr.players.delete("g-orphan");
+	mgr.playersByRoutingId.delete("g-orphan");
 
 	// Default staleAfterMs is 10s and heartbeatMs is 2s; give it enough time to be detected and
 	// disposed automatically, with no manual sweep call.

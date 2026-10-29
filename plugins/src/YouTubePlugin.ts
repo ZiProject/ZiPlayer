@@ -21,6 +21,7 @@ export interface PluginOptions {
 	searchLimit?: number;
 	clientType?: Types.InnerTubeClient;
 	searchClientType?: Types.InnerTubeClient;
+	preferYoutubei?: boolean;
 	fallbackStream?: (track: Track) => Promise<StreamInfo>;
 	fistStream?: (track: Track) => Promise<StreamInfo>;
 }
@@ -93,7 +94,7 @@ export class YouTubePlugin extends BasePlugin {
 	}
 
 	private debug(message?: any, ...optionalParams: any[]): void {
-		const tracer = this.player?.runtimeGraph?.debugTracer;
+		const tracer = this.player?.manager?.debugTracerInstance;
 		if (tracer) {
 			tracer.log("debug", "YouTubePlugin", message, ...optionalParams);
 			return;
@@ -391,12 +392,14 @@ export class YouTubePlugin extends BasePlugin {
 
 			if (videoId) {
 				try {
-					// Get the specific video info directly
-					const info: any = await this.client.getInfo(videoId, { client: this.options.searchClientType || "WEB" });
+					// Get the specific video info directly (fast basic_info lookup first)
+					const info: any =
+						(await this.client.getBasicInfo(videoId, { client: this.options.searchClientType || "WEB" }).catch(() => null)) ||
+						(await this.client.getInfo(videoId, { client: this.options.searchClientType || "WEB" }));
 					this.debug("Video info:", info);
 
-					if (info && info.basic_info) {
-						const track = this.buildTrack(info.basic_info, requestedBy);
+					if (info && (info.basic_info || info.video_details)) {
+						const track = this.buildTrack(info.basic_info || info.video_details, requestedBy);
 						this.debug("Track created:", track);
 						return { tracks: [track] };
 					}
@@ -525,39 +528,47 @@ export class YouTubePlugin extends BasePlugin {
 		const id = track.id || this.extractVideoId(track.url);
 		if (!id) throw new Error("Invalid track id");
 
-		try {
-			this.debug("🚀 Attempting SABR download");
-			return await this.downloadWithSabr(track, id, signal);
-		} catch (sabrError: any) {
-			if (signal?.aborted) {
-				throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
-			}
-
-			this.debug("⚠️ SABR stream failed, trying outubei.js download with BotGuard:", sabrError);
-
+		const downloads =
+			this.options?.preferYoutubei ?
+				[
+					{ name: "youtubei.js download with BotGuard", run: () => this.downloadWithYoutubei(track, id, signal) },
+					{ name: "SABR download", run: () => this.downloadWithSabr(track, id, signal) },
+				]
+			:	[
+					{ name: "SABR download", run: () => this.downloadWithSabr(track, id, signal) },
+					{ name: "youtubei.js download with BotGuard", run: () => this.downloadWithYoutubei(track, id, signal) },
+				];
+		let lastError: unknown;
+		for (let index = 0; index < downloads.length; index++) {
+			const download = downloads[index];
 			try {
-				return await this.downloadWithYoutubei(track, id, signal);
-			} catch (youtubeError: any) {
+				this.debug(`🚀 Attempting ${download.name}`);
+				return await download.run();
+			} catch (error) {
 				if (signal?.aborted) {
 					throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
 				}
-
-				if (this.options?.fallbackStream && typeof this.options.fallbackStream === "function") {
-					this.debug("🔁 Attempting user-provided fallback stream method");
-					try {
-						const fbStream = await this.options.fallbackStream(track);
-						if (fbStream && fbStream.stream) {
-							this.debug("✅ User-provided fallback stream successful");
-							return fbStream;
-						}
-					} catch (err: any) {
-						this.debug("⚠️ User-provided fallback stream failed or returned invalid stream");
-					}
+				lastError = error;
+				if (index < downloads.length - 1) {
+					this.debug(`⚠️ ${download.name} failed, trying ${downloads[index + 1].name}:`, error);
 				}
-
-				throw youtubeError;
 			}
 		}
+
+		if (this.options?.fallbackStream && typeof this.options.fallbackStream === "function") {
+			this.debug("🔁 Attempting user-provided fallback stream method");
+			try {
+				const fbStream = await this.options.fallbackStream(track);
+				if (fbStream?.stream) {
+					this.debug("✅ User-provided fallback stream successful");
+					return fbStream;
+				}
+			} catch (error) {
+				this.debug("⚠️ User-provided fallback stream failed:", error);
+			}
+		}
+
+		throw lastError;
 	}
 
 	private async downloadWithYoutubei(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
@@ -674,20 +685,6 @@ export class YouTubePlugin extends BasePlugin {
 		}
 
 		this.debug("🚀 Attempting sabr download for video ID:", id);
-		const videoInfo = await this.client.getInfo(id, { client: "WEB" });
-		this.throwIfAborted(signal);
-
-		const actualTitle = videoInfo.basic_info?.title || "";
-		const similarity = this.calculateTitleSimilarity(expectedTitle, actualTitle);
-
-		if (similarity < 60 && track.url && this.validate(track.url)) {
-			this.debug(`⚠️ Title mismatch! Expected "${expectedTitle}" but got "${actualTitle}"`);
-			throw new Error(`Wrong video: Expected "${track.title}" but got "${actualTitle}"`);
-		}
-
-		this.debug(`Title similarity: ${similarity}%`);
-		this.debug(`Expected: "${expectedTitle}"`);
-		this.debug(`Actual: "${actualTitle}"`);
 
 		const sabrOptions = {
 			preferWebM: true,
@@ -697,6 +694,12 @@ export class YouTubePlugin extends BasePlugin {
 		};
 
 		const { stream, title, format } = await createSabrStream(id, this.client, sabrOptions, signal);
+
+		if (title && expectedTitle) {
+			const actualTitle = title.toLowerCase().trim();
+			const similarity = this.calculateTitleSimilarity(expectedTitle, actualTitle);
+			this.debug(`Title similarity: ${similarity}% (Expected: "${expectedTitle}", Actual: "${title}")`);
+		}
 
 		this.debug("✅ Sabr download successful, stream ready");
 
@@ -806,12 +809,25 @@ export class YouTubePlugin extends BasePlugin {
 	}
 
 	async getVideo(track: Track, signal?: AbortSignal): Promise<StreamInfo> {
-		if (!track?.url && !track?.id) throw new Error("Track must have a URL or ID");
+		if (!track?.url && !track?.id && !track?.title) throw new Error("Track must have a URL, ID, or title");
 		const plugin = this as any;
 		plugin.throwIfAborted?.(signal);
 		await plugin.ready;
 		plugin.throwIfAborted?.(signal);
-		const id = track.id || plugin.extractVideoId(track.url);
+		let id = track.id || plugin.extractVideoId(track.url);
+		if (!id && track.title) {
+			const query = `${track.title} ${track.author || track.metadata?.author || ""}`.trim();
+			plugin.debug("🎬 No direct YouTube ID for track, searching video:", query);
+			try {
+				const searchRes = await plugin.search(query, "youtube-video");
+				const first = searchRes.tracks?.[0];
+				if (first) {
+					id = first.id || plugin.extractVideoId(first.url);
+				}
+			} catch (err) {
+				plugin.debug("⚠️ Video fallback search failed:", err);
+			}
+		}
 		if (!id) throw new Error("Invalid YouTube video id");
 		plugin.debug("🎬 Resolving YouTube video through SABR:", id);
 		const result = await createSabrVideoStream(id, plugin.client, undefined, signal);

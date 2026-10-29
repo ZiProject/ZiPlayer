@@ -307,6 +307,26 @@ interface StreamCacheEntry {
 	expiresAt: number;
 }
 
+interface PluginRuntime {
+	streamManager?: StreamManager;
+	extractorTimeout?: number;
+	destroyed: boolean;
+	plugins: Map<string, BasePlugin>;
+	pluginRegistrationIndex: Map<string, number>;
+	disabledPlugins: Set<string>;
+	streamCache: Map<string, StreamCacheEntry>;
+	pendingStreams: Map<string, Promise<StreamInfo | null>>;
+}
+
+const createPluginRuntime = (): PluginRuntime => ({
+	destroyed: false,
+	plugins: new Map(),
+	pluginRegistrationIndex: new Map(),
+	disabledPlugins: new Set(),
+	streamCache: new Map(),
+	pendingStreams: new Map(),
+});
+
 export class PluginManager {
 	private options: PluginManagerOptions;
 	private player?: Player;
@@ -314,12 +334,11 @@ export class PluginManager {
 	private plugins: Map<string, BasePlugin> = new Map();
 	private pluginRegistrationIndex: Map<string, number> = new Map();
 	private registrationCounter = 0;
-	private streamCache: Map<string, StreamCacheEntry> = new Map();
+	private readonly runtimes = new Map<string, PluginRuntime>();
+	private readonly defaultRuntime = createPluginRuntime();
 	private searchCache: Map<string, SearchCacheEntry> = new Map();
 	private readonly STREAM_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-	private pendingStreams: Map<string, Promise<StreamInfo | null>> = new Map(); // Dedupe in-flight requests
 	private pendingSearches: Map<string, Promise<SearchResult | null>> = new Map(); // Dedupe search requests
-	private streamManager?: StreamManager;
 	private destroyed = false;
 
 	constructor(options?: PluginManagerOptions);
@@ -330,9 +349,12 @@ export class PluginManager {
 		options?: PluginManagerOptions,
 	) {
 		const isLegacyCall =
-			playerOrOptions &&
-			(manager !== undefined ||
-				(typeof playerOrOptions === "object" && ("guildId" in (playerOrOptions as any) || "bus" in (playerOrOptions as any))));
+			manager !== undefined ||
+			Boolean(
+				playerOrOptions &&
+				typeof playerOrOptions === "object" &&
+				("guildId" in (playerOrOptions as any) || "bus" in (playerOrOptions as any)),
+			);
 
 		if (isLegacyCall) {
 			this.player = (playerOrOptions as Player) ?? undefined;
@@ -374,48 +396,140 @@ export class PluginManager {
 		}
 		plugin.priority ??= 0;
 		this.plugins.set(plugin.name, plugin);
+		for (const runtime of this.runtimes.values()) runtime.disabledPlugins.delete(plugin.name);
+		this.clearSearchCache();
 		this.debug(`Registered plugin: ${plugin.name} (priority: ${plugin.priority})`);
+	}
+
+	registerPlayerPlugin(playerId: string, plugin: BasePlugin): void {
+		const runtime = this.runtimes.get(playerId);
+		if (!runtime) throw new Error(`PluginManager has no runtime for player "${playerId}"`);
+		if (!runtime.plugins.has(plugin.name)) runtime.pluginRegistrationIndex.set(plugin.name, this.registrationCounter++);
+		runtime.disabledPlugins.delete(plugin.name);
+		plugin.priority ??= 0;
+		runtime.plugins.set(plugin.name, plugin);
+		this.clearSearchCache(playerId);
+		this.debug(`Registered player plugin: ${plugin.name} (${playerId})`);
 	}
 
 	unregister(name: string): boolean {
 		const removed = this.plugins.delete(name);
 		this.pluginRegistrationIndex.delete(name);
+		this.clearSearchCache();
 		if (removed) this.debug(`Unregistered plugin: ${name}`);
 		return removed;
 	}
 
-	get(name: string): BasePlugin | undefined {
+	unregisterPlayerPlugin(playerId: string, name: string): boolean {
+		const runtime = this.runtimes.get(playerId);
+		if (!runtime) return false;
+		const removed = runtime.plugins.delete(name) || (this.plugins.has(name) && !runtime.disabledPlugins.has(name));
+		if (!removed) return false;
+		runtime.pluginRegistrationIndex.delete(name);
+		runtime.disabledPlugins.add(name);
+		this.clearSearchCache(playerId);
+		this.debug(`Unregistered player plugin: ${name} (${playerId})`);
+		return true;
+	}
+
+	get(name: string, playerId?: string): BasePlugin | undefined {
+		const runtime = playerId ? this.runtimes.get(playerId) : undefined;
+		if (runtime?.plugins.has(name)) return runtime.plugins.get(name);
+		if (runtime?.disabledPlugins.has(name)) return undefined;
 		return this.plugins.get(name);
 	}
 
-	getAll(): BasePlugin[] {
-		return Array.from(this.plugins.values()).sort((a, b) => {
+	getAll(playerId?: string): BasePlugin[] {
+		const runtime = playerId ? this.runtimes.get(playerId) : undefined;
+		const available = new Map(this.plugins);
+		if (runtime) {
+			for (const name of runtime.disabledPlugins) available.delete(name);
+			for (const [name, plugin] of runtime.plugins) available.set(name, plugin);
+		}
+		return Array.from(available.values()).sort((a, b) => {
 			const priorityDiff = (b.priority ?? 0) - (a.priority ?? 0);
 			if (priorityDiff !== 0) return priorityDiff;
-			const indexA = this.pluginRegistrationIndex.get(a.name) ?? 0;
-			const indexB = this.pluginRegistrationIndex.get(b.name) ?? 0;
+			const indexA = runtime?.pluginRegistrationIndex.get(a.name) ?? this.pluginRegistrationIndex.get(a.name) ?? 0;
+			const indexB = runtime?.pluginRegistrationIndex.get(b.name) ?? this.pluginRegistrationIndex.get(b.name) ?? 0;
 			return indexA - indexB;
 		});
 	}
 
-	findPlugin(query: string): BasePlugin | undefined {
+	findPlugin(query: string, playerId?: string): BasePlugin | undefined {
 		if (!query || typeof query !== "string") return undefined;
-		for (const plugin of this.getAll()) {
+		for (const plugin of this.getAll(playerId)) {
 			if (plugin.name && query.toLowerCase().includes(plugin.name.toLowerCase())) {
 				return plugin;
 			}
 		}
-		return this.getAll().find((plugin) => plugin.canHandle?.(query) ?? false);
+		return this.getAll(playerId).find((plugin) => plugin.canHandle?.(query) ?? false);
 	}
 
 	clear(): void {
 		this.plugins.clear();
 		this.pluginRegistrationIndex.clear();
 		this.registrationCounter = 0;
-		this.streamCache.clear();
 		this.searchCache.clear();
-		this.pendingStreams.clear();
 		this.pendingSearches.clear();
+		this.clearRuntime(this.defaultRuntime, true);
+		for (const runtime of this.runtimes.values()) this.clearRuntime(runtime, true);
+		this.runtimes.clear();
+	}
+
+	private clearRuntime(runtime: PluginRuntime, destroyStreams: boolean): void {
+		if (destroyStreams) {
+			for (const entry of runtime.streamCache.values()) {
+				const stream = entry.streamInfo?.stream as { destroy?: () => void; destroyed?: boolean } | undefined;
+				if (stream && typeof stream.destroy === "function" && !stream.destroyed) {
+					try {
+						stream.destroy();
+					} catch {}
+				}
+			}
+		}
+		runtime.plugins.clear();
+		runtime.pluginRegistrationIndex.clear();
+		runtime.disabledPlugins.clear();
+		runtime.streamCache.clear();
+		runtime.pendingStreams.clear();
+	}
+
+	attachPlayer(playerId: string, streamManager: StreamManager, extractorTimeout?: number): void {
+		if (this.runtimes.has(playerId)) this.detachPlayer(playerId);
+		const runtime = createPluginRuntime();
+		runtime.streamManager = streamManager;
+		runtime.extractorTimeout = extractorTimeout;
+		this.runtimes.set(playerId, runtime);
+	}
+
+	hasPlayerRuntime(playerId: string): boolean {
+		return this.runtimes.has(playerId);
+	}
+
+	detachPlayer(playerId: string): void {
+		const runtime = this.runtimes.get(playerId);
+		if (!runtime) return;
+		runtime.destroyed = true;
+		this.clearRuntime(runtime, true);
+		this.runtimes.delete(playerId);
+		this.clearPlayerSearchState(playerId);
+	}
+
+	private clearPlayerSearchState(playerId: string): void {
+		const prefix = `${playerId}:`;
+		for (const key of this.searchCache.keys()) if (key.startsWith(prefix)) this.searchCache.delete(key);
+		for (const key of this.pendingSearches.keys()) if (key.startsWith(prefix)) this.pendingSearches.delete(key);
+	}
+
+	clearPlayerPlugins(playerId: string): void {
+		const runtime = this.runtimes.get(playerId);
+		if (!runtime) return;
+		runtime.plugins.clear();
+		runtime.pluginRegistrationIndex.clear();
+		runtime.disabledPlugins = new Set(this.plugins.keys());
+		runtime.streamCache.clear();
+		runtime.pendingStreams.clear();
+		this.clearPlayerSearchState(playerId);
 	}
 
 	/**
@@ -429,30 +543,22 @@ export class PluginManager {
 	destroy(): void {
 		if (this.destroyed) return;
 		this.destroyed = true;
-		for (const entry of this.streamCache.values()) {
-			const stream = entry.streamInfo?.stream as { destroy?: () => void; destroyed?: boolean } | undefined;
-			if (stream && typeof stream.destroy === "function" && !stream.destroyed) {
-				try {
-					stream.destroy();
-				} catch {}
-			}
-		}
 		this.clear();
 	}
 
 	setStreamManager(manager: StreamManager): void {
-		this.streamManager = manager;
+		this.defaultRuntime.streamManager = manager;
 	}
 	//#region Search advanced scoring
 
-	private getSearchCacheKey(query: string, requestedBy: string, pluginsKey?: string): string {
-		return `${query.toLowerCase().trim()}:${requestedBy}:${pluginsKey ?? "all"}`;
+	private getSearchCacheKey(query: string, requestedBy: string, pluginsKey?: string, playerId?: string): string {
+		return `${playerId ?? "global"}:${query.toLowerCase().trim()}:${requestedBy}:${pluginsKey ?? "all"}`;
 	}
 
-	private getCachedSearch(query: string, requestedBy: string, pluginsKey?: string): SearchResult | null {
+	private getCachedSearch(query: string, requestedBy: string, pluginsKey?: string, playerId?: string): SearchResult | null {
 		if (!this.options.enableCache) return null;
 
-		const key = this.getSearchCacheKey(query, requestedBy, pluginsKey);
+		const key = this.getSearchCacheKey(query, requestedBy, pluginsKey, playerId);
 		const cached = this.searchCache.get(key);
 
 		if (cached && Date.now() < cached.expiresAt) {
@@ -468,10 +574,16 @@ export class PluginManager {
 		return null;
 	}
 
-	private setCachedSearch(query: string, requestedBy: string, result: SearchResult, pluginsKey?: string): void {
-		if (!this.options.enableCache || this.destroyed) return;
+	private setCachedSearch(
+		query: string,
+		requestedBy: string,
+		result: SearchResult,
+		pluginsKey?: string,
+		playerId?: string,
+	): void {
+		if (!this.options.enableCache || this.destroyed || (playerId && !this.runtimes.has(playerId))) return;
 
-		const key = this.getSearchCacheKey(query, requestedBy, pluginsKey);
+		const key = this.getSearchCacheKey(query, requestedBy, pluginsKey, playerId);
 		this.searchCache.set(key, {
 			result,
 			timestamp: Date.now(),
@@ -488,16 +600,18 @@ export class PluginManager {
 	 */
 	async search(
 		query: string,
-		requestedByOrOptions: string | { requestedBy?: string; plugins?: string | string[]; signal?: AbortSignal },
+		requestedByOrOptions: string | { requestedBy?: string; plugins?: string | string[]; signal?: AbortSignal; playerId?: string },
 		signal?: AbortSignal,
 	): Promise<SearchResult | null> {
 		const opts = typeof requestedByOrOptions === "object" ? requestedByOrOptions : { requestedBy: requestedByOrOptions };
 		const requestedBy = opts.requestedBy ?? "Unknown";
 		const effectiveSignal = opts.signal ?? signal;
 		const pluginsFilter = opts.plugins;
+		const playerId = opts.playerId;
 
 		if (effectiveSignal?.aborted) throw new DOMException("Aborted", "AbortError");
 		if (this.destroyed) return null;
+		if (playerId && !this.runtimes.has(playerId)) return null;
 		if (!query || !query.trim()) {
 			this.debug(`[Search] Empty query provided`);
 			return null;
@@ -513,18 +627,18 @@ export class PluginManager {
 		this.debug(`[Search] Called with query: "${trimmedQuery}", requestedBy: ${requestedBy}, plugins: ${pluginsKey}`);
 
 		// Check cache
-		const cached = this.getCachedSearch(trimmedQuery, requestedBy, pluginsKey);
+		const cached = this.getCachedSearch(trimmedQuery, requestedBy, pluginsKey, playerId);
 		if (cached) {
 			this.debug(`[Search] Returning cached result for: ${trimmedQuery}`);
 			return cached;
 		}
 
 		// Check in-flight request
-		const dedupeKey = this.getSearchCacheKey(trimmedQuery, requestedBy, pluginsKey);
+		const dedupeKey = this.getSearchCacheKey(trimmedQuery, requestedBy, pluginsKey, playerId);
 		let searchPromise = this.pendingSearches.get(dedupeKey);
 		if (!searchPromise) {
-			searchPromise = this.searchInternal(trimmedQuery, requestedBy, selectedPluginNames, pluginsKey).finally(() => {
-				this.pendingSearches.delete(dedupeKey);
+			searchPromise = this.searchInternal(trimmedQuery, requestedBy, selectedPluginNames, pluginsKey, playerId).finally(() => {
+				if (this.pendingSearches.get(dedupeKey) === searchPromise) this.pendingSearches.delete(dedupeKey);
 			});
 			this.pendingSearches.set(dedupeKey, searchPromise);
 		} else {
@@ -554,12 +668,25 @@ export class PluginManager {
 		requestedBy: string,
 		selectedPluginNames?: string[] | null,
 		pluginsKey?: string,
+		playerId?: string,
 	): Promise<SearchResult | null> {
-		const timeoutMs = this.options.extractorTimeout ?? 15000;
+		const timeoutMs =
+			playerId ? (this.runtimes.get(playerId)?.extractorTimeout ?? 15000) : (this.options.extractorTimeout ?? 15000);
 
-		let plugins = this.getAll().filter((p) => typeof p.search === "function");
+		let plugins = this.getAll(playerId).filter((p) => typeof p.search === "function");
 		if (selectedPluginNames !== null && selectedPluginNames !== undefined) {
 			plugins = plugins.filter((p) => selectedPluginNames.includes(p.name.toLowerCase()));
+		} else {
+			plugins = plugins.filter((p) => {
+				if (typeof p.canHandle === "function") {
+					try {
+						return p.canHandle(query) !== false;
+					} catch {
+						return false;
+					}
+				}
+				return true;
+			});
 		}
 
 		if (!plugins.length) return null;
@@ -613,7 +740,7 @@ export class PluginManager {
 		const playlistResult = results.find((r) => r.playlist);
 
 		if (playlistResult) {
-			this.setCachedSearch(query, requestedBy, playlistResult, pluginsKey);
+			this.setCachedSearch(query, requestedBy, playlistResult, pluginsKey, playerId);
 
 			this.debug(`[Search] Returning playlist: ${playlistResult.playlist?.name} (${playlistResult.tracks.length} tracks)`);
 
@@ -644,6 +771,17 @@ export class PluginManager {
 				shouldPrioritize = true;
 			}
 
+			if (
+				!shouldPrioritize &&
+				query.trim().toLowerCase().startsWith("tts:") &&
+				(track.source?.toLowerCase() === "tts" ||
+					track.id?.toLowerCase().startsWith("tts-") ||
+					track.url?.toLowerCase().startsWith("tts://") ||
+					Boolean(track.metadata?.tts))
+			) {
+				shouldPrioritize = true;
+			}
+
 			if (shouldPrioritize) {
 				prioritized.push(track);
 			} else {
@@ -659,7 +797,7 @@ export class PluginManager {
 			source: "multi-search",
 		};
 
-		this.setCachedSearch(query, requestedBy, finalResult, pluginsKey);
+		this.setCachedSearch(query, requestedBy, finalResult, pluginsKey, playerId);
 
 		this.debug(`[Search] Aggregated ${tracks.length} tracks from ${plugins.length} plugins`);
 		return finalResult;
@@ -667,10 +805,10 @@ export class PluginManager {
 	/**
 	 * Get plugin priority groups info for debugging
 	 */
-	getPriorityGroupsInfo(): { priority: number; plugins: string[]; count: number }[] {
+	getPriorityGroupsInfo(playerId?: string): { priority: number; plugins: string[]; count: number }[] {
 		const groups = new Map<number, string[]>();
 
-		for (const plugin of this.getAll()) {
+		for (const plugin of this.getAll(playerId)) {
 			const priority = plugin.priority ?? 0;
 			if (!groups.has(priority)) {
 				groups.set(priority, []);
@@ -690,9 +828,11 @@ export class PluginManager {
 	/**
 	 * Clear search cache
 	 */
-	clearSearchCache(): void {
-		const size = this.searchCache.size;
-		this.searchCache.clear();
+	clearSearchCache(playerId?: string): void {
+		const matchingKeys =
+			playerId ? [...this.searchCache.keys()].filter((key) => key.startsWith(`${playerId}:`)) : [...this.searchCache.keys()];
+		const size = matchingKeys.length;
+		for (const key of matchingKeys) this.searchCache.delete(key);
 		this.debug(`[SearchCache] Cleared ${size} entries`);
 	}
 
@@ -714,17 +854,17 @@ export class PluginManager {
 		return `${track.source}:${track.url}:${track.id || track.title}`;
 	}
 
-	private getCachedStream(track: Track): StreamInfo | null {
+	private getCachedStream(track: Track, runtime: PluginRuntime): StreamInfo | null {
 		if (!this.options.enableCache) return null;
 
 		const key = this.getStreamCacheKey(track);
-		const cached = this.streamCache.get(key);
+		const cached = runtime.streamCache.get(key);
 
 		if (cached && Date.now() < cached.expiresAt) {
 			const s = cached.streamInfo?.stream;
 			if (!s || s.destroyed || (s as any).readable === false) {
 				this.debug(`[StreamCache] Dead stream detected, evicting: ${track.title}`);
-				this.streamCache.delete(key);
+				runtime.streamCache.delete(key);
 				return null;
 			}
 			this.debug(`[StreamCache] Hit for track: ${track.title}`);
@@ -733,17 +873,17 @@ export class PluginManager {
 
 		if (cached) {
 			this.debug(`[StreamCache] Expired for track: ${track.title}`);
-			this.streamCache.delete(key);
+			runtime.streamCache.delete(key);
 		}
 
 		return null;
 	}
 
-	private setCachedStream(track: Track, streamInfo: StreamInfo): void {
-		if (!this.options.enableCache || this.destroyed || streamInfo.remote) return;
+	private setCachedStream(track: Track, streamInfo: StreamInfo, runtime: PluginRuntime): void {
+		if (!this.options.enableCache || this.destroyed || runtime.destroyed || streamInfo.remote) return;
 
 		const key = this.getStreamCacheKey(track);
-		this.streamCache.set(key, {
+		runtime.streamCache.set(key, {
 			streamInfo,
 			timestamp: Date.now(),
 			expiresAt: Date.now() + this.STREAM_CACHE_TTL,
@@ -751,29 +891,40 @@ export class PluginManager {
 		this.debug(`[StreamCache] Stored for track: ${track.title}`);
 	}
 
-	private async getStreamWithDedupe(track: Track, primary: BasePlugin): Promise<StreamInfo | null> {
+	private async getStreamWithDedupe(
+		track: Track,
+		primary: BasePlugin,
+		runtime: PluginRuntime,
+		playerId?: string,
+	): Promise<StreamInfo | null> {
 		const key = this.getStreamCacheKey(track);
 
-		if (this.pendingStreams.has(key)) {
+		if (runtime.pendingStreams.has(key)) {
 			this.debug(`[StreamDedupe] Waiting for existing request: ${track.title}`);
-			return this.pendingStreams.get(key)!;
+			return runtime.pendingStreams.get(key)!;
 		}
 
-		const promise = this.getStreamInternal(track, primary);
-		this.pendingStreams.set(key, promise);
+		const promise = this.getStreamInternal(track, primary, false, runtime, playerId);
+		runtime.pendingStreams.set(key, promise);
 
 		try {
 			const result = await promise;
 			return result;
 		} finally {
-			this.pendingStreams.delete(key);
+			if (runtime.pendingStreams.get(key) === promise) runtime.pendingStreams.delete(key);
 		}
 	}
 
-	private async getStreamInternal(track: Track, primary: BasePlugin, fresh = false): Promise<StreamInfo | null> {
+	private async getStreamInternal(
+		track: Track,
+		primary: BasePlugin,
+		fresh = false,
+		runtime: PluginRuntime = this.defaultRuntime,
+		playerId?: string,
+	): Promise<StreamInfo | null> {
 		// Reuse existing stream from StreamManager
-		if (!fresh && this.streamManager) {
-			const existingStream = this.streamManager.getStreamByTrack(track.id || track.title);
+		if (!fresh && runtime.streamManager) {
+			const existingStream = runtime.streamManager.getStreamByTrack(track.id || track.title);
 
 			if (existingStream) {
 				this.debug(`[Stream] Using existing stream from manager`);
@@ -785,10 +936,10 @@ export class PluginManager {
 			}
 		}
 
-		const timeoutMs = this.options.extractorTimeout ?? 50000;
+		const timeoutMs = playerId ? (runtime.extractorTimeout ?? 50000) : (this.options.extractorTimeout ?? 50000);
 
 		// Cache
-		const cached = fresh ? null : this.getCachedStream(track);
+		const cached = fresh ? null : this.getCachedStream(track, runtime);
 
 		if (cached) {
 			this.debug(`[Stream] Using cached stream for: ${track.title}`);
@@ -896,7 +1047,7 @@ export class PluginManager {
 		const primaryResult = await tryPlugin(primary);
 
 		if (primaryResult.result?.stream || (primaryResult.result?.remote && primaryResult.result?.handle)) {
-			this.setCachedStream(track, primaryResult.result);
+			this.setCachedStream(track, primaryResult.result, runtime);
 
 			return primaryResult.result;
 		}
@@ -904,7 +1055,7 @@ export class PluginManager {
 		// =========================================================
 		// FALLBACK PLUGINS
 		// =========================================================
-		const fallbackPlugins = this.getAll().filter((p) => p !== primary && p.name !== primary.name);
+		const fallbackPlugins = this.getAll(playerId).filter((p) => p !== primary && p.name !== primary.name);
 
 		if (fallbackPlugins.length === 0) {
 			this.debug(`[Stream] No fallback plugins available`);
@@ -939,7 +1090,7 @@ export class PluginManager {
 			if (similarity >= 0.7) {
 				this.debug(`[Stream] Success via fallback ${plugin.name} (score: ${similarity})`);
 
-				this.setCachedStream(track, result);
+				this.setCachedStream(track, result, runtime);
 
 				return result;
 			}
@@ -962,7 +1113,7 @@ export class PluginManager {
 
 			this.debug(`[Stream] Using best available match from ${bestMatch.plugin} (${bestMatch.score})`);
 
-			this.setCachedStream(track, bestMatch.streamInfo);
+			this.setCachedStream(track, bestMatch.streamInfo, runtime);
 
 			return bestMatch.streamInfo;
 		}
@@ -977,11 +1128,14 @@ export class PluginManager {
 			this.debug(`[getStream] No track provided`);
 			return null;
 		}
+		const playerId = options?.context?.playerId;
+		const runtime = playerId ? this.runtimes.get(playerId) : this.defaultRuntime;
+		if (!runtime || runtime.destroyed) return null;
 
 		// Step 1: Check provenance (Track.source)
 		let primary: BasePlugin | undefined;
 		if (track.source) {
-			primary = this.get(track.source);
+			primary = this.get(track.source, playerId);
 			if (primary) {
 				this.debug(`[getStream] Using source plugin for track provenance: ${primary.name}`);
 			}
@@ -990,10 +1144,10 @@ export class PluginManager {
 		// Step 2: Fallback candidate resolution if no source or source not registered
 		if (!primary) {
 			if (track.url) {
-				primary = this.findPlugin(track.url);
+				primary = this.findPlugin(track.url, playerId);
 			}
 			if (!primary) {
-				const candidates = this.getAll();
+				const candidates = this.getAll(playerId);
 				primary = candidates[0];
 			}
 			if (primary) {
@@ -1006,26 +1160,28 @@ export class PluginManager {
 			return null;
 		}
 
-		if (options?.fresh) return this.getStreamInternal(track, primary, true);
-		return this.getStreamWithDedupe(track, primary);
+		if (options?.fresh) return this.getStreamInternal(track, primary, true, runtime, playerId);
+		return this.getStreamWithDedupe(track, primary, runtime, playerId);
 	}
 
-	hasStreamCandidate(track: Track): boolean {
+	hasStreamCandidate(track: Track, playerId?: string): boolean {
 		if (!track) return false;
-		if (track.source && this.get(track.source)) return true;
+		if (track.source && this.get(track.source, playerId)) return true;
 		const query = track.url || track.title || track.source;
-		if (query && this.findPlugin(query)) return true;
-		return this.getAll().some((p) => typeof p.getStream === "function" || typeof p.getFallback === "function");
+		if (query && this.findPlugin(query, playerId)) return true;
+		return this.getAll(playerId).some((p) => typeof p.getStream === "function" || typeof p.getFallback === "function");
 	}
 
 	async getRelatedTracks(track: Track, context?: TrackResolveContext | { history?: Track[] } | Track[]): Promise<Track[]> {
 		if (!track) return [];
 
-		const timeoutMs = this.options.extractorTimeout ?? 15000;
+		const playerId = context && !Array.isArray(context) && "playerId" in context ? context.playerId : undefined;
+		const timeoutMs =
+			playerId ? (this.runtimes.get(playerId)?.extractorTimeout ?? 15000) : (this.options.extractorTimeout ?? 15000);
 		const limit = 20;
 		const minSimilarityScore = 10;
 
-		const relatedPlugins = this.getAll().filter((p) => typeof p.getRelatedTracks === "function");
+		const relatedPlugins = this.getAll(playerId).filter((p) => typeof p.getRelatedTracks === "function");
 
 		if (relatedPlugins.length === 0) {
 			return [];
@@ -1077,7 +1233,7 @@ export class PluginManager {
 		for (const t of results) {
 			const author = normalize(t.author || t.metadata?.author || "");
 			// Tránh lặp lại bài hát trong lịch sử HOẶC lặp lại nghệ sĩ vừa phát (nếu có nhiều lựa chọn khác)
-			const isRecentlyPlayedAuthor = author && recentAuthors.has(author);
+			const isRecentlyPlayedAuthor = Boolean(author && recentAuthors.has(author));
 
 			if (!unique.has(t.url) && t.url !== currentTrackUrl && !historyUrls.has(t.url)) {
 				// Nếu là nghệ sĩ vừa phát, gắn flag để giảm điểm hoặc xử lý sau
@@ -1101,12 +1257,12 @@ export class PluginManager {
 		this.debug(`[RelatedTracks] Found ${ranked.length} related tracks`);
 		return ranked;
 	}
-	async getVideo(track: Track, options: VideoResolveOptions = {}): Promise<StreamInfo | null> {
+	async getVideo(track: Track, options: VideoResolveOptions & { playerId?: string } = {}): Promise<StreamInfo | null> {
 		if (!track) return null;
 
-		let primary = this.get(track.source);
+		let primary = this.get(track.source, options.playerId);
 		if (!primary) {
-			primary = this.findPlugin(track.url);
+			primary = this.findPlugin(track.url, options.playerId);
 		}
 		if (!primary) {
 			this.debug(`[getStream] No plugin found for track: ${track.title}`);
@@ -1115,7 +1271,7 @@ export class PluginManager {
 
 		const candidates = [
 			primary,
-			...this.getAll()
+			...this.getAll(options.playerId)
 				.filter((plugin) => plugin !== primary && typeof plugin.getVideo === "function")
 				.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)),
 		].filter((plugin, index, list) => list.indexOf(plugin) === index && typeof plugin.getVideo === "function");
@@ -1126,7 +1282,7 @@ export class PluginManager {
 			options.signal?.addEventListener("abort", onAbort, { once: true });
 
 			try {
-				if (plugin.validate && !plugin.validate(track.url ?? "")) continue;
+				if (plugin === primary && plugin.validate && !plugin.validate(track.url ?? "")) continue;
 
 				this.debug(`[Video] ${plugin.name} resolving video: ${track.title}`);
 				const result = await withTimeout(plugin.getVideo!(track, controller.signal), 50000, `${plugin.name} getVideo timeout`);
@@ -1149,20 +1305,51 @@ export class PluginManager {
 
 	//#region Utility methods
 
-	clearStreamCache(): void {
-		const size = this.streamCache.size;
-		this.streamCache.clear();
+	clearStreamCache(playerId?: string): void {
+		let size = 0;
+		if (playerId) {
+			const runtime = this.runtimes.get(playerId);
+			if (!runtime) return;
+			size = runtime.streamCache.size;
+			runtime.streamCache.clear();
+		} else {
+			size = this.defaultRuntime.streamCache.size;
+			this.defaultRuntime.streamCache.clear();
+			for (const runtime of this.runtimes.values()) {
+				size += runtime.streamCache.size;
+				runtime.streamCache.clear();
+			}
+		}
 		this.debug(`[StreamCache] Cleared ${size} entries`);
 	}
 
-	getStats(): object {
+	getStats(playerId?: string): object {
+		const runtime = playerId ? this.runtimes.get(playerId) : this.defaultRuntime;
+		const streamCacheSize =
+			playerId ?
+				(runtime?.streamCache.size ?? 0)
+			:	[...this.runtimes.values()].reduce((total, state) => total + state.streamCache.size, this.defaultRuntime.streamCache.size);
+		const pendingStreams =
+			playerId ?
+				(runtime?.pendingStreams.size ?? 0)
+			:	[...this.runtimes.values()].reduce(
+					(total, state) => total + state.pendingStreams.size,
+					this.defaultRuntime.pendingStreams.size,
+				);
+		const searchPrefix = playerId ? `${playerId}:` : null;
+		const searchCacheSize =
+			searchPrefix ? [...this.searchCache.keys()].filter((key) => key.startsWith(searchPrefix)).length : this.searchCache.size;
+		const pendingSearches =
+			searchPrefix ?
+				[...this.pendingSearches.keys()].filter((key) => key.startsWith(searchPrefix)).length
+			:	this.pendingSearches.size;
 		return {
-			totalPlugins: this.plugins.size,
-			pluginNames: Array.from(this.plugins.keys()),
-			streamCacheSize: this.streamCache.size,
-			searchCacheSize: this.searchCache.size,
-			pendingStreams: this.pendingStreams.size,
-			pendingSearches: this.pendingSearches.size,
+			totalPlugins: this.getAll(playerId).length,
+			pluginNames: this.getAll(playerId).map((plugin) => plugin.name),
+			streamCacheSize,
+			searchCacheSize,
+			pendingStreams,
+			pendingSearches,
 		};
 	}
 

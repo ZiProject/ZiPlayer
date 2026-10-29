@@ -2,53 +2,53 @@
 
 # ZiPlayer
 
-A powerful, extensible Discord music engine built on top of `@discordjs/voice`, designed for scalability, flexibility, and
-developer experience.
+ZiPlayer is a Discord audio engine built on top of `@discordjs/voice` and designed for real-time playback, queue orchestration,
+advanced filter pipelines, shared Discord/WebAudio playback, and resilient player lifecycle management.
 
-ZiPlayer is not just a player — it's a **full ecosystem** with plugins, extensions, and a modular architecture that lets you build
-advanced music bots quickly.
-
----
-
-## ✨ Highlights
-
-- 🔌 **Plugin-driven architecture** — Easily support new audio sources
-- 🌐 **Multi-source playback** — YouTube, SoundCloud, Spotify (with fallback), TTS, and more
-- 🧠 **Smart fallback system** — Automatically resolves streams across plugins
-- 🎛️ **Advanced audio filters** — Real-time FFmpeg effects (bassboost, nightcore, etc.)
-- 🔁 **Autoplay & looping** — Seamless listening experience
-- 🧩 **Extension system** — Add STT, lyrics, Lavalink, and custom logic
-- 🗂️ **Per-guild player system** — Scales across multiple Discord servers
-- 📡 **Event-driven core** — Full lifecycle hooks for customization
-- 💾 **Custom userdata** — Attach context to each player
-- ⚡ **Smart caching** — Search and stream caching for better performance
-- 🎯 **Queue management** — Advanced queue operations (move, swap, batch remove)
-- 💹 **Preload** - Auto Preload next Track
-- 🔃 **Crossfade** - Suport crossfade for new/slip Track
-- 🧠 **Transition Engine** - BPM/genre-aware crossfade (chill → long fade, EDM → short fade) with beat-aligned entry instead of
-  blind time-based fading
-- 🔄 **Anti-Stuck Recovery 2.0** - Automatic stream failure recovery: reuse preload → fallback plugin → reduce quality →
-  controlled skip (no chaotic skipping)
-- 🔊 **Loudness Normalization** - LUFS-based normalization prevents sudden volume jumps between tracks, with gentle limiter to
-  avoid distortion
+The public API is intentionally centered on `PlayerManager` and `Player`; the internal bus/controllers are operational details
+used by the runtime, not the normal application integration surface.
 
 ---
 
-## 📦 Installation
+## Highlights
+
+- Robust per-guild `PlayerManager` + `Player` facade
+- Source plugins for search, extraction, and playback fallback
+- Queue management with loop, autoplay, insert, swap, move, and history operations
+- FFmpeg filter pipeline with safe filter validation and early failure handling
+- Preload, crossfade, smart transition, and anti-stuck recovery flow
+- Loudness normalization and volume shaping for smoother transitions
+- One Discord `AudioPlayer` and inline-volume `AudioResource` feed Discord Voice and WebAudio subscribers with the same Opus
+  packets; server-side `Player.setVolume()` is applied before fan-out
+- WebSocket Opus publishing and in-browser Opus decoding via `@ziplayer/client` (`opus-decoder` WebAssembly)
+- WebAudio browser publishing subscribes to the same AudioPlayer Opus packets as Discord Voice
+- FFmpeg-backed DSP pipeline (gain, high/low-pass, loudness presets, resample/remix) that decodes common containers to PCM in a
+  child process
+
+---
+
+## Installation
 
 ```bash
-npm install ziplayer @ziplayer/plugin @ziplayer/extension @ziplayer/infinity @discordjs/voice discord.js opusscript
+npm install ziplayer @discordjs/voice discord.js
+npm install --prefix core
+```
+
+Optional extras:
+
+```bash
+npm install @ziplayer/plugin @ziplayer/extension @ziplayer/infinity
+npm install @discordjs/opus ffmpeg-static
 ```
 
 ---
 
-## 🚀 Quick Start
+## Quick start
 
 ```ts
 import { Client, GatewayIntentBits } from "discord.js";
 import { PlayerManager } from "ziplayer";
-import { YouTubePlugin, SoundCloudPlugin, SpotifyPlugin } from "@ziplayer/plugin";
-import { InfinityPlugin } from "@ziplayer/infinity";
+import { YouTubePlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin, AttachmentsPlugin } from "@ziplayer/plugin";
 
 const client = new Client({
 	intents: [
@@ -60,164 +60,244 @@ const client = new Client({
 });
 
 const manager = new PlayerManager({
-	plugins: [new YouTubePlugin(), new SoundCloudPlugin(), new SpotifyPlugin(), new InfinityPlugin()],
+	plugins: [
+		new TTSPlugin({ defaultLang: "en" }),
+		new YouTubePlugin(),
+		new SoundCloudPlugin(),
+		new SpotifyPlugin(),
+		new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }),
+	],
+	autoCleanup: true,
 });
 
-client.on("messageCreate", async (msg) => {
-	if (!msg.content.startsWith("!play ") || !msg.guildId) return;
+client.on("messageCreate", async (message) => {
+	if (message.author.bot || !message.guildId) return;
+	if (!message.content.startsWith("!play ")) return;
 
-	const voiceChannel = msg.member?.voice?.channel;
-	if (!voiceChannel) return msg.reply("Join a voice channel first!");
+	const voiceChannel = message.member?.voice?.channel;
+	if (!voiceChannel) return message.reply("Join a voice channel first!");
 
-	const player = await manager.create(msg.guildId, {
+	const player = await manager.create(message.guildId, {
 		leaveOnEnd: true,
-		userdata: { channel: msg.channel },
+		leaveOnEmpty: true,
+		volume: 80,
+		userdata: { channelId: message.channelId },
 	});
 
 	if (!player.connection) await player.connect(voiceChannel);
-	await player.play(msg.content.slice(6), msg.author.id);
+	await player.play(message.content.slice(6).trim(), message.author);
 });
 
+manager.on("trackStart", (player, track) => console.log(`[${player.id}] now playing: ${track.title}`));
 client.login(process.env.DISCORD_TOKEN);
 ```
 
 ---
 
-## 🧱 Architecture Overview
+## Public API overview
 
-```
-PlayerManager (global)
-  └── Player (per guild)
-        ├── Queue (advanced operations)
-        ├── PluginManager (with caching & fallback)
-        ├── ExtensionManager (with priority & caching)
-        └── FilterManager (FFmpeg filters)
-```
-
-### Flow
-
-```
-create → connect → play → stream → events → destroy
-         ↓
-    auto-save (periodic)
-         ↓
-    restore on restart
-```
-
----
-
-## 🎵 Core Usage
-
-### Play music
+### Playback control
 
 ```ts
 await player.play("Never Gonna Give You Up", userId);
-await player.play("https://youtube.com/watch?v=...", userId);
-await player.play("tts: Hello world", userId);
-await player.play(searchResult, userId); // Play from SearchResult
-await player.play(null); // Resume from queue
+await player.play("Never Gonna Give You Up", { requestedBy: user });
+await player.play("https://example.com/audio");
+await player.play(track);
+await player.play(searchResult);
+await player.play(null); // resume from queue when supported
+
+await player.pause();
+await player.resume();
+await player.skip();
+await player.skip(2);
+await player.previous();
+await player.seek(45_000);
+await player.stop();
+player.setVolume(80);
 ```
 
-### Controls
+`requestedBy` accepts either a user identifier or a user object. When an object is supplied, it is preserved as
+`track.requestedBy`; search plugins still receive the user's ID.
+
+### Queue operations
 
 ```ts
-player.pause();
-player.resume();
-player.skip();
-player.skip(2); // Skip to track at index 2
-player.stop();
-player.setVolume(100);
-player.loop("track"); // Loop current track
-player.loop("queue"); // Loop entire queue
-player.loop(1); // Number mode: 0=off, 1=track, 2=queue
-player.shuffle();
-player.seek(30000); // Seek to 30 seconds
-player.previous(); // Go back to previous track
-```
-
-### Queue Management
-
-```ts
-// Basic operations
 player.queue.add(track);
 player.queue.addMultiple([track1, track2]);
 player.queue.remove(0);
-player.queue.removeMultiple([0, 2, 5]); // Remove multiple indices
-player.queue.removeWhere((t) => t.source === "youtube"); // Remove by condition
-player.queue.clear();
-
-// Queue manipulation
-player.queue.move(3, 0); // Move track at index 3 to front
-player.queue.swap(1, 3); // Swap positions 1 and 3
+player.queue.removeMultiple([0, 2, 5]);
+player.queue.move(2, 0);
+player.queue.swap(1, 3);
 player.queue.shuffle();
+player.queue.clear();
+player.queue.loop("queue");
+player.queue.autoPlay(true);
 
-// Queue inspection
-player.queue.size;
-player.queue.isEmpty;
-player.queue.currentTrack;
-player.queue.nextTrack;
-player.queue.lastTrack;
-player.queue.previousTracks;
-player.queue.getTrack(5);
-player.queue.findTracks((t) => t.duration > 300000);
-player.queue.indexOf(track);
-player.queue.has(track);
+console.log(player.queue.size, player.queue.isEmpty);
+console.log(player.queue.currentTrack, player.queue.nextTrack);
+```
 
-// History navigation
-player.queue.jumpToHistory(2); // Go back 2 tracks
+### State and events
+
+```ts
+player.currentTrack;
+player.connection;
+player.isPlaying;
+player.isPaused;
+player.isIdle;
+player.volume;
+player.queue;
+```
+
+### Player-scoped application data
+
+Use `player.data` for application-owned values that should live as long as the player:
+
+```ts
+player.data.set("my-plugin:settings", { autoplay: true });
+const settings = player.data.get("my-plugin:settings");
+```
+
+The player's public `data` Map holds both application data and runtime controller state. Controllers store their state under
+reserved `@ziplayer/` keys directly in `player.data`; application code should use its own namespaced keys and avoid changing
+reserved entries. The Bus remains responsible for communication and routing, not player data. Destroying a player clears and
+closes its `data` Map.
+
+### Change a player ID
+
+Change a managed player's public ID without disconnecting it or interrupting playback:
+
+```ts
+player.changePlayerId("new-guild-id");
+// or
+manager.changePlayerId("current-guild-id", "new-guild-id");
+```
+
+The old ID stops resolving through `manager.get()`/`manager.has()`, and the new ID resolves to the same player. Existing playback,
+connections, queue, and controller state are preserved. The player remains attached to its current Discord voice connection;
+changing its ID does not move it between Discord guilds. IDs that are already in use or reserved are rejected.
+
+Manager-level events:
+
+```ts
+manager.on("trackStart", (player, track) => {});
+manager.on("trackEnd", (player, track) => {});
+manager.on("queueEnd", (player) => {});
+manager.on("playerError", (player, error, track) => {});
+manager.on("playerPause", (player, track) => {});
+manager.on("playerResume", (player, track) => {});
+manager.on("queueAdd", (player, track) => {});
+manager.on("playerDestroy", (player) => {});
 ```
 
 ---
 
-## 🔌 Plugins
+## Shared Discord and browser playback
 
-Install via `@ziplayer/plugin`:
+ZiPlayer plays through one Discord `AudioPlayer`. Discord Voice connections and browser `WebAudioConnection`s subscribe directly
+to that player; browser subscriptions publish its Opus packets through an application-owned WebSocket gateway. There is no
+separate stream-output backend or output factory.
 
-- **YouTubePlugin** — YouTube + search
-- **SoundCloudPlugin** — SoundCloud streaming
-- **SpotifyPlugin** — Metadata (uses fallback)
-- **TTSPlugin** — Text-to-speech
-- **AttachmentsPlugin** — Local/URL audio files
+PCM remains internal to codec processing, inline volume transformation, and browser decoding; it is not a WebSocket transport
+format.
 
-### Example
+### Unified Browser and Discord Audio Output (Shared Server Volume)
+
+ZiPlayer can send audio to Discord Voice and WebAudio through the same `@discordjs/voice` `AudioPlayer`. The managed playback path
+creates an `AudioResource` with inline volume; `Player.setVolume()` changes the shared server-side resource before the player
+dispatches Opus packets to either subscriber:
 
 ```ts
-import { TTSPlugin } from "@ziplayer/plugin";
+import { PlayerManager, WebAudioConnection } from "ziplayer";
 
-new PlayerManager({
-	plugins: [new TTSPlugin({ defaultLang: "en" })],
-});
+const manager = new PlayerManager({ autoCleanup: true });
+const player = await manager.create(guildId);
+
+// 1. Discord Voice output
+const voiceConnection = await player.connect(voiceChannel);
+// voiceConnection.subscribe(player) is handled automatically
+
+// 2. WebAudio / WebSocket Gateway output
+const webConnection = new WebAudioConnection({ sessionId: player.id });
+const publisherSocket = connectPublisherSocket({ sessionId: player.id, gatewayUrl, token });
+webConnection.attachSocket(publisherSocket);
+const webOutput = await player.connect(webConnection);
+
+// Resolve the source Readable and create the inline-volume resource through normal playback
+await player.play(query, { requestedBy: userId });
+player.setVolume(65); // affects Discord and browser listeners
 ```
 
-### Dynamic Plugin Registration
+The shared output path is:
+
+- `Readable` → inline-volume `AudioResource` → `AudioPlayer` Opus packets.
+- Discord Voice applies its protocol encryption/framing and sends packets over UDP.
+- `WebAudioConnection` wraps the same post-volume Opus packets in the ZI v1 header and publishes them over WebSocket.
+- The application gateway relays frames; browser listeners decode Opus to PCM and play it through an AudioWorklet.
+
+For encoded Opus input, Discord.js decodes to PCM for the inline volume transform and re-encodes to Opus using the installed codec
+implementation; this does not spawn FFmpeg. Both subscribers receive the same post-volume Opus packets. `WebAudioConnection` can
+be detached during playback without interrupting Discord Voice. An externally created `AudioResource` may bypass the managed
+inline-volume setup. PCM is used internally by the codec and browser AudioWorklet, not sent over WebSocket.
+
+For a full runnable example, see the backend sample in `examples/backend` and the client receiver package in `client`.
+
+---
+
+## Player configuration
 
 ```ts
-// Register plugin after initialization
-manager.registerPlugin(new YouTubePlugin());
-
-// Get all registered plugins
-const plugins = manager.getPlugins();
+const player = await manager.create(guildId, {
+	volume: 80,
+	leaveOnEnd: true,
+	leaveOnEmpty: true,
+	lowPerformance: false,
+	preload: { enabled: true, autoDisableInLowPerformance: true },
+	crossfade: { enabled: true, durationMs: 4000 },
+	smartTransition: {
+		enabled: true,
+		genreAware: true,
+		beatAlign: true,
+		baseDurationMs: 4000,
+	},
+	antiStuck: {
+		enabled: true,
+		maxRetries: 2,
+		retryDelayMs: 800,
+	},
+	userdata: { customField: "value" },
+});
 ```
 
 ---
 
-## 🧩 Extensions
+## Filters, transitions, and recovery
 
-Enhance player behavior:
+- `player.filter.applyFilter()` / `player.filter.applyFilters()` for incremental FFmpeg chain updates
+- `player.queue.loop("off" | "track" | "queue")`
+- `preload` and `crossfade` can be enabled or auto-disabled in low-performance mode
+- `antiStuck` retries stalled streams and falls back to safer recovery paths before skipping
+- `smartTransition` can align fade timing across track transitions
+- `loudnessNormalization` smooths volume jumps between tracks
 
-- 🎤 `voiceExt` — Speech-to-text commands
-- 🎤 `lyricsExt` — Auto lyrics (synced support)
-- ⚡ `lavalinkExt` — External Lavalink node
+---
 
-### Example
+## Recommended usage notes
 
-```ts
-import { voiceExt, lyricsExt } from "@ziplayer/extension";
+- Create one `PlayerManager` per bot process; reuse it across commands.
+- Call `await player.connect(voiceChannel)` before playback unless the voice channel is passed as part of the play call.
+- Add a browser Opus subscriber with `player.connect(webAudioConnection)` and remove it with the returned handle or
+  `player.disconnectWebAudio(id)`.
+- Prefer `PlayerManager`/`Player` exports over bus/controller internals for application code.
 
-const manager = new PlayerManager({
-	extensions: [new voiceExt(null, { lang: "en-US" }), new lyricsExt(null, { provider: "lrclib" })],
-});
-```
+---
+
+## Further reading
+
+- [core/AGENTS.md](core/AGENTS.md)
+- [core/README.md](core/README.md)
+- [client/AGENTS.md](client/AGENTS.md)
+- [examples/backend](examples/backend)
 
 ### Extension Capabilities
 

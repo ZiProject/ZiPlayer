@@ -1,0 +1,15 @@
+{
+	"tauri": {
+		"security": {
+			"csp": "default-src 'self'; connect-src 'self' ws: wss: http: https:; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'"
+		},
+		"windows": [
+			{
+				"title": "ZiPlayer Desktop Client (Tauri)",
+				"width": 960,
+				"height": 640,
+				"resizable": true
+			}
+		]
+	}
+}

@@ -63,7 +63,9 @@ async function playInGuild(guildId: string, voiceChannel: VoiceChannel, query: s
 		leaveOnEnd: true,
 		leaveOnEmpty: true,
 		volume: 80,
-		userdata: {/*User store data*/},
+		userdata: {
+			/*User store data*/
+		},
 	});
 
 	if (!player.connection) await player.connect(voiceChannel);
@@ -92,7 +94,7 @@ manager.on("trackStart", (player, track) => {
 await player.play("song title", { requestedBy: userId });
 await player.play("https://example.com/audio");
 await player.play(track); // A Track already resolved by your application
-await player.play(searchResult); // A SearchResult
+await player.play(searchResult); // Plays the first match, or all tracks when it represents a playlist
 await player.play(null); // Resume playback from the existing queue when supported
 
 await player.pause();
@@ -169,10 +171,67 @@ The first event argument is the affected `Player`, which is useful when one mana
 - Connect with `await player.connect(voiceChannel)` before playback unless you pass a `voiceChannel` in `play()` options.
 - Call `player.destroy()` when the bot explicitly removes a player. Manager cleanup may also destroy idle players according to its
   options.
+- Player-scoped runtime state belongs in `player.data`, not controller-owned maps or the Bus. Controllers use namespaced
+  `playerDataMap(namespace)` adapters that read and write directly to each player's public data Map; application code should avoid
+  changing the reserved `@ziplayer/` keys. The data Map is cleared and closed during player teardown.
 - Configure source plugins on `PlayerManagerOptions.plugins`; per-player options such as volume, voice behavior, filters, preload,
   and crossfade belong in `PlayerOptions`.
+- A managed player's public ID can be changed at runtime with `player.changePlayerId(newId)` or
+  `manager.changePlayerId(currentId, newId)`. This preserves the current controller state and playback; it changes manager lookup
+  identity only and does not migrate the Discord voice connection to another guild.
 - The canonical option definitions are `PlayerManagerOptions` and `PlayerOptions` in [`src/types/core.ts`](src/types/core.ts).
   Prefer those definitions over guessing option names or defaults.
+
+### Unified Browser and Discord Audio Output (Shared AudioResource and Volume)
+
+ZiPlayer can send the same `AudioPlayer` output to Discord Voice and WebAudio subscribers. In the normal managed playback path,
+`PlaybackController` creates a Discord `AudioResource` with inline volume, and the `AudioPlayer` dispatches its resulting Opus
+packets to each ready subscriber:
+
+```ts
+import { PlayerManager, WebAudioConnection } from "ziplayer";
+
+const manager = new PlayerManager({ autoCleanup: true });
+const player = await manager.create(guildId);
+
+// 1. Discord Voice output
+const voiceConnection = await player.connect(voiceChannel);
+// voiceConnection.subscribe(player) is handled automatically
+
+// 2. WebAudio / WebSocket Gateway output
+const webConnection = new WebAudioConnection({ sessionId: player.id });
+const publisherSocket = await connectPublisherToYourGateway(player.id);
+webConnection.attachSocket(publisherSocket);
+const webOutput = await player.connect(webConnection);
+
+// 3. Let ZiPlayer resolve the source Readable and create the inline-volume AudioResource
+await player.play(query, { requestedBy: userId });
+
+// Player volume is applied server-side to the shared resource before subscriber fan-out
+player.setVolume(65);
+```
+
+#### Key Architecture Guarantees:
+
+- **One shared player/resource**: The source `Readable` is wrapped in an inline-volume `AudioResource` and started with
+  `AudioPlayer.play(resource)`. Pause, resume, stop, skip, and `Player.setVolume()` remain player-level controls.
+- **Server-side volume before fan-out**: `AudioPlayer._stepPrepare()` distributes the post-volume Opus packets to all playable
+  subscribers. Discord and browser outputs therefore hear the same server-controlled volume.
+- **No FFmpeg required for inline Opus volume**: The inline volume path uses the installed Opus codec implementation.
+- **Independent non-blocking fan-out**: `WebAudioConnection` implements the complete duck-typed `@discordjs/voice`
+  `VoiceConnection` contract (`state.status === "ready"`, `prepareAudioPacket`, `dispatchAudio`, `setSpeaking`,
+  `onSubscriptionRemoved`). Frame queuing to WebSocket sockets is fully non-blocking; slow or stalled web clients drop excess
+  packets (`drop-newest` policy) without stalling Discord Voice packet dispatch or blocking the 20 ms audio scheduler.
+- **Distinct wire outputs**: Discord Voice encrypts/frames and sends through its UDP transport. `WebAudioConnection` wraps the
+  same Opus payload in the ZI v1 header and sends it to the gateway; the browser decodes Opus for AudioWorklet playback. The
+  gateway does not adjust player volume.
+- **Opus-only audio contract**: Sources use encoded audio; processing emits Opus in an Ogg container.
+- **External resource caveat**: An `AudioResource` created outside ZiPlayer (for example with `createOpusAudioResource()`) may not
+  have an inline volume transformer. Do not assume `Player.setVolume()` can modify it unless it was created with inline volume
+  enabled.
+
+`WebAudioConnection` can be attached or removed during playback without interrupting Discord Voice. Both connections subscribe to
+the same `AudioPlayer`; no stream-output backend or secondary pacing layer is used.
 
 ## Common Mistakes to Avoid
 

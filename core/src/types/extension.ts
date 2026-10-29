@@ -38,6 +38,7 @@ export interface SourceExtension {
 export type ExtensionMethod = "beforePlay" | "afterPlay" | "provideSearch" | "provideStream";
 
 import type { Bus } from "../structures/Bus";
+import type { TrackRequester } from "./core";
 
 /**
  * Context for the extension
@@ -69,7 +70,7 @@ export interface ExtensionContext {
  */
 export interface ExtensionPlayRequest {
 	query: string | Track;
-	requestedBy?: string;
+	requestedBy?: TrackRequester;
 }
 
 /**
@@ -85,7 +86,7 @@ export interface ExtensionPlayRequest {
 export interface ExtensionPlayResponse {
 	handled?: boolean;
 	query?: string | Track;
-	requestedBy?: string;
+	requestedBy?: TrackRequester;
 	tracks?: Track[];
 	isPlaylist?: boolean;
 	success?: boolean;
@@ -105,7 +106,7 @@ export interface ExtensionPlayResponse {
 export interface ExtensionAfterPlayPayload {
 	success: boolean;
 	query: string | Track;
-	requestedBy?: string;
+	requestedBy?: TrackRequester;
 	tracks?: Track[];
 	isPlaylist?: boolean;
 	error?: Error;

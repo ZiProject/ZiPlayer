@@ -12,6 +12,14 @@ export interface ConnectionControllerOptions {
 	debug?: (message: string) => void;
 	readyTimeoutMs?: number;
 }
+export interface WebAudioSubscriberInfo {
+	id: string;
+	name: string;
+	state: "playing" | "ready" | "stopped";
+	activeSessions: number;
+	droppedChunks: number;
+	droppedBytes: number;
+}
 export interface LifecycleControllerOptions {
 	bus: Bus;
 	options: Pick<PlayerOptions, "leaveOnEnd" | "leaveOnEmpty" | "pauseOnEmpty" | "leaveTimeout">;
@@ -19,7 +27,7 @@ export interface LifecycleControllerOptions {
 }
 /** Per-player resources handed to the shared `PlaybackController` via `attach(playerId, options)`. */
 export interface PlaybackControllerOptions {
-	audioPlayer: AudioPlayer;
+	audioPlayer?: AudioPlayer;
 	stuckTimeoutMs?: number;
 }
 
@@ -76,7 +84,15 @@ export interface PlaybackSessionSnapshot {
 }
 
 export type PlaybackSessionStatus =
-	AudioPlayerStatus | "idle" | "loading" | "playing" | "paused" | "stopped" | "ended" | "destroyed" | "buffering";
+	| AudioPlayerStatus
+	| "idle"
+	| "loading"
+	| "playing"
+	| "paused"
+	| "stopped"
+	| "ended"
+	| "destroyed"
+	| "buffering";
 export interface AntiStuckControllerOptions {
 	enabled?: boolean;
 	maxRetries?: number;
@@ -100,7 +116,7 @@ export interface AntiStuckRetryHandlers {
 }
 export interface SearchRequest {
 	query: string;
-	requestedBy?: string;
+	requestedBy?: import("./core").TrackRequester;
 	plugin?: string | string[];
 }
 
@@ -162,3 +178,8 @@ export interface TtsIsTTSRequest {
 export interface TtsPlayRequest {
 	track: Track;
 }
+export interface TtsSkipRequest {}
+export interface TtsSkipResponse {
+	skipped: boolean;
+}
+export interface TtsStopRequest {}
