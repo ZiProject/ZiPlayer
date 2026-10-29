@@ -32,7 +32,7 @@ export function Layout({ children }: PropsWithChildren) {
 	];
 
 	return (
-		<div className='min-h-screen flex flex-col'>
+		<div className='min-h-screen flex flex-col bg-transparent'>
 			{/* Header */}
 			<motion.header
 				initial={{ y: -100 }}
@@ -56,7 +56,7 @@ export function Layout({ children }: PropsWithChildren) {
 								<span className='text-xl font-bold text-white group-hover:text-brand-300 transition-colors duration-300'>
 									ZiPlayer
 								</span>
-								<div className='text-xs text-white/60 -mt-1'>Discord Audio Player</div>
+								<div className='text-xs text-white/50 -mt-1'>Event-driven audio engine</div>
 							</div>
 						</Link>
 
@@ -145,7 +145,7 @@ export function Layout({ children }: PropsWithChildren) {
 								<span className='text-xl font-bold text-white'>ZiPlayer</span>
 							</div>
 							<p className='text-white/60 text-sm leading-relaxed'>
-								Powerful Discord audio player with flexible plugin system and high performance.
+								A controller-architected audio engine for Discord bots, browser playback, and extensible source plugins.
 							</p>
 						</div>
 
@@ -217,7 +217,7 @@ export function Layout({ children }: PropsWithChildren) {
 
 					<div className='border-t border-white/10 mt-8 pt-8 flex flex-col md:flex-row items-center justify-between'>
 						<span className='text-white/60 text-sm'>© {new Date().getFullYear()} ZiPlayer. All rights reserved.</span>
-						<span className='text-white/60 text-sm mt-2 md:mt-0'>Built with Next.js and ❤️</span>
+						<span className='text-white/60 text-sm mt-2 md:mt-0'>Built for reliable playback at scale</span>
 					</div>
 				</div>
 			</motion.footer>

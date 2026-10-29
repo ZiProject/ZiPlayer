@@ -1,321 +1,218 @@
-"use client";
-
+import Link from "next/link";
 import { Layout } from "@/components/Layout";
 import { Sidebar } from "@/components/Sidebar";
-import { Logo } from "@/components/Logo";
-import Link from "next/link";
-import { motion } from "framer-motion";
-import { BookOpen, Play, Settings, Zap, Code, Puzzle, ArrowRight, CheckCircle, List, ExternalLink, Package } from "lucide-react";
+import {
+	ArrowRight,
+	AudioLines,
+	BookOpen,
+	Boxes,
+	Check,
+	Code2,
+	GitBranch,
+	Layers3,
+	Package,
+	Radio,
+	ShieldCheck,
+	Sparkles,
+	Zap,
+} from "lucide-react";
 
-const quickStartSteps = [
-	{
-		step: 1,
-		title: "Cài đặt",
-		description: "Cài đặt các package cần thiết",
-		code: "npm install ziplayer @ziplayer/plugin",
-	},
-	{
-		step: 2,
-		title: "Tạo PlayerManager",
-		description: "Khởi tạo và cấu hình PlayerManager",
-		code: "const manager = new PlayerManager({ plugins: [...] });",
-	},
-	{
-		step: 3,
-		title: "Tạo Player",
-		description: "Tạo player cho guild và kết nối",
-		code: "const player = await manager.create(guildId);",
-	},
-	{
-		step: 4,
-		title: "Phát nhạc",
-		description: "Bắt đầu phát nhạc từ các nguồn khác nhau",
-		code: "await player.play('song name', userId);",
-	},
+const highlights = [
+	[
+		AudioLines,
+		"Shared audio pipeline",
+		"One AudioPlayer fans out server-volume-adjusted Opus packets to Discord Voice and browser subscribers.",
+	],
+	[
+		GitBranch,
+		"Bus + controllers",
+		"A decoupled, event-driven core keeps playback, queue, filters, and lifecycle state testable.",
+	],
+	[
+		Sparkles,
+		"Smart recovery",
+		"Preloading, anti-stuck recovery, controlled skips, autoplay, crossfade, and loudness normalization work together.",
+	],
+	[
+		Boxes,
+		"Plugin-first sources",
+		"Connect YouTube, SoundCloud, Spotify, TTS, attachments, or your own resolver through extensions.",
+	],
+];
+
+const steps = [
+	["01", "Install the runtime", "npm install ziplayer @discordjs/voice discord.js"],
+	["02", "Create one manager", "const manager = new PlayerManager({ plugins, autoCleanup: true });"],
+	["03", "Create a guild player", "const player = await manager.create(guildId);"],
+	["04", "Connect and play", "await player.connect(voiceChannel);\nawait player.play(query, { requestedBy: userId });"],
 ];
 
 const topics = [
-	{
-		icon: Play,
-		title: "Getting Started",
-		description: "Hướng dẫn cài đặt và bắt đầu nhanh",
-		href: "/docs/getting-started",
-		color: "from-green-500 to-emerald-500",
-	},
-	{
-		icon: Settings,
-		title: "Player & Manager",
-		description: "Tìm hiểu cách sử dụng Player và PlayerManager",
-		href: "/docs/player",
-		color: "from-blue-500 to-cyan-500",
-	},
-	{
-		icon: List,
-		title: "Queue & Controls",
-		description: "Điều khiển queue và các tính năng phát nhạc",
-		href: "/docs/queue",
-		color: "from-purple-500 to-pink-500",
-	},
-	{
-		icon: Zap,
-		title: "Events",
-		description: "Lắng nghe và xử lý các sự kiện",
-		href: "/docs/events",
-		color: "from-yellow-500 to-orange-500",
-	},
-	{
-		icon: Puzzle,
-		title: "Plugins",
-		description: "Tạo và sử dụng plugins tùy chỉnh",
-		href: "/docs/plugins",
-		color: "from-green-500 to-emerald-500",
-	},
-	{
-		icon: Code,
-		title: "Extensions",
-		description: "Mở rộng chức năng với extensions",
-		href: "/docs/extensions",
-		color: "from-red-500 to-rose-500",
-	},
-	{
-		icon: BookOpen,
-		title: "Examples",
-		description: "Các ví dụ thực tế và best practices",
-		href: "/docs/examples",
-		color: "from-indigo-500 to-purple-500",
-	},
-	{
-		icon: Code,
-		title: "API Reference",
-		description: "Tài liệu đầy đủ về tất cả APIs",
-		href: "/api-reference",
-		color: "from-gray-500 to-slate-500",
-	},
+	[BookOpen, "Getting started", "Install dependencies, configure plugins, and ship your first bot.", "/docs/getting-started"],
+	[Code2, "Player API", "Playback controls, queue operations, events, state, and lifecycle.", "/docs/player"],
+	[Radio, "Browser playback", "Publish the shared Opus stream through your application WebSocket gateway.", "/docs/examples"],
+	[Layers3, "Architecture", "Understand the manager, Bus, controllers, facade, and audio subscribers.", "/architecture"],
 ];
 
 export default function Docs() {
 	return (
 		<Layout>
-			<div className='min-h-screen bg-gradient-to-br from-dark-900 via-dark-800 to-dark-900'>
-				<div className='max-w-7xl mx-auto px-4 py-8'>
-					<div className='grid lg:grid-cols-4 gap-8'>
-						{/* Sidebar */}
-						<aside className='lg:col-span-1'>
-							<Sidebar />
-						</aside>
-
-						{/* Main content */}
-						<main className='lg:col-span-3 space-y-12'>
-							{/* Header */}
-							<motion.div
-								initial={{ opacity: 0, y: 30 }}
-								animate={{ opacity: 1, y: 0 }}
-								transition={{ duration: 0.6 }}
-								className='text-center lg:text-left'>
-								<div className='flex items-center justify-center lg:justify-start gap-4 mb-6'>
-									<Logo
-										variant='icon'
-										size='lg'
-										animated={false}
-									/>
-									<h1 className='text-4xl lg:text-5xl font-bold'>
-										<span className='text-white'>Tài liệu </span>
-										<span className='gradient-text'>ZiPlayer</span>
-									</h1>
+			<div className='mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8'>
+				<div className='grid gap-10 lg:grid-cols-[220px_minmax(0,1fr)]'>
+					<aside className='hidden lg:block'>
+						<Sidebar />
+					</aside>
+					<main className='min-w-0'>
+						<section className='relative overflow-hidden rounded-3xl border border-brand-300/20 bg-gradient-to-br from-brand-300/10 via-white/[0.03] to-accent-400/10 p-8 sm:p-12'>
+							<div className='absolute -right-24 -top-24 h-64 w-64 rounded-full bg-brand-300/10 blur-3xl' />
+							<div className='relative max-w-3xl'>
+								<div className='mb-5 inline-flex items-center gap-2 rounded-full border border-brand-300/25 bg-brand-300/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-brand-200'>
+									<Sparkles size={14} /> Core documentation
 								</div>
-								<p className='text-xl text-white/70 leading-relaxed max-w-3xl'>
-									Hướng dẫn chi tiết để bắt đầu với ZiPlayer - Discord audio player mạnh mẽ với hệ thống plugin linh hoạt và hiệu
-									suất cao.
+								<h1 className='font-display text-4xl font-bold tracking-tight text-white sm:text-6xl'>
+									Build reliable audio flows with <span className='gradient-text'>ZiPlayer.</span>
+								</h1>
+								<p className='mt-6 max-w-2xl text-lg leading-8 text-white/65'>
+									An enterprise-grade Discord audio engine built on{" "}
+									<code className='rounded bg-white/10 px-1.5 py-0.5 text-brand-200'>@discordjs/voice</code>. Keep application
+									code simple with a clean Player facade and a powerful controller architecture underneath.
 								</p>
-							</motion.div>
-							{/* NPM Packages */}
-							<motion.section
-								initial={{ opacity: 0, y: 30 }}
-								animate={{ opacity: 1, y: 0 }}
-								transition={{ duration: 0.6, delay: 0.1 }}
-								className='glass-strong rounded-2xl p-8 mb-8'>
-								<div className='flex items-center gap-3 mb-6'>
-									<div className='p-2 rounded-lg bg-gradient-to-br from-indigo-500/20 to-purple-500/20'>
-										<Package className='w-6 h-6 text-indigo-400' />
-									</div>
-									<h2 className='text-2xl font-bold text-white'>NPM Packages</h2>
-								</div>
-
-								<p className='text-white/70 mb-6 text-lg'>Cài đặt và sử dụng các package ZiPlayer từ NPM registry.</p>
-
-								<div className='grid md:grid-cols-3 gap-4'>
-									<a
-										href='https://www.npmjs.com/package/ziplayer'
-										target='_blank'
-										rel='noopener noreferrer'
-										className='group flex items-center gap-3 p-4 rounded-xl bg-gradient-to-r from-blue-500/10 to-cyan-500/10 border border-blue-500/20 hover:border-blue-400/40 transition-all duration-300 hover:scale-105'>
-										<div className='p-2 rounded-lg bg-blue-500/20 group-hover:bg-blue-400/30 transition-colors'>
-											<Package className='w-5 h-5 text-blue-400' />
-										</div>
-										<div className='flex-1'>
-											<h3 className='font-semibold text-white group-hover:text-blue-300 transition-colors'>ziplayer</h3>
-											<p className='text-sm text-white/60'>Core package</p>
-										</div>
-										<ExternalLink className='w-4 h-4 text-white/40 group-hover:text-blue-400 transition-colors' />
-									</a>
-
-									<a
-										href='https://www.npmjs.com/package/@ziplayer/plugin'
-										target='_blank'
-										rel='noopener noreferrer'
-										className='group flex items-center gap-3 p-4 rounded-xl bg-gradient-to-r from-green-500/10 to-emerald-500/10 border border-green-500/20 hover:border-green-400/40 transition-all duration-300 hover:scale-105'>
-										<div className='p-2 rounded-lg bg-green-500/20 group-hover:bg-green-400/30 transition-colors'>
-											<Package className='w-5 h-5 text-green-400' />
-										</div>
-										<div className='flex-1'>
-											<h3 className='font-semibold text-white group-hover:text-green-300 transition-colors'>@ziplayer/plugin</h3>
-											<p className='text-sm text-white/60'>Plugin system</p>
-										</div>
-										<ExternalLink className='w-4 h-4 text-white/40 group-hover:text-green-400 transition-colors' />
-									</a>
-
-									<a
-										href='https://www.npmjs.com/package/@ziplayer/extension'
-										target='_blank'
-										rel='noopener noreferrer'
-										className='group flex items-center gap-3 p-4 rounded-xl bg-gradient-to-r from-purple-500/10 to-pink-500/10 border border-purple-500/20 hover:border-purple-400/40 transition-all duration-300 hover:scale-105'>
-										<div className='p-2 rounded-lg bg-purple-500/20 group-hover:bg-purple-400/30 transition-colors'>
-											<Package className='w-5 h-5 text-purple-400' />
-										</div>
-										<div className='flex-1'>
-											<h3 className='font-semibold text-white group-hover:text-purple-300 transition-colors'>
-												@ziplayer/extension
-											</h3>
-											<p className='text-sm text-white/60'>Extension system</p>
-										</div>
-										<ExternalLink className='w-4 h-4 text-white/40 group-hover:text-purple-400 transition-colors' />
-									</a>
-								</div>
-							</motion.section>
-
-							{/* Quick Start */}
-							<motion.section
-								initial={{ opacity: 0, y: 30 }}
-								animate={{ opacity: 1, y: 0 }}
-								transition={{ duration: 0.6, delay: 0.2 }}
-								className='glass-strong rounded-2xl p-8'>
-								<div className='flex items-center gap-3 mb-6'>
-									<div className='p-2 rounded-lg bg-gradient-to-br from-brand-500/20 to-brand-600/20'>
-										<Zap className='w-6 h-6 text-brand-400' />
-									</div>
-									<h2 className='text-2xl font-bold text-white'>Bắt đầu nhanh</h2>
-								</div>
-
-								<div className='grid md:grid-cols-2 gap-6'>
-									{quickStartSteps.map((step, index) => (
-										<motion.div
-											key={step.step}
-											initial={{ opacity: 0, x: -20 }}
-											animate={{ opacity: 1, x: 0 }}
-											transition={{ duration: 0.5, delay: 0.3 + index * 0.1 }}
-											className='relative'>
-											<div className='flex gap-4'>
-												<div className='flex-shrink-0'>
-													<div className='w-8 h-8 rounded-full bg-gradient-to-br from-brand-500 to-brand-600 flex items-center justify-center text-white font-bold text-sm'>
-														{step.step}
-													</div>
-												</div>
-												<div className='flex-1'>
-													<h3 className='text-lg font-semibold text-white mb-2'>{step.title}</h3>
-													<p className='text-white/70 mb-3'>{step.description}</p>
-													<div className='bg-dark-900/50 rounded-lg p-3 border border-white/10'>
-														<code className='text-brand-300 text-sm font-mono'>{step.code}</code>
-													</div>
-												</div>
-											</div>
-										</motion.div>
-									))}
-								</div>
-
-								<div className='mt-8 text-center'>
+								<div className='mt-8 flex flex-wrap gap-3'>
 									<Link
 										href='/docs/getting-started'
-										className='btn-primary inline-flex items-center gap-2'>
-										Xem hướng dẫn chi tiết
-										<ArrowRight className='w-4 h-4' />
+										className='btn-primary'>
+										Start building <ArrowRight size={16} />
+									</Link>
+									<Link
+										href='/architecture'
+										className='btn-secondary'>
+										Explore architecture
 									</Link>
 								</div>
-							</motion.section>
+							</div>
+						</section>
 
-							{/* Topics Grid */}
-							<motion.section
-								initial={{ opacity: 0, y: 30 }}
-								animate={{ opacity: 1, y: 0 }}
-								transition={{ duration: 0.6, delay: 0.4 }}>
-								<h2 className='text-3xl font-bold text-white mb-8 text-center'>Khám phá các chủ đề</h2>
+						<section className='mt-12 grid gap-4 sm:grid-cols-2'>
+							{highlights.map(([Icon, title, description]) => (
+								<article
+									key={title as string}
+									className='card-hover'>
+									<Icon
+										className='mb-5 text-brand-300'
+										size={22}
+									/>
+									<h2 className='font-display text-lg font-semibold text-white'>{title as string}</h2>
+									<p className='mt-2 text-sm leading-6 text-white/55'>{description as string}</p>
+								</article>
+							))}
+						</section>
 
-								<div className='grid md:grid-cols-2 lg:grid-cols-3 gap-6'>
-									{topics.map((topic, index) => (
-										<motion.div
-											key={topic.title}
-											initial={{ opacity: 0, y: 30 }}
-											animate={{ opacity: 1, y: 0 }}
-											transition={{ duration: 0.5, delay: 0.5 + index * 0.1 }}
-											whileHover={{ y: -5 }}
-											className='group'>
-											<Link href={topic.href}>
-												<div className='card-hover h-full'>
-													<div className='flex flex-col h-full'>
-														<div
-															className={`w-12 h-12 rounded-xl bg-gradient-to-br ${topic.color} flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-300`}>
-															<topic.icon className='w-6 h-6 text-white' />
-														</div>
-
-														<h3 className='text-xl font-bold text-white mb-3 group-hover:text-brand-300 transition-colors duration-300'>
-															{topic.title}
-														</h3>
-
-														<p className='text-white/70 group-hover:text-white/90 transition-colors duration-300 flex-1'>
-															{topic.description}
-														</p>
-
-														<div className='mt-4 flex items-center text-brand-400 group-hover:text-brand-300 transition-colors duration-300'>
-															<span className='text-sm font-medium'>Tìm hiểu thêm</span>
-															<ArrowRight className='w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform duration-300' />
-														</div>
-													</div>
-												</div>
-											</Link>
-										</motion.div>
-									))}
+						<section className='mt-16 grid gap-8 lg:grid-cols-[1fr_1.15fr] lg:items-start'>
+							<div>
+								<p className='text-xs font-bold uppercase tracking-[0.2em] text-brand-300'>Quick start</p>
+								<h2 className='mt-3 font-display text-3xl font-bold text-white'>From zero to playback.</h2>
+								<p className='mt-4 leading-7 text-white/60'>
+									Create a single process-wide manager, let plugins resolve sources, and use the facade for everyday playback.
+								</p>
+								<div className='mt-7 flex items-center gap-3 text-sm text-white/55'>
+									<ShieldCheck
+										size={18}
+										className='text-success-400'
+									/>{" "}
+									Node.js 20.3+ · TypeScript strict
 								</div>
-							</motion.section>
-
-							{/* Features Highlight */}
-							<motion.section
-								initial={{ opacity: 0, y: 30 }}
-								animate={{ opacity: 1, y: 0 }}
-								transition={{ duration: 0.6, delay: 0.6 }}
-								className='glass-strong rounded-2xl p-8'>
-								<h2 className='text-2xl font-bold text-white mb-6 text-center'>Tại sao chọn ZiPlayer?</h2>
-
-								<div className='grid md:grid-cols-3 gap-6'>
-									<div className='text-center'>
-										<CheckCircle className='w-12 h-12 text-green-400 mx-auto mb-4' />
-										<h3 className='text-lg font-semibold text-white mb-2'>Plugin-first</h3>
-										<p className='text-white/70'>Thêm nguồn âm thanh như YouTube, SoundCloud, Spotify một cách dễ dàng</p>
+							</div>
+							<div className='space-y-3'>
+								{steps.map(([number, title, code]) => (
+									<div
+										key={number}
+										className='flex gap-4 rounded-2xl border border-white/10 bg-white/[0.035] p-4'>
+										<span className='font-mono text-sm text-brand-300'>{number}</span>
+										<div className='min-w-0 flex-1'>
+											<h3 className='font-semibold text-white'>{title}</h3>
+											<pre className='code-block mt-3 whitespace-pre-wrap text-xs text-brand-100'>{code}</pre>
+										</div>
 									</div>
+								))}
+							</div>
+						</section>
 
-									<div className='text-center'>
-										<CheckCircle className='w-12 h-12 text-green-400 mx-auto mb-4' />
-										<h3 className='text-lg font-semibold text-white mb-2'>Ergonomics tốt</h3>
-										<p className='text-white/70'>API đơn giản với Player & Manager dễ sử dụng</p>
-									</div>
-
-									<div className='text-center'>
-										<CheckCircle className='w-12 h-12 text-green-400 mx-auto mb-4' />
-										<h3 className='text-lg font-semibold text-white mb-2'>Production-ready</h3>
-										<p className='text-white/70'>Event hooks, user data, hỗ trợ đa guild</p>
-									</div>
+						<section className='mt-16'>
+							<div className='flex items-end justify-between gap-4'>
+								<div>
+									<p className='text-xs font-bold uppercase tracking-[0.2em] text-brand-300'>Navigate the core</p>
+									<h2 className='mt-3 font-display text-3xl font-bold text-white'>Learn by system.</h2>
 								</div>
-							</motion.section>
-						</main>
-					</div>
+								<Zap className='hidden text-brand-300 sm:block' />
+							</div>
+							<div className='mt-6 grid gap-4 sm:grid-cols-2'>
+								{topics.map(([Icon, title, description, href]) => (
+									<Link
+										href={href as string}
+										key={title as string}
+										className='card-hover group'>
+										<Icon
+											size={22}
+											className='text-brand-300'
+										/>
+										<h3 className='mt-5 font-display text-xl font-semibold text-white'>{title as string}</h3>
+										<p className='mt-2 text-sm leading-6 text-white/55'>{description as string}</p>
+										<span className='mt-5 inline-flex items-center gap-2 text-sm font-semibold text-brand-300'>
+											Read guide{" "}
+											<ArrowRight
+												size={15}
+												className='transition group-hover:translate-x-1'
+											/>
+										</span>
+									</Link>
+								))}
+							</div>
+						</section>
+
+						<section className='mt-16 rounded-3xl border border-white/10 bg-white/[0.03] p-7 sm:p-9'>
+							<div className='flex items-start gap-4'>
+								<Package className='mt-1 text-brand-300' />
+								<div>
+									<h2 className='font-display text-2xl font-bold text-white'>The public API is the contract.</h2>
+									<p className='mt-3 max-w-2xl leading-7 text-white/60'>
+										Use <code className='rounded bg-white/10 px-1.5 py-0.5 text-brand-200'>PlayerManager</code>,{" "}
+										<code className='rounded bg-white/10 px-1.5 py-0.5 text-brand-200'>Player</code>, plugins, and documented
+										options in normal applications. Reach for Bus and controller internals only when extending the core itself.
+									</p>
+									<ul className='mt-5 grid gap-3 text-sm text-white/70 sm:grid-cols-2'>
+										<li className='flex gap-2'>
+											<Check
+												size={16}
+												className='mt-0.5 text-success-400'
+											/>{" "}
+											Await async playback operations
+										</li>
+										<li className='flex gap-2'>
+											<Check
+												size={16}
+												className='mt-0.5 text-success-400'
+											/>{" "}
+											Keep one manager per process
+										</li>
+										<li className='flex gap-2'>
+											<Check
+												size={16}
+												className='mt-0.5 text-success-400'
+											/>{" "}
+											Add sources through plugins
+										</li>
+										<li className='flex gap-2'>
+											<Check
+												size={16}
+												className='mt-0.5 text-success-400'
+											/>{" "}
+											Treat generated dist as read-only
+										</li>
+									</ul>
+								</div>
+							</div>
+						</section>
+					</main>
 				</div>
 			</div>
 		</Layout>
