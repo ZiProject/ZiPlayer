@@ -122,3 +122,70 @@ test("FilterEngine handles seek with recreate callback without FFmpeg", async ()
 	result.stream.destroy();
 	engine.destroy();
 });
+
+test("FilterEngine applies active filter when seeking a recreatable stream", async () => {
+	const engine = new FilterEngine(undefined, () => {}, undefined, { ffmpegPath }, "filter-seek-recreate-test");
+	const applied = await engine.applyFilter("bass");
+	assert.equal(applied, true);
+
+	let recreatedAt = null;
+	const wav = makeWav({ seconds: 0.2, sampleRate: 48000, channels: 2 });
+	const streamInfo = {
+		stream: Readable.from([Buffer.from("initial")]),
+		recreate: async (position) => {
+			recreatedAt = position;
+			return Readable.from([wav]);
+		},
+		track: { id: "t5", title: "Recreatable Filtered" },
+	};
+
+	const result = await engine.applyFiltersAndSeek(streamInfo, 10000);
+	assert.equal(recreatedAt, 10000, "recreate should be called with seek position");
+	assert.equal(result.wasRecreated, true, "wasRecreated flag must be true");
+	assert.equal(result.inputType, StreamType.OggOpus, "output must be OggOpus when filters are active");
+	assert.ok(result.stream, "must produce filtered output stream");
+
+	// Verify FFmpeg filtered output header
+	const firstChunk = await new Promise((resolve, reject) => {
+		result.stream.once("data", resolve);
+		result.stream.once("error", reject);
+	});
+	assert.equal(firstChunk.subarray(0, 4).toString(), "OggS", "Output from FFmpeg filter must be Ogg Opus");
+
+	engine.destroy();
+});
+
+test("initialFilters are preserved on player creation without being rolled back", async () => {
+	const { PlayerManager } = require("../core/dist");
+	const manager = new PlayerManager();
+	try {
+		const player = await manager.create("guild-initial-filters", {
+			filters: ["bassboost"],
+		});
+		assert.ok(player, "Player must be created");
+
+		const activeFilters = player.filter.getActiveFilters();
+		assert.equal(activeFilters.length, 1, "initialFilters must not be removed on creation");
+		assert.equal(activeFilters[0].name, "bassboost");
+		assert.equal(player.filter.hasFilter("bassboost"), true);
+		assert.ok(player.filter.getFilterString().includes("bass="));
+	} finally {
+		manager.destroy();
+	}
+});
+
+test("player.filter.applyFilter() before playback succeeds and retains filter", async () => {
+	const { PlayerManager } = require("../core/dist");
+	const manager = new PlayerManager();
+	try {
+		const player = await manager.create("guild-pre-playback-filter");
+		assert.equal(player.filter.getActiveFilters().length, 0);
+
+		const applied = await player.filter.applyFilter("nightcore");
+		assert.equal(applied, true, "applyFilter before playback must succeed");
+		assert.equal(player.filter.hasFilter("nightcore"), true);
+		assert.ok(player.filter.getFilterString().includes("asetrate"));
+	} finally {
+		manager.destroy();
+	}
+});
