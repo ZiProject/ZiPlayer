@@ -7,6 +7,7 @@ import type { SourcePlugin, SourcePluginLike, Track, StreamInfo, SearchResult } 
 import type { PluginManagerOptions } from "../types";
 import { normalizeStreamInfo } from "../types";
 import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
+import type { DebugLogger } from "../types";
 
 /** Owns one shared PluginManager and routes its player-scoped runtime through attach/detach. */
 export class PluginController {
@@ -15,9 +16,9 @@ export class PluginController {
 
 	constructor(
 		bus: Bus,
-		private readonly owner?: PlayerManager,
+		owner?: PlayerManager,
 		plugins: readonly SourcePluginLike[] = [],
-		debug?: (message?: any, ...optionalParams: any[]) => void,
+		debug?: DebugLogger,
 		options: Omit<PluginManagerOptions, "debug"> = {},
 	) {
 		this.pluginManager = new PluginManager(null, owner, { ...options, debug });

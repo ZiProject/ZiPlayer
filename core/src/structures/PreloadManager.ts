@@ -3,11 +3,12 @@ import type { StreamManager } from "./StreamManager";
 import { Bus } from "./Bus";
 import { playerDataMap } from "./PlayerDataRegistry";
 import { PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
+import type { DebugLogger } from "../types";
 
 /** Per-player resources handed to the shared `PreloadManager` via `attach(playerId, deps)`. */
 export interface PreloadManagerDeps {
 	streamManager: StreamManager;
-	debug: (message?: any, ...optionalParams: any[]) => void;
+	debug: DebugLogger;
 	isDestroyed: () => boolean;
 	isEnabled: () => boolean;
 	/** Optional overrides for standalone/unit-test use. By default everything goes through the Bus. */

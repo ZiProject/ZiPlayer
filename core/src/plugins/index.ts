@@ -5,6 +5,8 @@ import { normalizeStreamInfo } from "../types";
 import type { PlayerManager } from "../structures/PlayerManager";
 import type { Player } from "../structures/Player";
 import { StreamManager } from "../structures/StreamManager";
+import { TtlCache } from "../utils/cache";
+import { PLUGIN_SEARCH_CACHE_TTL_MS, STREAM_CACHE_TTL_MS } from "../utils/constants";
 
 export { BasePlugin } from "./BasePlugin";
 
@@ -295,12 +297,6 @@ export function extractMediaId(input: string): ExtractedMediaId | null {
 	}
 }
 
-interface SearchCacheEntry {
-	result: SearchResult;
-	timestamp: number;
-	expiresAt: number;
-}
-
 interface StreamCacheEntry {
 	streamInfo: StreamInfo;
 	timestamp: number;
@@ -336,8 +332,8 @@ export class PluginManager {
 	private registrationCounter = 0;
 	private readonly runtimes = new Map<string, PluginRuntime>();
 	private readonly defaultRuntime = createPluginRuntime();
-	private searchCache: Map<string, SearchCacheEntry> = new Map();
-	private readonly STREAM_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+	private readonly searchCache = new TtlCache<SearchResult>(PLUGIN_SEARCH_CACHE_TTL_MS);
+	private readonly STREAM_CACHE_TTL = STREAM_CACHE_TTL_MS;
 	private pendingSearches: Map<string, Promise<SearchResult | null>> = new Map(); // Dedupe search requests
 	private destroyed = false;
 
@@ -363,7 +359,7 @@ export class PluginManager {
 				maxFallbackAttempts: 3,
 				enableCache: true,
 				searchMinScore: 30,
-				searchCacheTTL: 2 * 60 * 1000, // 2 minutes
+				searchCacheTTL: PLUGIN_SEARCH_CACHE_TTL_MS,
 				...options,
 			};
 		} else {
@@ -374,7 +370,7 @@ export class PluginManager {
 				maxFallbackAttempts: 3,
 				enableCache: true,
 				searchMinScore: 30,
-				searchCacheTTL: 2 * 60 * 1000, // 2 minutes
+				searchCacheTTL: PLUGIN_SEARCH_CACHE_TTL_MS,
 				...opts,
 			};
 		}
@@ -517,7 +513,7 @@ export class PluginManager {
 
 	private clearPlayerSearchState(playerId: string): void {
 		const prefix = `${playerId}:`;
-		for (const key of this.searchCache.keys()) if (key.startsWith(prefix)) this.searchCache.delete(key);
+		this.searchCache.deleteByPrefix(prefix);
 		for (const key of this.pendingSearches.keys()) if (key.startsWith(prefix)) this.pendingSearches.delete(key);
 	}
 
@@ -560,18 +556,10 @@ export class PluginManager {
 
 		const key = this.getSearchCacheKey(query, requestedBy, pluginsKey, playerId);
 		const cached = this.searchCache.get(key);
+		if (!cached) return null;
 
-		if (cached && Date.now() < cached.expiresAt) {
-			this.debug(`[SearchCache] Hit for query: ${query}`);
-			return cached.result;
-		}
-
-		if (cached) {
-			this.debug(`[SearchCache] Expired for query: ${query}`);
-			this.searchCache.delete(key);
-		}
-
-		return null;
+		this.debug(`[SearchCache] Hit for query: ${query}`);
+		return cached;
 	}
 
 	private setCachedSearch(
@@ -584,11 +572,7 @@ export class PluginManager {
 		if (!this.options.enableCache || this.destroyed || (playerId && !this.runtimes.has(playerId))) return;
 
 		const key = this.getSearchCacheKey(query, requestedBy, pluginsKey, playerId);
-		this.searchCache.set(key, {
-			result,
-			timestamp: Date.now(),
-			expiresAt: Date.now() + (this.options.searchCacheTTL ?? 2 * 60 * 1000),
-		});
+		this.searchCache.set(key, result, this.options.searchCacheTTL);
 		this.debug(`[SearchCache] Stored for query: ${query}, tracks: ${result.tracks.length}`);
 	}
 
@@ -829,10 +813,8 @@ export class PluginManager {
 	 * Clear search cache
 	 */
 	clearSearchCache(playerId?: string): void {
-		const matchingKeys =
-			playerId ? [...this.searchCache.keys()].filter((key) => key.startsWith(`${playerId}:`)) : [...this.searchCache.keys()];
-		const size = matchingKeys.length;
-		for (const key of matchingKeys) this.searchCache.delete(key);
+		const size = playerId ? this.searchCache.deleteByPrefix(`${playerId}:`) : this.searchCache.size;
+		if (!playerId) this.searchCache.clear();
 		this.debug(`[SearchCache] Cleared ${size} entries`);
 	}
 
@@ -842,7 +824,7 @@ export class PluginManager {
 	getSearchCacheStats(): { size: number; keys: string[] } {
 		return {
 			size: this.searchCache.size,
-			keys: Array.from(this.searchCache.keys()),
+			keys: this.searchCache.keys(),
 		};
 	}
 
@@ -1338,7 +1320,7 @@ export class PluginManager {
 				);
 		const searchPrefix = playerId ? `${playerId}:` : null;
 		const searchCacheSize =
-			searchPrefix ? [...this.searchCache.keys()].filter((key) => key.startsWith(searchPrefix)).length : this.searchCache.size;
+			searchPrefix ? this.searchCache.keys().filter((key) => key.startsWith(searchPrefix)).length : this.searchCache.size;
 		const pendingSearches =
 			searchPrefix ?
 				[...this.pendingSearches.keys()].filter((key) => key.startsWith(searchPrefix)).length

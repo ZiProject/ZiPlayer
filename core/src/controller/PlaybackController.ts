@@ -13,6 +13,7 @@ import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { Track, PlaybackControllerOptions } from "../types";
 import { PlaybackMode } from "../types";
 import type { AntiStuckRetryHandlers } from "../types";
+import { abortable, createAbortError, toError } from "../utils/errors";
 import {
 	BUS_EVENT,
 	CONTROLLER_RPC,
@@ -180,7 +181,7 @@ export class PlaybackController {
 				}
 			},
 			onError: (error) => {
-				const normalized = error instanceof Error ? error : new Error(String(error));
+				const normalized = toError(error);
 				const session = slot.activeSession;
 				if (session?.isActive()) {
 					this.bus.event(playerId, { type: BUS_EVENT.trackError, session: session.snapshot(), error: normalized });
@@ -433,7 +434,7 @@ export class PlaybackController {
 	private reportAsyncFailure(slot: PlaybackSlot, error: unknown, track: Track | null): void {
 		this.bus.event(slot.playerId, {
 			type: BUS_EVENT.streamError,
-			error: error instanceof Error ? error : new Error(String(error)),
+			error: toError(error),
 			track,
 		});
 	}
@@ -515,31 +516,12 @@ export class PlaybackController {
 		return volumeUpdate;
 	}
 
-	private async awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-		if (signal.aborted) throw this.outputAbortError();
-		return new Promise<T>((resolve, reject) => {
-			const onAbort = () => {
-				signal.removeEventListener("abort", onAbort);
-				reject(this.outputAbortError());
-			};
-			signal.addEventListener("abort", onAbort, { once: true });
-			promise.then(
-				(value) => {
-					signal.removeEventListener("abort", onAbort);
-					resolve(value);
-				},
-				(error) => {
-					signal.removeEventListener("abort", onAbort);
-					reject(error);
-				},
-			);
-		});
+	private awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+		return abortable(promise, signal, () => this.outputAbortError());
 	}
 
 	private outputAbortError(): Error {
-		const error = new Error("Audio playback operation was aborted");
-		error.name = "AbortError";
-		return error;
+		return createAbortError("Audio playback operation was aborted");
 	}
 
 	private destroyResourceStream(resource: AudioResource): void {

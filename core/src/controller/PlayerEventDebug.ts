@@ -1,7 +1,8 @@
-import type { Bus, PlayerEvent, PlayerAction, PlayerEventType, PlayerActionExecutionContext } from "../structures/Bus";
+import type { Bus, PlayerEvent, PlayerAction, PlayerActionExecutionContext } from "../structures/Bus";
+import { PLAYER_EVENT_TYPES } from "../structures/BusContract";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
 import { BusLatencyTrace } from "./BusLatencyTrace";
-import type { PlayerDebugLevel, PlayerEventDebugLogger, BusLatencyKind } from "../types";
+import type { PlayerDebugLevel, DebugLogger, BusLatencyKind } from "../types";
 
 /**
  * Lower number = more severe / always-shown. A level is "enabled" when the
@@ -46,7 +47,7 @@ export class PlayerEventDebug {
 	constructor(
 		private readonly bus: Bus | undefined,
 		private readonly id = "unknown",
-		private readonly logger?: PlayerEventDebugLogger,
+		private readonly logger?: DebugLogger,
 		level: PlayerDebugLevel = "info",
 	) {
 		this.level = level;
@@ -56,42 +57,7 @@ export class PlayerEventDebug {
 			this.logger?.("[BusLatency]", record);
 		}, level);
 		if (this.bus) {
-			const eventTypes: PlayerEventType[] = [
-				"initialized",
-				"ready",
-				"destroyed",
-				"TRACK_LOADING",
-				"TRACK_LOADED",
-				"TRACK_STARTED",
-				"TRACK_ERROR",
-				"TRACK_END",
-				"STREAM_ABORTED",
-				"playbackStateChanged",
-				"playbackSessionCreated",
-				"trackRequested",
-				"stateChanged",
-				"STUCK_DETECTED",
-				"RECOVERY_STARTED",
-				"RECOVERY_FAILED",
-				"preloadStateChanged",
-				"preloadPromoted",
-				"preloadCancelled",
-				"queueChanged",
-				"volumeRequested",
-				"willPlay",
-				"queueEnd",
-				"playerPause",
-				"playerResume",
-				"playerStop",
-				"seek",
-				"filterApplied",
-				"filterRemoved",
-				"filtersCleared",
-				"streamError",
-				"forwardModeStart",
-				"forwardModeEnd",
-			];
-			for (const type of eventTypes) this.detach.push(this.bus.subscribe(this.id, type, (event) => this.event(event)));
+			for (const type of PLAYER_EVENT_TYPES) this.detach.push(this.bus.subscribe(this.id, type, (event) => this.event(event)));
 			this.detach.push(
 				this.bus.onAction((action, context) => {
 					if (context.playerId === this.id) this.action(action, context);
@@ -151,7 +117,7 @@ export class PlayerEventDebug {
 	 * (`this.debug("Registered plugin: X")`, `this.debug("X failed:", err)`, ...)
 	 * do not need to change - only what they're wired up to does.
 	 */
-	public channel(tag: string, defaultLevel: PlayerDebugLevel = "debug"): PlayerEventDebugLogger {
+	public channel(tag: string, defaultLevel: PlayerDebugLevel = "debug"): DebugLogger {
 		return (message?: any, ...args: any[]) => this.log(defaultLevel, tag, message, ...args);
 	}
 

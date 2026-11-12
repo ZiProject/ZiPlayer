@@ -17,6 +17,9 @@ import { PlaybackSeekController } from "../controller/PlaybackSeekController";
 import { PlaybackSkipController } from "../controller/PlaybackSkipController";
 import { PlaybackTrackEndController } from "../controller/PlaybackTrackEndController";
 import { PlaybackPlayController } from "../controller/PlaybackPlayController";
+import { abortable, createAbortError } from "../utils/errors";
+import { reportStreamError } from "../controller/reportStreamError";
+import type { DebugLogger } from "../types";
 
 interface OrchestratorCallbacks {
 	matchesContext: (session: PlaybackSession, context: PlayerMessageContext) => boolean;
@@ -36,7 +39,7 @@ interface PlaybackOrchestratorState {
 	readonly trackEnd: PlaybackTrackEndController;
 	readonly skip: PlaybackSkipController;
 	readonly lifecycleAbort: AbortController;
-	readonly debug: (message?: any, ...optionalParams: any[]) => void;
+	readonly debug: DebugLogger;
 	readonly adapters?: PlaybackOrchestratorAttachOptions["adapters"];
 	detachTrackEnd: () => void;
 	detachQueueEnd: () => void;
@@ -202,7 +205,7 @@ export class PlaybackOrchestrator {
 			if (!session || session.status === "ended" || session.status === "stopped") return;
 			const current = this.sessionController.current(playerId);
 			if (!current || current.id !== session.id) return;
-			void state.trackEnd.onTrackEnd(session).catch((error) => this.reportStreamError(playerId, session.track, error));
+			void state.trackEnd.onTrackEnd(session).catch((error) => reportStreamError(this.bus, playerId, session.track, error));
 		});
 		state.detachQueueEnd = this.bus.subscribe(playerId, BUS_EVENT.queueEnd, () => state.trackEnd.onQueueEnd());
 		state.detachQueueChanged = this.bus.subscribe(playerId, BUS_EVENT.queueChanged, () => state.trackEnd.onQueueChanged());
@@ -296,58 +299,12 @@ export class PlaybackOrchestrator {
 			case "SKIP":
 				await state.skip.skip(context, (a as any).index);
 				break;
-			case "PAUSE": {
-				const session = this.sessionController.current(playerId);
-				const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
-				if (mode === PlaybackMode.REMOTE) {
-					const ok = this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackRemotePause, {});
-					if (ok) {
-						if (session?.isActive()) session.markPaused();
-						this.publishState(playerId);
-						this.bus.event(playerId, {
-							type: BUS_EVENT.playerPause,
-							track: session?.track ?? (this.bus.querySync(playerId, PLAYER_QUERY.currentTrack) as Track | null),
-						});
-					}
-					break;
-				}
-				if (
-					session?.isActive() &&
-					this.matchesContext(session, context) &&
-					(await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackPause, {}, { signal: context.signal }))
-				) {
-					session.markPaused();
-					this.publishState(playerId);
-					this.bus.event(playerId, { type: BUS_EVENT.playerPause, track: session.track });
-				}
+			case "PAUSE":
+				await this.setPaused(playerId, context, true);
 				break;
-			}
-			case "RESUME": {
-				const session = this.sessionController.current(playerId);
-				const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
-				if (mode === PlaybackMode.REMOTE) {
-					const ok = this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackRemoteResume, {});
-					if (ok) {
-						if (session?.isActive()) session.markPlaying();
-						this.publishState(playerId);
-						this.bus.event(playerId, {
-							type: BUS_EVENT.playerResume,
-							track: session?.track ?? (this.bus.querySync(playerId, PLAYER_QUERY.currentTrack) as Track | null),
-						});
-					}
-					break;
-				}
-				if (
-					session?.isActive() &&
-					this.matchesContext(session, context) &&
-					(await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackResume, {}, { signal: context.signal }))
-				) {
-					session.markPlaying();
-					this.publishState(playerId);
-					this.bus.event(playerId, { type: BUS_EVENT.playerResume, track: session.track });
-				}
+			case "RESUME":
+				await this.setPaused(playerId, context, false);
 				break;
-			}
 			case "STOP": {
 				const session = this.sessionController.current(playerId);
 				const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
@@ -364,6 +321,42 @@ export class PlaybackOrchestrator {
 				break;
 			}
 		}
+	}
+
+	/** Shared PAUSE / RESUME handling for both local and remote playback. */
+	private async setPaused(playerId: string, context: PlayerMessageContext, pause: boolean): Promise<void> {
+		const session = this.sessionController.current(playerId);
+		const mode = this.bus.querySync(playerId, PLAYER_QUERY.playbackMode);
+		const eventType = pause ? BUS_EVENT.playerPause : BUS_EVENT.playerResume;
+		const markSession = (target: PlaybackSession) => (pause ? target.markPaused() : target.markPlaying());
+
+		if (mode === PlaybackMode.REMOTE) {
+			const ok = this.bus.requestRpcSync(
+				playerId,
+				pause ? CONTROLLER_RPC.playbackRemotePause : CONTROLLER_RPC.playbackRemoteResume,
+				{},
+			);
+			if (!ok) return;
+			if (session?.isActive()) markSession(session);
+			this.publishState(playerId);
+			this.bus.event(playerId, {
+				type: eventType,
+				track: session?.track ?? (this.bus.querySync(playerId, PLAYER_QUERY.currentTrack) as Track | null),
+			});
+			return;
+		}
+
+		if (!session?.isActive() || !this.matchesContext(session, context)) return;
+		const applied = await this.bus.requestRpc(
+			playerId,
+			pause ? CONTROLLER_RPC.playbackPause : CONTROLLER_RPC.playbackResume,
+			{},
+			{ signal: context.signal },
+		);
+		if (!applied) return;
+		markSession(session);
+		this.publishState(playerId);
+		this.bus.event(playerId, { type: eventType, track: session.track });
 	}
 
 	private async stopRemotePlayback(playerId: string, signal: AbortSignal): Promise<void> {
@@ -389,43 +382,12 @@ export class PlaybackOrchestrator {
 		await this.awaitWithAbort(operation, signal);
 	}
 
-	private async awaitWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-		if (signal.aborted) throw this.abortError();
-		return new Promise<T>((resolve, reject) => {
-			const onAbort = () => {
-				signal.removeEventListener("abort", onAbort);
-				reject(this.abortError());
-			};
-			signal.addEventListener("abort", onAbort, { once: true });
-			operation.then(
-				(value) => {
-					signal.removeEventListener("abort", onAbort);
-					resolve(value);
-				},
-				(error) => {
-					signal.removeEventListener("abort", onAbort);
-					reject(error);
-				},
-			);
-		});
+	private awaitWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+		return abortable(operation, signal, () => this.abortError());
 	}
 
 	private abortError(): Error {
-		const error = new Error("Playback operation was aborted");
-		error.name = "AbortError";
-		return error;
-	}
-
-	private reportStreamError(playerId: string, track: Track | null, error: unknown): void {
-		try {
-			this.bus.event(playerId, {
-				type: BUS_EVENT.streamError,
-				error: error instanceof Error ? error : new Error(String(error)),
-				track,
-			});
-		} catch (reportError) {
-			console.error("Failed to report playback stream error", reportError);
-		}
+		return createAbortError("Playback operation was aborted");
 	}
 
 	private matchesContext(session: PlaybackSession, context: PlayerMessageContext): boolean {

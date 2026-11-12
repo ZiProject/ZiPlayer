@@ -1,6 +1,7 @@
 import { Readable } from "stream";
 import { EventEmitter } from "events";
 import type { Track, ManagedStream, StreamManagerOptions } from "../types";
+import { DEFAULT_STREAM_TIMEOUT_MS } from "../utils/constants";
 
 export class StreamManager extends EventEmitter {
 	private streams = new Map<string, ManagedStream>();
@@ -22,7 +23,7 @@ export class StreamManager extends EventEmitter {
 
 		this.options = {
 			maxConcurrentStreams: 20,
-			streamTimeout: 5 * 60 * 1000, // 5 minutes
+			streamTimeout: DEFAULT_STREAM_TIMEOUT_MS,
 			maxListenersPerStream: 15,
 			cleanupInterval: 60000, // 1 minute
 			enableMetrics: true,

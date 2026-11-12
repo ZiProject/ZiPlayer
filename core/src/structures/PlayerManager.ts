@@ -51,6 +51,8 @@ import { GlobalControllerRegistry } from "../controller/GlobalControllerRegistry
 import { BUS_EVENT, BUS_OUTPUT, CONTROLLER_RPC, PLAYER_RPC } from "./BusContract";
 import { createAudioPlayer, NoSubscriberBehavior } from "@discordjs/voice";
 import { getRequesterId, withTrackRequester } from "../utils/requester";
+import { TtlCache } from "../utils/cache";
+import { DEFAULT_STREAM_TIMEOUT_MS, MAX_CACHE_ENTRIES, SEARCH_CACHE_TTL_MS } from "../utils/constants";
 
 export function createSharedControllers(params: {
 	options?: PlayerManagerOptions;
@@ -130,12 +132,6 @@ const setGlobalManager = (instance: PlayerManager): void => {
 export declare interface PlayerManager {
 	on<K extends keyof ManagerEvents>(event: K, listener: (...args: ManagerEvents[K]) => void): this;
 	emit<K extends keyof ManagerEvents>(event: K, ...args: ManagerEvents[K]): boolean;
-}
-
-interface ManagerCacheEntry<T> {
-	data: T;
-	timestamp: number;
-	expiresAt: number;
 }
 
 class PlayerMonitoring {
@@ -256,7 +252,7 @@ export class PlayerManager extends EventEmitter {
 	private pendingPlayers: Map<string, Promise<Player>> = new Map();
 	/** Teardowns still running; {@link dispose} waits for them before the Bus goes away. */
 	private readonly pendingTeardowns = new Set<Promise<void>>();
-	private searchCache: Map<string, ManagerCacheEntry<SearchResult>>;
+	private readonly searchCache = new TtlCache<SearchResult>(SEARCH_CACHE_TTL_MS, MAX_CACHE_ENTRIES);
 
 	public get sharedControllers(): SharedControllerSet {
 		return this.controllers;
@@ -281,8 +277,6 @@ export class PlayerManager extends EventEmitter {
 	public readonly cache = new LRUCache<string, object>({
 		max: 500,
 	});
-	private readonly SEARCH_CACHE_TTL = 60 * 1000; // 1 minute
-	private readonly MAX_CACHE_SIZE = 100;
 	private cleanupInterval: NodeJS.Timeout | null = null;
 	private statsInterval: NodeJS.Timeout | null = null;
 
@@ -348,7 +342,6 @@ export class PlayerManager extends EventEmitter {
 			}
 		});
 		this.monitoring = new PlayerMonitoring(this.controllers);
-		this.searchCache = new Map();
 
 		this.extensions = options.extensions || [];
 		this.extractorTimeout = options.extractorTimeout ?? 10000;
@@ -393,50 +386,21 @@ export class PlayerManager extends EventEmitter {
 	private getCachedSearch(query: string): SearchResult | null {
 		if (!this.enableSearchCache) return null;
 
-		const key = this.getSearchCacheKey(query);
-		const cached = this.searchCache.get(key);
-
-		if (cached && Date.now() < cached.expiresAt) {
-			this.debug(`[Cache] Search hit for: ${query}`);
-			return cached.data;
-		}
-
-		if (cached) {
-			this.searchCache.delete(key);
-		}
-
-		return null;
+		const cached = this.searchCache.get(this.getSearchCacheKey(query));
+		if (!cached) return null;
+		this.debug(`[Cache] Search hit for: ${query}`);
+		return cached;
 	}
 
 	private setCachedSearch(query: string, result: SearchResult): void {
 		if (!this.enableSearchCache) return;
 
-		// Clean up old entries if cache is too large
-		if (this.searchCache.size >= this.MAX_CACHE_SIZE) {
-			const oldest = Array.from(this.searchCache.entries()).sort((a, b) => a[1].timestamp - b[1].timestamp)[0];
-			if (oldest) this.searchCache.delete(oldest[0]);
-		}
-
-		const key = this.getSearchCacheKey(query);
-		this.searchCache.set(key, {
-			data: result,
-			timestamp: Date.now(),
-			expiresAt: Date.now() + this.SEARCH_CACHE_TTL,
-		});
+		this.searchCache.set(this.getSearchCacheKey(query), result);
 		this.debug(`[Cache] Search stored for: ${query}`);
 	}
 
 	private clearExpiredCache(): void {
-		const now = Date.now();
-		let expiredCount = 0;
-
-		for (const [key, entry] of this.searchCache) {
-			if (now >= entry.expiresAt) {
-				this.searchCache.delete(key);
-				expiredCount++;
-			}
-		}
-
+		const expiredCount = this.searchCache.pruneExpired();
 		if (expiredCount > 0) {
 			this.debug(`[Cache] Cleared ${expiredCount} expired search entries`);
 		}
@@ -519,7 +483,7 @@ export class PlayerManager extends EventEmitter {
 
 		const streamManager = new StreamManager({
 			maxConcurrentStreams: options?.maxStreamStore ?? 4,
-			streamTimeout: 5 * 60 * 1000,
+			streamTimeout: DEFAULT_STREAM_TIMEOUT_MS,
 			maxListenersPerStream: 15,
 			enableMetrics: true,
 			autoDestroy: true,

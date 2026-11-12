@@ -326,6 +326,9 @@ export const BUS_EVENT = {
 } as const satisfies Record<string, PlayerEventType>;
 export type BusEventKey = keyof typeof BUS_EVENT;
 
+/** Every broadcast event type, derived from {@link BUS_EVENT} so subscribers can never drift from the contract. */
+export const PLAYER_EVENT_TYPES: readonly PlayerEventType[] = Object.values(BUS_EVENT);
+
 // ---------------------------------------------------------------------
 // Actions: `bus.action()` commands, e.g. PLAY / PAUSE / SEEK / SKIP.
 // ---------------------------------------------------------------------

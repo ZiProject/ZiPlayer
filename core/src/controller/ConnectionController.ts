@@ -12,12 +12,14 @@ import { Bus, createPlayerSessionId, type PlayerRequestId, type PlayerSessionId 
 import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { BUS_OUTPUT, BUS_REQUEST, PLAYER_QUERY, PLAYER_RPC, traceBusSignal } from "../structures/BusContract";
 import type { WebAudioConnection } from "../output/WebAudioConnection";
+import { toError } from "../utils/errors";
+import type { DebugLogger } from "../types";
 
 interface ConnectionSlot {
 	group?: string;
 	selfDeaf: boolean;
 	selfMute: boolean;
-	debug?: (message: string) => void;
+	debug?: DebugLogger;
 	readyTimeoutMs: number;
 	connection: VoiceConnection | null;
 	channel: VoiceChannel | null;
@@ -357,7 +359,9 @@ export class ConnectionController {
 			this.cleanupSubscription(playerId);
 			slot.connection?.destroy();
 			slot.connection = null;
-			const existing = getVoiceConnection(playerId);
+
+			const guildId = event.channel.guildId || playerId;
+			const existing = getVoiceConnection(guildId, event.options?.group ?? slot.group);
 			if (existing) existing.destroy();
 
 			const group = event.options?.group ?? slot.group;
@@ -383,10 +387,15 @@ export class ConnectionController {
 					playerId,
 					sessionId,
 					operation: "connect",
-					error: this.toError(error),
+					error: toError(error),
 				});
 			});
-
+			connection.on("stateChange", (oldS, newS) => {
+				slot.debug?.(
+					`[Voice] ${oldS.status} -> ${newS.status}` + ("closeCode" in newS ? ` closeCode=${(newS as any).closeCode}` : ""),
+				);
+			});
+			connection.on("debug", (m) => slot.debug?.(`[Voice:debug] ${m}`));
 			connection.on(VoiceConnectionStatus.Ready, () => {
 				if (slot.connection !== connection) return;
 				this.ensureSubscription(playerId, connection);
@@ -437,7 +446,7 @@ export class ConnectionController {
 				playerId,
 				sessionId,
 				operation: "connect",
-				error: this.toError(error),
+				error: toError(error),
 			});
 		}
 	}
@@ -473,7 +482,7 @@ export class ConnectionController {
 				playerId,
 				sessionId,
 				operation: "disconnect",
-				error: this.toError(error),
+				error: toError(error),
 			});
 		}
 	}
@@ -510,10 +519,7 @@ export class ConnectionController {
 		});
 	}
 
-	private toError(error: unknown): Error {
-		return error instanceof Error ? error : new Error(String(error));
-	}
 	private errorMessage(error: unknown): string {
-		return this.toError(error).message;
+		return toError(error).message;
 	}
 }

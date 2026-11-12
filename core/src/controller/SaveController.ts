@@ -5,6 +5,7 @@ import type { Bus } from "../structures/Bus";
 import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { PLAYER_RPC } from "../structures/BusContract";
 import type { SaveControllerOptions } from "../types";
+import { createAbortError } from "../utils/errors";
 
 interface SaveState {
 	lifecycleAbort: AbortController;
@@ -72,24 +73,13 @@ export class SaveController {
 		this.assertActive(state);
 		if (!track) throw new TypeError("A track is required to save audio");
 
-		const saveOptions: SaveOptions = typeof options === "string" ? { filename: options } : (options ?? {});
-		const operationSignal = signal ?? saveOptions.signal;
-		state.debug(`[SaveController] save called for track: ${track.title}`);
-
-		const exportTrack = this.prepareExportTrack(track, saveOptions);
-		await this.applyMiddleware(state, exportTrack, operationSignal);
-		const streamInfo = await this.resolveWithTimeout(
+		const { saveOptions, operationSignal, streamInfo } = await this.resolveExportStream<SaveOptions>(
 			state,
-			() => state.resolveStream(exportTrack),
-			saveOptions.timeout,
-			operationSignal,
+			track,
+			options,
+			signal,
+			(exportTrack) => state.resolveStream(exportTrack),
 		);
-		if (!streamInfo?.stream) throw new Error(`No save stream available for track: ${track.title}`);
-
-		state.debug(`[SaveController] Save stream obtained for track: ${track.title}`);
-		if (saveOptions.filename) {
-			state.debug(`[SaveController] filename=${saveOptions.filename}, quality=${saveOptions.quality ?? "default"}`);
-		}
 
 		if (!saveOptions.filter?.length && (!saveOptions.seek || saveOptions.seek <= 0)) {
 			return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions, streamInfo.metadata);
@@ -131,24 +121,41 @@ export class SaveController {
 		this.assertActive(state);
 		if (!track) throw new TypeError("A track is required to save video");
 
-		const saveOptions: SaveVideoOptions = typeof options === "string" ? { filename: options } : (options ?? {});
+		const { saveOptions, operationSignal, streamInfo } = await this.resolveExportStream<SaveVideoOptions>(
+			state,
+			track,
+			options,
+			signal,
+			(exportTrack) => state.resolveVideoStream(exportTrack),
+		);
+		return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions, streamInfo.metadata);
+	}
+
+	/**
+	 * Shared front half of `save()` / `saveVideo()`: normalizes options, applies middleware and
+	 * resolves the source stream with the configured timeout. Throws if no stream is available.
+	 */
+	private async resolveExportStream<O extends SaveVideoOptions>(
+		state: SaveState,
+		track: Track,
+		options: O | string | undefined,
+		signal: AbortSignal | undefined,
+		resolver: (exportTrack: Track) => ReturnType<SaveState["resolveStream"]>,
+	) {
+		const saveOptions = (typeof options === "string" ? { filename: options } : (options ?? {})) as O;
 		const operationSignal = signal ?? saveOptions.signal;
 		state.debug(`[SaveController] save called for track: ${track.title}`);
+
 		const exportTrack = this.prepareExportTrack(track, saveOptions);
 		await this.applyMiddleware(state, exportTrack, operationSignal);
-		const streamInfo = await this.resolveWithTimeout(
-			state,
-			() => state.resolveVideoStream(exportTrack),
-			saveOptions.timeout,
-			operationSignal,
-		);
+		const streamInfo = await this.resolveWithTimeout(state, () => resolver(exportTrack), saveOptions.timeout, operationSignal);
 		if (!streamInfo?.stream) throw new Error(`No save stream available for track: ${track.title}`);
 
 		state.debug(`[SaveController] Save stream obtained for track: ${track.title}`);
 		if (saveOptions.filename) {
 			state.debug(`[SaveController] filename=${saveOptions.filename}, quality=${saveOptions.quality ?? "default"}`);
 		}
-		return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions, streamInfo.metadata);
+		return { saveOptions, operationSignal, streamInfo: streamInfo as typeof streamInfo & { stream: Readable } };
 	}
 
 	private prepareExportTrack(track: Track, options: SaveOptions): Track {
@@ -253,8 +260,6 @@ export class SaveController {
 	}
 
 	private abortError(): Error {
-		const error = new Error("Save operation was aborted");
-		error.name = "AbortError";
-		return error;
+		return createAbortError("Save operation was aborted");
 	}
 }

@@ -14,7 +14,9 @@ import type { PlaybackSession } from "./PlaybackSession";
 import type { PreloadManager } from "./PreloadManager";
 import { Bus } from "./Bus";
 import { playerDataMap } from "./PlayerDataRegistry";
-import { CONTROLLER_RPC, PLAYER_QUERY } from "./BusContract";
+import { CONTROLLER_RPC } from "./BusContract";
+import { queryPlaybackSession } from "./PlaybackSession";
+import { isAbortError } from "../utils/errors";
 
 const TRACK_LOADER_RPC = {
 	load: "controller.track.load",
@@ -82,7 +84,7 @@ export class TrackLoader {
 			bus.registerRpc<{ track: Track }, TrackLoadResult | null>(
 				CONTROLLER_RPC.playbackLoadFreshCurrent,
 				bridge((slot, { track }) => {
-					const session = bus.querySync(slot.playerId, PLAYER_QUERY.playbackSessionInternal);
+					const session = queryPlaybackSession(bus, slot.playerId);
 					if (!session) return null;
 					return bus.requestRpc(slot.playerId, CONTROLLER_RPC.trackLoad, { track, session });
 				}),
@@ -257,7 +259,7 @@ export class TrackLoader {
 				return { track, stream, sessionId: session.id, retry, usedFallback: retry > 0 };
 			} catch (error) {
 				lastError = error;
-				if (this.isAbort(error) || this.isUnrecoverable(error) || !slot.recovery.enabled || attempt >= slot.recovery.maxRetries)
+				if (isAbortError(error) || this.isUnrecoverable(error) || !slot.recovery.enabled || attempt >= slot.recovery.maxRetries)
 					break;
 				retry++;
 				slot.failures.set(key, retry);
@@ -321,11 +323,6 @@ export class TrackLoader {
 			};
 			signal.addEventListener("abort", abort, { once: true });
 		});
-	}
-	private isAbort(error: unknown): boolean {
-		return (
-			(error instanceof DOMException && error.name === "AbortError") || (error instanceof Error && error.name === "AbortError")
-		);
 	}
 	private isUnrecoverable(error: unknown): boolean {
 		if (!(error instanceof Error)) return false;

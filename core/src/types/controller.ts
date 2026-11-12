@@ -4,12 +4,13 @@ import type { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
 import type { Bus } from "../structures/Bus";
+import type { DebugLogger } from "./debug";
 
 /** Per-player configuration handed to the shared `ConnectionController` via `attach(playerId, options)`. */
 export interface ConnectionControllerOptions {
 	audioPlayer?: AudioPlayer;
 	options?: Pick<PlayerOptions, "selfDeaf" | "selfMute" | "group">;
-	debug?: (message: string) => void;
+	debug?: DebugLogger;
 	readyTimeoutMs?: number;
 }
 export interface WebAudioSubscriberInfo {
@@ -23,7 +24,7 @@ export interface WebAudioSubscriberInfo {
 export interface LifecycleControllerOptions {
 	bus: Bus;
 	options: Pick<PlayerOptions, "leaveOnEnd" | "leaveOnEmpty" | "pauseOnEmpty" | "leaveTimeout">;
-	debug?: (...args: any[]) => void;
+	debug?: DebugLogger;
 }
 /** Per-player resources handed to the shared `PlaybackController` via `attach(playerId, options)`. */
 export interface PlaybackControllerOptions {
@@ -102,7 +103,7 @@ export interface AntiStuckControllerOptions {
 	controlledSkipThreshold?: number;
 	bus?: Bus;
 	/** Debug sink; see `traceBusSignal` in BusContract for the log format used. */
-	debug?: (message: string) => void;
+	debug?: DebugLogger;
 }
 export interface AntiStuckRetryContext {
 	session: PlaybackSession;

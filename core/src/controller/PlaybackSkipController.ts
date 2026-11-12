@@ -1,7 +1,8 @@
 import type { Bus } from "../structures/Bus";
-import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext } from "../types";
 import type { PlaybackSkipControllerOptions } from "../types";
+import { toError } from "../utils/errors";
+import { queryPlaybackSession } from "../structures/PlaybackSession";
 import {
 	BUS_EVENT,
 	CONTROLLER_RPC,
@@ -31,10 +32,6 @@ export class PlaybackSkipController {
 		this.setWaitingForQueue = options.setWaitingForQueue;
 	}
 
-	private currentSession(): PlaybackSession | null {
-		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSessionInternal) ?? null;
-	}
-
 	public async skip(context: PlayerMessageContext, index?: number): Promise<boolean> {
 		if (context.signal.aborted) {
 			return false;
@@ -51,8 +48,8 @@ export class PlaybackSkipController {
 		} catch (error) {
 			this.bus.event(this.playerId, {
 				type: BUS_EVENT.streamError,
-				error: error instanceof Error ? error : new Error(String(error)),
-				track: this.currentSession()?.track ?? null,
+				error: toError(error),
+				track: queryPlaybackSession(this.bus, this.playerId)?.track ?? null,
 			});
 			return false;
 		}
@@ -86,7 +83,7 @@ export class PlaybackSkipController {
 
 		if (context.signal.aborted) return false;
 
-		const oldSession = this.currentSession();
+		const oldSession = queryPlaybackSession(this.bus, this.playerId);
 		const from = oldSession?.track ?? null;
 		if (oldSession && context.sessionId && oldSession.sessionId !== context.sessionId) return false;
 		this.bus.requestRpcSync(this.playerId, CONTROLLER_RPC.playbackTransitionLock, { active: true });
@@ -102,7 +99,7 @@ export class PlaybackSkipController {
 					} catch (error) {
 						this.bus.event(this.playerId, {
 							type: BUS_EVENT.streamError,
-							error: error instanceof Error ? error : new Error(String(error)),
+							error: toError(error),
 							track: oldSession.track,
 						});
 					}

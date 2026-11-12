@@ -15,16 +15,12 @@ import type {
 
 import { BaseExtension } from "./BaseExtension";
 import { withTimeout } from "../utils/timeout";
+import { TtlCache } from "../utils/cache";
+import { CACHE_CLEANUP_INTERVAL_MS, MAX_CACHE_ENTRIES, SEARCH_CACHE_TTL_MS, STREAM_CACHE_TTL_MS } from "../utils/constants";
 
 export { BaseExtension } from "./BaseExtension";
 
 const invokableExtensionMethods = new Set<ExtensionMethod>(["beforePlay", "afterPlay", "provideSearch", "provideStream"]);
-
-interface ExtensionCacheEntry<T> {
-	data: T;
-	timestamp: number;
-	expiresAt: number;
-}
 
 interface ExtensionMetadata {
 	name: string;
@@ -45,13 +41,8 @@ export class ExtensionManager {
 	private extensionContext: ExtensionContext;
 
 	// Caches for different operations
-	private searchCache: Map<string, ExtensionCacheEntry<SearchResult>>;
-	private streamCache: Map<string, ExtensionCacheEntry<StreamInfo>>;
-
-	// Cache TTLs
-	private readonly SEARCH_CACHE_TTL = 60 * 1000; // 1 minute
-	private readonly STREAM_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-	private readonly MAX_CACHE_SIZE = 100;
+	private readonly searchCache = new TtlCache<SearchResult>(SEARCH_CACHE_TTL_MS, MAX_CACHE_ENTRIES);
+	private readonly streamCache = new TtlCache<StreamInfo>(STREAM_CACHE_TTL_MS, MAX_CACHE_ENTRIES);
 
 	// Pending requests for deduplication
 	private pendingSearches: Map<string, Promise<SearchResult | null>>;
@@ -69,13 +60,11 @@ export class ExtensionManager {
 		this.extensions = new Map();
 		this.disabledExtensions = new Map();
 		this.extensionMetadata = new Map();
-		this.searchCache = new Map();
-		this.streamCache = new Map();
 		this.pendingSearches = new Map();
 		this.pendingStreams = new Map();
 		this.extensionContext = this.createExtensionContext(player, manager);
 		// Auto-cleanup caches periodically
-		this.cacheCleanupInterval = setInterval(() => this.cleanupCaches(), 5 * 60 * 1000);
+		this.cacheCleanupInterval = setInterval(() => this.cleanupCaches(), CACHE_CLEANUP_INTERVAL_MS);
 		if (this.cacheCleanupInterval.unref) {
 			this.cacheCleanupInterval.unref();
 		}
@@ -313,23 +302,17 @@ export class ExtensionManager {
 		return `${prefix}:${parts.join(":")}`;
 	}
 
+	private searchKey(query: string): string {
+		return this.getCacheKey("search", query.toLowerCase().trim());
+	}
+
+	private streamKey(track: Track): string {
+		return this.getCacheKey("stream", track.url || track.id || track.title);
+	}
+
 	private cleanupCaches(): void {
-		const now = Date.now();
-
-		// Clean search cache
-		for (const [key, entry] of this.searchCache) {
-			if (now >= entry.expiresAt) {
-				this.searchCache.delete(key);
-			}
-		}
-
-		// Clean stream cache
-		for (const [key, entry] of this.streamCache) {
-			if (now >= entry.expiresAt) {
-				this.streamCache.delete(key);
-			}
-		}
-
+		this.searchCache.pruneExpired();
+		this.streamCache.pruneExpired();
 		this.debug(`Cache cleanup completed - Search: ${this.searchCache.size}, Stream: ${this.streamCache.size}`);
 	}
 
@@ -340,53 +323,26 @@ export class ExtensionManager {
 	}
 
 	private getCachedSearch(query: string): SearchResult | null {
-		const key = this.getCacheKey("search", query.toLowerCase().trim());
-		const cached = this.searchCache.get(key);
-		if (cached && Date.now() < cached.expiresAt) {
-			this.debug(`[Cache] Search hit for: ${query}`);
-			return cached.data;
-		}
-		return null;
+		const cached = this.searchCache.get(this.searchKey(query));
+		if (!cached) return null;
+		this.debug(`[Cache] Search hit for: ${query}`);
+		return cached;
 	}
 
 	private setCachedSearch(query: string, result: SearchResult): void {
-		if (this.searchCache.size >= this.MAX_CACHE_SIZE) {
-			// Remove oldest entries (LRU approximation)
-			const oldest = Array.from(this.searchCache.entries()).sort((a, b) => a[1].timestamp - b[1].timestamp)[0];
-			if (oldest) this.searchCache.delete(oldest[0]);
-		}
-
-		const key = this.getCacheKey("search", query.toLowerCase().trim());
-		this.searchCache.set(key, {
-			data: result,
-			timestamp: Date.now(),
-			expiresAt: Date.now() + this.SEARCH_CACHE_TTL,
-		});
+		this.searchCache.set(this.searchKey(query), result);
 		this.debug(`[Cache] Search stored for: ${query}`);
 	}
 
 	private getCachedStream(track: Track): StreamInfo | null {
-		const key = this.getCacheKey("stream", track.url || track.id || track.title);
-		const cached = this.streamCache.get(key);
-		if (cached && Date.now() < cached.expiresAt) {
-			this.debug(`[Cache] Stream hit for: ${track.title}`);
-			return cached.data;
-		}
-		return null;
+		const cached = this.streamCache.get(this.streamKey(track));
+		if (!cached) return null;
+		this.debug(`[Cache] Stream hit for: ${track.title}`);
+		return cached;
 	}
 
 	private setCachedStream(track: Track, stream: StreamInfo): void {
-		if (this.streamCache.size >= this.MAX_CACHE_SIZE) {
-			const oldest = Array.from(this.streamCache.entries()).sort((a, b) => a[1].timestamp - b[1].timestamp)[0];
-			if (oldest) this.streamCache.delete(oldest[0]);
-		}
-
-		const key = this.getCacheKey("stream", track.url || track.id || track.title);
-		this.streamCache.set(key, {
-			data: stream,
-			timestamp: Date.now(),
-			expiresAt: Date.now() + this.STREAM_CACHE_TTL,
-		});
+		this.streamCache.set(this.streamKey(track), stream);
 		this.debug(`[Cache] Stream stored for: ${track.title}`);
 	}
 
@@ -399,7 +355,7 @@ export class ExtensionManager {
 		if (cached) return cached;
 
 		// Deduplicate concurrent requests
-		const cacheKey = this.getCacheKey("search", query.toLowerCase().trim());
+		const cacheKey = this.searchKey(query);
 		if (this.pendingSearches.has(cacheKey)) {
 			this.debug(`[Dedupe] Waiting for pending search: ${query}`);
 			return this.pendingSearches.get(cacheKey)!;
@@ -450,7 +406,7 @@ export class ExtensionManager {
 		}
 
 		// Deduplicate concurrent requests
-		const cacheKey = this.getCacheKey("stream", track.url || track.id || track.title);
+		const cacheKey = this.streamKey(track);
 		if (this.pendingStreams.has(cacheKey)) {
 			this.debug(`[Dedupe] Waiting for pending stream: ${track.title}`);
 			return this.pendingStreams.get(cacheKey)!;

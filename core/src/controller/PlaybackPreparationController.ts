@@ -3,6 +3,7 @@ import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, Track } from "../types";
 import type { PlaybackPreparationControllerOptions } from "../types";
 import { BUS_EVENT, BUS_REQUEST, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
+import { reportStreamError } from "./reportStreamError";
 
 /**
  * Owns related-track and autoplay preparation after a track starts.
@@ -80,7 +81,7 @@ export class PlaybackPreparationController {
 			try {
 				related = await this.createRelatedTracks(session.track);
 			} catch (error) {
-				this.reportStreamError(session.track, error);
+				reportStreamError(this.bus, this.playerId, session.track, error);
 				related = [];
 			}
 		}
@@ -134,7 +135,7 @@ export class PlaybackPreparationController {
 			this.setQueueRelated(related);
 		} catch (error) {
 			this.debug?.("[PlaybackPreparationController] Error preparing related tracks:", error);
-			if (!context.signal.aborted) this.reportStreamError(session.track, error);
+			if (!context.signal.aborted) reportStreamError(this.bus, this.playerId, session.track, error);
 		}
 	}
 
@@ -147,19 +148,7 @@ export class PlaybackPreparationController {
 				{ signal: context.signal, timeoutMs: 30000 },
 			);
 		} catch (error) {
-			if (!context.signal.aborted) this.reportStreamError(track, error);
-		}
-	}
-
-	private reportStreamError(track: Track | null, error: unknown): void {
-		try {
-			this.bus.event(this.playerId, {
-				type: BUS_EVENT.streamError,
-				error: error instanceof Error ? error : new Error(String(error)),
-				track,
-			});
-		} catch (reportError) {
-			console.error("Failed to report playback stream error", reportError);
+			if (!context.signal.aborted) reportStreamError(this.bus, this.playerId, track, error);
 		}
 	}
 }

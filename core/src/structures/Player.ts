@@ -40,6 +40,7 @@ import type { PlaybackSession } from "./PlaybackSession";
 import { BUS_EVENT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "./BusContract";
 import { PlayerData, PlayerDataRegistry } from "./PlayerDataRegistry";
 import type { PlayerQueue } from "../controller/QueueController";
+import { isAbortError } from "../utils/errors";
 
 export interface PlayerWebAudioRegistration {
 	readonly id: string;
@@ -684,9 +685,8 @@ export class Player extends EventEmitter {
 		return this.bus.requestRpc(this.playerId, PLAYER_RPC.streamResolve, { track });
 	}
 	public isUnrecoverableStreamError(error: unknown): boolean {
-		const name = error instanceof Error ? error.name : "";
 		const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-		return name === "AbortError" || /unrecoverable|unsupported|not found|invalid source/.test(message);
+		return isAbortError(error) || /unrecoverable|unsupported|not found|invalid source/.test(message);
 	}
 	public startTrack(track: Track, ..._args: any[]): Promise<void> {
 		return this.action({ type: PLAYER_ACTION.play, track });

@@ -1,6 +1,7 @@
 import { Readable, Transform } from "node:stream";
 import { createAudioResource, StreamType, type AudioResource } from "@discordjs/voice";
 import prism from "prism-media";
+import { toError } from "../utils/errors";
 
 /**
  * Validates the RFC 6716 Opus packet framing structure:
@@ -271,7 +272,7 @@ export function createOpusAudioResource(
 					}
 					this.push(Buffer.isBuffer(packet) ? packet : Buffer.from(packet));
 				} catch (error) {
-					this.destroy(error instanceof Error ? error : new Error(String(error)));
+					this.destroy(toError(error));
 				}
 			},
 			destroy(error, callback) {
@@ -280,7 +281,7 @@ export function createOpusAudioResource(
 					try {
 						iterator.return();
 					} catch (iteratorError) {
-						cleanupError ??= iteratorError instanceof Error ? iteratorError : new Error(String(iteratorError));
+						cleanupError ??= toError(iteratorError);
 					}
 				}
 				callback(cleanupError);

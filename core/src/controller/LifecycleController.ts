@@ -3,13 +3,14 @@ import { createPlayerRequestId, type Bus } from "../structures/Bus";
 import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { BUS_EVENT, BUS_OUTPUT, BUS_REQUEST, PLAYER_ACTION, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import { PlaybackMode, type LifecycleControllerOptions } from "../types";
+import type { DebugLogger } from "../types";
 
 interface LifecycleState {
 	leaveOnEnd: boolean;
 	leaveOnEmpty: boolean;
 	pauseOnEmpty: boolean;
 	leaveTimeout: number;
-	debug?: (...args: any[]) => void;
+	debug?: DebugLogger;
 	leaveTimer: NodeJS.Timeout | null;
 	voiceEmptyTimer: NodeJS.Timeout | null;
 	voiceChannel: any;
@@ -36,7 +37,7 @@ export class LifecycleController {
 		bus.registerRpc<void, void>(PLAYER_RPC.lifecycleClearLeaveTimeout, (_req, ctx) => this.clearLeaveTimeout(ctx.playerId));
 	}
 
-	attach(playerId: string, options: LifecycleControllerOptions["options"], debug?: (...args: any[]) => void): void {
+	attach(playerId: string, options: LifecycleControllerOptions["options"], debug?: DebugLogger): void {
 		this.detach(playerId);
 		const state: LifecycleState = {
 			leaveOnEnd: options.leaveOnEnd ?? true,

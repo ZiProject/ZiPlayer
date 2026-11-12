@@ -4,6 +4,9 @@ import { playerDataMap } from "../structures/PlayerDataRegistry";
 import type { BusRpcContext } from "../types";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlaybackSessionSnapshot, StreamInfo, Track } from "../types";
+import { toError } from "../utils/errors";
+import { queryPlaybackSession } from "../structures/PlaybackSession";
+import type { DebugLogger } from "../types";
 import {
 	BUS_OUTPUT,
 	BUS_REQUEST,
@@ -28,7 +31,7 @@ export class ResourceRefreshController {
 
 	constructor(
 		private readonly bus: Bus,
-		private readonly debug?: (message: string) => void,
+		private readonly debug?: DebugLogger,
 	) {
 		bus.registerRpc<{ position: number }, PlaybackSessionSnapshot>(
 			PLAYER_RPC.playbackRefreshResource,
@@ -63,7 +66,7 @@ export class ResourceRefreshController {
 
 	private async refreshResource(playerId: string, position: number, rpcContext: BusRpcContext): Promise<PlaybackSessionSnapshot> {
 		const state = this.states.get(playerId);
-		const session = this.bus.querySync(playerId, PLAYER_QUERY.playbackSessionInternal);
+		const session = queryPlaybackSession(this.bus, playerId);
 		if (!state || !session?.track || !session.isActive()) throw new Error("No active playback session");
 		const sessionId = session.id;
 		const refreshSequence = ++state.refreshSequence;
@@ -79,7 +82,7 @@ export class ResourceRefreshController {
 			this.states.get(playerId) === state &&
 			refreshSequence === state.refreshSequence &&
 			!signal.aborted &&
-			this.bus.querySync(playerId, PLAYER_QUERY.playbackSessionInternal)?.owns(sessionId) === true;
+			queryPlaybackSession(this.bus, playerId)?.owns(sessionId) === true;
 		try {
 			const info = await this.bus.requestRpc<{ track: Track; fresh?: boolean }, StreamInfo | null>(
 				playerId,
@@ -158,7 +161,7 @@ export class ResourceRefreshController {
 				type: BUS_OUTPUT.resourceError,
 				requestId: event.requestId,
 				playerId,
-				error: error instanceof Error ? error : new Error(String(error)),
+				error: toError(error),
 			});
 		}
 	}

@@ -13,6 +13,9 @@ import { createPlayerRequestId } from "../structures/Bus";
 import type { TrackLoader } from "../structures/TrackLoader";
 import type { PreloadManager } from "../structures/PreloadManager";
 import type { PreloadControllerOptions } from "../types";
+import { toError } from "../utils/errors";
+import { queryPlaybackSession } from "../structures/PlaybackSession";
+import type { DebugLogger } from "../types";
 import {
 	BUS_EVENT,
 	BUS_OUTPUT,
@@ -47,7 +50,7 @@ export class PreloadController {
 	private get states(): Map<string, PreloadState> {
 		return playerDataMap(this.bus!, "controller.preload.states");
 	}
-	private readonly debug?: (message: string) => void;
+	private readonly debug?: DebugLogger;
 
 	public constructor(bus: Bus, options: PreloadControllerOptions) {
 		this.bus = bus;
@@ -125,7 +128,7 @@ export class PreloadController {
 	public promotePreload(playerId: string, track: Track): AudioResource | null {
 		const bus = this.bus;
 		if (!bus) return null;
-		const session = bus.querySync(playerId, PLAYER_QUERY.playbackSessionInternal);
+		const session = queryPlaybackSession(bus, playerId);
 		if (!session) return null;
 		const promoted = bus.requestRpcSync<{ track: Track }, PromotedPreload | null>(playerId, PLAYER_RPC.preloadPromote, { track });
 		if (!promoted) return null;
@@ -151,7 +154,7 @@ export class PreloadController {
 			})
 			.catch((error) => {
 				if (!session.isActive()) return;
-				const normalized = error instanceof Error ? error : new Error(String(error));
+				const normalized = toError(error);
 				bus.event(playerId, { type: BUS_EVENT.trackError, session: session.snapshot(), error: normalized });
 			});
 		return resource;
@@ -220,7 +223,7 @@ export class PreloadController {
 					requestId: event.requestId,
 					playerId,
 					track: event.track,
-					error: error instanceof Error ? error : new Error(String(error)),
+					error: toError(error),
 				});
 			}
 		}

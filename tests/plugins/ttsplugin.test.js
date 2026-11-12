@@ -22,3 +22,40 @@ test("TTS search builds track and encodes metadata", async () => {
 	assert.ok(tr.url.startsWith("tts://"));
 	assert.ok(tr.metadata && tr.metadata.tts);
 });
+
+test("TTS falls back to Google when Edge TTS fails", async () => {
+	const ttsModule = require("@ziplayer/tts");
+	const axios = require("axios");
+	const originalVoices = ttsModule.getEdgeTTSVoices;
+	const originalGetEdgeTTS = ttsModule.getEdgeTTS;
+	const originalGetUrls = ttsModule.getTTSUrls;
+	const originalAxiosGet = axios.get;
+
+	try {
+		ttsModule.getEdgeTTSVoices = async () => [{ Name: "en-US-AriaNeural", Locale: "en-US" }];
+		ttsModule.getEdgeTTS = async () => {
+			throw new Error("Edge TTS WebSocket error");
+		};
+		ttsModule.getTTSUrls = () => ["https://example.com/tts.mp3"];
+		axios.get = async () => ({ data: Buffer.from("fake-audio") });
+
+		const tts = new TTSPlugin({ defaultLang: "en" });
+		const info = await tts.getStream({
+			id: "tts-1",
+			title: "TTS: hello",
+			url: "tts://e30=",
+			duration: 1,
+			requestedBy: "me",
+			source: "tts",
+			metadata: { tts: { text: "hello", lang: "en", slow: false } },
+		});
+		assert.ok(info.stream);
+		assert.equal(info.type, "arbitrary");
+		assert.ok(info.metadata && typeof info.metadata.size === "number" && info.metadata.size > 0);
+	} finally {
+		ttsModule.getEdgeTTSVoices = originalVoices;
+		ttsModule.getEdgeTTS = originalGetEdgeTTS;
+		ttsModule.getTTSUrls = originalGetUrls;
+		axios.get = originalAxiosGet;
+	}
+});

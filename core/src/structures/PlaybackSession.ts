@@ -1,6 +1,18 @@
 import type { AudioResource } from "@discordjs/voice";
 import type { Track, PlaybackSessionStatus, PlaybackSessionSnapshot, PlayerSessionId } from "../types";
 import { createPlayerSessionId } from "./Bus";
+import type { Bus } from "./Bus";
+import { PLAYER_QUERY } from "./BusContract";
+
+/** Snapshot used as a fallback when an event needs a session but none is active. */
+export function createIdleSnapshot(): PlaybackSessionSnapshot {
+	return { id: 0, track: null, resource: null, status: "idle", position: null, startedAt: null };
+}
+
+/** Returns the player's current playback session, or `null` when none exists. */
+export function queryPlaybackSession(bus: Bus, playerId: string): PlaybackSession | null {
+	return bus.querySync(playerId, PLAYER_QUERY.playbackSessionInternal) ?? null;
+}
 
 /**
  * Owns the lifecycle state of one active playback operation.

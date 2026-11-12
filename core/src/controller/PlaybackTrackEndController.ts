@@ -1,10 +1,11 @@
 import { createPlayerRequestId } from "../structures/Bus";
-import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { PlayerMessageContext, PlaybackSessionSnapshot, Track } from "../types";
 import type { Bus } from "../structures/Bus";
 import type { PlaybackTrackEndControllerOptions } from "../types";
 import { PlayerActionPriority } from "../types";
 import { BUS_EVENT, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
+import { reportStreamError } from "./reportStreamError";
+import { queryPlaybackSession } from "../structures/PlaybackSession";
 
 /**
  * Owns TRACK_END, queue refill, autoplay fallback, and queue-end transitions.
@@ -36,10 +37,6 @@ export class PlaybackTrackEndController {
 		this.publishState = options.publishState;
 		this.queueSnapshot = options.queueSnapshot;
 		this.lifecycleSignal = options.lifecycleSignal;
-	}
-
-	private currentSession(): PlaybackSession | null {
-		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSessionInternal) ?? null;
 	}
 
 	public get isTransitioning(): boolean {
@@ -85,14 +82,14 @@ export class PlaybackTrackEndController {
 		if (!this.queueSnapshot().length) return;
 		const generation = ++this.queueStartGeneration;
 		this.queueStartPromise = this.startQueuedTrackAfterEnd()
-			.catch((error) => this.reportStreamError(this.currentSession()?.track ?? null, error))
+			.catch((error) => reportStreamError(this.bus, this.playerId, queryPlaybackSession(this.bus, this.playerId)?.track ?? null, error))
 			.finally(() => {
 				if (generation === this.queueStartGeneration) this.queueStartPromise = null;
 			});
 	}
 
 	public async onTrackEnd(snapshot: PlaybackSessionSnapshot): Promise<void> {
-		const current = this.currentSession();
+		const current = queryPlaybackSession(this.bus, this.playerId);
 		if (!current || current.id !== snapshot.id || current.status === "ended" || current.status === "stopped") return;
 		if (this.trackEndTransition) return;
 		this.trackEndTransition = true;
@@ -132,7 +129,7 @@ export class PlaybackTrackEndController {
 							},
 						);
 					} catch (error) {
-						this.reportStreamError(from, error);
+						reportStreamError(this.bus, this.playerId, from, error);
 						relatedTracks = [];
 					}
 					relatedTracks = relatedTracks ?? [];
@@ -185,7 +182,7 @@ export class PlaybackTrackEndController {
 			}
 
 			// autoPlay=false or no next candidate -> stop here
-			const finalSession = this.currentSession();
+			const finalSession = queryPlaybackSession(this.bus, this.playerId);
 			if (!finalSession || finalSession.id !== snapshot.id || !finalSession.isActive()) return;
 			endedSession.markEnded();
 			await this.stopPlayback(context.signal);
@@ -208,7 +205,7 @@ export class PlaybackTrackEndController {
 		if (this.lifecycleSignal.aborted || !this.waitingForQueue || this.trackEndTransition || !this.queueSnapshot().length) return;
 		this.trackEndTransition = true;
 		try {
-			const from = this.currentSession()?.track ?? null;
+			const from = queryPlaybackSession(this.bus, this.playerId)?.track ?? null;
 			const context = this.createContext("PlaybackTrackEndController:queue-refill");
 			const next = await this.nextThroughBus(false, context);
 			if (!next || context.signal.aborted) return;
@@ -216,18 +213,6 @@ export class PlaybackTrackEndController {
 			this.waitingForQueue = false;
 		} finally {
 			this.trackEndTransition = false;
-		}
-	}
-
-	private reportStreamError(track: Track | null, error: unknown): void {
-		try {
-			this.bus.event(this.playerId, {
-				type: BUS_EVENT.streamError,
-				error: error instanceof Error ? error : new Error(String(error)),
-				track,
-			});
-		} catch (reportError) {
-			console.error("Failed to report playback stream error", reportError);
 		}
 	}
 

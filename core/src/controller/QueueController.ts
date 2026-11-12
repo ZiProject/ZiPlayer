@@ -2,6 +2,8 @@ import type { LoopMode, SearchResult, Track, TrackRequester } from "../types";
 import type { Bus, PlayerAction, PlayerActionExecutionContext } from "../structures/Bus";
 import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { BUS_EVENT, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
+import { toError } from "../utils/errors";
+import { createIdleSnapshot } from "../structures/PlaybackSession";
 
 type QueueInsertRequest = { query: string | Track | Track[]; index?: number; requestedBy?: TrackRequester };
 
@@ -396,15 +398,8 @@ export class QueueState {
 				const session = this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSession);
 				this.bus.event(this.playerId, {
 					type: BUS_EVENT.trackError,
-					session: session ?? {
-						id: 0,
-						track: null,
-						resource: null,
-						status: "idle",
-						position: null,
-						startedAt: null,
-					},
-					error: error instanceof Error ? error : new Error(String(error)),
+					session: session ?? createIdleSnapshot(),
+					error: toError(error),
 				});
 			}
 			return false;

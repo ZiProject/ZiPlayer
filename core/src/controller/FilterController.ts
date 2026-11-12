@@ -9,8 +9,8 @@ import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { StreamType } from "@discordjs/voice";
 import { PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 
-type DebugFn = (message?: any, ...optionalParams: any[]) => void;
 import type { FilterControllerOptions } from "../types";
+import type { DebugLogger } from "../types";
 
 /** Per-player filter engine (ffmpeg pipeline + active filter list). Used by the shared
  *  `FilterController` and standalone (bus-less) by SaveController for isolated export filtering. */
@@ -26,7 +26,7 @@ export class FilterEngine {
 
 	constructor(
 		private readonly resourcePort: FilterControllerResourcePort | undefined,
-		private readonly debug: DebugFn = () => {},
+		private readonly debug: DebugLogger = () => {},
 		private readonly bus?: Bus,
 		private readonly options: FilterControllerOptions = {},
 		private readonly playerId?: string,
@@ -457,7 +457,7 @@ export class FilterController {
 	attach(
 		playerId: string,
 		resourcePort: FilterControllerResourcePort | undefined,
-		debug: DebugFn = () => {},
+		debug: DebugLogger = () => {},
 		options: FilterControllerOptions = {},
 	): void {
 		if (this.engines.has(playerId)) this.detach(playerId);

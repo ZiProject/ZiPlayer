@@ -10,6 +10,7 @@ import {
 } from "../structures/BusContract";
 import type { Bus } from "../structures/Bus";
 import { playerDataMap } from "../structures/PlayerDataRegistry";
+import type { DebugLogger } from "../types";
 
 const MAX_FAILURE_ENTRIES = 500;
 
@@ -24,7 +25,7 @@ interface AntiStuckState {
 	timer: NodeJS.Timeout | null;
 	generation: number;
 	lifecycleAbort: AbortController;
-	debug?: (message: string) => void;
+	debug?: DebugLogger;
 	disposed: boolean;
 	recordFailure: (key: string, value: number) => void;
 }

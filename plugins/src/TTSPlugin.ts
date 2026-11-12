@@ -25,7 +25,7 @@ export interface TTSPluginOptions {
 	 * - Buffer / Uint8Array / ArrayBuffer
 	 * - Or an object with { stream, type } | { url, type }
 	 */
-	edgeTTSOptions?: EdgeTTSOptions;
+	edgeTTSOptions?: EdgeTTSOptions | { skip: boolean };
 
 	createStream?: (
 		text: string,
@@ -98,7 +98,7 @@ export class TTSPlugin extends BasePlugin {
 		defaultLang: string;
 		slow: boolean;
 		createStream?: TTSPluginOptions["createStream"];
-		edgeTTSOptions?: EdgeTTSOptions;
+		edgeTTSOptions?: EdgeTTSOptions | { skip: boolean };
 	};
 	private edgeTTSVoicesCache: Array<{ Name: string; Locale: string }> | null = null;
 	/**
@@ -351,12 +351,16 @@ export class TTSPlugin extends BasePlugin {
 			}
 			return { stream, type: type || "arbitrary", metadata: { provider: "custom", ...(metadata || {}) } };
 		}
-		//TRY EDGE TTS FIRST
+		// Try Edge TTS first, but always fall back to Google when Edge is unavailable
+		let edgeError: unknown;
 		try {
+			if (this.opts.edgeTTSOptions && "skip" in this.opts.edgeTTSOptions && this.opts.edgeTTSOptions.skip) {
+				throw new Error("Edge TTS is skipped by configuration");
+			}
 			if (!this.edgeTTSVoicesCache) {
 				this.edgeTTSVoicesCache = await getEdgeTTSVoices();
 			}
-			const voices = this.edgeTTSVoicesCache;
+			const voices = this.edgeTTSVoicesCache || [];
 			const voicelang = voices.filter((v) => v.Locale.startsWith(cfg.lang + "-"));
 
 			const voice =
@@ -365,24 +369,36 @@ export class TTSPlugin extends BasePlugin {
 				:	(voices.find((v) => v.Locale.startsWith(this.opts.defaultLang + "-"))?.Name ?? "en-US-AriaNeural");
 
 			const edgeStream = await getEdgeTTS(cfg.text, { ...this.opts.edgeTTSOptions, voice });
+			if (!edgeStream || edgeStream.length === 0) {
+				throw new Error("Edge TTS returned empty audio");
+			}
 			const streamReadable = await this.toReadable(edgeStream);
 			return { stream: streamReadable, type: "arbitrary", metadata: { provider: "edge-tts" } };
 		} catch (e) {
-			// If Edge TTS fails, fallback to Google TTS
+			edgeError = e;
 		}
 
-		const urls = getTTSUrls(cfg.text, { lang: cfg.lang, slow: cfg.slow });
-		if (!urls || urls.length === 0) {
-			throw new Error("TTS returned no audio URLs");
+		try {
+			const urls = getTTSUrls(cfg.text, { lang: cfg.lang, slow: cfg.slow });
+			if (!urls || urls.length === 0) {
+				throw new Error("TTS returned no audio URLs");
+			}
+
+			const parts = await Promise.all(
+				urls.map((u) => axios.get<ArrayBuffer>(u, { responseType: "arraybuffer" }).then((r) => Buffer.from(r.data))),
+			);
+
+			const merged = Buffer.concat(parts);
+			const stream = Readable.from([merged]);
+			return { stream, type: "arbitrary", metadata: { size: merged.length } };
+		} catch (fallbackError) {
+			if (edgeError) {
+				throw new Error(
+					`Edge TTS failed and Google fallback failed: ${edgeError instanceof Error ? edgeError.message : String(edgeError)}; ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+				);
+			}
+			throw fallbackError;
 		}
-
-		const parts = await Promise.all(
-			urls.map((u) => axios.get<ArrayBuffer>(u, { responseType: "arraybuffer" }).then((r) => Buffer.from(r.data))),
-		);
-
-		const merged = Buffer.concat(parts);
-		const stream = Readable.from([merged]);
-		return { stream, type: "arbitrary", metadata: { size: merged.length } };
 	}
 
 	private async toReadable(out: Readable | string | URL | Buffer | Uint8Array | ArrayBuffer): Promise<Readable> {

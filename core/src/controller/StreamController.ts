@@ -1,10 +1,11 @@
-import { PlaybackMode, type StreamInfo, type Track, type ActiveStream, type StreamControllerOptions } from "../types";
+import { PlaybackMode, type StreamInfo, type Track, type ActiveStream } from "../types";
 import { Readable } from "stream";
 import type { PlaybackSession } from "../structures/PlaybackSession";
 import type { StreamManager } from "../structures/StreamManager";
 import type { Bus } from "../structures/Bus";
 import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, BUS_EVENT } from "../structures/BusContract";
+import { createAbortError, isAbortError } from "../utils/errors";
 
 const STREAM_RPC_REPLACE = "controller.stream.replace";
 
@@ -235,7 +236,7 @@ export class StreamController {
 				}
 				throw new Error(`File URL not found: ${info.url}`);
 			} catch (urlError) {
-				if (!session.isActive() || this.isAbortError(urlError)) throw this.abortError();
+				if (!session.isActive() || this.looksAborted(urlError)) throw this.abortError();
 				if (info.recreate) {
 					const stream = await info.recreate(info.position ?? 0);
 					if (!session.isActive()) {
@@ -312,13 +313,12 @@ export class StreamController {
 		}
 	}
 
-	private isAbortError(error: unknown): boolean {
-		return error instanceof Error && (error.name === "AbortError" || error.message.toLowerCase().includes("abort"));
+	/** Looser than `isAbortError`: also treats plugin errors that merely mention "abort" as aborts. */
+	private looksAborted(error: unknown): boolean {
+		return isAbortError(error) || (error instanceof Error && error.message.toLowerCase().includes("abort"));
 	}
 
 	private abortError(): Error {
-		const error = new Error("Playback stream operation was aborted");
-		error.name = "AbortError";
-		return error;
+		return createAbortError("Playback stream operation was aborted");
 	}
 }

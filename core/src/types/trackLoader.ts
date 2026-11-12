@@ -1,5 +1,6 @@
 import type { StreamInfo, Track, TrackMiddleware, TrackMiddlewareContext } from ".";
 import type { PlaybackSession } from "../structures/PlaybackSession";
+import type { DebugLogger } from "./debug";
 
 export interface TrackLoaderContext extends TrackMiddlewareContext {}
 export type TrackStreamResolver = (
@@ -32,5 +33,5 @@ export interface TrackLoaderOptions {
 	resolvers?: TrackStreamResolver[];
 	recovery?: TrackRecoveryPolicy;
 	qualityController?: TrackAttemptQualityController;
-	debug?: (message?: any, ...optionalParams: any[]) => void;
+	debug?: DebugLogger;
 }

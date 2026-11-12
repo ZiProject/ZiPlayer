@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { VoiceConnectionStatus, type AudioPlayer, type PlayerSubscription } from "@discordjs/voice";
-import { getOpusPacketDurationMs, validateOpusPacketDuration, validateOpusPacketFraming } from "../audio/OpusSourceAdapter";
+import { validateOpusPacketDuration, validateOpusPacketFraming } from "../audio/OpusSourceAdapter";
+import type { DebugLogger } from "../types";
 
 export const WEB_AUDIO_MAGIC_0 = 0x5a;
 export const WEB_AUDIO_MAGIC_1 = 0x49;
@@ -40,7 +41,7 @@ export interface WebAudioConnectionOptions {
 	maxQueuedPackets?: number;
 	dropPolicy?: "drop-newest" | "drop-oldest" | "disconnect";
 	onDrop?: (stats: { socket: WebSocketLike; droppedPackets: number; droppedBytes: number; reason: string }) => void;
-	debug?: (message: string) => void;
+	debug?: DebugLogger;
 }
 
 export interface WebAudioConnectionState {
@@ -171,7 +172,6 @@ export class WebAudioConnection extends EventEmitter {
 	private pendingPacket: Buffer | null = null;
 	private sequence = 0;
 	private mediaTimestampUs = 0n;
-	private startTime = 0;
 	private speaking = false;
 	private destroyed = false;
 	private manuallyDisconnected = false;
@@ -343,7 +343,6 @@ export class WebAudioConnection extends EventEmitter {
 		const subscription: PlayerSubscription = subscribeMethod.call(targetPlayer, this);
 		this.state.subscription = subscription;
 		this.updateState();
-		this.startTime = Date.now();
 		this.reset();
 		return subscription;
 	}

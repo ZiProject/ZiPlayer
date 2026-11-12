@@ -10,4 +10,4 @@ export type PlayerDebugLevel = "off" | "error" | "warn" | "info" | "debug" | "ve
  * Kept variadic (rather than a single `value` payload) so every call site - controllers,
  * plugins, extensions - can forward extra args through untouched.
  */
-export type PlayerEventDebugLogger = (message: string, ...args: any[]) => void;
+export type DebugLogger = (message?: any, ...args: any[]) => void;

@@ -1,5 +1,4 @@
 import type { Bus, BusRpcContext } from "../structures/Bus";
-import type { PlaybackSession } from "../structures/PlaybackSession";
 import type {
 	PlayerMessageContext,
 	SearchResult,
@@ -11,6 +10,9 @@ import type {
 	TrackRequester,
 } from "../types";
 import { BUS_EVENT, CONTROLLER_RPC, PLAYER_QUERY, PLAYER_RPC, PLAYER_ACTION } from "../structures/BusContract";
+import { toError } from "../utils/errors";
+import { createIdleSnapshot } from "../structures/PlaybackSession";
+import { queryPlaybackSession } from "../structures/PlaybackSession";
 
 function selectPlaybackTracks(result: SearchResult): { tracks: Track[]; isPlaylist: boolean } {
 	const isPlaylist = Boolean(result.playlist);
@@ -48,10 +50,6 @@ export class PlaybackPlayController {
 
 	public dispose(): void {
 		// No module-level registration to release; kept for a uniform per-player lifecycle API.
-	}
-
-	private currentSession(): PlaybackSession | null {
-		return this.bus.querySync(this.playerId, PLAYER_QUERY.playbackSessionInternal) ?? null;
 	}
 
 	private async skipThroughBus(context: PlayerMessageContext): Promise<void> {
@@ -106,14 +104,14 @@ export class PlaybackPlayController {
 
 		try {
 			if (query === null) {
-				const session = this.currentSession();
+				const session = queryPlaybackSession(this.bus, this.playerId);
 				if (session?.status === "playing" || session?.status === "paused") {
 					return { ok: true, track: session.track };
 				}
 				const queueLength = (this.bus.querySync(this.playerId, PLAYER_QUERY.queue) ?? []).length;
 				if (queueLength === 0) return { ok: false, track: null };
 				await this.skipThroughBus(context);
-				return { ok: true, track: this.currentSession()?.track ?? null };
+				return { ok: true, track: queryPlaybackSession(this.bus, this.playerId)?.track ?? null };
 			}
 
 			if (query && typeof query === "object" && "tracks" in query && Array.isArray((query as SearchResult).tracks)) {
@@ -142,17 +140,10 @@ export class PlaybackPlayController {
 					};
 					await this.afterPlayHooks(handledPayload);
 					if (hookResponse.error) {
-						const session = this.currentSession();
+						const session = queryPlaybackSession(this.bus, this.playerId);
 						this.bus.event(this.playerId, {
 							type: BUS_EVENT.trackError,
-							session: session?.snapshot() ?? {
-								id: 0,
-								track: null,
-								resource: null,
-								status: "idle",
-								position: null,
-								startedAt: null,
-							},
+							session: session?.snapshot() ?? createIdleSnapshot(),
 							error: hookResponse.error,
 						});
 					}
@@ -229,6 +220,15 @@ export class PlaybackPlayController {
 				}
 			}
 
+			const reportPlayResult = (success: boolean) =>
+				this.afterPlayHooks({
+					success,
+					query: effectiveRequest.query,
+					requestedBy: effectiveRequest.requestedBy,
+					tracks: tracksToAdd,
+					isPlaylist,
+				});
+
 			const isTTSTrack = !isPlaylist && tracksToAdd.length > 0 && ttsInterruptEnabled && checkIsTTS(tracksToAdd[0]);
 
 			if (isTTSTrack) {
@@ -237,13 +237,7 @@ export class PlaybackPlayController {
 				} else {
 					await this.adapters?.playTTS?.(tracksToAdd[0]);
 				}
-				await this.afterPlayHooks({
-					success: true,
-					query: effectiveRequest.query,
-					requestedBy: effectiveRequest.requestedBy,
-					tracks: tracksToAdd,
-					isPlaylist,
-				});
+				await reportPlayResult(true);
 				return { ok: true, track: tracksToAdd[0] ?? null };
 			}
 
@@ -258,7 +252,7 @@ export class PlaybackPlayController {
 				await this.bus.requestRpc(this.playerId, PLAYER_RPC.queueAdd, { track: tracksToAdd[0] }, { signal: context.signal });
 			}
 
-			const session = this.currentSession();
+			const session = queryPlaybackSession(this.bus, this.playerId);
 			const isPlayingOrPaused = session?.status === "playing" || session?.status === "paused";
 
 			if (isPlayingOrPaused && !this.isWaitingForQueue()) {
@@ -267,13 +261,7 @@ export class PlaybackPlayController {
 						.requestRpc(this.playerId, PLAYER_RPC.preloadNext, {}, { signal: context.signal })
 						.catch((error: unknown) => this.debug("[PlaybackPlayController] Preload after queue add error:", error));
 				}
-				await this.afterPlayHooks({
-					success: true,
-					query: effectiveRequest.query,
-					requestedBy: effectiveRequest.requestedBy,
-					tracks: tracksToAdd,
-					isPlaylist,
-				});
+				await reportPlayResult(true);
 				return { ok: true, track: tracksToAdd[0] ?? null };
 			}
 
@@ -287,17 +275,11 @@ export class PlaybackPlayController {
 				}
 			}
 
-			await this.afterPlayHooks({
-				success: started,
-				query: effectiveRequest.query,
-				requestedBy: effectiveRequest.requestedBy,
-				tracks: tracksToAdd,
-				isPlaylist,
-			});
+			await reportPlayResult(started);
 			return { ok: started, track: tracksToAdd[0] ?? null };
 		} catch (error) {
 			this.debug("[PlaybackPlayController] Play error:", error);
-			const err = error instanceof Error ? error : new Error(String(error));
+			const err = toError(error);
 			await this.afterPlayHooks({
 				success: false,
 				query: effectiveRequest.query,
@@ -306,18 +288,11 @@ export class PlaybackPlayController {
 				isPlaylist,
 				error: err,
 			});
-			const session = this.currentSession();
+			const session = queryPlaybackSession(this.bus, this.playerId);
 			if (!context.signal.aborted) {
 				this.bus.event(this.playerId, {
 					type: BUS_EVENT.trackError,
-					session: session?.snapshot() ?? {
-						id: 0,
-						track: null,
-						resource: null,
-						status: "idle",
-						position: null,
-						startedAt: null,
-					},
+					session: session?.snapshot() ?? createIdleSnapshot(),
 					error: err,
 				});
 			}

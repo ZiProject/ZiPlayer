@@ -8,6 +8,7 @@ import type { TrackLoader } from "../structures/TrackLoader";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
 import type { PlayerOptions, Track, TrackMiddleware, StreamInfo } from "./index";
+import type { DebugLogger } from "./debug";
 export interface PlaybackStartControllerOptions {
 	bus: Bus;
 	sessionController: PlaybackSessionController;
@@ -21,7 +22,7 @@ export interface PlaybackPreparationControllerOptions {
 	isCurrentSession: (session: PlaybackSession, context: import("./bus").PlayerMessageContext) => boolean;
 	queueSnapshot: () => Track[];
 	setQueueRelated: (tracks: Track[]) => void;
-	debug?: (...args: any[]) => void;
+	debug?: DebugLogger;
 }
 export interface PlaybackSkipControllerOptions {
 	bus: Bus;
@@ -41,7 +42,7 @@ export interface PlaybackTrackEndControllerOptions {
 export interface PlaybackPlayControllerOptions {
 	bus: Bus;
 	isWaitingForQueue: () => boolean;
-	debug: (message?: any, ...optionalParams: any[]) => void;
+	debug: DebugLogger;
 	lifecycleSignal: AbortSignal;
 	adapters?: PlaybackOrchestratorAdapters;
 }
@@ -51,7 +52,7 @@ export interface SaveControllerOptions {
 	resolveStream: (track: Track) => Promise<StreamInfo | null | undefined>;
 	resolveVideoStream: (track: Track) => Promise<StreamInfo | null | undefined>;
 	ffmpegPath?: string | null;
-	debug?: (...args: any[]) => void;
+	debug?: DebugLogger;
 	bus?: Bus;
 }
 export interface QueueControllerOptions {
@@ -62,7 +63,7 @@ export interface PreloadControllerOptions {
 	loader: TrackLoader;
 	manager: PreloadManager;
 	/** Process-wide debug sink; see `traceBusSignal` in BusContract for the log format used. */
-	debug?: (message: string) => void;
+	debug?: DebugLogger;
 }
 export interface TransitionControllerOptions {
 	enabled?: boolean;
@@ -88,7 +89,7 @@ export interface TTSControllerOptions {
 	extensionManager?: ExtensionManager;
 	connection?: VoiceConnection | null;
 	audioPlayer?: AudioPlayer;
-	debug?: (...args: any[]) => void;
+	debug?: DebugLogger;
 	maxTimeTts?: number;
 	volume?: number;
 	interrupt?: boolean;
@@ -127,7 +128,7 @@ export interface PlaybackOrchestratorOptions {
 }
 /** Per-player configuration handed to the shared `PlaybackOrchestrator` via `attach(playerId, options)`. */
 export interface PlaybackOrchestratorAttachOptions {
-	debug?: (...args: any[]) => void;
+	debug?: DebugLogger;
 	adapters?: PlaybackOrchestratorAdapters;
 }
 export type { SharedControllerSet } from "./controllerSet";

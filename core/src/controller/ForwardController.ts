@@ -3,6 +3,7 @@ import { AudioPlayerStatus } from "@discordjs/voice";
 import type { Bus } from "../structures/Bus";
 import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { PLAYER_QUERY, PLAYER_RPC, BUS_EVENT, PLAYER_ACTION, CONTROLLER_RPC } from "../structures/BusContract";
+import type { DebugLogger } from "../types";
 
 interface ForwardState {
 	leaderId?: string;
@@ -22,11 +23,11 @@ export class ForwardController {
 		return playerDataMap(this.bus, "controller.forward.leaderSubscriptions");
 	}
 	private disposed = false;
-	private readonly debug: (...args: any[]) => void;
+	private readonly debug: DebugLogger;
 
 	constructor(
 		private readonly bus: Bus,
-		options: { debug?: (...args: any[]) => void } = {},
+		options: { debug?: DebugLogger } = {},
 	) {
 		this.debug = options.debug ?? (() => undefined);
 		bus.registerRpc<void, ForwardHealthStatus>(PLAYER_RPC.forwardHealth, (_req, ctx) => this.healthStatus(ctx.playerId));

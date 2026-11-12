@@ -3,6 +3,7 @@ import type { PlaybackSessionController } from "./PlaybackSessionController";
 import type { PlayerMessageContext, Track } from "../types";
 import { PlaybackMode } from "../types";
 import { BUS_EVENT, BUS_REQUEST, CONTROLLER_RPC, PLAYER_QUERY } from "../structures/BusContract";
+import { toError } from "../utils/errors";
 
 /** Shared, singleton controller: owns seek validation and resource-refresh coordination
  *  for the active session of whichever player the seek was requested for. */
@@ -50,7 +51,7 @@ export class PlaybackSeekController {
 				bus.event(playerId, {
 					type: BUS_EVENT.trackError,
 					session: session.snapshot(),
-					error: error instanceof Error ? error : new Error(String(error)),
+					error: toError(error),
 				});
 			}
 			throw error;

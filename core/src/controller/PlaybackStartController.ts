@@ -5,6 +5,8 @@ import type { PlaybackSessionController } from "./PlaybackSessionController";
 import { CONTROLLER_RPC, PLAYER_ACTION, BUS_EVENT, PLAYER_QUERY, PLAYER_RPC } from "../structures/BusContract";
 import { PlaybackMode, type PlayerMessageContext, type StreamInfo, type Track, type TrackLoadResult } from "../types";
 import type { PlaybackStartControllerOptions } from "../types";
+import { reportStreamError } from "./reportStreamError";
+import { toError } from "../utils/errors";
 
 /**
  * Owns loading and starting one playback session through the Bus.
@@ -70,7 +72,7 @@ export class PlaybackStartController {
 			this.bus.event(this.playerId, { type: BUS_EVENT.trackStarted, session: session.snapshot(), track });
 			return true;
 		} catch (error) {
-			const normalized = error instanceof Error ? error : new Error(String(error));
+			const normalized = toError(error);
 			if (!context.signal.aborted && this.isCurrentSession(session, context)) {
 				this.bus.event(this.playerId, {
 					type: BUS_EVENT.trackError,
@@ -166,7 +168,7 @@ export class PlaybackStartController {
 			await this.prepareTrack(session, context);
 		} catch (error) {
 			if (transition) this.sessionController.retirePendingPrevious(this.playerId);
-			const normalized = error instanceof Error ? error : new Error(String(error));
+			const normalized = toError(error);
 			if (context.signal.aborted) throw error;
 			if (!context.signal.aborted && this.isCurrentSession(session, context)) {
 				this.bus.event(this.playerId, {
@@ -183,7 +185,7 @@ export class PlaybackStartController {
 				if (this.bus.hasRpc(PLAYER_RPC.lifecycleScheduleLeave)) {
 					void this.bus
 						.requestRpc(this.playerId, PLAYER_RPC.lifecycleScheduleLeave, {})
-						.catch((reportError) => this.reportStreamError(track, reportError));
+						.catch((reportError) => reportStreamError(this.bus, this.playerId, track, reportError));
 				}
 			} else if (!parentContext.signal.aborted) {
 				void this.bus
@@ -192,21 +194,9 @@ export class PlaybackStartController {
 						{ type: PLAYER_ACTION.skip, ignoreLoop: true, requestId: parentContext.requestId },
 						parentContext,
 					)
-					.catch((reportError) => this.reportStreamError(track, reportError));
+					.catch((reportError) => reportStreamError(this.bus, this.playerId, track, reportError));
 			}
 			throw error;
-		}
-	}
-
-	private reportStreamError(track: Track, error: unknown): void {
-		try {
-			this.bus.event(this.playerId, {
-				type: BUS_EVENT.streamError,
-				error: error instanceof Error ? error : new Error(String(error)),
-				track,
-			});
-		} catch (reportError) {
-			console.error("Failed to report playback stream error", reportError);
 		}
 	}
 

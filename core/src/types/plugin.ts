@@ -2,6 +2,7 @@ import type { SearchResult, StreamInfo, Track } from ".";
 import type { StreamManager } from "../structures/StreamManager";
 import type { PluginManager } from "../plugins";
 import type { ExtensionManager } from "../extensions";
+import type { DebugLogger } from "./debug";
 
 export type PluginManagerOptions = {
 	extractorTimeout?: number;
@@ -9,7 +10,7 @@ export type PluginManagerOptions = {
 	enableCache?: boolean;
 	searchCacheTTL?: number;
 	searchMinScore?: number;
-	debug?: (message?: any, ...optionalParams: any[]) => void;
+	debug?: DebugLogger;
 };
 
 export interface TrackResolveContext {

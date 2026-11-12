@@ -1,48 +1,9 @@
 import type { Player } from "../structures/Player";
 import type { PlayerEventType, Bus, PlayerEvent } from "../structures/Bus";
 import { playerDataMap } from "../structures/PlayerDataRegistry";
-import { BUS_OUTPUT, CONTROLLER_RPC } from "../structures/BusContract";
+import { BUS_OUTPUT, CONTROLLER_RPC, PLAYER_EVENT_TYPES } from "../structures/BusContract";
 import { PlayerEventDebug } from "./PlayerEventDebug";
 import { describeEvent, traceEvent } from "./PlayerEventTrace";
-
-const EVENT_TYPES: PlayerEventType[] = [
-	"initialized",
-	"ready",
-	"destroyed",
-	"TRACK_LOADING",
-	"TRACK_LOADED",
-	"TRACK_STARTED",
-	"TRACK_ERROR",
-	"TRACK_END",
-	"STREAM_ABORTED",
-	"playbackStateChanged",
-	"playbackSessionCreated",
-	"trackRequested",
-	"stateChanged",
-	"STUCK_DETECTED",
-	"RECOVERY_STARTED",
-	"RECOVERY_FAILED",
-	"preloadStateChanged",
-	"preloadPromoted",
-	"preloadCancelled",
-	"queueAdd",
-	"queueAddList",
-	"queueRemove",
-	"queueChanged",
-	"volumeRequested",
-	"willPlay",
-	"queueEnd",
-	"playerPause",
-	"playerResume",
-	"playerStop",
-	"seek",
-	"filterApplied",
-	"filterRemoved",
-	"filtersCleared",
-	"streamError",
-	"forwardModeStart",
-	"forwardModeEnd",
-];
 
 interface PlayerEventBridgeSlot {
 	player: Player | null;
@@ -102,7 +63,7 @@ export class PlayerEventBridge {
 		};
 		this.slots.set(playerId, slot);
 		this.debug(slot, "attached");
-		for (const type of EVENT_TYPES)
+		for (const type of PLAYER_EVENT_TYPES)
 			slot.unsubscribers.push(this.bus.subscribe(playerId, type, (event) => this.forward(playerId, event)));
 	}
 

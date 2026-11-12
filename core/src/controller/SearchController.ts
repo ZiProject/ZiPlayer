@@ -7,11 +7,13 @@ import type { Bus } from "../structures/Bus";
 import { playerDataMap } from "../structures/PlayerDataRegistry";
 import { PLAYER_RPC } from "../structures/BusContract";
 import { getRequesterId, withTrackRequester } from "../utils/requester";
+import { PLUGIN_SEARCH_CACHE_TTL_MS } from "../utils/constants";
+import type { DebugLogger } from "../types";
 
 interface SearchControllerOptions {
 	pluginManager: PluginManager;
 	extensionManager?: ExtensionManager;
-	debug: (...args: any[]) => void;
+	debug: DebugLogger;
 	cacheEnabled?: boolean;
 }
 
@@ -24,7 +26,7 @@ interface SearchState {
 
 /** Shared search orchestration; player-specific options and cache live in each player's `data` Map. */
 export class SearchController {
-	private static readonly CACHE_TTL = 2 * 60 * 1000;
+	private static readonly CACHE_TTL = PLUGIN_SEARCH_CACHE_TTL_MS;
 	private get states(): Map<string, SearchState> {
 		return playerDataMap(this.bus, "controller.search.states");
 	}
