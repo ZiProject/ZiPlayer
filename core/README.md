@@ -526,8 +526,10 @@ const leader = manager.get("guild-A");
 const follower = manager.get("guild-B");
 if (!leader || !follower) throw new Error("Create both players first with manager.create(guildId)");
 
-// Follower subscribes directly to leader's AudioPlayer
-follower.subscribeTo(leader);
+// Follower subscribes directly to leader's AudioPlayer.
+// Async: resolves false if refused (follower not in a voice channel, leader is a follower, ...).
+// The leader only needs an AudioPlayer, so a WebAudio-only leader works too.
+const ok = await follower.subscribeTo(leader);
 
 // Follower automatically mirrors trackStart, trackEnd, pause, resume, and volume!
 // Follower mutations are guarded to prevent disrupting the leader.

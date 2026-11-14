@@ -1,6 +1,6 @@
 {
 	"name": "@ziplayer/net",
-	"version": "0.1.0-dev.1",
+	"version": "0.0.1",
 	"description": "Connect multiple ZiPlayer nodes over MQTT: stream resources and hand off voice connections",
 	"keywords": [
 		"ZiPlayer",
@@ -36,7 +36,7 @@
 	"peerDependencies": {
 		"@discordjs/voice": "^0.19.2",
 		"mqtt": "^5.0.0",
-		"ziplayer": "^1.0.5-dev.4"
+		"ziplayer": "^1.0.5-dev.7"
 	},
 	"peerDependenciesMeta": {
 		"mqtt": {
@@ -49,6 +49,6 @@
 		"aedes": "^0.51.3",
 		"mqtt": "^5.16.1",
 		"typescript": "^5.0.0",
-		"ziplayer": "file:../core"
+		"ziplayer": "^1.0.5-dev.7"
 	}
 }

@@ -976,8 +976,9 @@ export class Player extends EventEmitter {
 			extension,
 		});
 	}
-	public subscribeTo(leader: Player | string, options?: { forwardMode?: boolean }): boolean {
-		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.forwardSubscribe, { leader, options });
+
+	public subscribeTo(leader: Player | string, options?: { forwardMode?: boolean }): Promise<boolean> {
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.forwardSubscribe, { leader, options });
 	}
 	public unsubscribeForward(reason?: string): boolean {
 		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.forwardUnsubscribe, { reason });
