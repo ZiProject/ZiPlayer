@@ -5,6 +5,17 @@ import { StreamImporter, type StreamImporterOptions } from "./stream/StreamImpor
 import { StreamProvider, type ProvidedStreamInfo } from "./stream/StreamProvider";
 import { RemoteVoiceHub, serializeTrack } from "./voice/RemoteVoice";
 import { planRoute, type RoutePlan } from "./router";
+import {
+	dedupeNetTracks,
+	DEFAULT_SEARCH_ALIASES,
+	importWireResult,
+	MAX_QUERY_CHARS,
+	parseSearchQuery,
+	toWireResult,
+	type NetSearchOptions,
+	type NetSearchResult,
+	type ServeSearchOptions,
+} from "./search";
 import type { GatewayLike } from "./voice/Gateway";
 
 export interface ZiNetOptions extends NetNodeOptions {
@@ -15,6 +26,8 @@ export interface ZiNetOptions extends NetNodeOptions {
 	importer?: StreamImporterOptions;
 	/** Source (plugin) names this node can resolve. Defaults to the manager's registered plugin names. */
 	sources?: string[];
+	/** Extra / overriding query prefixes for `search()`: `{ ytm: "youtube" }` makes `ytm:lofi` search the youtube plugin. */
+	searchAliases?: Record<string, string>;
 }
 
 export interface DelegateVoiceOptions {
@@ -61,10 +74,13 @@ export class ZiNet {
 	private readonly manager: any;
 	private readonly gateway?: GatewayLike;
 	private voiceAccepting = false;
+	private searchProvider?: { allow?: ServeSearchOptions["allow"]; maxResults: number; maxResponseBytes: number };
+	private readonly aliases: Record<string, string>;
 	private allowVoice?: (guildId: string, from: string) => boolean | Promise<boolean>;
 
 	constructor(private readonly options: ZiNetOptions) {
 		this.node = new NetNode(options);
+		this.aliases = { ...DEFAULT_SEARCH_ALIASES, ...(options.searchAliases ?? {}) };
 		this.manager = options.manager;
 		this.gateway = options.gateway;
 		this.importer = new StreamImporter(this.node, options.importer);
@@ -90,12 +106,14 @@ export class ZiNet {
 		this.node.handle("net.capabilities", () => ({
 			sources: this.localSources(),
 			players: this.manager?.getStats?.().players ?? 0,
+			search: Boolean(this.searchProvider),
 		}));
+		this.node.handle("net.search", (body, ctx) => this.onSearch(body, ctx.from), { role: "provide-search" });
 	}
 
 	// ── capabilities & routing ───────────────────────────────────────────────
 
-	private readonly capsCache = new Map<string, { at: number; sources: string[]; players: number }>();
+	private readonly capsCache = new Map<string, { at: number; sources: string[]; players: number; search?: boolean }>();
 
 	localSources(): string[] {
 		if (this.options.sources) return this.options.sources;
@@ -106,10 +124,13 @@ export class ZiNet {
 	async peerCapabilities(peerId: string, maxAgeMs = 30_000) {
 		const hit = this.capsCache.get(peerId);
 		if (hit && Date.now() - hit.at < maxAgeMs) return hit;
-		const caps = await this.node.request<{ sources: string[]; players: number }>(peerId, "net.capabilities", undefined, {
-			timeoutMs: 5000,
-		});
-		const entry = { at: Date.now(), sources: caps.sources ?? [], players: caps.players ?? 0 };
+		const caps = await this.node.request<{ sources: string[]; players: number; search?: boolean }>(
+			peerId,
+			"net.capabilities",
+			undefined,
+			{ timeoutMs: 5000 },
+		);
+		const entry = { at: Date.now(), sources: caps.sources ?? [], players: caps.players ?? 0, search: caps.search };
 		this.capsCache.set(peerId, entry);
 		return entry;
 	}
@@ -186,6 +207,173 @@ export class ZiNet {
 				super(net, player ?? null);
 			}
 		};
+	}
+
+	// ── search ───────────────────────────────────────────────────────────────
+
+	/**
+	 * Serve search results from this node's plugins to trusted peers that hold the `provide-search` role
+	 * (the default `*` role includes it). Opt-in, like `provideStreams()`.
+	 */
+	provideSearch(options: ServeSearchOptions = {}): void {
+		if (!this.manager?.search) throw new Error("provideSearch() needs a PlayerManager with search()");
+		this.searchProvider = {
+			allow: options.allow,
+			maxResults: Math.min(Math.max(Math.floor(options.maxResults ?? 25), 1), 100),
+			maxResponseBytes: Math.max(Math.floor(options.maxResponseBytes ?? 200_000), 1_000),
+		};
+	}
+
+	/**
+	 * Searches across the cluster. Tracks found by another node come back already marked with that node as owner
+	 * (`track.metadata.net.owner`), so `player.play(track)` pulls the audio from it.
+	 *
+	 * `yt:lofi`, `sc:…`, `sp:…`, `tts:…` target the node that has that plugin; anything else (a plain query or a URL)
+	 * is tried on this node first and, if nothing is found, on every node that serves search.
+	 */
+	async search(text: string, options: NetSearchOptions = {}): Promise<NetSearchResult> {
+		const raw = typeof text === "string" ? text.trim() : "";
+		if (!raw) throw new NetError("Empty search query", "BAD_REQUEST");
+		const { source, query } = parseSearchQuery(raw, this.aliases, options.source);
+		const limit = Math.min(Math.max(Math.floor(options.limit ?? 10) || 10, 1), 100);
+		const mode = options.local ?? "first";
+		const canLocal = mode !== "never" && Boolean(this.manager?.search) && (!source || this.localSources().includes(source));
+		const errors: Error[] = [];
+		const fail = () => {
+			const detail = [...new Set(errors.map((e) => e.message))].join("; ");
+			return new NetError(`No results found for: ${raw}${detail ? ` (${detail})` : ""}`, "NO_RESULTS");
+		};
+
+		const local = async (): Promise<NetSearchResult> => {
+			const r = await this.searchLocal(query, source, options.requestedBy);
+			if (!r?.tracks?.length) throw new NetError(`No results found locally for: ${query}`, "NO_RESULTS");
+			this.node.traceNote(`search "${query}": ${r.tracks.length} result(s) from local plugins`);
+			return {
+				tracks: r.tracks.slice(0, limit),
+				playlist: r.playlist ?? null,
+				query: r.query,
+				source: r.source,
+				node: this.nodeId,
+				nodes: [this.nodeId],
+			};
+		};
+		const peerIds = async () => (mode === "only" ? [] : await this.searchCandidates(source, options.peers));
+
+		if (options.merge) {
+			const ids = await peerIds();
+			const jobs = [...(canLocal ? [local()] : []), ...ids.map((id) => this.searchOn(id, raw, options))];
+			const settled = await Promise.allSettled(jobs);
+			const ok: NetSearchResult[] = [];
+			for (const r of settled) r.status === "fulfilled" ? ok.push(r.value) : errors.push(r.reason as Error);
+			if (!ok.length) throw fail();
+			const withPlaylist = ok.find((r) => r.playlist);
+			if (withPlaylist) return withPlaylist;
+			return {
+				tracks: dedupeNetTracks(ok.flatMap((r) => r.tracks)).slice(0, limit),
+				playlist: null,
+				query: ok[0].query,
+				source: ok[0].source,
+				node: ok[0].node,
+				nodes: [...new Set(ok.flatMap((r) => r.nodes))],
+			};
+		}
+
+		const tryLocal = async () => {
+			if (!canLocal) return null;
+			try {
+				return await local();
+			} catch (error) {
+				errors.push(error as Error);
+				this.node.traceNote(`search "${query}": nothing from local plugins (${(error as Error).message})`);
+				return null;
+			}
+		};
+		const tryPeers = async () => {
+			const ids = await peerIds();
+			if (!ids.length) return null;
+			const stop = new AbortController();
+			const onAbort = () => stop.abort();
+			if (options.signal?.aborted) stop.abort();
+			options.signal?.addEventListener("abort", onAbort, { once: true });
+			try {
+				return await Promise.any(ids.map((id) => this.searchOn(id, raw, { ...options, signal: stop.signal })));
+			} catch (error) {
+				errors.push(...(error instanceof AggregateError ? (error.errors as Error[]) : [error as Error]));
+				return null;
+			} finally {
+				stop.abort(); // cancel the requests that lost the race
+				options.signal?.removeEventListener("abort", onAbort);
+			}
+		};
+		for (const step of mode === "last" ? [tryPeers, tryLocal] : [tryLocal, tryPeers]) {
+			const result = await step();
+			if (result) return result;
+		}
+		throw fail();
+	}
+
+	/** Searches on one specific node (it must run `provideSearch()` and trust this node). */
+	async searchOn(peerId: string, text: string, options: NetSearchOptions = {}): Promise<NetSearchResult> {
+		const { source, query } = parseSearchQuery(String(text ?? ""), this.aliases, options.source);
+		if (!query) throw new NetError("Empty search query", "BAD_REQUEST");
+		const limit = Math.min(Math.max(Math.floor(options.limit ?? 10) || 10, 1), 100);
+		this.node.traceNote(`search "${query}" → ${peerId}${source ? ` (plugin ${source})` : ""}`, { peer: peerId });
+		const raw = await this.node.request(
+			peerId,
+			"net.search",
+			{ query, limit, plugins: source ? [source] : undefined },
+			{ timeoutMs: options.timeoutMs, signal: options.signal },
+		);
+		const result = importWireResult(raw, peerId, options.requestedBy, limit);
+		if (!result.tracks.length) throw new NetError(`No results found on ${peerId} for: ${query}`, "NO_RESULTS");
+		this.node.traceNote(`search "${query}": ${result.tracks.length} result(s) from ${peerId}`, { peer: peerId });
+		return { ...result, node: peerId, nodes: [peerId] };
+	}
+
+	private async searchCandidates(source: string | undefined, explicit?: string[]): Promise<string[]> {
+		const ids = (explicit ?? this.node.onlinePeers()).filter((id) => id !== this.nodeId && (explicit || this.node.isOnline(id)));
+		const caps = await Promise.all(
+			ids.map((id) =>
+				this.peerCapabilities(id)
+					.then((c) => ({ id, ...c }))
+					.catch(() => null),
+			),
+		);
+		return caps
+			.filter((c): c is NonNullable<typeof c> => c !== null)
+			.filter((c) => c.search !== false && (!source || c.sources.includes(source)))
+			.sort((a, b) => a.players - b.players)
+			.map((c) => c.id);
+	}
+
+	/** Runs the query on this node's plugins. With a `plugins` filter it goes straight to the shared plugin manager. */
+	private async searchLocal(query: string, source: string | undefined, requestedBy: unknown): Promise<any> {
+		const who = typeof requestedBy === "string" ? requestedBy : ((requestedBy as any)?.id ?? "net");
+		const pluginManager = source ? this.manager?.controllers?.plugin?.getSharedManager?.() : undefined;
+		if (pluginManager?.search) {
+			const result = await pluginManager.search(query, { requestedBy: String(who), plugins: [source] });
+			if (!result?.tracks?.length) throw new NetError(`No results found for: ${query}`, "NO_RESULTS");
+			return result;
+		}
+		return this.manager.search(query, requestedBy ?? "net");
+	}
+
+	private async onSearch(body: any, from: string) {
+		const provider = this.searchProvider;
+		if (!provider) throw new NetError("This node does not serve search", "NOT_PROVIDED");
+		const query = typeof body?.query === "string" ? body.query.trim() : "";
+		if (!query || query.length > MAX_QUERY_CHARS) throw new NetError("Invalid search query", "BAD_REQUEST");
+		const plugins: string[] | undefined =
+			Array.isArray(body?.plugins) ?
+				body.plugins.filter((p: unknown): p is string => typeof p === "string" && p.length > 0 && p.length <= 64).slice(0, 8)
+			:	undefined;
+		const limit = Math.min(Math.max(Math.floor(Number(body?.limit)) || 10, 1), provider.maxResults);
+		if (provider.allow && !(await provider.allow(query, from))) throw new NetError("Search refused", "FORBIDDEN");
+		const source = plugins?.length === 1 ? plugins[0] : undefined;
+		const result = await this.searchLocal(query, source, `net:${from}`);
+		const wire = toWireResult(result, limit, provider.maxResponseBytes);
+		this.node.traceNote(`search "${query}" from ${from}: answering ${wire.tracks.length} track(s)`, { peer: from });
+		return wire;
 	}
 
 	// ── owner streamInfo ─────────────────────────────────────────────────────

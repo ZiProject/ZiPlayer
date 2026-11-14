@@ -52,8 +52,10 @@ Join a voice channel and type in a text channel:
 | Command                        | What it tests                                                                                   |
 | ------------------------------ | ----------------------------------------------------------------------------------------------- |
 | `!nodes` / `!status`           | Authenticated request to every node, their plugins, who owns the voice                          |
-| `!play <query>`                | Local plugin of the bot                                                                         |
-| `!play yt:<query>`             | Audio resolved on the node with the youtube plugin and streamed to the bot (`sc:` `sp:` `tts:`) |
+| `!play <query>`                | Bot plugins first; if nothing is found (e.g. a YouTube URL) the other nodes are asked           |
+| `!play yt:<query>`             | Search and audio on the node with the youtube plugin, streamed to the bot (`sc:` `sp:` `tts:`)  |
+| `!search <query>`              | Only show the results and which node found them                                                 |
+| `!trace [on\|off\|msg\|wire\|audio]` | Print what this node sends to / receives from MQTT (or `NET_DEBUG=1` in `.env`)             |
 | `!route yt:<query> [n]`        | Router: relay a few foreign tracks, or hand the voice off when most tracks are foreign          |
 | `!handoff <node>` / `!reclaim` | Move the Discord voice session to another node and take it back                                 |
 | `!selftest [failover]`         | Automated: pairing, plugins, stream, relay, handoff, executor playback, reclaim (+ node crash)  |

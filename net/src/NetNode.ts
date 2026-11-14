@@ -11,8 +11,9 @@ import {
 	type TrustedPeer,
 } from "./crypto/identity";
 import { KIND, SecureChannel, SessionError } from "./crypto/session";
+import { hexPreview, redact, type NetDebugEvent, type NetDebugKind } from "./debug";
 import { decodePlainAudio, encodePlainAudio, sessionIdOf, topics, type AudioFrame } from "./protocol/frames";
-import type { Transport } from "./transport/Transport";
+import type { PublishOptions, Transport } from "./transport/Transport";
 
 export interface NetNodeOptions {
 	/** Unique id of this node. No `/`, `+` or `#`. */
@@ -34,6 +35,10 @@ export interface NetNodeOptions {
 	handshakeTimeoutMs?: number;
 	sessionMaxAgeMs?: number;
 	debug?: (message: string, ...args: unknown[]) => void;
+	/** Also emit `debug` events for every audio frame (very chatty). Default `false`. */
+	debugAudio?: boolean;
+	/** Hide tokens / session ids in the `body` of `debug` message events. Default `true`. */
+	debugRedact?: boolean;
 }
 
 export interface RequestContext {
@@ -66,7 +71,8 @@ const ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
  * One ZiPlayer process on the network. Owns the transport, authenticates peers with the 3-message
  * handshake, and exposes encrypted request/notify messaging plus (optionally encrypted) audio frames.
  *
- * Events: `peerOnline(id)`, `peerOffline(id)`, `sessionOpen(id)`, `sessionClose(id)`.
+ * Events: `peerOnline(id)`, `peerOffline(id)`, `sessionOpen(id)`, `sessionClose(id)`, `peerDiscovered(info)` and
+ * `debug(event: NetDebugEvent)`, which shows exactly what is published to / received from the broker (see `debug.ts`).
  */
 export class NetNode extends EventEmitter {
 	readonly nodeId: string;
@@ -77,8 +83,12 @@ export class NetNode extends EventEmitter {
 	readonly fingerprint: string;
 	private readonly discovered = new Map<string, { nodeId: string; publicKey: string; fingerprint: string }>();
 	private readonly identity: NodeIdentity;
+	/** The transport as given (kept untouched: tests and tooling reach into it, e.g. `MemoryTransport.kill()`). */
 	private readonly transport: Transport;
-	private readonly options: NetNodeOptions;
+	/** What this node really talks through: the same transport, observed for `debug` events. */
+	private readonly wire: Transport;
+	/** @internal */
+	readonly options: NetNodeOptions;
 	private readonly bySid = new Map<string, SecureChannel>();
 	private readonly byPeer = new Map<string, SecureChannel>();
 	private readonly initiating = new Map<string, Promise<SecureChannel>>();
@@ -110,6 +120,65 @@ export class NetNode extends EventEmitter {
 		this.fingerprint = fingerprint(this.identity.publicKey);
 		this.trust = options.trust instanceof TrustStore ? options.trust : new TrustStore(options.trust ?? []);
 		this.transport = options.transport;
+		this.wire = new TracedTransport(options.transport, this);
+	}
+
+	/** True while somebody listens to `debug`: tracing costs nothing otherwise. */
+	get tracing(): boolean {
+		return this.listenerCount("debug") > 0;
+	}
+
+	/** Emits a `debug` event. Cheap no-op without listeners. */
+	trace(event: Omit<NetDebugEvent, "at" | "node">): void {
+		if (!this.tracing) return;
+		try {
+			this.emit("debug", { at: Date.now(), node: this.nodeId, ...event } satisfies NetDebugEvent);
+		} catch {}
+	}
+
+	/** Free-form `info` debug note (used by routing code such as `ZiNet.search`). */
+	traceNote(note: string, extra: Partial<NetDebugEvent> = {}): void {
+		this.trace({ layer: "info", dir: "info", note, ...extra });
+	}
+
+	private traceMessage(
+		dir: "out" | "in",
+		peer: string | undefined,
+		kind: NetDebugKind,
+		message: Record<string, any>,
+		bytes: number,
+		sessionId?: string,
+	) {
+		if (!this.tracing) return;
+		const type = typeof message.type === "string" ? message.type : message.re !== undefined ? (message.err ? "reply:error" : "reply") : undefined;
+		const raw = message.body !== undefined ? message.body : message.err;
+		this.trace({
+			layer: "message",
+			dir,
+			kind,
+			peer,
+			type,
+			id: message.id,
+			re: message.re,
+			bytes,
+			sessionId,
+			body: raw === undefined ? undefined : this.options.debugRedact === false ? raw : redact(raw),
+		});
+	}
+
+	private traceAudio(dir: "out" | "in", peer: string, frame: AudioFrame, encrypted: boolean) {
+		if (!this.tracing || !this.options.debugAudio) return;
+		this.trace({
+			layer: "message",
+			dir,
+			kind: encrypted ? "audio-encrypted" : "audio",
+			peer,
+			encrypted,
+			streamId: frame.streamId,
+			seq: frame.seq,
+			flags: frame.flags,
+			bytes: frame.payload.length,
+		});
 	}
 
 	private debug(message: string, ...args: unknown[]) {
@@ -122,15 +191,15 @@ export class NetNode extends EventEmitter {
 		if (this.started) return;
 		const enc = (v: unknown) => Buffer.from(JSON.stringify(v));
 		const presenceTopic = topics.presence(this.networkId, this.nodeId);
-		this.transport.setLastWill?.(presenceTopic, enc({ online: false, nodeId: this.nodeId }), { qos: 1, retain: true });
-		await this.transport.connect();
+		this.wire.setLastWill?.(presenceTopic, enc({ online: false, nodeId: this.nodeId }), { qos: 1, retain: true });
+		await this.wire.connect();
 		this.started = true;
 		this.unsubs.push(
-			await this.transport.subscribe(topics.inbox(this.networkId, this.nodeId), (_t, p) => this.onInbox(Buffer.from(p))),
-			await this.transport.subscribe(topics.audio(this.networkId, this.nodeId), (_t, p) => this.onAudioFrame(Buffer.from(p))),
-			await this.transport.subscribe(topics.presenceAll(this.networkId), (t, p) => this.onPresence(t, Buffer.from(p))),
+			await this.wire.subscribe(topics.inbox(this.networkId, this.nodeId), (_t, p) => this.onInbox(Buffer.from(p))),
+			await this.wire.subscribe(topics.audio(this.networkId, this.nodeId), (_t, p) => this.onAudioFrame(Buffer.from(p))),
+			await this.wire.subscribe(topics.presenceAll(this.networkId), (t, p) => this.onPresence(t, Buffer.from(p))),
 		);
-		await this.transport.publish(
+		await this.wire.publish(
 			presenceTopic,
 			enc({ online: true, nodeId: this.nodeId, ts: Date.now(), pub: this.publicKeyPem }),
 			{ qos: 1, retain: true },
@@ -141,7 +210,7 @@ export class NetNode extends EventEmitter {
 		if (!this.started) return;
 		this.started = false;
 		try {
-			await this.transport.publish(
+			await this.wire.publish(
 				topics.presence(this.networkId, this.nodeId),
 				Buffer.from(JSON.stringify({ online: false, nodeId: this.nodeId })),
 				{ qos: 1, retain: true },
@@ -157,7 +226,7 @@ export class NetNode extends EventEmitter {
 		this.initiating.clear();
 		for (const r of this.responders.values()) clearTimeout(r.timer);
 		this.responders.clear();
-		await this.transport.close();
+		await this.wire.close();
 	}
 
 	/** Nodes seen on the network that are not trusted yet. Compare `fingerprint` out-of-band before accepting. */
@@ -244,7 +313,8 @@ export class NetNode extends EventEmitter {
 			this.options.encryptAudio ?
 				session.sealAudio(frame.streamId, frame.seq, frame.flags, frame.payload)
 			:	encodePlainAudio(session.sessionId, frame);
-		await this.transport.publish(topics.audio(this.networkId, peerId), data, { qos: this.options.audioQos ?? 1 });
+		this.traceAudio("out", peerId, frame, Boolean(this.options.encryptAudio));
+		await this.wire.publish(topics.audio(this.networkId, peerId), data, { qos: this.options.audioQos ?? 1 });
 	}
 
 	// ── sessions ─────────────────────────────────────────────────────────────
@@ -293,7 +363,8 @@ export class NetNode extends EventEmitter {
 
 	private publishHandshake(peerId: string, message: Hs1 | Hs2 | Hs3) {
 		const data = Buffer.concat([Buffer.from([KIND.HANDSHAKE]), Buffer.from(JSON.stringify(message))]);
-		return this.transport.publish(topics.inbox(this.networkId, peerId), data, { qos: 1 });
+		this.trace({ layer: "message", dir: "out", kind: "handshake", peer: peerId, type: message.t, sessionId: message.sid, bytes: data.length });
+		return this.wire.publish(topics.inbox(this.networkId, peerId), data, { qos: 1 });
 	}
 
 	private install(channel: SecureChannel) {
@@ -374,6 +445,7 @@ export class NetNode extends EventEmitter {
 
 	private onHandshake(message: Hs1 | Hs2 | Hs3) {
 		if (!message || typeof message !== "object") return;
+		this.trace({ layer: "message", dir: "in", kind: "handshake", type: message.t, sessionId: message.sid });
 		if (message.t === "hs1") {
 			if (this.responders.size >= 64) return;
 			let responder: HandshakeResponder;
@@ -427,7 +499,8 @@ export class NetNode extends EventEmitter {
 
 	private async sendControl(session: SecureChannel, message: Record<string, unknown>) {
 		const frame = session.seal(Buffer.from(JSON.stringify(message)));
-		await this.transport.publish(topics.inbox(this.networkId, session.peerId), frame, { qos: 1 });
+		this.traceMessage("out", session.peerId, "control", message, frame.length, session.sessionId);
+		await this.wire.publish(topics.inbox(this.networkId, session.peerId), frame, { qos: 1 });
 	}
 
 	private async onControl(buf: Buffer) {
@@ -441,6 +514,7 @@ export class NetNode extends EventEmitter {
 			if (error instanceof SessionError) this.debug(`dropped control frame: ${error.message}`);
 			return;
 		}
+		this.traceMessage("in", session.peerId, "control", message, buf.length, session.sessionId);
 		if (message.re !== undefined) {
 			const p = this.pending.get(message.re);
 			if (!p || p.peerId !== session.peerId) return;
@@ -473,13 +547,105 @@ export class NetNode extends EventEmitter {
 			const session = sid ? this.bySid.get(sid) : undefined;
 			if (!session || !this.audioHandler) return;
 			if (buf[0] === KIND.AUDIO_ENCRYPTED) {
-				this.audioHandler(session.peerId, session.openAudio(buf));
+				const frame = session.openAudio(buf);
+				this.traceAudio("in", session.peerId, frame, true);
+				this.audioHandler(session.peerId, frame);
 			} else if (buf[0] === KIND.AUDIO) {
 				if (this.options.encryptAudio) return; // refuse downgrade
-				this.audioHandler(session.peerId, decodePlainAudio(buf).frame);
+				const frame = decodePlainAudio(buf).frame;
+				this.traceAudio("in", session.peerId, frame, false);
+				this.audioHandler(session.peerId, frame);
 			}
 		} catch (error) {
 			this.debug(`dropped audio frame: ${(error as Error).message}`);
 		}
+	}
+}
+
+/**
+ * Wraps the real transport and reports every publish / delivery as a `wire` debug event: this is the exact
+ * MQTT traffic (topic, qos, size, first bytes). Audio frames are only reported with `debugAudio`.
+ */
+class TracedTransport implements Transport {
+	constructor(
+		private readonly inner: Transport,
+		private readonly node: NetNode,
+	) {}
+
+	setLastWill(topic: string, payload: Uint8Array, options?: PublishOptions): void {
+		this.inner.setLastWill?.(topic, payload, options);
+		this.report("out", topic, payload, options, "last-will registered (the broker publishes it if this node disappears)");
+	}
+
+	connect(): Promise<void> {
+		return this.inner.connect();
+	}
+
+	close(): Promise<void> {
+		return this.inner.close();
+	}
+
+	async publish(topic: string, payload: Uint8Array, options?: PublishOptions): Promise<void> {
+		this.report("out", topic, payload, options);
+		try {
+			await this.inner.publish(topic, payload, options);
+		} catch (error) {
+			this.report("out", topic, payload, options, undefined, (error as Error)?.message ?? String(error));
+			throw error;
+		}
+	}
+
+	subscribe(filter: string, handler: (topic: string, payload: Uint8Array) => void): Promise<() => void> {
+		return this.inner.subscribe(filter, (topic, payload) => {
+			this.report("in", topic, payload);
+			handler(topic, payload);
+		});
+	}
+
+	private report(dir: "out" | "in", topic: string, payload: Uint8Array, options?: PublishOptions, note?: string, error?: string) {
+		if (!this.node.tracing) return;
+		const buf = Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+		const presence = topic.includes("/presence/");
+		let kind: NetDebugKind = "unknown";
+		let encrypted = false;
+		let type: string | undefined = note;
+		let body: unknown;
+		if (presence) {
+			kind = "presence";
+			try {
+				const { pub, ...rest } = JSON.parse(buf.toString("utf8"));
+				body = pub ? { ...rest, pub: "<public key>" } : rest;
+			} catch {}
+		} else if (buf[0] === KIND.HANDSHAKE) {
+			kind = "handshake";
+			try {
+				type = JSON.parse(buf.subarray(1).toString("utf8")).t;
+			} catch {}
+		} else if (buf[0] === KIND.CONTROL) {
+			kind = "control";
+			encrypted = true;
+		} else if (buf[0] === KIND.AUDIO) kind = "audio";
+		else if (buf[0] === KIND.AUDIO_ENCRYPTED) {
+			kind = "audio-encrypted";
+			encrypted = true;
+		}
+		if ((kind === "audio" || kind === "audio-encrypted") && !this.node.options.debugAudio) return;
+		const parts = topic.split("/");
+		const peer = presence ? parts[parts.length - 1] : dir === "out" && parts[parts.length - 3] === "node" ? parts[parts.length - 2] : undefined;
+		this.node.trace({
+			layer: "wire",
+			dir,
+			kind,
+			topic,
+			peer,
+			qos: options?.qos,
+			retain: options?.retain,
+			bytes: buf.length,
+			hex: hexPreview(buf),
+			encrypted,
+			type,
+			body,
+			error,
+		});
 	}
 }

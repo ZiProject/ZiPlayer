@@ -36,7 +36,7 @@ node.on("peerDiscovered", ({ nodeId, fingerprint }) => console.log(nodeId, finge
 node.acceptPeer("eu-2", fingerprintYouVerified, ["provide-stream"]); // both sides must accept each other
 ```
 
-Or pin keys up front: `trust: [{ nodeId, publicKey: pem, roles: ["provide-stream", "accept-voice", "delegate-voice"] }]`. Roles
+Or pin keys up front: `trust: [{ nodeId, publicKey: pem, roles: ["provide-stream", "provide-search", "accept-voice", "delegate-voice"] }]`. Roles
 default to `*`; narrow them for least privilege.
 
 ## Usage
@@ -58,6 +58,9 @@ await net.start();
 // Node that can resolve YouTube: serve streams
 net.provideStreams({ allow: (track) => track.source === "youtube" });
 
+// ...and serve search results too (opt-in, role "provide-search")
+net.provideSearch({ allow: (query, peerId) => true, maxResults: 25 });
+
 // Node that plays on behalf of others
 net.acceptVoice();
 
@@ -77,6 +80,47 @@ await net.reclaimVoice(player);
 ```
 
 If an executor disappears (MQTT last-will), the owner reconnects the voice locally.
+
+## Search across nodes
+
+`manager.search()` only knows this node's plugins, so a bot without the YouTube plugin finds nothing for a YouTube URL.
+`net.search()` fixes that: the query is tried on the local plugins first and then on every trusted node that runs `provideSearch()`.
+Tracks that another node found come back already marked with that node as owner, so `player.play(track)` pulls the audio from it.
+
+```js
+const { tracks, node } = await net.search("https://www.youtube.com/watch?v=PqpCRSOUuIE", { requestedBy: userId });
+await player.play(tracks[0]); // audio is streamed from `node` when it is not this node
+
+await net.search("yt:lofi hip hop"); // prefix = go straight to the node with that plugin (yt, sc, sp, tts; extend with searchAliases)
+await net.search("lofi", { merge: true, limit: 20 }); // ask every node and merge instead of "first answer wins"
+await net.searchOn("yt-1", "lofi"); // one specific node
+```
+
+Options: `source`, `peers`, `local` (`"first"` default, `"last"`, `"only"`, `"never"`), `merge`, `limit`, `timeoutMs`, `signal`.
+Results are validated on arrival: a peer cannot choose the `owner` of its tracks, and answers are capped (`maxResults`,
+`maxResponseBytes`) to fit one control frame. When nothing is found the error is `NetError` with code `NO_RESULTS` and the
+same `No results found for: …` message as the core.
+
+## Debugging what goes over MQTT
+
+Every `NetNode` (also `net.node`) emits a `debug` event. Without listeners it costs nothing.
+
+```js
+const { formatNetDebug } = require("@ziplayer/net");
+net.node.on("debug", (e) => console.log(formatNetDebug(e)));
+```
+
+```
+[net:bot-1] → MQTT PUBLISH zi/v1/ziplayer-test/node/yt-1/in qos1 188B control(encrypted) [02a1b2c3…]
+[net:bot-1] → control to yt-1 net.search #3 188B {"query":"https://www.youtube.com/watch?v=PqpCRSOUuIE","limit":1}
+[net:bot-1] ← control from yt-1 reply re#3 3120B {"tracks":[{"id":"PqpCRSOUuIE","title":"…"}],…}
+```
+
+- `layer: "wire"`: the exact MQTT message the broker sees (topic, qos, retain, size, first bytes). Control frames are ciphertext.
+- `layer: "message"`: the same traffic decoded: `type`, request `id` / `re`, `body`, `peer`. Handshakes, requests, notifications and replies.
+- `layer: "info"`: routing notes such as `search "lofi" → yt-1`.
+- Audio frames are only reported with `debugAudio: true` (very chatty). Bodies are redacted (`token`, `session_id`, `password`, …)
+  unless `debugRedact: false`; treat logs with raw bodies as secrets because voice tokens pass through here.
 
 ## Try it for real
 

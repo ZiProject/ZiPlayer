@@ -67,7 +67,7 @@ export function fingerprint(key: KeyObject): string {
 		.digest("hex");
 }
 
-export type NetRole = "provide-stream" | "accept-voice" | "delegate-voice" | "*";
+export type NetRole = "provide-stream" | "provide-search" | "accept-voice" | "delegate-voice" | "*";
 
 export interface TrustedPeer {
 	nodeId: string;

@@ -10,8 +10,10 @@
  *
  * In Discord (prefix from COMMAND_PREFIX), from inside a voice channel:
  *   !help | !nodes | !status
- *   !play <query>            local plugin of the bot
- *   !play yt:<query>         audio resolved on the node that has the youtube plugin and streamed to the bot (also sc: sp: tts:)
+ *   !play <query>            search on the bot's own plugins; if nothing is found, ask the other nodes (e.g. a YouTube URL)
+ *   !play yt:<query>         search AND audio on the node that has the youtube plugin, streamed to the bot (also sc: sp: tts:)
+ *   !search <query>          only show the search results (and which node found them); nothing is played
+ *   !trace [on|off|msg|wire|audio]   print what this node sends to / receives from MQTT (also: NET_DEBUG=1 in .env)
  *   !route yt:<query> [n]    plan relay/handoff for n tracks (default 20), apply it and start playing
  *   !handoff <node> | !reclaim | !stop | !skip | !leave
  *   !selftest [failover]     automated checks of pairing, stream transfer, relay, handoff, reclaim (and failover)
@@ -105,6 +107,9 @@ function loadConfig(argv = process.argv.slice(2), env = process.env) {
 		handoffThreshold: Number(get("HANDOFF_THRESHOLD", "0.5")),
 		allowRemoteKill: flag("ALLOW_REMOTE_KILL"),
 		debug: flag("DEBUG"),
+		// what the net layer prints: 0 | msg | wire | 1/all   (+ NET_DEBUG_AUDIO=1 for every audio frame)
+		netDebug: ["1", "true", "yes", "on"].includes(get("NET_DEBUG", "0").toLowerCase()) ? "all" : get("NET_DEBUG", "0").toLowerCase(),
+		netDebugAudio: flag("NET_DEBUG_AUDIO"),
 	};
 }
 
@@ -137,17 +142,26 @@ function trustFor(cfg, id) {
 
 /* ───────────────────────────── a node ───────────────────────────── */
 
-const SOURCE_ALIASES = {
-	yt: "youtube",
-	youtube: "youtube",
-	sc: "soundcloud",
-	soundcloud: "soundcloud",
-	sp: "spotify",
-	spotify: "spotify",
-	tts: "tts",
-};
 const SEARCHABLE = ["youtube", "soundcloud", "spotify", "tts"];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Prints the net layer's `debug` events. `mode`: "all" (wire + message + info), "msg" (decoded messages + info),
+ * "wire" (raw MQTT only), anything else = off. Returns a function to change the mode at runtime.
+ */
+function makeTracer(node, formatNetDebug, initial, out = console.log) {
+	let mode = initial;
+	const layers = () => (mode === "all" ? ["wire", "message", "info"] : mode === "msg" ? ["message", "info"] : mode === "wire" ? ["wire"] : []);
+	const listener = (e) => layers().includes(e.layer) && out(formatNetDebug(e));
+	const apply = (next) => {
+		mode = next;
+		node.off("debug", listener);
+		if (layers().length) node.on("debug", listener);
+		return mode;
+	};
+	apply(initial);
+	return apply;
+}
 
 /**
  * Starts one node. `hooks` exists for automated tests of this file (inject discord.js, plugins, simulated voice); normal runs
@@ -237,6 +251,7 @@ async function startNode(id, cfg, hooks = {}) {
 		manager,
 		gateway: client ? net.discordJsGateway(client) : undefined,
 		encryptAudio: cfg.encryptAudio,
+		debugAudio: cfg.netDebugAudio,
 		requestTimeoutMs: 30_000,
 		debug: cfg.debug ? (m, ...a) => console.log(m, ...a) : undefined,
 	});
@@ -254,10 +269,7 @@ async function startNode(id, cfg, hooks = {}) {
 		events: events.slice(-20),
 	});
 	zi.node.handle("test.status", status);
-	zi.node.handle("test.search", async (body) => {
-		const r = await manager.search(String(body?.query ?? ""), "net-test");
-		return r.tracks.slice(0, Math.min(Number(body?.limit) || 5, 25)).map(net.serializeTrack);
-	});
+	const setTrace = makeTracer(zi.node, net.formatNetDebug, cfg.netDebug, (line) => log(line));
 	if (cfg.allowRemoteKill) {
 		zi.node.handle("test.kill", () => {
 			log("test.kill received: crashing on purpose");
@@ -268,12 +280,15 @@ async function startNode(id, cfg, hooks = {}) {
 
 	await zi.start();
 	zi.acceptVoice();
-	if (!isBot || cfg.botServes) zi.provideStreams({ allow: (track) => spec.sources.includes(track.source) });
+	if (!isBot || cfg.botServes) {
+		zi.provideStreams({ allow: (track) => spec.sources.includes(track.source) });
+		zi.provideSearch();
+	}
 	log(
 		`ready · plugins: ${spec.sources.join(", ") || "-"} · mqtt ${cfg.mqttUrl} · net ${cfg.netId}${isBot ? " · discord bot" : ""}`,
 	);
 
-	if (isBot) attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, log, hooks });
+	if (isBot) attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, log, hooks, setTrace });
 	if (isBot && !hooks.noLogin) {
 		if (!cfg.discordToken) throw new Error("DISCORD_TOKEN is empty (set it in .env)");
 		await client.login(cfg.discordToken);
@@ -284,35 +299,18 @@ async function startNode(id, cfg, hooks = {}) {
 
 /* ───────────────────────── Discord command handling ───────────────────────── */
 
-function attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, log }) {
+function attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, log, setTrace = () => "off" }) {
 	const peers = cfg.nodes.filter((n) => n.id !== id);
 	const ask = (peer, type, body, timeoutMs = 30_000) => zi.node.request(peer, type, body, { timeoutMs });
-	const ownerOf = (source) => cfg.nodes.find((n) => n.sources.includes(source))?.id;
 	const specFor = (source) => (source === "tts" ? "tts:Hello from the ZiPlayer net test" : cfg.query);
 
-	/** "yt:lofi" → { source: "youtube", query: "lofi" }; "tts:hello" keeps the prefix for the TTS plugin. */
-	function parseSpec(text) {
-		const m = text.match(/^(\w+):(.*)$/s);
-		const source = m && SOURCE_ALIASES[m[1].toLowerCase()];
-		if (!source) return { source: null, query: text };
-		return { source, query: source === "tts" ? text : m[2].trim() };
-	}
-
-	async function searchOn(node, query, limit = 5) {
-		if (node === id) return (await manager.search(query, "net-test")).tracks.slice(0, limit).map(net.serializeTrack);
-		return ask(node, "test.search", { query, limit });
-	}
-
+	/**
+	 * Cluster-wide search. `yt:lofi` goes to the node that has the youtube plugin; a plain query or a URL is tried on this
+	 * bot's plugins first and then on every node that serves search. Tracks come back marked with the node that found them.
+	 */
 	async function findTracks(text, limit = 5) {
-		const { source, query } = parseSpec(text);
-		const node = source ? ownerOf(source) : id;
-		if (!node)
-			throw new Error(
-				`no node has the "${source}" plugin (NODES=${cfg.nodes.map((n) => `${n.id}:${n.sources.join("+")}`).join(",")})`,
-			);
-		const tracks = await searchOn(node, query, limit);
-		if (!tracks.length) throw new Error(`no results on ${node} for "${query}"`);
-		return { tracks, node };
+		const result = await zi.search(text, { limit, requestedBy: "net-test" });
+		return { tracks: result.tracks, node: result.node, result };
 	}
 
 	async function getPlayer(message, { connect = true } = {}) {
@@ -349,7 +347,8 @@ function attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, 
 			await m.reply(
 				[
 					"**ZiPlayer net test**",
-					"`play <q>` local · `play yt:<q>` / `sc:` / `sp:` / `tts:` remote (audio streamed from the node with that plugin)",
+					"`play <q>` bot plugins first, then the other nodes · `play yt:<q>` / `sc:` / `sp:` / `tts:` search + audio on the node with that plugin",
+					"`search <q>` show results and which node found them · `trace [on|off|msg|wire|audio]` print MQTT traffic of this node",
 					"`route yt:<q> [n]` plan relay/handoff for n tracks and play · `handoff <node>` · `reclaim` · `stop` · `skip` · `leave`",
 					"`nodes` · `status` · `selftest [failover]` · `kill <node>` (ALLOW_REMOTE_KILL=1)",
 				].join("\n"),
@@ -387,6 +386,25 @@ function attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, 
 			);
 		},
 
+		async search(m, arg) {
+			if (!arg) return void (await m.reply("Usage: `search <query>` or `search yt:<query>`"));
+			const { tracks, node, result } = await findTracks(arg, 5);
+			const lines = tracks.map(
+				(t, i) => `${i + 1}. **${t.title}** (${t.source}) · found on **${t.metadata?.net?.owner ?? id}**${t.duration ? ` · ${t.duration}s` : ""}`,
+			);
+			await m.reply(`${result.playlist ? `📃 playlist **${result.playlist.name}**\n` : ""}${lines.join("\n")}\n_(answered by ${node === id ? "this bot" : node})_`.slice(0, 1990));
+		},
+
+		async trace(m, arg) {
+			const a = (arg || "").trim().toLowerCase();
+			if (a === "audio") {
+				zi.node.options.debugAudio = !zi.node.options.debugAudio;
+				return void (await m.reply(`audio frames in trace: ${zi.node.options.debugAudio ? "on" : "off"}`));
+			}
+			const mode = a === "off" || a === "0" ? "off" : a === "msg" || a === "wire" ? a : "all";
+			await m.reply(`net trace: **${setTrace(mode)}** (printed in the console of ${id})`);
+		},
+
 		async play(m, arg) {
 			if (!arg) return void (await m.reply("Usage: `play <query>` or `play yt:<query>`"));
 			const player = await getPlayer(m);
@@ -400,7 +418,7 @@ function attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, 
 			const started = await waitStart(m.guildId, since).catch((e) => e.message);
 			const where = d ? `played by **${d.executor}**` : "played here";
 			const from =
-				node === id ? "resolved locally" : (
+				node === id ? "found and resolved locally" : (
 					`audio streamed from **${node}**${st.bytesIn > bytes0 ? ` (${st.bytesIn - bytes0} bytes)` : ""}`
 				);
 			await m.reply(
