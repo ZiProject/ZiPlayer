@@ -1,0 +1,54 @@
+{
+	"name": "@ziplayer/net",
+	"version": "0.1.0-dev.1",
+	"description": "Connect multiple ZiPlayer nodes over MQTT: stream resources and hand off voice connections",
+	"keywords": [
+		"ZiPlayer",
+		"@ziplayer/net",
+		"mqtt",
+		"discord",
+		"voice",
+		"cluster"
+	],
+	"homepage": "https://player.ziji.best",
+	"bugs": {
+		"url": "https://github.com/ZiProject/ZiPlayer/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ZiProject/ZiPlayer.git"
+	},
+	"license": "MIT",
+	"engines": {
+		"node": ">=20.3.0"
+	},
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"files": [
+		"dist",
+		"README.md"
+	],
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"prepare": "npm run build"
+	},
+	"peerDependencies": {
+		"@discordjs/voice": "^0.19.2",
+		"mqtt": "^5.0.0",
+		"ziplayer": "^1.0.5-dev.4"
+	},
+	"peerDependenciesMeta": {
+		"mqtt": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@discordjs/voice": "^0.19.2",
+		"@types/node": "^20.0.0",
+		"aedes": "^0.51.3",
+		"mqtt": "^5.16.1",
+		"typescript": "^5.0.0",
+		"ziplayer": "file:../core"
+	}
+}

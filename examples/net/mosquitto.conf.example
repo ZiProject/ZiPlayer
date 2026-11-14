@@ -1,0 +1,10 @@
+# Minimal Mosquitto 2.x config for the cluster test.
+#   mosquitto_passwd -c ./passwd bot-1      # then: mosquitto_passwd ./passwd yt-1 ; mosquitto_passwd ./passwd tts-1
+#   mosquitto -c ./mosquitto.conf.example
+listener 1883
+allow_anonymous false
+password_file ./passwd
+acl_file ./mosquitto.acl.example
+# Mosquitto 2.x wants these files to be owned by the mosquitto user and not world-readable:
+#   chown mosquitto passwd mosquitto.acl.example && chmod 600 passwd mosquitto.acl.example
+# For TLS, add: cafile / certfile / keyfile and use mqtts://host:8883 in MQTT_URL.

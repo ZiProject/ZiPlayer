@@ -21,8 +21,8 @@ backwards-compatible `Player` facade.
 
 - 🚌 **Bus & Controller Architecture** — Fully decoupled internal design with synchronized state queries, ordered actions, and
   granular RPC handlers.
-- 🔌 **Extensible Plugin Ecosystem** — First-class support for YouTube, SoundCloud, Spotify, TTS, Apple Music, and custom
-  extractors.
+- 🔌 **Extensible Plugin Ecosystem** — Official plugins for YouTube, SoundCloud, Spotify, TTS and file attachments, plus a simple
+  interface for custom extractors.
 - 🎛️ **Real-Time FFmpeg Audio Filters** — Live filter switching with zero playback interruption (`bassboost`, `nightcore`, `8D`,
   `vaporwave`, `equalizer`, custom chains).
 - 🔁 **Smart Autoplay & Queue Management** — Automatic related-track generation based on history, customizable loop modes (`off`,
@@ -39,7 +39,10 @@ backwards-compatible `Player` facade.
   volume, active filters, loop mode).
 - ⚡ **High Performance & Auto-Scaling** — Low-performance mode automatically disables memory-heavy features (preload, crossfade)
   on constrained host environments.
-- 🎛️ Shared Discord and browser playback through the `AudioPlayer` Opus subscriber path
+- 🌐 **Web / Browser Playback** — Stream the same Opus packets that go to Discord Voice to web listeners with `WebAudioConnection`
+  and the `@ziplayer/client` AudioWorklet receiver (shared server-side volume, no second encode).
+- 🕸️ **Multi-Node Clustering with `@ziplayer/net`** — Link several ZiPlayer processes over MQTT: pull audio resolved on another
+  server, or hand a Discord voice session to another node. Authenticated, pinned-key, end-to-end encrypted control channel.
 
 ---
 
@@ -319,11 +322,11 @@ disconnectButton.addEventListener("click", async () => {
 ```
 
 Run the gateway separately and make sure its publisher uses the same player ID. To try the included local gateway and publisher,
-follow the [Web Audio quick start](../examples/backend/README.md), start playback there, and then open the Vite URL and click
-**Listen**. The gateway URL is the WebSocket origin (for example `ws://127.0.0.1:8080`); the client appends `/listen`. To listen
-before a new publisher starts, use `nextPublisher: true` instead of `sessionId`, then start playback through your application API
-after the WebSocket connects. Supply a short-lived token only if the gateway requires one. Serve the page over HTTPS when
-connecting to a non-local `wss://` gateway.
+follow the [Web Audio quick start](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend), start playback there, and
+then open the Vite URL and click **Listen**. The gateway URL is the WebSocket origin (for example `ws://127.0.0.1:8080`); the
+client appends `/listen`. To listen before a new publisher starts, use `nextPublisher: true` instead of `sessionId`, then start
+playback through your application API after the WebSocket connects. Supply a short-lived token only if the gateway requires one.
+Serve the page over HTTPS when connecting to a non-local `wss://` gateway.
 
 ### Shared Discord and browser playback with server-side volume
 
@@ -518,9 +521,10 @@ const player = await manager.create(guildId, {
 Broadcast one stream across multiple guilds simultaneously with **zero duplicate bandwidth or decoding overhead**:
 
 ```typescript
-// Guild A is playing music
+// Guild A is playing music; guild B has its own player
 const leader = manager.get("guild-A");
 const follower = manager.get("guild-B");
+if (!leader || !follower) throw new Error("Create both players first with manager.create(guildId)");
 
 // Follower subscribes directly to leader's AudioPlayer
 follower.subscribeTo(leader);
@@ -630,22 +634,147 @@ interface PlayerOptions {
 
 ---
 
-## 📚 Advanced Developer Guide
+## 🧩 Advanced: Web Playback & Multi-Node (`@ziplayer/net`)
 
-For contributors, custom controller authors, and AI agent instructions detailing internal Bus protocols, controller state
-ownership, and teardown lifecycle, see [**AGENTS.md**](./AGENTS.md).
+### Web playback (browser listeners)
+
+A regular player can feed browsers and Discord at the same time: `WebAudioConnection` subscribes to the shared `AudioPlayer`,
+publishes Opus packets (Wire Format v1) to **your** WebSocket gateway, and `@ziplayer/client` decodes and plays them in the
+browser. ZiPlayer does not host the gateway.
+
+- Complete publisher + browser code: [Browser Playback with `@ziplayer/client`](#-browser-playback-with-ziplayerclient)
+- Runnable local gateway and demo page: [`examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend)
+- Discord and browser at once, with shared server-side volume: see _Shared Discord and browser playback_ above.
+
+### Multi-node clustering with `@ziplayer/net`
+
+Run several ZiPlayer processes ("nodes") and let them cooperate over **MQTT**. This helps when one server can resolve YouTube but
+the bot's gateway lives on another, when you want to spread voice load across machines, or when a source is blocked on one host.
+
+- **Stream transfer** — the node whose plugins resolve a track sends the compressed audio (Opus, or the `arbitrary` containers the
+  official plugins return) to the node that plays it. Raw PCM and peer-supplied URLs are never accepted.
+- **Voice hand-off** — the node that called `player.connect()` keeps the Discord gateway and queue, and hands the voice session to
+  another node (`delegateVoice` / `reclaimVoice`). If that node goes offline the owner takes the voice back.
+- **Automatic routing** — `routeTracks()` keeps the voice and pulls a few foreign tracks (_relay_), or moves the voice to the node
+  that can play most of them (_handoff_).
+- **Security** — Ed25519 node identities pinned per node, a 3-message authenticated key exchange, ChaCha20-Poly1305 for all
+  control data and voice credentials, replay protection. The MQTT broker is untrusted. Audio is sent in clear unless
+  `encryptAudio: true`.
+
+`@ziplayer/net` is a pre-release package that lives in this repository under
+[`net/`](https://github.com/ZiProject/ZiPlayer/tree/main/net). Until it is published, build and install it from a clone:
+
+```bash
+npm install --prefix net && npm run build --prefix net
+npm install ./net mqtt        # run inside your bot project
+```
+
+**1. Create a key for every node** and copy each `<name>.key.pub` file to the other machine (never copy the `.key` file):
+
+```bash
+node -e "require('@ziplayer/net').loadOrCreateIdentity('./yt-1.key')"
+node -e "require('@ziplayer/net').loadOrCreateIdentity('./bot-1.key')"
+```
+
+**2. The node that can resolve YouTube** (`provider.ts`) serves streams:
+
+```ts
+import fs from "node:fs";
+import { PlayerManager } from "ziplayer";
+import { YouTubePlugin } from "@ziplayer/plugin";
+import { ZiNet, MqttTransport } from "@ziplayer/net";
+
+const manager = new PlayerManager({ plugins: [new YouTubePlugin()] });
+
+const net = new ZiNet({
+	nodeId: "yt-1",
+	networkId: "prod",
+	keyFile: "./yt-1.key",
+	// Only bot-1 may ask this node for streams
+	trust: [{ nodeId: "bot-1", publicKey: fs.readFileSync("./bot-1.key.pub", "utf8"), roles: ["provide-stream"] }],
+	transport: new MqttTransport({ url: process.env.MQTT_URL!, username: process.env.MQTT_USER, password: process.env.MQTT_PASS }),
+	manager,
+});
+
+await net.start();
+net.provideStreams(); // optional: { allow: (track) => track.source === "youtube" }
+console.log("yt-1 ready");
+```
+
+**3. The bot node** (`bot.ts`) owns the Discord gateway and plays audio pulled from `yt-1`:
+
+```ts
+import fs from "node:fs";
+import { Client, GatewayIntentBits } from "discord.js";
+import { PlayerManager } from "ziplayer";
+import { YouTubePlugin } from "@ziplayer/plugin";
+import { ZiNet, MqttTransport, discordJsGateway, markTrack } from "@ziplayer/net";
+
+const client = new Client({
+	intents: [
+		GatewayIntentBits.Guilds,
+		GatewayIntentBits.GuildVoiceStates,
+		GatewayIntentBits.GuildMessages,
+		GatewayIntentBits.MessageContent,
+	],
+});
+// YouTube plugin is still needed here for search/metadata; the audio itself comes from yt-1
+const manager = new PlayerManager({ plugins: [new YouTubePlugin()] });
+
+const net = new ZiNet({
+	nodeId: "bot-1",
+	networkId: "prod",
+	keyFile: "./bot-1.key",
+	trust: [{ nodeId: "yt-1", publicKey: fs.readFileSync("./yt-1.key.pub", "utf8") }],
+	transport: new MqttTransport({ url: process.env.MQTT_URL!, username: process.env.MQTT_USER, password: process.env.MQTT_PASS }),
+	manager,
+	gateway: discordJsGateway(client), // lets this node hand voice off later
+});
+
+client.on("messageCreate", async (message) => {
+	if (message.author.bot || !message.guildId || !message.content.startsWith("!play ")) return;
+	const voiceChannel = message.member?.voice?.channel;
+	if (!voiceChannel) return void message.reply("Join a voice channel first!");
+
+	const player = await manager.create(message.guildId, { extensions: [net.extensionClass()] });
+	if (!player.connection) await player.connect(voiceChannel);
+
+	const result = await manager.search(message.content.slice(6).trim(), message.author.id);
+	const track = result.tracks[0];
+	if (!track) return void message.reply("No results.");
+	await player.play(markTrack(track, "yt-1"), { requestedBy: message.author.id }); // audio streamed from yt-1
+	message.reply(`Playing **${track.title}**`);
+});
+
+await net.start();
+await client.login(process.env.DISCORD_TOKEN);
+```
+
+To move the Discord voice session itself to another node instead (while nothing is playing), accept it there with
+`net.acceptVoice()` and call `await net.delegateVoice(player, "other-node")` on the bot; `await net.reclaimVoice(player)` takes it
+back. `await net.routeTracks(player, result.tracks)` picks between pulling tracks and handing off the voice automatically. Pair
+nodes without copying files by listening to `net.node.on("peerDiscovered", ...)` and calling
+`net.node.acceptPeer(id, fingerprint)` after comparing the fingerprint out-of-band; both sides must accept each other.
+
+To try it with a real Discord bot, real plugins and Mosquitto, see
+[`examples/net`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/net) (commands are driven by `messageCreate`, with an
+automated `!selftest`).
+
+`@ziplayer/net` relies on three core APIs: `manager.resolveStream(track)` (resolve a stream through plugins without a player),
+`player.disconnect({ silent: true })` (release the voice connection without leaving the Discord channel), and the
+`cacheable: false` flag on single-use extension streams. Only one process can own a `PlayerManager`, so run one node per process.
+Web/WebAudio voice and multi-output mirroring across nodes are not available over `@ziplayer/net` yet. See the
+[net README](https://github.com/ZiProject/ZiPlayer/tree/main/net) for the security model.
 
 ---
 
-## 📄 License
-
-MIT © [ZiProject](https://github.com/ZiProject)
-
-## Shared Discord and WebAudio playback
+### Connection ownership (reference)
 
 `Player.connect(voiceChannel)` joins Discord Voice. A browser publisher can subscribe to the same `AudioPlayer`:
 
 ```ts
+import { WebAudioConnection } from "ziplayer";
+
 const webConnection = new WebAudioConnection({ sessionId: player.id });
 webConnection.attachSocket(publisherSocket);
 const subscription = await player.connect(webConnection);
@@ -659,3 +788,16 @@ backends and output factories are not part of the player API. The shared `Connec
 WebAudio connection state; `Player` delegates WebAudio registration, lookup, and teardown through the Bus. `player.connections`
 (also exposed through `PLAYER_QUERY.connection`) returns all currently subscribed Voice and WebAudio connections; each WebAudio
 connection can be removed through its registration handle or destroyed during player teardown.
+
+## 📚 Advanced Developer Guide
+
+For contributors, custom controller authors, and AI agent instructions detailing internal Bus protocols, controller state
+ownership, and teardown lifecycle, see [**AGENTS.md**](./AGENTS.md).
+
+---
+
+---
+
+## 📄 License
+
+MIT © [ZiProject](https://github.com/ZiProject)

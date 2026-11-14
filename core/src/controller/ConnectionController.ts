@@ -465,7 +465,9 @@ export class ConnectionController {
 		slot.sessionId = null;
 		slot.requestId = null;
 		try {
-			connection?.destroy();
+			// `silent` tears the local voice connection down without sending the "leave channel" payload,
+			// so another node can take over the same Discord voice session (see @ziplayer/net).
+			if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy(!event.silent);
 			this.trace(playerId, BUS_OUTPUT.connectionDisconnected, event.reason ? `reason=${event.reason}` : undefined);
 			this.bus?.emitOutput({
 				type: BUS_OUTPUT.connectionDisconnected,

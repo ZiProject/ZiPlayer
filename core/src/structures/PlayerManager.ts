@@ -18,6 +18,9 @@ import {
 	SharedControllerSet,
 	SourcePluginLike,
 	type TrackRequester,
+	type Track,
+	type StreamInfo,
+	normalizeStreamInfo,
 } from "../types";
 import type { BaseExtension } from "../extensions";
 import { PlayerEventDebug } from "../controller/PlayerEventDebug";
@@ -1356,6 +1359,18 @@ export class PlayerManager extends EventEmitter {
 			this.debug(`Search error:`, error);
 			throw error as Error;
 		}
+	}
+
+	/**
+	 * Resolves a playable stream for `track` through the manager's plugins without needing a player.
+	 * The caller owns the returned stream and must destroy it. Used by `@ziplayer/net` stream providers.
+	 */
+	async resolveStream(track: Track, options?: { fresh?: boolean }): Promise<StreamInfo | null> {
+		this.assertNotDisposed();
+		const pluginManager = this.controllers.plugin?.getSharedManager();
+		if (!pluginManager) throw new Error("PluginController is unavailable");
+		const info = await pluginManager.getStream(track, { fresh: options?.fresh });
+		return info ? normalizeStreamInfo(track, info) : null;
 	}
 
 	/**

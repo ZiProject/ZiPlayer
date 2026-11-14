@@ -358,9 +358,17 @@ export class Player extends EventEmitter {
 	public getWebAudioSubscribers() {
 		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.connectionWebAudioList, undefined);
 	}
-	public async disconnect(): Promise<void> {
+	/**
+	 * Disconnects the voice connection. With `{ silent: true }` the local connection is destroyed
+	 * without leaving the Discord voice channel (used when handing the voice session to another node).
+	 */
+	public async disconnect(options?: { silent?: boolean }): Promise<void> {
 		return this.bus
-			.request(this.playerId, { type: BUS_REQUEST.connectionDisconnect, requestId: createPlayerRequestId() })
+			.request(this.playerId, {
+				type: BUS_REQUEST.connectionDisconnect,
+				requestId: createPlayerRequestId(),
+				silent: options?.silent === true ? true : undefined,
+			})
 			.then(() => undefined);
 	}
 

@@ -78,7 +78,7 @@ export type PlayerConnectionInput =
 			channel: VoiceChannel;
 			options?: { deaf?: boolean; mute?: boolean; group?: string };
 	  }
-	| { type: typeof BUS_REQUEST.connectionDisconnect; requestId: PlayerRequestId; reason?: string }
+	| { type: typeof BUS_REQUEST.connectionDisconnect; requestId: PlayerRequestId; reason?: string; silent?: boolean }
 	| { type: typeof BUS_REQUEST.connectionReconnect; requestId: PlayerRequestId; channel: VoiceChannel };
 export type PlayerPreloadInput = { type: typeof BUS_REQUEST.preloadRequest; requestId: PlayerRequestId; track: Track };
 export type PlayerRecoveryInput = {

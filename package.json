@@ -2,8 +2,12 @@
 	"name": "ziplayer-dev-root",
 	"private": true,
 	"scripts": {
-		"build:core": "npm run build --prefix core",
+		"build:core": "npm install --prefix core && npm run build --prefix core",
 		"build:core:fast": "npm run build:fast --prefix core",
+		"build:plugins": "npm install --prefix plugins && npm run build --prefix plugins",
+		"build:extensions": "npm install --prefix extensions && npm run build --prefix extensions",
+		"build:net": "npm install --prefix net && npm run build --prefix net",
+		"setup": "npm run build:core && npm run build:plugins && npm run build:extensions && npm run build:net",
 		"pretest": "node scripts/ensure-core-build.js",
 		"test": "node --test --test-concurrency=4 tests/*.test.js",
 		"test:integration": "node --test tests/plugins/*.test.js tests/extensions/*.test.js",

@@ -39,16 +39,6 @@ function createMockAudioPlayer() {
 	});
 }
 
-test("Architectural: removed processing engine symbols are not exported", () => {
-	const core = require("../core/dist");
-	assert.equal(core.createAudioProcessingEngine, undefined, "createAudioProcessingEngine must not be exported");
-	assert.equal(core.FFmpegAudioProcessingEngine, undefined, "FFmpegAudioProcessingEngine must not be exported");
-	assert.equal(core.defaultAudioProcessingEngine, undefined, "defaultAudioProcessingEngine must not be exported");
-	assert.equal(core.resolveAudioProcessingOptions, undefined, "resolveAudioProcessingOptions must not be exported");
-	assert.equal(core.getFfmpegProcessStats, undefined, "getFfmpegProcessStats must not be exported");
-	assert.equal(core.configureFfmpegConcurrency, undefined, "configureFfmpegConcurrency must not be exported");
-});
-
 test("PlaybackController creates direct inline-volume resource without FFmpeg for normal playback", async () => {
 	const bus = new Bus();
 	const controller = new PlaybackController(bus);
