@@ -38,12 +38,12 @@
 		"axios": "^1.19.0",
 		"bgutils-js": "^4.0.3",
 		"file-type": "^22.0.1",
-		"googlevideo": "^4.1.1",
+		"googlevideo": "^5.0.1",
 		"jsdom": "^28.1.0",
 		"mime-types": "^3.0.2",
 		"music-metadata": "^11.12.3",
 		"spotify-url-info": "^3.3.0",
-		"youtubei.js": "^18.0.0",
+		"youtubei.js": "^18.3.0",
 		"ziplayer": "^1.0.5-dev.5"
 	},
 	"devDependencies": {
