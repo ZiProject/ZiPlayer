@@ -17,6 +17,7 @@ export class PlaybackPreparationController {
 	private readonly playerId: string;
 	private readonly bus: Bus;
 	private readonly isCurrentSession: PlaybackPreparationControllerOptions["isCurrentSession"];
+	private readonly isLatestSession: PlaybackPreparationControllerOptions["isLatestSession"];
 	private readonly queueSnapshot: PlaybackPreparationControllerOptions["queueSnapshot"];
 	private readonly setQueueRelated: PlaybackPreparationControllerOptions["setQueueRelated"];
 	private readonly debug: PlaybackPreparationControllerOptions["debug"];
@@ -25,6 +26,7 @@ export class PlaybackPreparationController {
 		this.playerId = playerId;
 		this.bus = options.bus;
 		this.isCurrentSession = options.isCurrentSession;
+		this.isLatestSession = options.isLatestSession;
 		this.queueSnapshot = options.queueSnapshot;
 		this.setQueueRelated = options.setQueueRelated;
 		this.debug = options.debug;
@@ -68,8 +70,21 @@ export class PlaybackPreparationController {
 		return related.slice();
 	}
 
-	public async prepareAutoplay(session: PlaybackSession, context: PlayerMessageContext): Promise<Track | null> {
-		if (context.signal.aborted || !this.isCurrentSession(session, context)) return null;
+	/**
+	 * Picks the next autoplay candidate. With `allowEnded` the session may already be over (the track
+	 * ended and nothing was started, e.g. autoplay found no candidate or failed): Next must still be able
+	 * to enter autoplay then, so only require that no newer session replaced it.
+	 */
+	public async prepareAutoplay(
+		session: PlaybackSession,
+		context: PlayerMessageContext,
+		allowEnded = false,
+	): Promise<Track | null> {
+		const stillValid = () =>
+			allowEnded && session.status === "ended" ?
+				!context.signal.aborted && (this.isLatestSession?.(session) ?? true)
+			:	this.isCurrentSession(session, context);
+		if (context.signal.aborted || !stillValid()) return null;
 		if (this.bus.querySync(this.playerId, PLAYER_QUERY.queueLoop) === "track") {
 			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track: null });
 			return null;
@@ -94,13 +109,13 @@ export class PlaybackPreparationController {
 					upcomingTracks: this.queueSnapshot(),
 					relatedTracks: [],
 				});
-				await this.requestPreload(queueNext, context);
+				if (!allowEnded) await this.requestPreload(queueNext, context);
 			}
 			return queueNext;
 		}
 		const pool = related.slice(0, Math.min(5, related.length));
 		const next = queueNext ?? pool[Math.floor(Math.random() * pool.length)];
-		if (!next || !this.isCurrentSession(session, context)) return null;
+		if (!next || !stillValid()) return null;
 		this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track: next });
 		this.bus.event(this.playerId, {
 			type: BUS_EVENT.willPlay,
@@ -109,10 +124,10 @@ export class PlaybackPreparationController {
 			relatedTracks: related,
 		});
 		const autoPlayEnabled = Boolean(this.bus.querySync(this.playerId, PLAYER_QUERY.queueAutoPlay));
-		if (queueNext || autoPlayEnabled) {
+		if ((queueNext || autoPlayEnabled) && !allowEnded) {
 			await this.requestPreload(next, context);
 		}
-		if (context.signal.aborted || !this.isCurrentSession(session, context)) return null;
+		if (context.signal.aborted || !stillValid()) return null;
 		return next;
 	}
 

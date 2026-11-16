@@ -213,6 +213,27 @@ new voiceExt(null, {
 
 If you pass a Discord.js `client`, the payload will include resolved `user` and `channel` objects when possible.
 
+### Discord Rich Presence Extension
+
+Use `richPresenceExt` to broadcast currently playing track information directly to the local Discord desktop client via IPC. It
+displays song titles, artist/author, interactive timeline progress bar, thumbnail artwork, and maintains status even when idle.
+
+```ts
+import { richPresenceExt } from "@ziplayer/extension";
+
+const rpc = new richPresenceExt({
+	clientId: "YOUR_DISCORD_APPLICATION_ID", // optional override
+	activityType: "Listening", // "Listening" | "Playing"
+	showTimeline: true, // displays start/end time bar
+	showThumbnail: true, // displays track thumbnail
+	showIdle: true, // displays idle presence when not playing
+	idleDetails: "Chờ phát nhạc",
+	idleState: "Zimusix",
+});
+
+await player.attachExtension(rpc);
+```
+
 ## Requirements & Tips
 
 - Your bot needs the `GuildVoiceStates` intent.

@@ -20,6 +20,8 @@ export interface PlaybackStartControllerOptions {
 export interface PlaybackPreparationControllerOptions {
 	bus: Bus;
 	isCurrentSession: (session: PlaybackSession, context: import("./bus").PlayerMessageContext) => boolean;
+	/** True while `session` is still the player's latest session, even after it ended or stopped. */
+	isLatestSession?: (session: PlaybackSession) => boolean;
 	queueSnapshot: () => Track[];
 	setQueueRelated: (tracks: Track[]) => void;
 	debug?: DebugLogger;

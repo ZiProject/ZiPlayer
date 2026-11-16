@@ -162,8 +162,10 @@ export interface AntiStuckReportRequest {
 	session: PlaybackSession;
 	reason: string;
 	handlers: AntiStuckRetryHandlers;
-}
-export interface TrackLoadRequest {
+		/** Hard failure (stream already dead): retry right away instead of waiting `retryDelayMs`. */
+		immediate?: boolean;
+	}
+	export interface TrackLoadRequest {
 	track: Track;
 	session: PlaybackSession;
 }

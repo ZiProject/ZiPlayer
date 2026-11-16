@@ -772,3 +772,75 @@ test("WebAudioClient getFrequencyBands and getBassEnergy delegates to active Ana
 		else globalThis.AudioWorkletNode = originalAudioWorkletNode;
 	}
 });
+
+test("WebAudioClient playback:flush drops buffered audio without leaving the playing state", async () => {
+	const originalAudioWorkletNode = globalThis.AudioWorkletNode;
+	const posted = [];
+	class FakeAudioWorkletNode {
+		port = {
+			postMessage(msg) {
+				posted.push(msg);
+			},
+		};
+		connect() {}
+		disconnect() {}
+	}
+	globalThis.AudioWorkletNode = FakeAudioWorkletNode;
+	let resets = 0;
+	class MockOpusDecoder {
+		async initialize() {}
+		decode() {
+			return { samples: new Float32Array(960 * 2), peak: 0.5 };
+		}
+		reset() {
+			resets++;
+		}
+		free() {}
+	}
+	const client = new WebAudioClient({
+		audioContextFactory: () => ({
+			sampleRate: 48_000,
+			state: "running",
+			destination: {},
+			audioWorklet: { async addModule() {} },
+			async resume() {},
+			async close() {
+				this.state = "closed";
+			},
+		}),
+		opusDecoderFactory: () => new MockOpusDecoder(),
+	});
+	try {
+		await client.createAudioOutput();
+		client.receiveControlMessage(
+			JSON.stringify({
+				v: 1,
+				type: "audio:config",
+				sessionId: "flush-session",
+				protocolVersion: 1,
+				codec: "opus",
+				sampleRateHz: 48_000,
+				channels: 2,
+			}),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		const flushesBefore = posted.filter((m) => m.type === "flush").length;
+		const resetsBefore = resets;
+
+		client.receiveControlMessage(
+			JSON.stringify({ v: 1, type: "playback:flush", sessionId: "flush-session", reason: "resource-changed" }),
+		);
+
+		assert.equal(posted.filter((m) => m.type === "flush").length, flushesBefore + 1, "worklet ring buffer must be flushed");
+		assert.equal(resets, resetsBefore + 1, "decoder state must be reset");
+		assert.equal(client.state, "playing", "a flush is not a stop: audio keeps flowing afterwards");
+		assert.throws(
+			() => client.receiveControlMessage(JSON.stringify({ v: 1, type: "playback:flush", sessionId: "other" })),
+			/another session/,
+		);
+	} finally {
+		await client.disconnect();
+		if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+		else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+	}
+});

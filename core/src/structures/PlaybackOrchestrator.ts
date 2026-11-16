@@ -100,11 +100,11 @@ export class PlaybackOrchestrator {
 				return state.start.startResource(resource, track, context);
 			},
 		);
-		bus.registerRpc<{ session: PlaybackSession; context: PlayerMessageContext }, Promise<Track | null>>(
+		bus.registerRpc<{ session: PlaybackSession; context: PlayerMessageContext; allowEnded?: boolean }, Promise<Track | null>>(
 			CONTROLLER_RPC.playbackPrepareAutoplay,
-			({ session, context }, ctx) => {
+			({ session, context, allowEnded }, ctx) => {
 				const state = this.states.get(ctx.playerId);
-				return state ? state.prepare.prepareAutoplay(session, context) : Promise.resolve(null);
+				return state ? state.prepare.prepareAutoplay(session, context, allowEnded) : Promise.resolve(null);
 			},
 		);
 		bus.registerRpc<{ track?: Track | null }, Promise<Track[]>>(CONTROLLER_RPC.playbackCreateRelatedTracks, ({ track }, ctx) => {
@@ -150,6 +150,7 @@ export class PlaybackOrchestrator {
 		const prepare = new PlaybackPreparationController(playerId, {
 			bus: this.bus,
 			isCurrentSession: callbacks.matchesContext,
+			isLatestSession: (session) => this.sessionController.current(playerId) === session,
 			queueSnapshot: () => callbacks.queueSnapshot(playerId),
 			setQueueRelated: (tracks) => callbacks.setQueueRelated(playerId, tracks),
 			debug,

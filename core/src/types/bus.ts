@@ -324,7 +324,10 @@ export interface PlayerRpcMap {
 	"playback.loadFreshCurrent": { request: { track: Track }; response: TrackLoadResult | null };
 	"playback.promotePreload": { request: { track: Track }; response: AudioResource | null };
 	"playback.transitionLock": { request: { active: boolean }; response: void };
-	"playback.prepareAutoplay": { request: { session: PlaybackSession; context: PlayerMessageContext }; response: Track | null };
+	"playback.prepareAutoplay": {
+			request: { session: PlaybackSession; context: PlayerMessageContext; allowEnded?: boolean };
+			response: Track | null;
+		};
 	"playback.start": { request: { track: Track; context: PlayerMessageContext; from: Track | null }; response: void };
 	"playback.startResource": { request: { resource: AudioResource; track: Track }; response: boolean };
 	"forward.health": { request: undefined; response: ForwardHealthStatus };

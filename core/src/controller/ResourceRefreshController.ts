@@ -69,6 +69,8 @@ export class ResourceRefreshController {
 		const session = queryPlaybackSession(this.bus, playerId);
 		if (!state || !session?.track || !session.isActive()) throw new Error("No active playback session");
 		const sessionId = session.id;
+		// A reload must not change the user's intent: a paused track stays paused.
+		const wasPaused = session.status === "paused";
 		const refreshSequence = ++state.refreshSequence;
 		if (state.refreshAbortController) {
 			state.refreshAbortController.abort();
@@ -121,8 +123,9 @@ export class ResourceRefreshController {
 			if (!isCurrentRefresh()) throw new Error("Playback resource refresh superseded");
 			session.setResource(resource);
 			session.setPlaybackOffset(Math.max(0, position));
-			await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackPlay, { resource, session }, { signal });
-			session.markPlaying(Math.max(0, position));
+			await this.bus.requestRpc(playerId, CONTROLLER_RPC.playbackPlay, { resource, session, startPaused: wasPaused }, { signal });
+			if (wasPaused) session.markPaused(Math.max(0, position));
+			else session.markPlaying(Math.max(0, position));
 			this.bus.event(playerId, { type: BUS_EVENT.playbackStateChanged, session: session.snapshot() });
 			return session.snapshot();
 		} finally {

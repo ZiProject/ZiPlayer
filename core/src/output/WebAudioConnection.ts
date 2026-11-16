@@ -1,5 +1,11 @@
 import { EventEmitter } from "node:events";
-import { VoiceConnectionStatus, type AudioPlayer, type PlayerSubscription } from "@discordjs/voice";
+import {
+	AudioPlayerStatus,
+	VoiceConnectionStatus,
+	type AudioPlayer,
+	type AudioPlayerState,
+	type PlayerSubscription,
+} from "@discordjs/voice";
 import { validateOpusPacketDuration, validateOpusPacketFraming } from "../audio/OpusSourceAdapter";
 import type { DebugLogger } from "../types";
 
@@ -175,6 +181,10 @@ export class WebAudioConnection extends EventEmitter {
 	private speaking = false;
 	private destroyed = false;
 	private manuallyDisconnected = false;
+	private playerStateListener: {
+		player: AudioPlayer;
+		listener: (oldState: AudioPlayerState, newState: AudioPlayerState) => void;
+	} | null = null;
 
 	// Metrics
 	private dispatchedPackets = 0;
@@ -344,6 +354,7 @@ export class WebAudioConnection extends EventEmitter {
 		this.state.subscription = subscription;
 		this.updateState();
 		this.reset();
+		this.watchPlayer(targetPlayer);
 		return subscription;
 	}
 
@@ -357,9 +368,60 @@ export class WebAudioConnection extends EventEmitter {
 	}
 
 	/**
+	 * Drops every audio frame that is queued but not yet delivered (pending packet and per-socket
+	 * backlog) and tells listeners to discard what they already buffered. Call it whenever the audio
+	 * source changes abruptly (skip, stop, seek, resource reload) so stale frames of the previous
+	 * track are never heard before the new one. Sequence/timestamps keep counting, so there is no gap.
+	 */
+	public flush(reason = "manual"): void {
+		if (this.destroyed) return;
+		this.pendingPacket = null;
+		for (const queue of this.socketQueues.values()) queue.length = 0;
+		const message = JSON.stringify({ v: 1, type: "playback:flush", sessionId: this.sessionId, reason });
+		for (const socket of [...this.sockets]) {
+			if (socket.readyState !== 1 /* OPEN */) continue;
+			try {
+				socket.send(message);
+			} catch (err: any) {
+				this.debugLogger?.(`[WebAudioConnection] Error sending flush: ${err?.message}`);
+				this.detachSocket(socket);
+			}
+		}
+		this.emit("flush", reason);
+	}
+
+	/** Flushes on every abrupt source change observed on the subscribed AudioPlayer. */
+	private watchPlayer(player: AudioPlayer): void {
+		this.unwatchPlayer();
+		const listener = (oldState: AudioPlayerState, newState: AudioPlayerState) => {
+			// Coming from Idle there is no previous audio to discard: either nothing played, the track
+			// ended by itself (its tail must still be heard) or an abrupt stop already flushed below.
+			if (oldState.status === AudioPlayerStatus.Idle) return;
+			const oldResource = "resource" in oldState ? oldState.resource : undefined;
+			if (newState.status === AudioPlayerStatus.Idle) {
+				// readableEnded === true: the stream was consumed to EOF (natural end). Anything else
+				// (stop, skip, destroyed stream) is an abrupt cut and must not leave frames behind.
+				if (oldResource && !oldResource.playStream?.readableEnded) this.flush("stopped");
+				return;
+			}
+			const newResource = "resource" in newState ? newState.resource : undefined;
+			if (newResource && newResource !== oldResource) this.flush("resource-changed");
+		};
+		player.on("stateChange", listener);
+		this.playerStateListener = { player, listener };
+	}
+
+	private unwatchPlayer(): void {
+		if (!this.playerStateListener) return;
+		this.playerStateListener.player.off("stateChange", this.playerStateListener.listener);
+		this.playerStateListener = null;
+	}
+
+	/**
 	 * Unsubscribes from the active AudioPlayer subscription.
 	 */
 	public unsubscribe(): boolean {
+		this.unwatchPlayer();
 		const sub = this.state.subscription;
 		if (!sub) return false;
 		this.state.subscription = undefined;
@@ -551,6 +613,7 @@ export class WebAudioConnection extends EventEmitter {
 	public destroy(): void {
 		if (this.destroyed) return;
 		this.destroyed = true;
+		this.unwatchPlayer();
 		this.unsubscribe();
 		this.state.status = VoiceConnectionStatus.Destroyed;
 

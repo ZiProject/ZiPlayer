@@ -109,3 +109,21 @@ export * from "./types/lavalink";
  * ```
  */
 export * from "./AiAutoplayExtension";
+
+/**
+ * Discord Rich Presence extension for live now-playing status, timeline progress bar, and thumbnail artwork.
+ *
+ * @example
+ * ```typescript
+ * import { richPresenceExt } from "@ziplayer/extension";
+ *
+ * const rpc = new richPresenceExt({
+ *   clientId: "383226320970055681",
+ *   activityType: "Listening",
+ *   showTimeline: true,
+ *   showThumbnail: true
+ * });
+ * await player.attachExtension(rpc);
+ * ```
+ */
+export * from "./richPresenceExt";

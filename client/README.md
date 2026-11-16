@@ -63,6 +63,16 @@ The `token` option is optional for gateways that do not require authentication; 
 authentication. The browser fills in `client.sessionId` when the next publisher sends `audio:config`. If a publisher is already
 active and you want to join that live stream, pass its `sessionId` instead. Call `disconnect()` to release browser resources.
 
+## Control messages
+
+Besides `audio:config` and Opus frames, the publisher may send JSON control messages (all carry `v: 1` and the `sessionId`):
+
+| Message                              | Effect in `WebAudioClient`                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `playback:flush`                     | Drops audio that is buffered but not yet played (queued Opus frames, decoder state, worklet ring buffer) and keeps the `playing` state. Sent by `WebAudioConnection` when the track changes abruptly (skip, stop, seek, resource reload) so frames of the previous track are never heard before the new one. Older clients ignore it. |
+| `playback:stop`                      | Same flush, but also moves the client to `waiting`.                                                                                                                                                                                                                                                                                   |
+| `playback:pause` / `playback:resume` | Suspend / resume the `AudioContext`.                                                                                                                                                                                                                                                                                                  |
+
 ## Events
 
 `WebAudioClient` is an `EventTarget`:
