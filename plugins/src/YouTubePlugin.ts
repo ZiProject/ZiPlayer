@@ -1,5 +1,6 @@
 import { BasePlugin, Track, SearchResult, StreamInfo, Player } from "ziplayer";
 import { EnabledTrackTypes } from "googlevideo/utils";
+import type { VideoFormatPreferences, AudioFormatPreferences } from "googlevideo/sabr-stream";
 
 import { Innertube, Log, UniversalCache, Platform, type Types } from "youtubei.js";
 import { createSabrStream, createSabrVideoStream } from "./utils/sabr-stream-factory.js";
@@ -22,6 +23,8 @@ export interface PluginOptions {
 	clientType?: Types.InnerTubeClient;
 	searchClientType?: Types.InnerTubeClient;
 	preferYoutubei?: boolean;
+	videoPreferences?: Partial<VideoFormatPreferences>;
+	audioPreferences?: Partial<AudioFormatPreferences>;
 	fallbackStream?: (track: Track) => Promise<StreamInfo>;
 	fistStream?: (track: Track) => Promise<StreamInfo>;
 }
@@ -531,12 +534,12 @@ export class YouTubePlugin extends BasePlugin {
 		const downloads =
 			this.options?.preferYoutubei ?
 				[
-					{ name: "youtubei.js download with BotGuard", run: () => this.downloadWithYoutubei(track, id, signal) },
+					{ name: "Direct format URL download with BotGuard", run: () => this.downloadWithDirectUrl(track, id, signal) },
 					{ name: "SABR download", run: () => this.downloadWithSabr(track, id, signal) },
 				]
 			:	[
 					{ name: "SABR download", run: () => this.downloadWithSabr(track, id, signal) },
-					{ name: "youtubei.js download with BotGuard", run: () => this.downloadWithYoutubei(track, id, signal) },
+					{ name: "Direct format URL download with BotGuard", run: () => this.downloadWithDirectUrl(track, id, signal) },
 				];
 		let lastError: unknown;
 		for (let index = 0; index < downloads.length; index++) {
@@ -571,105 +574,79 @@ export class YouTubePlugin extends BasePlugin {
 		throw lastError;
 	}
 
-	private async downloadWithYoutubei(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
-		this.debug("🚀 Attempting youtubei.js download with BotGuard WebPO token");
+	private async downloadWithDirectUrl(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
+		this.debug("🚀 Attempting direct format URL download with BotGuard WebPO token");
 		this.throwIfAborted(signal);
 
 		const poToken = await mintYouTubePoToken(id, signal);
 		this.throwIfAborted(signal);
 
-		const videoInfo = await this.client.getBasicInfo(id, {
-			client: "YTMUSIC",
-		});
+		const clientsToTry = ["YTMUSIC", "IOS", "ANDROID"] as const;
+		for (const clientType of clientsToTry) {
+			try {
+				this.throwIfAborted(signal);
+				const videoInfo = await this.client.getBasicInfo(id, { client: clientType as any });
+				const format = videoInfo.chooseFormat({ quality: "best", type: "audio" });
+				if (!format) continue;
 
-		this.throwIfAborted(signal);
+				let directUrl: string | undefined = format.url;
+				if (!directUrl && typeof format.decipher === "function") {
+					try {
+						directUrl = await format.decipher(this.client.session.player);
+					} catch {}
+				}
 
-		const format = videoInfo.chooseFormat({
-			quality: "best",
-			type: "audio",
-		});
+				if (!directUrl) continue;
 
-		if (!format) {
-			throw new Error("youtubei.js could not choose an audio format");
-		}
+				const separator = directUrl.includes("?") ? "&" : "?";
+				const audioStreamingURL = `${directUrl}${separator}pot=${encodeURIComponent(poToken)}`;
 
-		this.debug("🎵 Selected youtubei.js audio format:", {
-			itag: format.itag,
-			mimeType: format.mime_type,
-			bitrate: format.bitrate,
-			contentLength: format.content_length,
-		});
+				const response = await fetch(audioStreamingURL, {
+					signal,
+					headers: {
+						"User-Agent": "Mozilla/5.0",
+						Accept: "*/*",
+					},
+				});
 
-		const decipheredUrl = await format.decipher(this.client.session.player);
+				if (!response.ok || !response.body) continue;
 
-		this.throwIfAborted(signal);
+				const nodeStream = await webStreamToNodeStream(response.body, 64 * 1024, 0, signal);
+				if (!Readable.isReadable(nodeStream)) continue;
 
-		if (!decipheredUrl) {
-			throw new Error("youtubei.js returned an empty deciphered URL");
-		}
-
-		const separator = decipheredUrl.includes("&") ? "&" : "?";
-		const audioStreamingURL = `${decipheredUrl}${separator}pot=${encodeURIComponent(poToken)}`;
-
-		this.debug("✅ youtubei.js format deciphered successfully");
-
-		const response = await fetch(audioStreamingURL, {
-			signal,
-			headers: {
-				"User-Agent": "Mozilla/5.0",
-				Accept: "*/*",
-			},
-		});
-
-		this.throwIfAborted(signal);
-
-		if (!response.ok) {
-			throw new Error(`youtubei.js audio request failed: HTTP ${response.status} ${response.statusText}`);
-		}
-
-		if (!response.body) {
-			throw new Error("youtubei.js audio request returned no response body");
-		}
-
-		this.debug("🔄 Converting youtubei.js audio Web Stream to Node.js stream");
-
-		const nodeStream = await webStreamToNodeStream(response.body, 32 * 1024, 0, signal);
-
-		nodeStream.on("error", (error: Error) => {
-			const errorMsg = error.message || String(error);
-
-			if (!errorMsg.includes("Controller is already closed")) {
-				this.debug("⚠️ youtubei.js stream error:", errorMsg);
+				this.debug(`✅ Direct format audio download successful with client ${clientType}`);
+				return {
+					stream: nodeStream,
+					type: "arbitrary",
+					metadata: {
+						...track.metadata,
+						itag: format.itag,
+						mime: (format as any).mime_type ?? (format as any).mimeType,
+						contentLength: (format as any).content_length ?? (format as any).contentLength,
+					},
+				};
+			} catch (err) {
+				this.debug(`Direct format download failed with client ${clientType}:`, err);
 			}
-		});
-
-		if (!Readable.isReadable(nodeStream)) {
-			throw new Error("youtubei.js audio stream is not readable");
 		}
 
-		this.debug("✅ youtubei.js audio stream ready");
-
-		return {
-			stream: nodeStream,
-			type: "arbitrary",
-			metadata: {
-				...track.metadata,
-				itag: format.itag,
-				mime: (format as any).mime_type ?? (format as any).mimeType,
-			},
-		};
+		throw new Error("Direct format URL download failed for all clients");
 	}
+
 	private async downloadWithSabr(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
-		const { stream, format } = await this.getSabrDL(track, id, signal);
-		const expectedId = track.id || this.extractVideoId(track.url);
+		const { stream, format, title, author, duration } = await this.getSabrDL(track, id, signal);
 
 		return {
 			stream,
 			type: "arbitrary",
 			metadata: {
 				...track.metadata,
+				title,
+				author,
+				duration,
 				itag: format.itag,
 				mime: format.mimeType,
+				contentLength: format.contentLength,
 			},
 		};
 	}
@@ -687,39 +664,24 @@ export class YouTubePlugin extends BasePlugin {
 		this.debug("🚀 Attempting sabr download for video ID:", id);
 
 		const sabrOptions = {
-			preferWebM: true,
-			preferOpus: true,
-			audioQuality: "medium",
+			audioPreferences: {
+				preferredAudioCodec: "opus" as const,
+				...this.options?.audioPreferences,
+			},
 			enabledTrackTypes: EnabledTrackTypes.AUDIO_ONLY,
 		};
 
-		const { stream, title, format } = await createSabrStream(id, this.client, sabrOptions, signal);
+		const result = await createSabrStream(id, this.client, sabrOptions, signal);
 
-		if (title && expectedTitle) {
-			const actualTitle = title.toLowerCase().trim();
+		if (result.title && expectedTitle) {
+			const actualTitle = result.title.toLowerCase().trim();
 			const similarity = this.calculateTitleSimilarity(expectedTitle, actualTitle);
-			this.debug(`Title similarity: ${similarity}% (Expected: "${expectedTitle}", Actual: "${title}")`);
+			this.debug(`Title similarity: ${similarity}% (Expected: "${expectedTitle}", Actual: "${result.title}")`);
 		}
 
 		this.debug("✅ Sabr download successful, stream ready");
 
-		if (!stream) {
-			throw new Error("Sabr download did not return a stream");
-		}
-
-		// Add error handler to prevent unhandled rejections from SABR
-		stream.on("error", (error: Error) => {
-			const errorMsg = error.message || String(error);
-			// Log but suppress "Controller is already closed" errors as they're expected during cleanup
-			if (!errorMsg.includes("Controller is already closed")) {
-				this.debug("⚠️ SABR stream error:", errorMsg);
-			}
-		});
-
-		return {
-			stream,
-			format,
-		};
+		return result;
 	}
 	/**
 	 * Gets related tracks for a given YouTube video.
@@ -810,41 +772,146 @@ export class YouTubePlugin extends BasePlugin {
 
 	async getVideo(track: Track, signal?: AbortSignal): Promise<StreamInfo> {
 		if (!track?.url && !track?.id && !track?.title) throw new Error("Track must have a URL, ID, or title");
-		const plugin = this as any;
-		plugin.throwIfAborted?.(signal);
-		await plugin.ready;
-		plugin.throwIfAborted?.(signal);
-		let id = track.id || plugin.extractVideoId(track.url);
+		this.throwIfAborted(signal);
+		await this.ready;
+		this.throwIfAborted(signal);
+
+		let id = track.id || this.extractVideoId(track.url);
 		if (!id && track.title) {
 			const query = `${track.title} ${track.author || track.metadata?.author || ""}`.trim();
-			plugin.debug("🎬 No direct YouTube ID for track, searching video:", query);
+			this.debug("🎬 No direct YouTube ID for track, searching video:", query);
 			try {
-				const searchRes = await plugin.search(query, "youtube-video");
+				const searchRes = await this.search(query, "youtube-video");
 				const first = searchRes.tracks?.[0];
 				if (first) {
-					id = first.id || plugin.extractVideoId(first.url);
+					id = first.id || this.extractVideoId(first.url);
 				}
 			} catch (err) {
-				plugin.debug("⚠️ Video fallback search failed:", err);
+				this.debug("⚠️ Video fallback search failed:", err);
 			}
 		}
 		if (!id) throw new Error("Invalid YouTube video id");
-		plugin.debug("🎬 Resolving YouTube video through SABR:", id);
-		const result = await createSabrVideoStream(id, plugin.client, undefined, signal);
-		plugin.throwIfAborted?.(signal);
-		plugin.debug("✅ YouTube SABR video stream ready:", result.format);
-		return {
-			stream: result.stream,
-			type: "arbitrary",
-			metadata: {
-				...track.metadata,
-				title: result.title,
-				itag: result.format.itag,
-				mime: result.format.mimeType,
-				contentLength: result.format.contentLength,
-				mediaType: "video",
+
+		const downloads = [
+			{
+				name: "SABR video download",
+				run: async () => {
+					this.debug("🎬 Resolving YouTube video through SABR:", id);
+					const videoOptions = {
+						videoPreferences: {
+							quality: "1080p",
+							preferredVideoCodec: "h264" as const,
+							...this.options?.videoPreferences,
+						},
+						audioPreferences: {
+							preferredAudioCodec: "opus" as const,
+							...this.options?.audioPreferences,
+						},
+					};
+
+					const result = await createSabrVideoStream(id, this.client, videoOptions as any, signal);
+					this.throwIfAborted(signal);
+					this.debug("✅ YouTube SABR video stream ready:", result.format);
+
+					return {
+						stream: result.stream,
+						type: "arbitrary",
+						metadata: {
+							...track.metadata,
+							title: result.title,
+							author: result.author,
+							duration: result.duration,
+							itag: result.format.itag,
+							mime: result.format.mimeType,
+							contentLength: result.format.contentLength,
+							mediaType: "video",
+						},
+					} as StreamInfo;
+				},
 			},
-		};
+			{
+				name: "Direct video URL download with BotGuard",
+				run: () => this.downloadVideoWithDirectUrl(track, id, signal),
+			},
+		];
+
+		let lastError: unknown;
+		for (let i = 0; i < downloads.length; i++) {
+			const dl = downloads[i];
+			try {
+				this.debug(`🎬 Attempting ${dl.name}`);
+				return await dl.run();
+			} catch (err) {
+				if (signal?.aborted) throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+				lastError = err;
+				this.debug(`⚠️ ${dl.name} failed:`, err);
+			}
+		}
+
+		throw lastError;
+	}
+
+	private async downloadVideoWithDirectUrl(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
+		this.debug("🎬 Attempting direct video format URL download with BotGuard WebPO token");
+		this.throwIfAborted(signal);
+
+		const poToken = await mintYouTubePoToken(id, signal);
+		this.throwIfAborted(signal);
+
+		const clientsToTry = ["IOS", "WEB", "TVHTML5"] as const;
+		for (const clientType of clientsToTry) {
+			try {
+				this.throwIfAborted(signal);
+				const videoInfo = await this.client.getBasicInfo(id, { client: clientType as any });
+				const format = videoInfo.chooseFormat({
+					quality: "best",
+					type: "video",
+					format: "mp4",
+				});
+				if (!format) continue;
+
+				let directUrl: string | undefined = format.url;
+				if (!directUrl && typeof format.decipher === "function") {
+					try {
+						directUrl = await format.decipher(this.client.session.player);
+					} catch {}
+				}
+
+				if (!directUrl) continue;
+
+				const separator = directUrl.includes("?") ? "&" : "?";
+				const videoUrl = `${directUrl}${separator}pot=${encodeURIComponent(poToken)}`;
+
+				const response = await fetch(videoUrl, {
+					signal,
+					headers: {
+						"User-Agent": "Mozilla/5.0",
+						Accept: "*/*",
+					},
+				});
+
+				if (!response.ok || !response.body) continue;
+
+				const nodeStream = await webStreamToNodeStream(response.body, 256 * 1024, 0, signal);
+				if (!Readable.isReadable(nodeStream)) continue;
+
+				return {
+					stream: nodeStream,
+					type: "arbitrary",
+					metadata: {
+						...track.metadata,
+						itag: format.itag,
+						mime: (format as any).mime_type ?? (format as any).mimeType,
+						contentLength: (format as any).content_length ?? (format as any).contentLength,
+						mediaType: "video",
+					},
+				};
+			} catch (err) {
+				this.debug(`Direct video download with client ${clientType} failed:`, err);
+			}
+		}
+
+		throw new Error("Direct video format URL download failed for all available clients");
 	}
 
 	private normalizeYouTubeMixUrl(input: string): string {

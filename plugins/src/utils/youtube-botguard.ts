@@ -12,25 +12,28 @@ type CachedMinter = {
 	minter: WebPoMinter;
 };
 
+let fallbackCachedMinter: WebPoMinter | undefined;
+
 function getCachedMinter(): WebPoMinter | undefined {
 	const mng = getManager();
-	if (!mng) return undefined;
-
-	const cached = mng.cache.get(MINTER_CACHE_KEY) as CachedMinter | undefined;
-	return cached?.minter;
+	if (mng) {
+		const cached = mng.cache.get(MINTER_CACHE_KEY) as CachedMinter | undefined;
+		if (cached?.minter) return cached.minter;
+	}
+	return fallbackCachedMinter;
 }
 
 function setCachedMinter(minter: WebPoMinter): void {
+	fallbackCachedMinter = minter;
 	const mng = getManager();
 	if (!mng) return;
-
 	mng.cache.set(MINTER_CACHE_KEY, { minter });
 }
 
 function clearCachedMinter(): void {
+	fallbackCachedMinter = undefined;
 	const mng = getManager();
 	if (!mng) return;
-
 	mng.cache.delete(MINTER_CACHE_KEY);
 }
 
@@ -61,12 +64,41 @@ async function createMinter(): Promise<WebPoMinter> {
 
 	const pageHtml = await pageResponse.text();
 
-	// YouTube may change its page HTML, so keep this extraction isolated and
-	// fail cleanly so callers can fall back to SABR.
 	const ytConfig = pageHtml.match(/ytcfg\.set\(({.+?})\);/s)?.[1];
 	if (!ytConfig) throw new Error("Could not find ytcfg in YouTube page HTML");
 
 	(dom.window as any).yt = { config_: JSON.parse(ytConfig) };
+
+	// Canvas 2d context stub to prevent BotGuard VM from throwing in headless environments
+	(dom.window as any).HTMLCanvasElement.prototype.getContext = function (contextId: string) {
+		if (contextId !== "2d") return null;
+		return {
+			fillRect: () => {},
+			clearRect: () => {},
+			getImageData: (_x: number, _y: number, w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+			putImageData: () => {},
+			createImageData: () => [],
+			setTransform: () => {},
+			drawImage: () => {},
+			save: () => {},
+			fillText: () => {},
+			restore: () => {},
+			beginPath: () => {},
+			moveTo: () => {},
+			lineTo: () => {},
+			closePath: () => {},
+			stroke: () => {},
+			translate: () => {},
+			scale: () => {},
+			rotate: () => {},
+			arc: () => {},
+			fill: () => {},
+			measureText: () => ({ width: 0 }),
+			transform: () => {},
+			rect: () => {},
+			clip: () => {},
+		};
+	} as any;
 
 	Object.assign(globalThis, {
 		yt: (dom.window as any).yt,
@@ -76,8 +108,15 @@ async function createMinter(): Promise<WebPoMinter> {
 		origin: dom.window.origin,
 	});
 
-	if (!("navigator" in globalThis)) {
-		Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator });
+	// Override navigator on globalThis (Node.js 21+ has built-in read-only navigator by default)
+	try {
+		Object.defineProperty(globalThis, "navigator", {
+			value: dom.window.navigator,
+			configurable: true,
+			writable: true,
+		});
+	} catch {
+		// Ignore if non-configurable
 	}
 
 	const initialAttestationData = pageHtml.match(/window\.ytAtN\(\s*({[\s\S]*?})\s*\)/);
@@ -138,13 +177,12 @@ async function createMinter(): Promise<WebPoMinter> {
 
 let minterPromise: Promise<WebPoMinter> | undefined;
 
-async function getMinter(): Promise<WebPoMinter> {
+export async function getYouTubeWebPoMinter(signal?: AbortSignal): Promise<WebPoMinter> {
+	throwIfAborted(signal);
 	const cached = getCachedMinter();
 	if (cached) return cached;
 
 	if (!minterPromise) {
-		// Do not bind creation to a track AbortSignal: this promise is shared by
-		// every plugin/player using the manager cache.
 		minterPromise = createMinter()
 			.then((minter) => {
 				setCachedMinter(minter);
@@ -160,24 +198,37 @@ async function getMinter(): Promise<WebPoMinter> {
 }
 
 /**
- * Mint a current WebPO token bound to a YouTube video ID.
- *
- * The WebPoMinter is shared through PlayerManager.cache so multiple
- * YouTubePlugin instances reuse the same BotGuard state. The manager's LRU
- * cache owns eviction; WebPoMinter remains responsible for token lifetime.
+ * Mint a WebPO token string bound to a YouTube video ID (base64url websafe string).
  */
 export async function mintYouTubePoToken(videoId: string, signal?: AbortSignal): Promise<string> {
 	if (!videoId) throw new Error("videoId is required for a WebPO token");
 	throwIfAborted(signal);
 
-	const minter = await getMinter();
+	const minter = await getYouTubeWebPoMinter(signal);
 	throwIfAborted(signal);
 
 	try {
 		return await minter.mintAsWebsafeString(videoId);
 	} catch (error) {
-		// A cached minter can become invalid after YouTube changes its
-		// attestation state. Drop it so the next request can rebuild it.
+		clearCachedMinter();
+		minterPromise = undefined;
+		throw error;
+	}
+}
+
+/**
+ * Mint a WebPO token as binary Uint8Array bytes bound to a YouTube video ID (for SABR/UMP callbacks).
+ */
+export async function mintYouTubePoTokenBytes(videoId: string, signal?: AbortSignal): Promise<Uint8Array> {
+	if (!videoId) throw new Error("videoId is required for a WebPO token");
+	throwIfAborted(signal);
+
+	const minter = await getYouTubeWebPoMinter(signal);
+	throwIfAborted(signal);
+
+	try {
+		return await minter.mint(videoId);
+	} catch (error) {
 		clearCachedMinter();
 		minterPromise = undefined;
 		throw error;
