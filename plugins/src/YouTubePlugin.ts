@@ -534,12 +534,18 @@ export class YouTubePlugin extends BasePlugin {
 		const downloads =
 			this.options?.preferYoutubei ?
 				[
-					{ name: "Direct format URL download with BotGuard", run: () => this.downloadWithDirectUrl(track, id, signal) },
+					{
+						name: "Direct format URL download with BotGuard",
+						run: () => (this as any).downloadWithYoutubei?.(track, id, signal) ?? this.downloadWithDirectUrl(track, id, signal),
+					},
 					{ name: "SABR download", run: () => this.downloadWithSabr(track, id, signal) },
 				]
 			:	[
 					{ name: "SABR download", run: () => this.downloadWithSabr(track, id, signal) },
-					{ name: "Direct format URL download with BotGuard", run: () => this.downloadWithDirectUrl(track, id, signal) },
+					{
+						name: "Direct format URL download with BotGuard",
+						run: () => (this as any).downloadWithYoutubei?.(track, id, signal) ?? this.downloadWithDirectUrl(track, id, signal),
+					},
 				];
 		let lastError: unknown;
 		for (let index = 0; index < downloads.length; index++) {
@@ -625,7 +631,7 @@ export class YouTubePlugin extends BasePlugin {
 						mime: (format as any).mime_type ?? (format as any).mimeType,
 						contentLength: (format as any).content_length ?? (format as any).contentLength,
 					},
-					recreate: async (position: number) => {
+					recreate: async (position: number, recreateSignal?: AbortSignal) => {
 						const startTimeMs =
 							typeof position === "number" && Number.isFinite(position) && position > 0 ? Math.floor(position) : undefined;
 						try {
@@ -640,16 +646,16 @@ export class YouTubePlugin extends BasePlugin {
 									enabledTrackTypes: EnabledTrackTypes.AUDIO_ONLY,
 									startTimeMs,
 								},
-								signal,
+								recreateSignal,
 							);
 							return recreateResult.stream;
 						} catch {
 							const seekBytes = calculateSeekBytes(startTimeMs ?? 0, ((format as any).bitrate ?? 128000) / 1000);
-							const poToken = await mintYouTubePoToken(id, signal);
+							const poToken = await mintYouTubePoToken(id, recreateSignal);
 							const separator = directUrl.includes("?") ? "&" : "?";
 							const audioStreamingURL = `${directUrl}${separator}pot=${encodeURIComponent(poToken)}`;
 							const response = await fetch(audioStreamingURL, {
-								signal,
+								signal: recreateSignal,
 								headers: {
 									"User-Agent": "Mozilla/5.0",
 									Accept: "*/*",
@@ -658,7 +664,7 @@ export class YouTubePlugin extends BasePlugin {
 							});
 							if (!response.ok || !response.body) throw new Error("Failed to recreate direct audio stream");
 							const bytesToSkip = response.status === 206 ? 0 : seekBytes;
-							return await webStreamToNodeStream(response.body, 64 * 1024, bytesToSkip, signal);
+							return await webStreamToNodeStream(response.body, 64 * 1024, bytesToSkip, recreateSignal);
 						}
 					},
 				};
@@ -668,6 +674,10 @@ export class YouTubePlugin extends BasePlugin {
 		}
 
 		throw new Error("Direct format URL download failed for all clients");
+	}
+
+	protected async downloadWithYoutubei(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
+		return this.downloadWithDirectUrl(track, id, signal);
 	}
 
 	private async downloadWithSabr(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
@@ -686,7 +696,7 @@ export class YouTubePlugin extends BasePlugin {
 				mime: format.mimeType,
 				contentLength: format.contentLength,
 			},
-			recreate: async (position: number) => {
+			recreate: async (position: number, recreateSignal?: AbortSignal) => {
 				const startTimeMs =
 					typeof position === "number" && Number.isFinite(position) && position > 0 ? Math.floor(position) : undefined;
 				const recreateResult = await createSabrStream(
@@ -700,7 +710,7 @@ export class YouTubePlugin extends BasePlugin {
 						enabledTrackTypes: EnabledTrackTypes.AUDIO_ONLY,
 						startTimeMs,
 					},
-					signal,
+					recreateSignal,
 				);
 				return recreateResult.stream;
 			},
@@ -883,7 +893,7 @@ export class YouTubePlugin extends BasePlugin {
 							contentLength: result.format.contentLength,
 							mediaType: "video",
 						},
-						recreate: async (position: number) => {
+						recreate: async (position: number, recreateSignal?: AbortSignal) => {
 							const startTimeMs =
 								typeof position === "number" && Number.isFinite(position) && position > 0 ? Math.floor(position) : undefined;
 							const res = await createSabrVideoStream(
@@ -901,7 +911,7 @@ export class YouTubePlugin extends BasePlugin {
 									},
 									startTimeMs,
 								} as any,
-								signal,
+								recreateSignal,
 							);
 							return res.stream;
 						},
@@ -985,7 +995,7 @@ export class YouTubePlugin extends BasePlugin {
 						contentLength: (format as any).content_length ?? (format as any).contentLength,
 						mediaType: "video",
 					},
-					recreate: async (position: number) => {
+					recreate: async (position: number, recreateSignal?: AbortSignal) => {
 						const startTimeMs =
 							typeof position === "number" && Number.isFinite(position) && position > 0 ? Math.floor(position) : undefined;
 						try {
@@ -1004,16 +1014,16 @@ export class YouTubePlugin extends BasePlugin {
 									},
 									startTimeMs,
 								} as any,
-								signal,
+								recreateSignal,
 							);
 							return res.stream;
 						} catch {
 							const seekBytes = calculateSeekBytes(startTimeMs ?? 0, ((format as any).bitrate ?? 2500000) / 1000);
-							const poToken = await mintYouTubePoToken(id, signal);
+							const poToken = await mintYouTubePoToken(id, recreateSignal);
 							const separator = directUrl.includes("?") ? "&" : "?";
 							const videoUrl = `${directUrl}${separator}pot=${encodeURIComponent(poToken)}`;
 							const response = await fetch(videoUrl, {
-								signal,
+								signal: recreateSignal,
 								headers: {
 									"User-Agent": "Mozilla/5.0",
 									Accept: "*/*",
@@ -1022,7 +1032,7 @@ export class YouTubePlugin extends BasePlugin {
 							});
 							if (!response.ok || !response.body) throw new Error("Failed to recreate direct video stream");
 							const bytesToSkip = response.status === 206 ? 0 : seekBytes;
-							return await webStreamToNodeStream(response.body, 256 * 1024, bytesToSkip, signal);
+							return await webStreamToNodeStream(response.body, 256 * 1024, bytesToSkip, recreateSignal);
 						}
 					},
 				};

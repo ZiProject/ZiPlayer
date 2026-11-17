@@ -54,7 +54,12 @@ export class FilterEngine {
 				this.setSourceStreamType(action.streamType);
 				return;
 			case "FILTER_APPLY_AND_SEEK":
-				this.lastFilteredStream = await this.applyFiltersAndSeek(action.streamInfo, action.position ?? -1);
+				this.lastFilteredStream = await this.applyFiltersAndSeek(action.streamInfo, action.position ?? -1, signal);
+				return;
+			case "STOP":
+			case "SKIP":
+				this.teardownFFmpeg();
+				this.lastFilteredStream = null;
 				return;
 		}
 	}
@@ -96,6 +101,9 @@ export class FilterEngine {
 
 	public get lastFilteredStreamValue(): (StreamInfo & { wasRecreated?: boolean }) | null {
 		return this.lastFilteredStream;
+	}
+	public clearLastFilteredStream(): void {
+		this.lastFilteredStream = null;
 	}
 	public getFilterString(): string {
 		return this.activeFilters.map((filter) => filter.ffmpegFilter).join(",");
@@ -208,8 +216,13 @@ export class FilterEngine {
 		return this.resourcePort.refreshPlayerResource();
 	}
 
-	public async applyFiltersAndSeek(streamInfo: StreamInfo, position = -1): Promise<StreamInfo & { wasRecreated?: boolean }> {
+	public async applyFiltersAndSeek(
+		streamInfo: StreamInfo,
+		position = -1,
+		signal?: AbortSignal,
+	): Promise<StreamInfo & { wasRecreated?: boolean }> {
 		this.teardownFFmpeg();
+		this.lastFilteredStream = null;
 		const generation = ++this.ffmpegGeneration;
 		const hasSeek = position >= 0;
 		const filterString = this.getFilterString();
@@ -219,7 +232,7 @@ export class FilterEngine {
 		let needsFfmpegSeek = hasSeek;
 
 		if (hasSeek && streamInfo.recreate) {
-			const recreated = await streamInfo.recreate(position);
+			const recreated = await streamInfo.recreate(position, signal);
 			if (!recreated) throw new Error("Stream recreation returned no stream");
 			if (generation !== this.ffmpegGeneration) {
 				recreated.destroy();
@@ -423,11 +436,17 @@ export class FilterController {
 
 	constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => {
-			void this.engines.get(context.playerId)?.handleAction(action, context.signal);
+			return this.engines.get(context.playerId)?.handleAction(action, context.signal);
 		});
 		bus.registerQuery(PLAYER_QUERY.filterState, (playerId) => this.engines.get(playerId) ?? null);
 		bus.registerQuery(PLAYER_QUERY.filterString, (playerId) => this.engines.get(playerId)?.getFilterString() ?? "");
-		bus.registerQuery(PLAYER_QUERY.filteredStream, (playerId) => this.engines.get(playerId)?.lastFilteredStreamValue ?? null);
+		bus.registerQuery(PLAYER_QUERY.filteredStream, (playerId) => {
+			const engine = this.engines.get(playerId);
+			if (!engine) return null;
+			const stream = engine.lastFilteredStreamValue;
+			engine.clearLastFilteredStream();
+			return stream;
+		});
 		bus.registerQuery(
 			PLAYER_QUERY.filterList,
 			(playerId) =>

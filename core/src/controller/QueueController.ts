@@ -442,7 +442,7 @@ export class QueueController {
 
 	public constructor(private readonly bus: Bus) {
 		bus.onAction((action, context) => {
-			void this.states.get(context.playerId)?.handleAction(action, context);
+			return this.states.get(context.playerId)?.handleAction(action, context);
 		});
 		bus.registerQuery(PLAYER_QUERY.currentTrack, (playerId) => this.states.get(playerId)?.current ?? null);
 		bus.registerQuery(PLAYER_QUERY.queueCurrent, (playerId) => this.states.get(playerId)?.current ?? null);

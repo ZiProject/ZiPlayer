@@ -65,7 +65,7 @@ export interface RawStreamInfo {
 	inputType?: StreamType;
 	metadata?: Record<string, any>;
 	position?: number;
-	recreate?: (position: number) => Promise<Readable>;
+	recreate?: (position: number, signal?: AbortSignal) => Promise<Readable>;
 	/**
 	 * Set to `false` when the stream is single-use (for example data pulled from another node) so the extension
 	 * manager does not cache it and hand the same, already consumed stream to the next play of this track.
