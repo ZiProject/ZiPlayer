@@ -50,7 +50,7 @@
 		"@types/jsdom": "^27.0.0",
 		"@types/mime-types": "^3.0.1",
 		"@types/node": "^20.19.43",
-		"typescript": "^5.0.0"
+		"typescript": "^5.9.3"
 	},
 	"allowScripts": {
 		"ffmpeg-static": true

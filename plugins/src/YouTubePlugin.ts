@@ -4,7 +4,7 @@ import type { VideoFormatPreferences, AudioFormatPreferences } from "googlevideo
 
 import { Innertube, Log, UniversalCache, Platform, type Types } from "youtubei.js";
 import { createSabrStream, createSabrVideoStream } from "./utils/sabr-stream-factory.js";
-import { webStreamToNodeStream } from "./utils/stream-converter.js";
+import { webStreamToNodeStream, calculateSeekBytes } from "./utils/stream-converter.js";
 import { mintYouTubePoToken } from "./utils/youtube-botguard.js";
 import { Readable } from "stream";
 import { createPluginDebugLogger } from "./utils/debugLog.js";
@@ -618,11 +618,48 @@ export class YouTubePlugin extends BasePlugin {
 				return {
 					stream: nodeStream,
 					type: "arbitrary",
+					position: 0,
 					metadata: {
 						...track.metadata,
 						itag: format.itag,
 						mime: (format as any).mime_type ?? (format as any).mimeType,
 						contentLength: (format as any).content_length ?? (format as any).contentLength,
+					},
+					recreate: async (position: number) => {
+						const startTimeMs =
+							typeof position === "number" && Number.isFinite(position) && position > 0 ? Math.floor(position) : undefined;
+						try {
+							const recreateResult = await createSabrStream(
+								id,
+								this.client,
+								{
+									audioPreferences: {
+										preferredAudioCodec: "opus" as const,
+										...this.options?.audioPreferences,
+									},
+									enabledTrackTypes: EnabledTrackTypes.AUDIO_ONLY,
+									startTimeMs,
+								},
+								signal,
+							);
+							return recreateResult.stream;
+						} catch {
+							const seekBytes = calculateSeekBytes(startTimeMs ?? 0, ((format as any).bitrate ?? 128000) / 1000);
+							const poToken = await mintYouTubePoToken(id, signal);
+							const separator = directUrl.includes("?") ? "&" : "?";
+							const audioStreamingURL = `${directUrl}${separator}pot=${encodeURIComponent(poToken)}`;
+							const response = await fetch(audioStreamingURL, {
+								signal,
+								headers: {
+									"User-Agent": "Mozilla/5.0",
+									Accept: "*/*",
+									...(seekBytes > 0 ? { Range: `bytes=${seekBytes}-` } : {}),
+								},
+							});
+							if (!response.ok || !response.body) throw new Error("Failed to recreate direct audio stream");
+							const bytesToSkip = response.status === 206 ? 0 : seekBytes;
+							return await webStreamToNodeStream(response.body, 64 * 1024, bytesToSkip, signal);
+						}
 					},
 				};
 			} catch (err) {
@@ -639,6 +676,7 @@ export class YouTubePlugin extends BasePlugin {
 		return {
 			stream,
 			type: "arbitrary",
+			position: 0,
 			metadata: {
 				...track.metadata,
 				title,
@@ -647,6 +685,24 @@ export class YouTubePlugin extends BasePlugin {
 				itag: format.itag,
 				mime: format.mimeType,
 				contentLength: format.contentLength,
+			},
+			recreate: async (position: number) => {
+				const startTimeMs =
+					typeof position === "number" && Number.isFinite(position) && position > 0 ? Math.floor(position) : undefined;
+				const recreateResult = await createSabrStream(
+					id,
+					this.client,
+					{
+						audioPreferences: {
+							preferredAudioCodec: "opus" as const,
+							...this.options?.audioPreferences,
+						},
+						enabledTrackTypes: EnabledTrackTypes.AUDIO_ONLY,
+						startTimeMs,
+					},
+					signal,
+				);
+				return recreateResult.stream;
 			},
 		};
 	}
@@ -816,6 +872,7 @@ export class YouTubePlugin extends BasePlugin {
 					return {
 						stream: result.stream,
 						type: "arbitrary",
+						position: 0,
 						metadata: {
 							...track.metadata,
 							title: result.title,
@@ -825,6 +882,28 @@ export class YouTubePlugin extends BasePlugin {
 							mime: result.format.mimeType,
 							contentLength: result.format.contentLength,
 							mediaType: "video",
+						},
+						recreate: async (position: number) => {
+							const startTimeMs =
+								typeof position === "number" && Number.isFinite(position) && position > 0 ? Math.floor(position) : undefined;
+							const res = await createSabrVideoStream(
+								id,
+								this.client,
+								{
+									videoPreferences: {
+										quality: "1080p",
+										preferredVideoCodec: "h264" as const,
+										...this.options?.videoPreferences,
+									},
+									audioPreferences: {
+										preferredAudioCodec: "opus" as const,
+										...this.options?.audioPreferences,
+									},
+									startTimeMs,
+								} as any,
+								signal,
+							);
+							return res.stream;
 						},
 					} as StreamInfo;
 				},
@@ -898,12 +977,53 @@ export class YouTubePlugin extends BasePlugin {
 				return {
 					stream: nodeStream,
 					type: "arbitrary",
+					position: 0,
 					metadata: {
 						...track.metadata,
 						itag: format.itag,
 						mime: (format as any).mime_type ?? (format as any).mimeType,
 						contentLength: (format as any).content_length ?? (format as any).contentLength,
 						mediaType: "video",
+					},
+					recreate: async (position: number) => {
+						const startTimeMs =
+							typeof position === "number" && Number.isFinite(position) && position > 0 ? Math.floor(position) : undefined;
+						try {
+							const res = await createSabrVideoStream(
+								id,
+								this.client,
+								{
+									videoPreferences: {
+										quality: "1080p",
+										preferredVideoCodec: "h264" as const,
+										...this.options?.videoPreferences,
+									},
+									audioPreferences: {
+										preferredAudioCodec: "opus" as const,
+										...this.options?.audioPreferences,
+									},
+									startTimeMs,
+								} as any,
+								signal,
+							);
+							return res.stream;
+						} catch {
+							const seekBytes = calculateSeekBytes(startTimeMs ?? 0, ((format as any).bitrate ?? 2500000) / 1000);
+							const poToken = await mintYouTubePoToken(id, signal);
+							const separator = directUrl.includes("?") ? "&" : "?";
+							const videoUrl = `${directUrl}${separator}pot=${encodeURIComponent(poToken)}`;
+							const response = await fetch(videoUrl, {
+								signal,
+								headers: {
+									"User-Agent": "Mozilla/5.0",
+									Accept: "*/*",
+									...(seekBytes > 0 ? { Range: `bytes=${seekBytes}-` } : {}),
+								},
+							});
+							if (!response.ok || !response.body) throw new Error("Failed to recreate direct video stream");
+							const bytesToSkip = response.status === 206 ? 0 : seekBytes;
+							return await webStreamToNodeStream(response.body, 256 * 1024, bytesToSkip, signal);
+						}
 					},
 				};
 			} catch (err) {
