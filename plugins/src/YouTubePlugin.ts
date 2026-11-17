@@ -240,6 +240,8 @@ export class YouTubePlugin extends BasePlugin {
 		// 	metadata: raw.metadata,
 		// });
 
+		const isLive = Boolean(raw?.is_live ?? raw?.basic_info?.is_live ?? duration === 0);
+
 		return {
 			id: String(id),
 			title: String(title),
@@ -248,9 +250,11 @@ export class YouTubePlugin extends BasePlugin {
 			thumbnail: thumb,
 			requestedBy,
 			source: this.name,
+			isLive,
 			metadata: {
 				author,
 				views,
+				isLive,
 				...(extra?.playlist ? { playlist: extra.playlist } : {}),
 			},
 		} as Track;
@@ -531,8 +535,9 @@ export class YouTubePlugin extends BasePlugin {
 		const id = track.id || this.extractVideoId(track.url);
 		if (!id) throw new Error("Invalid track id");
 
+		const isLive = Boolean(track.isLive || track.duration === 0 || (track.metadata as any)?.isLive);
 		const downloads =
-			this.options?.preferYoutubei ?
+			this.options?.preferYoutubei && !isLive ?
 				[
 					{
 						name: "Direct format URL download with BotGuard",
@@ -584,6 +589,10 @@ export class YouTubePlugin extends BasePlugin {
 		this.debug("🚀 Attempting direct format URL download with BotGuard WebPO token");
 		this.throwIfAborted(signal);
 
+		if (track.isLive || track.duration === 0 || (track.metadata as any)?.isLive) {
+			throw new Error("Direct format download is not supported for live streams (requires SABR)");
+		}
+
 		const poToken = await mintYouTubePoToken(id, signal);
 		this.throwIfAborted(signal);
 
@@ -592,6 +601,9 @@ export class YouTubePlugin extends BasePlugin {
 			try {
 				this.throwIfAborted(signal);
 				const videoInfo = await this.client.getBasicInfo(id, { client: clientType as any });
+				if (videoInfo.basic_info?.is_live) {
+					throw new Error("Direct format download is not supported for live streams (requires SABR)");
+				}
 				const format = videoInfo.chooseFormat({ quality: "best", type: "audio" });
 				if (!format) continue;
 
@@ -682,6 +694,7 @@ export class YouTubePlugin extends BasePlugin {
 
 	private async downloadWithSabr(track: Track, id: string, signal?: AbortSignal): Promise<StreamInfo> {
 		const { stream, format, title, author, duration } = await this.getSabrDL(track, id, signal);
+		const isLive = Boolean(track.isLive || duration === 0 || track.duration === 0);
 
 		return {
 			stream,
@@ -695,6 +708,7 @@ export class YouTubePlugin extends BasePlugin {
 				itag: format.itag,
 				mime: format.mimeType,
 				contentLength: format.contentLength,
+				isLive,
 			},
 			recreate: async (position: number, recreateSignal?: AbortSignal) => {
 				const startTimeMs =
@@ -704,7 +718,8 @@ export class YouTubePlugin extends BasePlugin {
 					this.client,
 					{
 						audioPreferences: {
-							preferredAudioCodec: "opus" as const,
+							container: isLive ? ("mp4" as const) : undefined,
+							preferredAudioCodec: isLive ? ("aac" as const) : ("opus" as const),
 							...this.options?.audioPreferences,
 						},
 						enabledTrackTypes: EnabledTrackTypes.AUDIO_ONLY,
@@ -729,9 +744,11 @@ export class YouTubePlugin extends BasePlugin {
 
 		this.debug("🚀 Attempting sabr download for video ID:", id);
 
+		const isLive = Boolean(track.isLive || track.duration === 0 || (track.metadata as any)?.isLive);
 		const sabrOptions = {
 			audioPreferences: {
-				preferredAudioCodec: "opus" as const,
+				container: isLive ? ("mp4" as const) : undefined,
+				preferredAudioCodec: isLive ? ("aac" as const) : ("opus" as const),
 				...this.options?.audioPreferences,
 			},
 			enabledTrackTypes: EnabledTrackTypes.AUDIO_ONLY,
@@ -858,6 +875,7 @@ export class YouTubePlugin extends BasePlugin {
 		}
 		if (!id) throw new Error("Invalid YouTube video id");
 
+		const isLive = Boolean(track.isLive || track.duration === 0 || (track.metadata as any)?.isLive);
 		const downloads = [
 			{
 				name: "SABR video download",
@@ -865,12 +883,13 @@ export class YouTubePlugin extends BasePlugin {
 					this.debug("🎬 Resolving YouTube video through SABR:", id);
 					const videoOptions = {
 						videoPreferences: {
-							quality: "1080p",
-							preferredVideoCodec: "h264" as const,
+							quality: isLive ? "720p" : "1080p",
+							preferredVideoCodec: (isLive ? "vp9" : "h264") as any,
 							...this.options?.videoPreferences,
 						},
 						audioPreferences: {
-							preferredAudioCodec: "opus" as const,
+							container: isLive ? ("mp4" as const) : undefined,
+							preferredAudioCodec: isLive ? ("aac" as const) : ("opus" as const),
 							...this.options?.audioPreferences,
 						},
 					};
@@ -892,6 +911,7 @@ export class YouTubePlugin extends BasePlugin {
 							mime: result.format.mimeType,
 							contentLength: result.format.contentLength,
 							mediaType: "video",
+							isLive,
 						},
 						recreate: async (position: number, recreateSignal?: AbortSignal) => {
 							const startTimeMs =
@@ -901,12 +921,13 @@ export class YouTubePlugin extends BasePlugin {
 								this.client,
 								{
 									videoPreferences: {
-										quality: "1080p",
-										preferredVideoCodec: "h264" as const,
+										quality: isLive ? "720p" : "1080p",
+										preferredVideoCodec: (isLive ? "vp9" : "h264") as any,
 										...this.options?.videoPreferences,
 									},
 									audioPreferences: {
-										preferredAudioCodec: "opus" as const,
+										container: isLive ? ("mp4" as const) : undefined,
+										preferredAudioCodec: isLive ? ("aac" as const) : ("opus" as const),
 										...this.options?.audioPreferences,
 									},
 									startTimeMs,
@@ -944,6 +965,10 @@ export class YouTubePlugin extends BasePlugin {
 		this.debug("🎬 Attempting direct video format URL download with BotGuard WebPO token");
 		this.throwIfAborted(signal);
 
+		if (track.isLive || track.duration === 0 || (track.metadata as any)?.isLive) {
+			throw new Error("Direct video format download is not supported for live streams (requires SABR)");
+		}
+
 		const poToken = await mintYouTubePoToken(id, signal);
 		this.throwIfAborted(signal);
 
@@ -952,6 +977,9 @@ export class YouTubePlugin extends BasePlugin {
 			try {
 				this.throwIfAborted(signal);
 				const videoInfo = await this.client.getBasicInfo(id, { client: clientType as any });
+				if (videoInfo.basic_info?.is_live) {
+					throw new Error("Direct video format download is not supported for live streams (requires SABR)");
+				}
 				const format = videoInfo.chooseFormat({
 					quality: "best",
 					type: "video",

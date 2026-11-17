@@ -398,9 +398,26 @@ export async function createSabrStream(
 							...innertubeRequestBody,
 							parse: true,
 						});
+
+						if (!heartbeatResponse.playability_status) {
+							return { status: "OK" as PlayabilityStatus };
+						}
+
+						const status = (heartbeatResponse.playability_status?.status ?? "OK") as PlayabilityStatus;
+						const pollDelayMs = heartbeatResponse.poll_delay_ms;
+						const liveStreamability = heartbeatResponse.playability_status_memo?.getType(YTNodes.LiveStreamability).first();
+						const displayEndscreen = !!liveStreamability?.display_endscreen;
+						const offlineSlate = liveStreamability?.offline_slate;
+						const broadcastId = liveStreamability?.broadcast_id;
+
 						return {
-							status: heartbeatResponse.playability_status?.status as PlayabilityStatus,
-							pollDelayMs: heartbeatResponse.poll_delay_ms,
+							status,
+							displayEndscreen,
+							offlineSlatePresent: !!offlineSlate,
+							offlineSlateButtonsPresent: !!offlineSlate?.action_buttons?.length,
+							broadcastId,
+							pollDelayMs,
+							heartbeatServerData: heartbeatResponse.heartbeat_server_data ?? innertubeRequestBody.heartbeatServerData,
 						};
 					} catch {
 						return { status: "OK" as PlayabilityStatus };
@@ -409,13 +426,17 @@ export async function createSabrStream(
 			},
 		});
 
+		const isLive = Boolean(playerResponse.video_details?.is_live);
 		const playbackOptions: SabrPlaybackOptions = {
 			audioPreferences: {
-				preferredAudioCodec: "opus",
+				container: isLive ? "mp4" : undefined,
+				preferredAudioCodec: isLive ? "aac" : "opus",
+				dynamicRangeCompression: false,
+				voiceBoost: false,
 				...options?.audioPreferences,
 			},
 			enabledTrackTypes: EnabledTrackTypes.AUDIO_ONLY,
-			isPostLiveDvr: !!playerResponse.video_details?.is_post_live_dvr,
+			isPostLiveDvr: Boolean(playerResponse.video_details?.is_post_live_dvr),
 			...options,
 		};
 
@@ -546,9 +567,26 @@ export async function createSabrVideoStream(
 							...innertubeRequestBody,
 							parse: true,
 						});
+
+						if (!heartbeatResponse.playability_status) {
+							return { status: "OK" as PlayabilityStatus };
+						}
+
+						const status = (heartbeatResponse.playability_status?.status ?? "OK") as PlayabilityStatus;
+						const pollDelayMs = heartbeatResponse.poll_delay_ms;
+						const liveStreamability = heartbeatResponse.playability_status_memo?.getType(YTNodes.LiveStreamability).first();
+						const displayEndscreen = !!liveStreamability?.display_endscreen;
+						const offlineSlate = liveStreamability?.offline_slate;
+						const broadcastId = liveStreamability?.broadcast_id;
+
 						return {
-							status: heartbeatResponse.playability_status?.status as PlayabilityStatus,
-							pollDelayMs: heartbeatResponse.poll_delay_ms,
+							status,
+							displayEndscreen,
+							offlineSlatePresent: !!offlineSlate,
+							offlineSlateButtonsPresent: !!offlineSlate?.action_buttons?.length,
+							broadcastId,
+							pollDelayMs,
+							heartbeatServerData: heartbeatResponse.heartbeat_server_data ?? innertubeRequestBody.heartbeatServerData,
 						};
 					} catch {
 						return { status: "OK" as PlayabilityStatus };
@@ -557,18 +595,23 @@ export async function createSabrVideoStream(
 			},
 		});
 
+		const isLive = Boolean(playerResponse.video_details?.is_live);
 		const playbackOptions: SabrPlaybackOptions = {
 			videoPreferences: {
-				quality: "1080p",
-				preferredVideoCodec: "h264",
+				container: "webm",
+				quality: isLive ? "720p" : "1080p",
+				preferredVideoCodec: "vp9",
 				...options?.videoPreferences,
 			},
 			audioPreferences: {
-				preferredAudioCodec: "opus",
+				container: isLive ? "mp4" : undefined,
+				preferredAudioCodec: isLive ? "aac" : "opus",
+				dynamicRangeCompression: false,
+				voiceBoost: false,
 				...options?.audioPreferences,
 			},
 			enabledTrackTypes: EnabledTrackTypes.VIDEO_AND_AUDIO,
-			isPostLiveDvr: !!playerResponse.video_details?.is_post_live_dvr,
+			isPostLiveDvr: Boolean(playerResponse.video_details?.is_post_live_dvr),
 			...options,
 		};
 
