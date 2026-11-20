@@ -7,7 +7,7 @@ Read the root [`README.md`](README.md) for public setup and player workflows. Fo
 
 - `core/src/` contains the player facade, manager, controllers, stream handling, audio subscribers, and public exports. Edit
   source here; `core/dist/` is generated.
-- `plugins/`, `extension/`, `infinity/`, `adapters/`, and `net/` are separate integration packages.
+- `plugins/`, `extensions/`, `infinity/`, `adapters/`, and `net/` are separate integration packages.
 - `client/` is the browser Opus receiver package. Keep its browser entry free of Node.js APIs.
 - `examples/backend/` is the runnable ZiPlayer + authenticated WebSocket gateway + browser playback example.
 - `docs/` contains player event flow and event debugging references (`PLAYER_EVENT_FLOW.md`, `PLAYER_EVENT_DEBUG.md`).
