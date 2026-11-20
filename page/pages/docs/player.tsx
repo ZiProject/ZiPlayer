@@ -15,11 +15,11 @@ const manager = new PlayerManager({
     new YouTubePlugin(), 
     new SpotifyPlugin()
   ],
-  // Cấu hình tùy chọn
-  defaultVolume: 50,
-  maxQueueSize: 100,
-  leaveOnEmpty: true,
-  leaveOnEmptyCooldown: 30000,
+  // Cấu hình manager
+  extractorTimeout: 50000,
+  autoCleanup: true,
+  cleanupInterval: 60000,
+  enableSearchCache: true,
 });`;
 
 const createPlayerCode = `const player = await manager.create(guildId, {
@@ -31,12 +31,9 @@ const createPlayerCode = `const player = await manager.create(guildId, {
     guild: guild 
   },
   extensions: ["voiceExt"],
-  // Cấu hình queue
-  queue: {
-    autoPlay: false,
-    shuffle: false,
-    repeat: "off"
-  }
+  volume: 80,
+  leaveOnEmpty: true,
+  leaveTimeout: 100000
 });`;
 
 const playerMethodsCode = `// Kết nối voice channel
@@ -78,19 +75,19 @@ player.destroy();
 // Cần tạo player mới nếu muốn phát nhạc lại`;
 
 const eventsCode = `// Lắng nghe events
-player.on("trackStart", (player, track) => {
+player.on("trackStart", (track) => {
   console.log("Bắt đầu phát:", track.title);
 });
 
-player.on("trackEnd", (player, track) => {
+player.on("trackEnd", (track) => {
   console.log("Kết thúc:", track.title);
 });
 
-player.on("queueEnd", (player) => {
+player.on("queueEnd", () => {
   console.log("Hết queue, tự động thoát...");
 });
 
-player.on("error", (player, error) => {
+player.on("playerError", (error, track) => {
   console.error("Lỗi player:", error);
 });
 

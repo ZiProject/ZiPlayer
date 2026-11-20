@@ -89,6 +89,7 @@ async function recover(
 	reason: string,
 	handlers: AntiStuckRetryHandlers,
 	requestId?: string,
+	immediate = false,
 ): Promise<boolean> {
 	const track = session.track;
 	if (state.disposed || !state.enabled || !track || !session.isActive() || generation !== state.generation) return false;
@@ -112,7 +113,8 @@ async function recover(
 			attempt: retry + 1,
 		});
 	}
-	if (state.retryDelayMs > 0) await delay(state.retryDelayMs, AbortSignal.any([session.signal, state.lifecycleAbort.signal]));
+	if (!immediate && state.retryDelayMs > 0)
+		await delay(state.retryDelayMs, AbortSignal.any([session.signal, state.lifecycleAbort.signal]));
 	if (state.disposed || !session.isActive() || generation !== state.generation) return false;
 	const ok = await handlers.retry({ session, track, retry: retry + 1, reason });
 	if (ok) {
@@ -164,10 +166,13 @@ export class AntiStuckController {
 			const state = this.states.get(playerId);
 			return state ? policy(state) : {};
 		});
-		bus.registerRpc<AntiStuckReportRequest, boolean>(CONTROLLER_RPC.antiStuckReport, ({ session, reason, handlers }, ctx) => {
-			const state = this.states.get(ctx.playerId);
-			return state ? this.reportStuck(ctx.playerId, state, session, reason, handlers) : false;
-		});
+		bus.registerRpc<AntiStuckReportRequest, boolean>(
+			CONTROLLER_RPC.antiStuckReport,
+			({ session, reason, handlers, immediate }, ctx) => {
+				const state = this.states.get(ctx.playerId);
+				return state ? this.reportStuck(ctx.playerId, state, session, reason, handlers, immediate) : false;
+			},
+		);
 	}
 
 	attach(playerId: string, options: Omit<AntiStuckControllerOptions, "bus"> = {}): void {
@@ -212,7 +217,8 @@ export class AntiStuckController {
 		session: PlaybackSession,
 		reason: string,
 		handlers: AntiStuckRetryHandlers,
+		immediate = false,
 	): Promise<boolean> {
-		return recover(this.bus, playerId, state, session, ++state.generation, reason, handlers);
+		return recover(this.bus, playerId, state, session, ++state.generation, reason, handlers, undefined, immediate);
 	}
 }

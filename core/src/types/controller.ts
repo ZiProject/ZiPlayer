@@ -85,15 +85,7 @@ export interface PlaybackSessionSnapshot {
 }
 
 export type PlaybackSessionStatus =
-	| AudioPlayerStatus
-	| "idle"
-	| "loading"
-	| "playing"
-	| "paused"
-	| "stopped"
-	| "ended"
-	| "destroyed"
-	| "buffering";
+	AudioPlayerStatus | "idle" | "loading" | "playing" | "paused" | "stopped" | "ended" | "destroyed" | "buffering";
 export interface AntiStuckControllerOptions {
 	enabled?: boolean;
 	maxRetries?: number;
@@ -162,6 +154,8 @@ export interface AntiStuckReportRequest {
 	session: PlaybackSession;
 	reason: string;
 	handlers: AntiStuckRetryHandlers;
+	/** Hard failure (stream already dead): retry right away instead of waiting `retryDelayMs`. */
+	immediate?: boolean;
 }
 export interface TrackLoadRequest {
 	track: Track;

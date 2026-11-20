@@ -59,4 +59,19 @@ test("YouTube stream source order respects preferYoutubei", async () => {
 	};
 	assert.equal(await preferredPlugin.getStream(track), youtubeiResult);
 	assert.deepEqual(preferredAttempts, ["youtubei"]);
+
+	// Live streams must always prioritize SABR even if preferYoutubei is enabled
+	const liveTrack = { id: "live-id", title: "Live radio", duration: 0, isLive: true };
+	const liveAttempts = [];
+	preferredPlugin.extractVideoId = () => liveTrack.id;
+	preferredPlugin.downloadWithSabr = async () => {
+		liveAttempts.push("sabr");
+		return sabrResult;
+	};
+	preferredPlugin.downloadWithYoutubei = async () => {
+		liveAttempts.push("youtubei");
+		return youtubeiResult;
+	};
+	assert.equal(await preferredPlugin.getStream(liveTrack), sabrResult);
+	assert.deepEqual(liveAttempts, ["sabr"]);
 });

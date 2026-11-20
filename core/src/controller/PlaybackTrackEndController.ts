@@ -82,7 +82,9 @@ export class PlaybackTrackEndController {
 		if (!this.queueSnapshot().length) return;
 		const generation = ++this.queueStartGeneration;
 		this.queueStartPromise = this.startQueuedTrackAfterEnd()
-			.catch((error) => reportStreamError(this.bus, this.playerId, queryPlaybackSession(this.bus, this.playerId)?.track ?? null, error))
+			.catch((error) =>
+				reportStreamError(this.bus, this.playerId, queryPlaybackSession(this.bus, this.playerId)?.track ?? null, error),
+			)
 			.finally(() => {
 				if (generation === this.queueStartGeneration) this.queueStartPromise = null;
 			});
@@ -137,6 +139,10 @@ export class PlaybackTrackEndController {
 					isFromQueueOrLoop = false;
 				}
 			}
+
+			// A manual skip may have taken over while related tracks were being fetched: it already started
+			// (or is starting) the next track, so starting another one here would skip twice.
+			if (!current.isActive() || this.lifecycleSignal.aborted) return;
 
 			// Emit willNext
 			this.bus.requestRpcSync(this.playerId, PLAYER_RPC.queueWillNext, { track: next });

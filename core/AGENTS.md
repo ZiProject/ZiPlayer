@@ -63,9 +63,7 @@ async function playInGuild(guildId: string, voiceChannel: VoiceChannel, query: s
 		leaveOnEnd: true,
 		leaveOnEmpty: true,
 		volume: 80,
-		userdata: {
-			/*User store data*/
-		},
+		userdata: {/*User store data*/},
 	});
 
 	if (!player.connection) await player.connect(voiceChannel);
@@ -270,7 +268,7 @@ The Bus contract is defined in [`src/structures/BusContract.ts`](src/structures/
 3. **Preserve synchronous query contracts.** `querySync()` and `requestRpcSync()` must return immediate, non-Promise values. An
    asynchronous handler must use the asynchronous query/RPC path.
 4. **Serialize playback mutations.** `PLAY`, `PAUSE`, `RESUME`, `SEEK`, `STOP`, `SKIP`, and `SET_VOLUME` must pass through
-   `PlayerActionExecutor` (`this.action()` or `bus.action()`).
+   `PlayerAction` (`this.action()` or `bus.action()`).
 5. **Enforce forward-mode guards.** Followers (`playbackMode === PlaybackMode.FORWARD`) must not mutate playback. Existing facade
    methods return `false` or return early and log a debug message.
 6. **Recover from failed starts.** A failed track start must not leave playback idle indefinitely. Respect
@@ -304,7 +302,7 @@ Use an existing contract before adding another. When adding a contract, update `
 | `PlaybackSkipController`                   | Skip, transition lock, fadeout, and autoplay fallback                              |
 | `PlaybackSeekController`                   | Seek validation, timeouts, stream recreation, and pipe seeking                     |
 | `PlaybackPreparationController`            | Related-track selection, `willNext`, `willPlay`, and preload preparation           |
-| `TrackLoader` / `TrackResolverController`  | Stream resolution and recovery through plugins, extensions, and stream managers    |
+| `TrackLoader` / `TrackResolver`            | Stream resolution and recovery through plugins, extensions, and stream managers    |
 | `PreloadManager`                           | Upcoming-track preloads, promotion, and broken-stream cleanup                      |
 | `AntiStuckController`                      | Stalled buffering detection, recovery, and skip fallback                           |
 | `TransitionController`                     | Transition timing, genre-aware duration, and beat alignment                        |
@@ -332,8 +330,11 @@ substitute a related track. When autoplay is enabled and the queue is empty, sel
 
 ### Forward Mode
 
-- Subscription validates the follower's voice connection/player, stops independent follower playback, subscribes its voice
-  connection to the leader audio player, then sets `PlaybackMode.FORWARD` and emits `forwardModeStart`.
+- Subscription validates the follower's voice connection/player and that the leader has an audio player (the leader needs no
+  Discord voice connection), stops independent follower playback, subscribes its voice connection to the leader audio player, then
+  sets `PlaybackMode.FORWARD` and emits `forwardModeStart`.
+- `Player.subscribeTo()` is asynchronous (`bus.requestRpc`); the `forward.subscribe` handler is async, so never call it through
+  `requestRpcSync`. `unsubscribeForward()` stays synchronous.
 - The leader's track and playback events are mirrored to followers.
 - Followers cannot call mutating playback methods (`play`, `playNext`, `pause`, `resume`, `stop`, `seek`, `skip`, `previous`,
   `insert`, `clearQueue`, `setVolume`). Preserve this guard in facade and controller paths where needed.
@@ -349,6 +350,34 @@ Managed teardown must be idempotent and follow this order:
    Bus subscriptions.
 
 Do not bypass manager teardown or dispose Bus subscriptions before controller detach.
+
+### Multi-Node Support (`@ziplayer/net`)
+
+`net/` (`@ziplayer/net`, separate package) connects ZiPlayer processes over MQTT. Core only provides two hooks for it; keep them
+stable:
+
+- `PlayerManager.resolveStream(track, { fresh? })` resolves a normalized `StreamInfo` through the shared plugin manager without
+  creating a player. The caller owns and must destroy the returned stream. Raw PCM is still rejected by `normalizeStreamInfo`.
+- `Player.disconnect({ silent: true })` sends `connectionDisconnect` with `silent`, and `ConnectionController` then calls
+  `connection.destroy(false)` so the Discord channel is **not** left. Plain `disconnect()` still leaves the channel.
+
+Rules when touching connection, stream or extension code:
+
+- A voice hand-off works by giving `player.connect()` a channel whose `guild.voiceAdapterCreator` relays gateway payloads to
+  another node. Do not add a generic stream/output backend for this; `ConnectionController` must keep using
+  `adapterCreator: channel.guild.voiceAdapterCreator`.
+- The owner of a delegated player plays through `StreamInfo.remote` + `handle` (same contract as the Lavalink extension); keep
+  that path free of connection or output checks.
+- `ExtensionManager.provideStream` runs before plugins; `NetExtension` relies on it to pull audio from another node. It caches
+  results by track, so single-use streams must return `cacheable: false` (`RawStreamInfo`); otherwise a replay gets a consumed
+  stream and a later hand-off is bypassed by the cached entry.
+- `StreamController` only forwards `stop()` to a remote handle and stays in REMOTE mode until the remote ends. `@ziplayer/net`
+  therefore calls the public `Player.exitRemoteMode()` after a remote stop, on `reclaimVoice`, and when the executor disappears.
+- Only compressed audio crosses the network: Opus containers (`webm/opus`, `ogg/opus`, `opus`) and `arbitrary` (what the official
+  plugins return, demuxed by the receiver as usual). Raw PCM is refused. Peers cannot make a node fetch a URL.
+- One process holds one `PlayerManager` (singleton), so tests for several nodes use in-memory transports in one process only with
+  fake managers (see `tests/net_voice.test.js`), or separate processes with real managers.
+- Tests: `tests/net_*.test.js` need `net/dist`; run `npm install --prefix net` once, then `npm test` builds it automatically.
 
 ## Core Development Checks
 

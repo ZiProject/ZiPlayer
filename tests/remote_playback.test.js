@@ -180,3 +180,20 @@ test("plugin returning remote: true sets REMOTE mode and exitRemoteMode restores
 	assert.equal(player.playbackMode, PlaybackMode.NATIVE);
 	assert.ok(calls.includes("destroy"));
 });
+
+test("replacing remote playback stops the current remote handle first", async (t) => {
+	const mgr = new PlayerManager();
+	t.after(() => mgr.destroy());
+
+	const calls = [];
+	const player = await mgr.create("guild-remote-replace");
+	const createHandle = (id) => ({
+		play: async () => calls.push(`play:${id}`),
+		destroy: async () => calls.push(`destroy:${id}`),
+	});
+
+	await player.playRemote({ id: "remote-current" }, { remote: true, handle: createHandle("remote-current") });
+	await player.playRemote({ id: "remote-next" }, { remote: true, handle: createHandle("remote-next") });
+
+	assert.deepEqual(calls, ["play:remote-current", "destroy:remote-current", "play:remote-next"]);
+});

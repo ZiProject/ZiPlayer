@@ -570,10 +570,14 @@ export class WebAudioClient extends EventTarget {
 			if (this.socket !== socket) return;
 			try {
 				if (typeof event.data === "string") this.receiveControlMessage(event.data);
+				else if (!this.config)
+					return; // frame đến trước audio:config: bỏ qua, chờ config
 				else this.receiveOpusFrame(event.data);
 			} catch (error) {
 				this.reportError(error);
-				socket.close(1002, "Invalid audio protocol message");
+				try {
+					socket.close(4002, "Invalid audio protocol message"); // 1002 không hợp lệ trên browser
+				} catch {}
 			}
 		};
 		socket.addEventListener("message", onMessage);
@@ -828,6 +832,13 @@ export class WebAudioClient extends EventTarget {
 			case "playback:resume":
 				void this.audioContext?.resume().catch((error) => this.reportError(error));
 				this.setState("playing");
+				break;
+			case "playback:flush":
+				// Abrupt source change (skip/seek/stop): drop buffered audio of the old source without
+				// leaving the "playing" state, so stale frames never play before the new track.
+				this.pendingOpusFrames = [];
+				this.opusDecoder?.reset();
+				this.workletNode?.port.postMessage({ type: "flush" });
 				break;
 			case "playback:stop":
 				this.pendingOpusFrames = [];

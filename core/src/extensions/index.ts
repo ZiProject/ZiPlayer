@@ -437,8 +437,8 @@ export class ExtensionManager {
 						);
 
 						if (hasStream || hasHandle) {
-							// Only cache if it's a reusable stream (not remote with handle)
-							if (!isRemote) {
+							// Only cache reusable streams (not remote handles, not streams that opt out with cacheable: false)
+							if (!isRemote && (result as StreamInfo).cacheable !== false) {
 								this.setCachedStream(track, result as StreamInfo);
 							}
 							return result as StreamInfo;

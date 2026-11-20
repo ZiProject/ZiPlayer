@@ -18,6 +18,9 @@ import {
 	SharedControllerSet,
 	SourcePluginLike,
 	type TrackRequester,
+	type Track,
+	type StreamInfo,
+	normalizeStreamInfo,
 } from "../types";
 import type { BaseExtension } from "../extensions";
 import { PlayerEventDebug } from "../controller/PlayerEventDebug";
@@ -558,8 +561,8 @@ export class PlayerManager extends EventEmitter {
 		this.controllers.save?.attach(playerId, {
 			middleware: [async (track) => this.controllers.trackLoader.applyMiddleware(playerId, track)],
 			middlewareContext: { playerId, manager: this } as any,
-			resolveStream: (track) => pluginManager.getStream(track, { context: { playerId } }),
-			resolveVideoStream: (track) => pluginManager.getVideo(track, { playerId }),
+			resolveStream: (track, options) => pluginManager.getStream(track, { context: { playerId, signal: options?.signal } }),
+			resolveVideoStream: (track, options) => pluginManager.getVideo(track, { playerId, signal: options?.signal }),
 			debug: channel("SaveController"),
 		});
 		this.controllers.filter?.attach(playerId, undefined, channel("FilterController"), {
@@ -1006,7 +1009,11 @@ export class PlayerManager extends EventEmitter {
 	 *
 	 * ## Requirements
 	 * - All guilds must already have active players.
-	 * - All players must already be connected to voice channels.
+	 * - Every follower must already be connected to a voice channel.
+	 * - The leader only needs an AudioPlayer (it may be a WebAudio-only player).
+	 *
+	 * Subscription is asynchronous; failures are reported through the manager debug log.
+	 * Calling the returned cleanup also cancels subscriptions that have not finished yet.
 	 *
 	 * @param {PlaybackMirrorOptions} options Playback mirror configuration.
 	 *
@@ -1030,10 +1037,11 @@ export class PlayerManager extends EventEmitter {
 		if (!leader) {
 			throw new Error(`subscribeForwardMirror: no player for leader guild ${options.leaderGuildId}`);
 		}
-		if (!leader.connection) {
-			throw new Error(`Leader player ${options.leaderGuildId} is not connected to a voice channel`);
+		if (!leader.audioPlayer) {
+			throw new Error(`Leader player ${options.leaderGuildId} has no AudioPlayer`);
 		}
 		const followers = [...new Set(options.followerGuildIds)].filter((id) => id !== options.leaderGuildId);
+		let stopped = false;
 
 		for (const gid of followers) {
 			const fp = this.get(gid);
@@ -1048,12 +1056,20 @@ export class PlayerManager extends EventEmitter {
 				continue;
 			}
 
-			fp.subscribeTo(leader, {
-				forwardMode: options.forwardMode,
-			});
+			void fp
+				.subscribeTo(leader, {
+					forwardMode: options.forwardMode,
+				})
+				.then((subscribed) => {
+					if (!subscribed) this.debug(`Playback mirror: follower ${gid} could not subscribe to ${options.leaderGuildId}`);
+					// Cleanup ran while the subscription was still in flight: undo it now.
+					else if (stopped) fp.unsubscribeForward();
+				})
+				.catch((error) => this.debug(`Playback mirror: follower ${gid} subscribe failed: ${error?.message ?? error}`));
 		}
 
 		return () => {
+			stopped = true;
 			for (const gid of followers) {
 				const fp = this.get(gid);
 
@@ -1356,6 +1372,18 @@ export class PlayerManager extends EventEmitter {
 			this.debug(`Search error:`, error);
 			throw error as Error;
 		}
+	}
+
+	/**
+	 * Resolves a playable stream for `track` through the manager's plugins without needing a player.
+	 * The caller owns the returned stream and must destroy it. Used by `@ziplayer/net` stream providers.
+	 */
+	async resolveStream(track: Track, options?: { fresh?: boolean }): Promise<StreamInfo | null> {
+		this.assertNotDisposed();
+		const pluginManager = this.controllers.plugin?.getSharedManager();
+		if (!pluginManager) throw new Error("PluginController is unavailable");
+		const info = await pluginManager.getStream(track, { fresh: options?.fresh });
+		return info ? normalizeStreamInfo(track, info) : null;
 	}
 
 	/**

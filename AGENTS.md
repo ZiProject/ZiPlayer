@@ -7,10 +7,10 @@ Read the root [`README.md`](README.md) for public setup and player workflows. Fo
 
 - `core/src/` contains the player facade, manager, controllers, stream handling, audio subscribers, and public exports. Edit
   source here; `core/dist/` is generated.
-- `plugins/`, `extension/`, `infinity/`, and `adapters/` are separate integration packages.
+- `plugins/`, `extensions/`, `infinity/`, `adapters/`, and `net/` are separate integration packages.
 - `client/` is the browser Opus receiver package. Keep its browser entry free of Node.js APIs.
 - `examples/backend/` is the runnable ZiPlayer + authenticated WebSocket gateway + browser playback example.
-- `docs/` contains implementation/API references, including the audio output contract.
+- `docs/` contains player event flow and event debugging references (`PLAYER_EVENT_FLOW.md`, `PLAYER_EVENT_DEBUG.md`).
 - `tests/` contains core regression tests; each package can also provide focused tests.
 
 ## User-facing behavior
@@ -20,6 +20,12 @@ Read the root [`README.md`](README.md) for public setup and player workflows. Fo
 - Discord Voice and WebAudio outputs subscribe to the shared `@discordjs/voice` `AudioPlayer`; attach browser output with
   `player.connect(webConnection)`. `WebAudioConnection` publishes only Opus packets in Wire Format v1 frames through an
   application gateway. The `@ziplayer/client` browser receiver decodes Opus to PCM locally for AudioWorklet playback.
+- `net/` (`@ziplayer/net`) links ZiPlayer processes over MQTT. It is not an output backend: it moves compressed audio (Opus
+  containers and `arbitrary`, never raw PCM) between nodes, and hands a Discord voice session to another node through a relay
+  `voiceAdapterCreator`, so the real `@discordjs/voice` connection still runs on the node that plays. Control data and voice
+  credentials are always end-to-end encrypted; audio is clear by default (`encryptAudio` is opt-in). A node never fetches a URL a
+  peer hands it; a provider resolves peer-requested tracks only through its own plugins (use the `allow` hook). Test with
+  `tests/net_*.test.js` (`npm install --prefix net` once so `npm test` builds and runs them).
 - PCM remains internal to DSP/codec processing and browser decoding, not a WebSocket transport. Do not reintroduce server-side PCM
   output backends or a custom output backend/factory API. Discord Voice and WebAudio connections subscribe directly to the shared
   `AudioPlayer`; attach browser output with `player.connect(webConnection)`.

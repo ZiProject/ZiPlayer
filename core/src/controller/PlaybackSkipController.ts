@@ -91,8 +91,7 @@ export class PlaybackSkipController {
 			if (context.signal.aborted) return false;
 			if (oldSession?.isActive()) {
 				const transition = this.bus.querySync(this.playerId, PLAYER_QUERY.transitionSettings) as
-					| { enabled?: boolean }
-					| undefined;
+					{ enabled?: boolean } | undefined;
 				if (transition?.enabled) {
 					try {
 						await this.bus.requestRpc(this.playerId, PLAYER_RPC.transitionFadeOutCurrent, undefined);
@@ -118,9 +117,12 @@ export class PlaybackSkipController {
 			if (context.signal.aborted) return false;
 
 			if (!next && this.bus.querySync(this.playerId, PLAYER_QUERY.queueAutoPlay) && oldSession) {
+				// After a natural end nothing may be playing (autoplay found nothing / failed): the old session is
+				// "ended" and Next must still reach autoplay instead of silently ending the queue again.
 				const candidate = await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackPrepareAutoplay, {
 					session: oldSession,
 					context,
+					allowEnded: oldSession.status === "ended",
 				});
 				if (context.signal.aborted) return false;
 

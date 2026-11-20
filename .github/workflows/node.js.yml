@@ -94,7 +94,7 @@ jobs:
         with:
           path: ~/.npm
           key:
-            npm-${{ runner.os }}-${{ hashFiles('core/package.json', 'plugins/package.json', 'extension/package.json',
+            npm-${{ runner.os }}-${{ hashFiles('core/package.json', 'plugins/package.json', 'extensions/package.json',
             'package.json') }}
           restore-keys: npm-${{ runner.os }}-
 
@@ -110,10 +110,10 @@ jobs:
           npm -C plugins install --package-lock=false --no-audit --no-fund
           npm -C plugins run build
 
-      - name: Bootstrap extension package
+      - name: Bootstrap extensions package
         run: |
-          npm -C extension install --package-lock=false --no-audit --no-fund
-          npm -C extension run build
+          npm -C extensions install --package-lock=false --no-audit --no-fund
+          npm -C extensions run build
 
       - name: Bootstrap root package
         run: npm install --no-save --package-lock=false --no-audit --no-fund ./core

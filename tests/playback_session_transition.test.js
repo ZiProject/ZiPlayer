@@ -502,3 +502,75 @@ test("PreloadManager manages StreamInfo directly without AudioResource and prese
 	preloadManager.dispose();
 	streamManager.dispose();
 });
+
+test("Next after a natural end that found no autoplay candidate still enters autoplay", async () => {
+	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
+	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
+	let related = [];
+	const harness = createOrchestrator({ autoPlay: true, relatedResolver: async () => related });
+
+	await play(harness, trackA);
+	const endedSession = harness.orchestrator.getCurrentSession(harness.playerId);
+	// Natural end, autoplay has nothing to offer yet: the session ends and the player waits.
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: endedSession.snapshot() });
+	await waitFor(() => endedSession.status === "ended");
+	assert.deepEqual(harness.played, ["track-a"]);
+
+	// Later related tracks become available; pressing Next must reach autoplay although no track is live.
+	related = [trackB];
+	await harness.bus.action(harness.playerId, { type: "SKIP" }, context());
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackB);
+	assert.deepEqual(harness.played, ["track-a", "track-b"], harness.errors.join("; "));
+	await harness.orchestrator.dispose();
+	harness.queueController.dispose();
+});
+
+test("an explicit stop is not revived by Next through autoplay", async () => {
+	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
+	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
+	const harness = createOrchestrator({ autoPlay: true, related: [trackB] });
+
+	await play(harness, trackA);
+	await harness.bus.action(harness.playerId, { type: "STOP" }, context());
+	await harness.bus.action(harness.playerId, { type: "SKIP" }, context());
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.deepEqual(harness.played, ["track-a"]);
+	await harness.orchestrator.dispose();
+	harness.queueController.dispose();
+});
+
+test("a manual skip that takes over during TRACK_END autoplay lookup does not start a second track", async () => {
+	const trackA = { id: "track-a", title: "Track A", duration: 180000 };
+	const trackB = { id: "track-b", title: "Track B", duration: 180000 };
+	const trackC = { id: "track-c", title: "Track C", duration: 180000 };
+	const releases = [];
+	let blocking = false;
+	const harness = createOrchestrator({
+		autoPlay: true,
+		relatedResolver: async () => {
+			if (!blocking) return [trackB];
+			await new Promise((resolve) => releases.push(resolve));
+			return [trackB];
+		},
+	});
+
+	await play(harness, trackA);
+	const session = harness.orchestrator.getCurrentSession(harness.playerId);
+	blocking = true;
+	harness.bus.event(harness.playerId, { type: "TRACK_END", session: session.snapshot() });
+	await waitFor(() => releases.length === 1); // TRACK_END is now waiting for related tracks
+
+	harness.bus.requestRpcSync(harness.playerId, "queue.add", { track: trackC });
+	const skipped = harness.bus.action(harness.playerId, { type: "SKIP" }, context());
+	await waitFor(() => harness.orchestrator.getCurrentSession(harness.playerId)?.track === trackC);
+
+	// Unblock every pending related lookup (TRACK_END's and the new track's own preparation).
+	for (let i = 0; i < 20; i++) {
+		releases.splice(0).forEach((release) => release());
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	await skipped;
+	assert.deepEqual(harness.played, ["track-a", "track-c"], "TRACK_END must not start a second track after the skip");
+	await harness.orchestrator.dispose();
+	harness.queueController.dispose();
+});

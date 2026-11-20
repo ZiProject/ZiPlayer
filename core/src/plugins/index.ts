@@ -844,7 +844,7 @@ export class PluginManager {
 
 		if (cached && Date.now() < cached.expiresAt) {
 			const s = cached.streamInfo?.stream;
-			if (!s || s.destroyed || (s as any).readable === false) {
+			if (!s || s.destroyed || (s as any).readable === false || (s as any).readableEnded || (s as any)._readableState?.ended) {
 				this.debug(`[StreamCache] Dead stream detected, evicting: ${track.title}`);
 				runtime.streamCache.delete(key);
 				return null;

@@ -3,22 +3,22 @@ import { pipeline } from "node:stream/promises";
 
 import { YouTubePlugin } from "./src";
 
-const plugin = new YouTubePlugin({});
+const plugin = new YouTubePlugin({
+	debug: console.log,
+});
 
 const track = {
-	id: process.argv[2] ?? "J1X6LEa1hYA",
-	url: `https://www.youtube.com/watch?v=${process.argv[2] ?? "J1X6LEa1hYA"}`,
+	id: "J1X6LEa1hYA",
+	url: `https://www.youtube.com/watch?v=${"J1X6LEa1hYA"}`,
 	title: "test",
 	metadata: {},
 } as any;
 
 async function main() {
-	const info = await plugin?.getVideo?.(track);
-
-	console.log("Metadata:", info.metadata);
-
-	await pipeline(info.stream!, createWriteStream(process.argv[3] ?? "./test-video.mp4"));
-
+	const video = await plugin?.getVideo?.(track);
+	await pipeline(video.stream!, createWriteStream("./test-video.mp4"));
+	const audio = await plugin?.getStream?.(track);
+	await pipeline(audio.stream!, createWriteStream("./test-audio.opus"));
 	console.log("Done");
 }
 

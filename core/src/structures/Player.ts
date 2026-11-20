@@ -358,9 +358,17 @@ export class Player extends EventEmitter {
 	public getWebAudioSubscribers() {
 		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.connectionWebAudioList, undefined);
 	}
-	public async disconnect(): Promise<void> {
+	/**
+	 * Disconnects the voice connection. With `{ silent: true }` the local connection is destroyed
+	 * without leaving the Discord voice channel (used when handing the voice session to another node).
+	 */
+	public async disconnect(options?: { silent?: boolean }): Promise<void> {
 		return this.bus
-			.request(this.playerId, { type: BUS_REQUEST.connectionDisconnect, requestId: createPlayerRequestId() })
+			.request(this.playerId, {
+				type: BUS_REQUEST.connectionDisconnect,
+				requestId: createPlayerRequestId(),
+				silent: options?.silent === true ? true : undefined,
+			})
 			.then(() => undefined);
 	}
 
@@ -719,8 +727,9 @@ export class Player extends EventEmitter {
 			.catch(() => false);
 	}
 	async save(track: Track, options?: SaveOptions | string): Promise<Stream.Readable> {
+		const signal = typeof options === "object" ? options?.signal : undefined;
 		try {
-			return await this.bus.requestRpc(this.playerId, PLAYER_RPC.save, { track, options });
+			return await this.bus.requestRpc(this.playerId, PLAYER_RPC.save, { track, options }, { signal });
 		} catch (error) {
 			this.debug("[Player] save error:", error);
 			this.emit("playerError", error as Error, track);
@@ -729,8 +738,9 @@ export class Player extends EventEmitter {
 	}
 	async saveVideo(track: Track, options?: SaveVideoOptions | string): Promise<Stream.Readable> {
 		if (!track) throw new TypeError("A track is required to save video");
+		const signal = typeof options === "object" ? options?.signal : undefined;
 		try {
-			return await this.bus.requestRpc(this.playerId, PLAYER_RPC.saveVideo, { track, options });
+			return await this.bus.requestRpc(this.playerId, PLAYER_RPC.saveVideo, { track, options }, { signal });
 		} catch (error) {
 			this.debug("[Player] saveVideo error:", error);
 			this.emit("playerError", error as Error, track);
@@ -778,10 +788,11 @@ export class Player extends EventEmitter {
 			return false;
 		}
 		return this.bus
-			.requestRpc<
-				{ query: string | Track | Track[]; index: number; requestedBy?: TrackRequester },
-				boolean
-			>(this.playerId, PLAYER_RPC.queueInsert, { query, index, requestedBy })
+			.requestRpc<{ query: string | Track | Track[]; index: number; requestedBy?: TrackRequester }, boolean>(
+				this.playerId,
+				PLAYER_RPC.queueInsert,
+				{ query, index, requestedBy },
+			)
 			.catch(() => false);
 	}
 	public remove(index: number): Track | null {
@@ -968,8 +979,9 @@ export class Player extends EventEmitter {
 			extension,
 		});
 	}
-	public subscribeTo(leader: Player | string, options?: { forwardMode?: boolean }): boolean {
-		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.forwardSubscribe, { leader, options });
+
+	public subscribeTo(leader: Player | string, options?: { forwardMode?: boolean }): Promise<boolean> {
+		return this.bus.requestRpc(this.playerId, PLAYER_RPC.forwardSubscribe, { leader, options });
 	}
 	public unsubscribeForward(reason?: string): boolean {
 		return this.bus.requestRpcSync(this.playerId, PLAYER_RPC.forwardUnsubscribe, { reason });

@@ -1,0 +1,33 @@
+# ACL for the cluster test. The username of each client is its node id (MQTT_USERNAME={node}).
+# Payloads are ciphertext / authenticated end to end, so the broker is not trusted; these rules only stop a node from
+# impersonating another node's presence or reading someone else's inbox.
+#
+# Mosquitto applies `topic` lines that appear BEFORE the first `user` line to anonymous clients only, so every node gets
+# its own block. Copy a block for each node id in NODES (and keep NET_ID as the "+" level, or replace it with the id).
+#
+#   read  presence of everyone (retained + last-will)        write only its own presence
+#   read  only its own inbox / audio                          write into any peer's inbox / audio
+
+user bot-1
+topic read zi/v1/+/presence/+
+topic write zi/v1/+/presence/bot-1
+topic read zi/v1/+/node/bot-1/in
+topic read zi/v1/+/node/bot-1/au
+topic write zi/v1/+/node/+/in
+topic write zi/v1/+/node/+/au
+
+user yt-1
+topic read zi/v1/+/presence/+
+topic write zi/v1/+/presence/yt-1
+topic read zi/v1/+/node/yt-1/in
+topic read zi/v1/+/node/yt-1/au
+topic write zi/v1/+/node/+/in
+topic write zi/v1/+/node/+/au
+
+user tts-1
+topic read zi/v1/+/presence/+
+topic write zi/v1/+/presence/tts-1
+topic read zi/v1/+/node/tts-1/in
+topic read zi/v1/+/node/tts-1/au
+topic write zi/v1/+/node/+/in
+topic write zi/v1/+/node/+/au

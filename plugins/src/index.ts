@@ -107,3 +107,25 @@ export * from "./TTSPlugin.js";
  * );
  */
 export * from "./AttachmentsPlugin.js";
+
+/**
+ * Bilibili plugin for handling Bilibili videos, playlists, and search.
+ *
+ * Provides comprehensive support for Bilibili content including:
+ * - Video URLs (bilibili.com, b23.tv)
+ * - Playlist URLs and user favorites
+ * - Search functionality
+ * - Audio stream extraction
+ * - Related track recommendations
+ *
+ * @example
+ * const bilibiliPlugin = new BilibiliPlugin({
+ *   quality: "super",
+ *   preferHiRes: false,
+ *   multiPartAsPlaylist: true,
+ *   maxPlaylistItems: 100
+ * });
+ * const result = await bilibiliPlugin.search("周杰伦 青花瓷", "user123");
+ */
+
+export * from "./BilibiliPlugin.js";

@@ -1,13 +1,10 @@
-// pretest helper: rebuild core only when dist is missing or older than src.
+// pretest helper: rebuild core (and @ziplayer/net) only when dist is missing or older than src.
 // Uses the fast build (no .d.ts) because tests only load the JS output.
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
-const srcDir = path.join(root, "core", "src");
-const distEntry = path.join(root, "core", "dist", "index.js");
-
 function newestMtime(dir) {
 	let newest = 0;
 	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -17,20 +14,48 @@ function newestMtime(dir) {
 	return newest;
 }
 
-const configs = ["package.json", "tsup.config.ts", "tsconfig.json"].map((f) => path.join(root, "core", f));
-const srcNewest = Math.max(newestMtime(srcDir), ...configs.filter(fs.existsSync).map((f) => fs.statSync(f).mtimeMs));
-const distTime = fs.existsSync(distEntry) ? fs.statSync(distEntry).mtimeMs : 0;
+const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 
-if (process.env.ZIPLAYER_FORCE_BUILD !== "1" && distTime > srcNewest) {
-	console.log("[pretest] core/dist is up to date, skipping build");
-	process.exit(0);
+function ensureBuild({ name, dir, entry, configFiles, script }) {
+	const srcDir = path.join(root, dir, "src");
+	const distEntry = path.join(root, dir, "dist", entry);
+	if (!fs.existsSync(srcDir)) return 0;
+	const configs = configFiles.map((f) => path.join(root, dir, f));
+	const srcNewest = Math.max(newestMtime(srcDir), ...configs.filter(fs.existsSync).map((f) => fs.statSync(f).mtimeMs));
+	const distTime = fs.existsSync(distEntry) ? fs.statSync(distEntry).mtimeMs : 0;
+	if (process.env.ZIPLAYER_FORCE_BUILD !== "1" && distTime > srcNewest) {
+		console.log(`[pretest] ${dir}/dist is up to date, skipping build`);
+		return 0;
+	}
+	console.log(`[pretest] building ${name}...`);
+	const r = spawnSync(npm, ["run", script, "--prefix", dir], {
+		cwd: root,
+		stdio: "inherit",
+		shell: process.platform === "win32",
+	});
+	return r.status ?? 1;
 }
 
-console.log("[pretest] building core (fast, no .d.ts)...");
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const r = spawnSync(npm, ["run", "build:fast", "--prefix", "core"], {
-	cwd: root,
-	stdio: "inherit",
-	shell: process.platform === "win32",
+// Core: fast build (no .d.ts) because tests only load the JS output.
+let status = ensureBuild({
+	name: "core (fast, no .d.ts)",
+	dir: "core",
+	entry: "index.js",
+	configFiles: ["package.json", "tsup.config.ts", "tsconfig.json"],
+	script: "build:fast",
 });
-process.exit(r.status ?? 1);
+
+// @ziplayer/net: plain tsc. Needs `npm install --prefix net` once; skipped (with a notice) otherwise.
+if (status === 0 && fs.existsSync(path.join(root, "net", "node_modules", "typescript"))) {
+	status = ensureBuild({
+		name: "net",
+		dir: "net",
+		entry: "index.js",
+		configFiles: ["package.json", "tsconfig.json"],
+		script: "build",
+	});
+} else if (status === 0 && fs.existsSync(path.join(root, "net", "src"))) {
+	console.log("[pretest] net/node_modules missing: run `npm install --prefix net` to build and test @ziplayer/net");
+}
+
+process.exit(status);

@@ -153,7 +153,13 @@ export class StreamController {
 		state: StreamState,
 		stream: { handle?: NonNullable<StreamInfo["handle"]> },
 	): Promise<boolean> {
-		state.remoteHandle = stream?.handle ?? null;
+		const nextHandle = stream?.handle ?? null;
+		const previousHandle = state.remoteHandle;
+		if (previousHandle && previousHandle !== nextHandle) {
+			if (previousHandle.destroy) await previousHandle.destroy();
+			else if (previousHandle.stop) await previousHandle.stop();
+		}
+		state.remoteHandle = nextHandle;
 		state.remotePaused = false;
 		if (this.bus.hasRpc(CONTROLLER_RPC.playbackModeSet)) {
 			this.bus.requestRpcSync(playerId, CONTROLLER_RPC.playbackModeSet, { mode: PlaybackMode.REMOTE });

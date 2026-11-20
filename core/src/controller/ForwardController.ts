@@ -165,9 +165,10 @@ export class ForwardController {
 			this.bus.querySync(leaderId, PLAYER_QUERY.forwardLeaderId) ?? this.bus.querySync(leaderId, PLAYER_QUERY.forwardLeader);
 		if (leaderMode === PlaybackMode.FORWARD || leaderLeader) return false;
 
+		// Only the follower needs a Discord voice connection (it is what plays the leader's audio).
+		// The leader just has to own an AudioPlayer: it may feed WebAudio outputs only.
 		const myConn = this.bus.querySync(playerId, PLAYER_QUERY.voiceConnection);
-		const leaderConn = this.bus.querySync(leaderId, PLAYER_QUERY.voiceConnection);
-		if (!myConn || !leaderConn) return false;
+		if (!myConn) return false;
 
 		const leaderAudioPlayer = this.bus.querySync(leaderId, PLAYER_QUERY.audioPlayer);
 		const playerAudioPlayer = this.bus.querySync(playerId, PLAYER_QUERY.audioPlayer);

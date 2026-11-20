@@ -36,6 +36,10 @@ interface PlaybackSlot {
 	activeResource: AudioResource | null;
 	readonly volumeValues: Map<AudioResource, number>;
 	readonly stopPromises: Map<string, Promise<boolean>>;
+	/** Resources whose stream died with an AudioPlayer error; their Idle transition is a failure, not a track end. */
+	readonly failedResources: WeakSet<AudioResource>;
+	/** Resource that must be paused the instant it becomes audible (in-place reload of a paused track). */
+	pauseOnReady: AudioResource | null;
 	activeSession: PlaybackSession | null;
 	transitionTimer: ReturnType<typeof setTimeout> | null;
 	transitionStartResolve: (() => void) | null;
@@ -82,10 +86,10 @@ export class PlaybackController {
 		bus.registerRpc<void, void>(PLAYER_RPC.transitionFadeOutCurrent, (_req, ctx) => this.applyCrossfadeOutCurrent(ctx.playerId));
 		bus.registerRpc<void, void>(PLAYER_RPC.transitionSkipAndStop, (_req, ctx) => this.crossfadeSkipAndStop(ctx.playerId));
 		bus.registerRpc<
-			{ resource: AudioResource; session?: PlaybackSession; from?: Track | null; to?: Track },
+			{ resource: AudioResource; session?: PlaybackSession; from?: Track | null; to?: Track; startPaused?: boolean },
 			void | Promise<void>
-		>(CONTROLLER_RPC.playbackPlay, ({ resource, session, from, to }, ctx) =>
-			this.play(ctx.playerId, resource, session, from, to, ctx.signal),
+		>(CONTROLLER_RPC.playbackPlay, ({ resource, session, from, to, startPaused }, ctx) =>
+			this.play(ctx.playerId, resource, session, from, to, ctx.signal, startPaused),
 		);
 		bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackPause, (_req, ctx) => this.pause(ctx.playerId, ctx.signal));
 		bus.registerRpc<void, boolean>(CONTROLLER_RPC.playbackResume, (_req, ctx) => this.resume(ctx.playerId, ctx.signal));
@@ -135,6 +139,8 @@ export class PlaybackController {
 			activeResource: null,
 			volumeValues: new Map(),
 			stopPromises: new Map(),
+			failedResources: new WeakSet(),
+			pauseOnReady: null,
 			activeSession: null,
 			transitionTimer: null,
 			transitionStartResolve: null,
@@ -149,10 +155,12 @@ export class PlaybackController {
 				retry: async ({ session }) => {
 					if (!session.isActive()) return false;
 					try {
+						// `position()` refreshes from the resource clock; `session.position` is stale while paused.
+						const position = this.position(playerId) ?? session.position ?? 0;
 						await this.bus.requestRpc(
 							playerId,
 							PLAYER_RPC.playbackRefreshResource,
-							{ position: session.position },
+							{ position },
 							{ signal: session.signal, timeoutMs: 30000 },
 						);
 						return session.isActive();
@@ -164,12 +172,32 @@ export class PlaybackController {
 					this.bus.action(playerId, { type: PLAYER_ACTION.skip }, { signal: session.signal, sessionId: session.sessionId }),
 			},
 			onStateChange: (a, b) => {
+				let pauseNow = false;
+				if (slot.pauseOnReady) {
+					const next = "resource" in b ? b.resource : undefined;
+					if (b.status === AudioPlayerStatus.Playing && next === slot.pauseOnReady) {
+						slot.pauseOnReady = null;
+						pauseNow = true;
+					} else if (b.status === AudioPlayerStatus.Idle || (next && next !== slot.pauseOnReady)) {
+						slot.pauseOnReady = null;
+					}
+				}
 				this.bus.publish(playerId, BUS_EVENT.stateChanged, a, b);
+				// Same synchronous dispatch as the Playing transition: no frame is sent before the pause.
+				if (pauseNow) slot.audioPlayer.pause(false);
 				if (b.status === AudioPlayerStatus.Buffering) this.armStuckWatchdog(slot);
 				else this.clearStuckWatchdog(slot);
 				if (b.status === AudioPlayerStatus.Idle && a.status !== AudioPlayerStatus.Idle) {
 					const previousResource = "resource" in a ? a.resource : undefined;
 					if (!slot.stopping && previousResource && previousResource === slot.activeResource) {
+						if (slot.failedResources.has(previousResource)) {
+							// The stream died (expired URL, destroyed while paused, ...). This is not a natural
+							// track end: keep the session alive so anti-stuck can reload it in place.
+							slot.failedResources.delete(previousResource);
+							slot.volumeValues.delete(previousResource);
+							slot.activeResource = null;
+							return;
+						}
 						const session = slot.activeSession;
 						if (session?.isActive()) {
 							this.bus.event(playerId, { type: BUS_EVENT.trackEnd, session: session.snapshot() });
@@ -183,11 +211,20 @@ export class PlaybackController {
 			onError: (error) => {
 				const normalized = toError(error);
 				const session = slot.activeSession;
+				const failedResource = (error as { resource?: AudioResource } | undefined)?.resource;
+				if (failedResource && failedResource === slot.activeResource) slot.failedResources.add(failedResource);
 				if (session?.isActive()) {
 					this.bus.event(playerId, { type: BUS_EVENT.trackError, session: session.snapshot(), error: normalized });
-					void this.reportStuck(slot, session, `audio player error: ${normalized.message}`).catch((reportError) =>
-						this.reportAsyncFailure(slot, reportError, session.track),
-					);
+					const reason = `audio player error: ${normalized.message}`;
+					void this.reportStuck(slot, session, reason, true)
+						.then((recovered) => {
+							// Anti-stuck disabled or gave up without skipping: never leave a dead session behind.
+							if (recovered || slot.disposed || !session.isActive() || slot.activeSession !== session || slot.activeResource)
+								return;
+							if (!session.track) return;
+							return slot.recoveryHandlers.skip({ session, track: session.track, retry: 0, reason });
+						})
+						.catch((reportError) => this.reportAsyncFailure(slot, reportError, session.track));
 				} else {
 					this.bus.event(playerId, { type: BUS_EVENT.streamError, error: normalized, track: null });
 				}
@@ -366,12 +403,12 @@ export class PlaybackController {
 	// Stuck watchdog / resource refresh / filter errors
 	// ---------------------------------------------------------------------
 
-	private reportStuck(slot: PlaybackSlot, session: PlaybackSession, reason: string): Promise<boolean> {
+	private reportStuck(slot: PlaybackSlot, session: PlaybackSession, reason: string, immediate = false): Promise<boolean> {
 		if (!session.isActive()) return Promise.resolve(false);
 		return this.bus.requestRpc(
 			slot.playerId,
 			CONTROLLER_RPC.antiStuckReport,
-			{ session, reason, handlers: slot.recoveryHandlers },
+			{ session, reason, handlers: slot.recoveryHandlers, immediate },
 			{ signal: session.signal },
 		);
 	}
@@ -489,6 +526,7 @@ export class PlaybackController {
 		from?: Track | null,
 		to?: Track,
 		signal?: AbortSignal,
+		startPaused = false,
 	): void | Promise<void> {
 		const slot = this.slots.get(playerId);
 		if (!slot || (session && !session.isActive())) return;
@@ -511,6 +549,9 @@ export class PlaybackController {
 		if (session) session.setResource(resource);
 		slot.activeSession = session ?? null;
 		slot.activeResource = resource;
+		// Armed before play(): the AudioPlayer pauses it inside the very stateChange that makes it
+		// Playing (see onStateChange), however long the stream takes to become readable.
+		slot.pauseOnReady = startPaused ? resource : null;
 		slot.audioPlayer.play(resource);
 		this.retirePendingSession(playerId);
 		return volumeUpdate;
@@ -706,6 +747,11 @@ export class PlaybackController {
 		const slot = this.slots.get(playerId);
 		if (!slot?.activeResource) return false;
 		if (signal?.aborted) throw this.outputAbortError();
+		if (slot.audioPlayer.state.status === AudioPlayerStatus.Buffering) {
+			// AudioPlayer.pause() is a no-op while buffering: pause as soon as it becomes audible.
+			slot.pauseOnReady = slot.activeResource;
+			return true;
+		}
 		return slot.audioPlayer.pause();
 	}
 
@@ -715,6 +761,11 @@ export class PlaybackController {
 		const slot = this.slots.get(playerId);
 		if (!slot?.activeResource) return false;
 		if (signal?.aborted) throw this.outputAbortError();
+		if (slot.pauseOnReady) {
+			// Resume requested while a paused reload is still buffering: just don't pause it when ready.
+			slot.pauseOnReady = null;
+			return true;
+		}
 		return slot.audioPlayer.unpause();
 	}
 

@@ -1,0 +1,12 @@
+{
+	"name": "@ziplayer/net-cluster-example",
+	"private": true,
+	"description": "Real Discord bot + provider nodes talking over MQTT (Mosquitto) with @ziplayer/net",
+	"scripts": {
+		"start": "node test-cluster.js",
+		"keys": "node test-cluster.js --keys"
+	},
+	"dependencies": {
+		"discord.js": "^14.16.0"
+	}
+}

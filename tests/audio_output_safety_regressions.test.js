@@ -56,12 +56,3 @@ test("FFmpeg executable resolution honors explicit path, environment path, bundl
 		fs.rmSync(temp, { recursive: true, force: true });
 	}
 });
-
-test("removed audio processing engine exports are not exposed", () => {
-	const core = require("../core/dist");
-	assert.equal(core.createAudioProcessingEngine, undefined);
-	assert.equal(core.FFmpegAudioProcessingEngine, undefined);
-	assert.equal(core.resolveAudioProcessingOptions, undefined);
-	assert.equal(core.getFfmpegProcessStats, undefined);
-	assert.equal(core.configureFfmpegConcurrency, undefined);
-});

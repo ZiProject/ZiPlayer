@@ -1,0 +1,5 @@
+.env
+.keys/
+node_modules/
+mqtt-debug.log
+voice-transfer-mqtt-debug.log
