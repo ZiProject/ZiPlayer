@@ -1,4 +1,5 @@
 <img width="1175" height="305" alt="logo" src="https://raw.githubusercontent.com/ZiProject/ZiPlayer/refs/heads/main/publish/logo.png" />
+<img width="2172" height="724" alt="ZiPlayer NET" src="https://github.com/user-attachments/assets/5247fd4b-dbe0-4702-beb9-ef6eecdca569" />
 
 # ZiPlayer
 
