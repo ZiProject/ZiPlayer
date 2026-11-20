@@ -249,6 +249,9 @@ await player.play(track);
 await net.reclaimVoice(player); // Return voice to the owner
 ```
 
+Reclaim stops the remote current track, preserves queued tracks, and refreshes the gateway voice state before reconnecting the
+owner to the channel. This avoids leaving a stale remote playback session behind or reusing an unchanged Discord voice session.
+
 The executor must call `net.acceptVoice()` and pass an authorization check if configured. By default, the executor resolves the
 track with its own plugins. Set `{ streamFrom: "owner" }` in `delegateVoice()` when the owner should provide the audio stream. The
 owner reconnects locally if delegation fails or the executor goes offline, provided its gateway adapter can resolve the original

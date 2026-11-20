@@ -115,6 +115,7 @@ export class PlaybackStartController {
 				await this.bus.requestRpc(this.playerId, CONTROLLER_RPC.playbackRemoteAttach, { stream: loaded.stream });
 				session.markPlaying(0);
 				this.consecutiveFailures = 0;
+				if (transition) this.sessionController.retirePendingPrevious(this.playerId);
 				this.bus.event(this.playerId, { type: BUS_EVENT.trackStarted, session: session.snapshot(), track });
 				await this.prepareTrack(session, context);
 				return;

@@ -44,6 +44,8 @@ interface Delegation {
 	executor: string;
 	channelId: string;
 	channel: any;
+	selfDeaf: boolean;
+	selfMute: boolean;
 	streamFrom: "executor" | "owner";
 	stopRelay: () => void;
 }
@@ -439,6 +441,8 @@ export class ZiNet {
 			executor: executorId,
 			channelId,
 			channel,
+			selfDeaf: connection.joinConfig.selfDeaf,
+			selfMute: connection.joinConfig.selfMute,
 			streamFrom: options.streamFrom ?? "executor",
 			stopRelay,
 		});
@@ -469,13 +473,59 @@ export class ZiNet {
 		const guildId: string = player.guildId;
 		const d = this.delegations.get(guildId);
 		if (!d) return;
+		const queuedTracks = player.queue?.getTracks?.() ?? [];
+		const hadCurrentTrack = player.currentTrack != null;
 		await this.node.request(d.executor, "voice.release", { guildId }, { timeoutMs: 10_000 }).catch(() => {});
 		this.dropDelegation(guildId);
 		try {
 			player.exitRemoteMode?.();
 		} catch {}
+		if (hadCurrentTrack) {
+			if (!(await player.stop())) throw new NetError("Could not clear remote playback while reclaiming voice", "STOP_FAILED");
+			if (queuedTracks.length) player.queue.addMultiple(queuedTracks);
+		}
 		const channel = options.channel ?? d.channel;
-		if (channel) await player.connect(channel);
+		if (channel) {
+			await this.leaveGatewayVoice(guildId, d);
+			await player.connect(channel);
+		}
+	}
+
+	private async leaveGatewayVoice(guildId: string, delegation: Delegation): Promise<void> {
+		const gateway = this.gateway;
+		if (!gateway) return;
+		await new Promise<void>((resolve, reject) => {
+			let settled = false;
+			let unsubscribe = () => {};
+			const finish = (error?: unknown) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timeout);
+				unsubscribe();
+				if (error) reject(error);
+				else resolve();
+			};
+			const timeout = setTimeout(
+				() => finish(new NetError(`Timed out waiting for guild ${guildId} to leave voice before reclaim`, "VOICE_LEAVE_TIMEOUT")),
+				5_000,
+			);
+			unsubscribe = gateway.onVoiceUpdate((eventGuildId, kind, data) => {
+				if (eventGuildId === guildId && kind === "state" && data?.channel_id == null) finish();
+			});
+			try {
+				gateway.send(guildId, {
+					op: 4,
+					d: {
+						guild_id: guildId,
+						channel_id: null,
+						self_deaf: delegation.selfDeaf,
+						self_mute: delegation.selfMute,
+					},
+				});
+			} catch (error) {
+				finish(error);
+			}
+		});
 	}
 
 	private dropDelegation(guildId: string) {

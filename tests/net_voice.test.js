@@ -103,6 +103,11 @@ class FakePlayer extends EventEmitter {
 		this.destroyed = false;
 		this.connection = null;
 		this.currentTrack = null;
+		this.queuedTracks = [];
+		this.queue = {
+			getTracks: () => this.queuedTracks.slice(),
+			addMultiple: (tracks) => this.queuedTracks.push(...tracks),
+		};
 	}
 	async connect(channel) {
 		this.log.push(`connect:${channel.id}`);
@@ -139,6 +144,10 @@ class FakePlayer extends EventEmitter {
 	}
 	async stop() {
 		this.log.push("stop");
+		this.isPlaying = false;
+		this.currentTrack = null;
+		this.queuedTracks = [];
+		return true;
 	}
 	async seek(p) {
 		this.log.push(`seek:${p}`);
@@ -180,7 +189,12 @@ async function voiceSetup(t, { roles } = {}) {
 	const gateway = {
 		userId: "bot",
 		onVoiceUpdate: (l) => (listeners.add(l), () => listeners.delete(l)),
-		send: (guildId, payload) => sent.push({ guildId, payload }),
+		send: (guildId, payload) => {
+			sent.push({ guildId, payload });
+			if (payload.op === 4 && payload.d.channel_id === null) {
+				for (const listener of listeners) listener(guildId, "state", { guild_id: guildId, channel_id: null });
+			}
+		},
 		resolveChannel: (_g, id) => ({ id, type: 2, guild: {} }),
 	};
 	const ownerMgr = fakeManager(ownerLog);
@@ -306,6 +320,27 @@ test("reclaimVoice: executor lets go silently and the owner reconnects", async (
 	assert.ok(s.execLog.includes("disconnect:silent"));
 	assert.deepEqual(s.ownerLog, ["exitRemote", "connect:c1"], "leave REMOTE mode, then reconnect locally");
 	assert.equal(s.listeners.size, 0);
+});
+
+test("reclaimVoice stops stale remote playback and preserves queued tracks", async (t) => {
+	const s = await voiceSetup(t);
+	await s.ownerNet.delegateVoice(s.player, "exec");
+	s.player.currentTrack = { id: "remote-current" };
+	s.player.isPlaying = true;
+	s.player.queuedTracks = [{ id: "queued-next" }];
+	s.ownerLog.length = 0;
+	s.sent.length = 0;
+
+	await s.ownerNet.reclaimVoice(s.player);
+
+	assert.deepEqual(s.ownerLog, ["exitRemote", "stop", "connect:c1"]);
+	assert.deepEqual(s.player.queuedTracks, [{ id: "queued-next" }]);
+	assert.deepEqual(s.sent, [
+		{
+			guildId: "g1",
+			payload: { op: 4, d: { guild_id: "g1", channel_id: null, self_deaf: true, self_mute: false } },
+		},
+	]);
 });
 
 test("when the executor crashes the owner takes the voice back", async (t) => {

@@ -23,10 +23,17 @@ module.exports = function createSearchAndPlayCases({ id, net, zi, st, findTracks
 			const { tracks, node } = await findTracks(query, 1);
 			const track = tracks[0];
 			if (node !== id) net.markTrack(track, node);
+			const alreadyActive = player.isPlaying || player.isPaused || player.isBuffering;
 			const since = Date.now();
 			const bytes0 = st.bytesIn;
-			await player.play(track, { requestedBy: message.author.id });
+			const result = await player.play(track, { requestedBy: message.author.id });
+			if (!result) throw new Error(`Could not queue or play "${track.title}"`);
 			const delegation = zi.delegationFor(message.guildId);
+			if (alreadyActive) {
+				const destination = delegation ? ` · will play on **${delegation.executor}**` : "";
+				await message.reply(`➕ queued **${track.title}** (${track.source})${destination}`);
+				return;
+			}
 			const started = await waitStart(message.guildId, since).catch((error) => error.message);
 			const where = delegation ? `played by **${delegation.executor}**` : "played here";
 			const from =

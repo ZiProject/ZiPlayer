@@ -2,18 +2,41 @@
   <img width="800" alt="ZiPlayer Logo" src="https://raw.githubusercontent.com/ZiProject/ZiPlayer/refs/heads/main/publish/logo.png" />
 </p>
 
-# ZiPlayer
-
-> Next-generation, event-driven, controller-architected audio engine for Discord bots, built on top of `@discordjs/voice`.
+> Next-generation, event-driven, controller-architected audio engine for Discord bots / Web, built on top of `@discordjs/voice`.
 
 [![npm version](https://img.shields.io/npm/v/ziplayer.svg?style=flat-square)](https://www.npmjs.com/package/ziplayer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.3.0-brightgreen.svg?style=flat-square)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue.svg?style=flat-square)](https://www.typescriptlang.org)
+[![Discord](https://img.shields.io/discord/1504721559041081387?logo=discord&label=Discord&color=5865F2)](https://discord.gg/TK9WnFFngu)
 
-ZiPlayer is an enterprise-grade Discord music engine. Built around an asynchronous **Global Bus & Distributed Controller**
-architecture, it separates business logic into decoupled, testable controllers while exposing a clean, intuitive, and
-backwards-compatible `Player` facade.
+ZiPlayer is a powerful and flexible audio engine for Discord bots and web applications. It makes music playback simple to
+integrate while providing everything you need to build a rich audio experience — from smart queues and real-time audio effects to
+crossfade, multi-server playback, and browser streaming.
+
+<p align="center">
+  💬 Need help or have questions?
+  <a href="https://discord.gg/TK9WnFFngu"><strong>Join our Discord Community</strong></a>
+  for support, discussions, and updates.
+</p>
+
+---
+
+## 📚 Table of Contents
+
+- [✨ Key Features](#-key-features)
+- [📦 Installation](#-installation)
+- [🚀 Quick Start](#-quick-start)
+- [🎵 Core Usage & Controls](#-core-usage--controls)
+- [🎛️ Audio Filters](#-audio-filters)
+- [🧠 Smart Transitions & Crossfade](#-smart-transitions--crossfade)
+- [📻 Multi-Guild Forward Mode](#-multi-guild-forward-mode-stream-mirroring)
+- [💾 Session Persistence](#-session-persistence--state-restoration)
+- [🌐 Web Playback & Multi-Node](#-advanced-web-playback--multi-node-ziplayernet)
+- [⚙️ Configuration](#-configuration-reference)
+- [📚 Advanced Developer Guide](#-advanced-developer-guide)
+- [💬 Community & Support](#-community--support)
+- [📄 License](#-license)
 
 ---
 
@@ -31,8 +54,6 @@ backwards-compatible `Player` facade.
   protection to prevent infinite loops.
 - 🧠 **Smart Transitions & Crossfade** — BPM/genre-aware crossfade (long smooth fades for ambient/chill, punchy fades for
   EDM/rock) with beat-alignment capabilities.
-- 🔊 **LUFS Loudness Normalization** — EBU R128 loudness normalization and soft-knee peak limiting to prevent jarring volume jumps
-  between tracks.
 - 📻 **Playback Mirror / Forward Mode** — Zero-overhead multi-guild broadcasting where follower guilds subscribe directly to a
   leader's audio stream without re-downloading or re-encoding.
 - 💾 **Session Serialization & State Recovery** — Export and restore full player states across bot restarts (queue, position,
@@ -41,8 +62,8 @@ backwards-compatible `Player` facade.
   on constrained host environments.
 - 🌐 **Web / Browser Playback** — Stream the same Opus packets that go to Discord Voice to web listeners with `WebAudioConnection`
   and the `@ziplayer/client` AudioWorklet receiver (shared server-side volume, no second encode).
-- 🕸️ **Multi-Node Clustering with `@ziplayer/net`** — Link several ZiPlayer processes over MQTT: pull audio resolved on another
-  server, or hand a Discord voice session to another node. Authenticated, pinned-key, end-to-end encrypted control channel.
+- 🕸️ **Multi-Node Clustering with `@ziplayer/net`** — Connect multiple ZiPlayer instances through MQTT, enabling distributed
+  stream resolution, voice handoff, and intelligent cross-node routing.
 
 ---
 
@@ -50,7 +71,7 @@ backwards-compatible `Player` facade.
 
 ```bash
 # Using npm
-npm install ziplayer @discordjs/voice discord.js
+npm install ziplayer @discordjs/voice discord.js opusscript
 
 # Recommended audio dependencies
 npm install @discordjs/opus ffmpeg-static
@@ -72,7 +93,7 @@ Here is a minimal, production-ready Discord.js bot using ZiPlayer:
 import { Client, GatewayIntentBits } from "discord.js";
 import { PlayerManager } from "ziplayer";
 // Official plugins can be imported from @ziplayer/plugin
-import { YouTubePlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin, AttachmentsPlugin } from "@ziplayer/plugin";
+import { YouTubePlugin, SoundCloudPlugin, BilibiliPlugin, SpotifyPlugin, TTSPlugin, AttachmentsPlugin } from "@ziplayer/plugin";
 
 const client = new Client({
 	intents: [
@@ -89,6 +110,7 @@ const manager = new PlayerManager({
 		new TTSPlugin({ defaultLang: "en" }),
 		new YouTubePlugin(),
 		new SoundCloudPlugin(),
+		new BilibiliPlugin(),
 		new SpotifyPlugin(),
 		new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }), //25mb
 	],
@@ -144,7 +166,350 @@ client.login(process.env.DISCORD_TOKEN);
 
 ---
 
-## 🌐 Browser Playback with `@ziplayer/client`
+## Singleton Access
+
+ZiPlayer exposes a process-wide manager singleton. Create `PlayerManager` once during application startup so it registers the
+singleton, then use `getManager()` and `getPlayer(guildId)` from command handlers and other modules. Do not create a manager per
+guild/command or attach it to the Discord client just to share it.
+
+```ts
+import { PlayerManager, getManager, getPlayer } from "ziplayer";
+
+// Application bootstrap: configure plugins and options once.
+new PlayerManager({ plugins, autoCleanup: true });
+
+// In a command or another module:
+const manager = getManager(); // PlayerManager | null
+if (!manager) throw new Error("ZiPlayer has not been initialized");
+
+let player = getPlayer(guildId); // Player | undefined; lookup only, does not create
+if (!player) {
+	player = await manager.create(guildId, playerOptions);
+}
+```
+
+`getManager()` returns `null` until a manager has been constructed. `getPlayer(guildId)` returns `undefined` until that guild's
+player has been created; use `manager.create()` to create it. Keep the single manager initialization in the bot's startup path,
+and use the helpers wherever code needs to retrieve the shared instances.
+
+---
+
+## 🎵 Core Usage & Controls
+
+### Playback Operations
+
+```typescript
+// Play from search query, URL, SearchResult, or resume queue
+await player.play("Never Gonna Give You Up", message.author.id);
+await player.play("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+await player.play("tts:Hello world! Welcome to the voice channel");
+await player.play(null); // Resume from queue if idle
+
+// Controls (All state transitions return a boolean indicating success)
+player.pause(); // Returns false if already paused or not playing
+player.resume(); // Returns false if not paused
+player.skip(); // Skips to next track
+player.skip(3); // Skips directly to track at queue index 3
+player.stop(); // Stops playback and clears the queue
+await player.seek(45000); // Seek to 45 seconds (45,000 ms)
+await player.previous(); // Return to previous track in history
+player.setVolume(120); // Volume supported from 0% up to 200%
+```
+
+### Queue Management
+
+The `player.queue` object provides rich queue operations:
+
+```typescript
+// Inspection
+console.log(player.queue.size); // Number of upcoming tracks
+console.log(player.queue.isEmpty); // Boolean
+console.log(player.queue.currentTrack); // Currently playing track
+console.log(player.queue.nextTrack); // Next track in line
+console.log(player.queue.previousTracks); // History of played tracks
+
+// Adding & Inserting
+player.queue.add(track);
+player.queue.addMultiple([track1, track2]);
+await player.insert(track, 0); // Insert track at the top (play next)
+await player.insert("query string", 2); // Searches and inserts at index 2
+
+// Removing & Reordering
+player.queue.remove(0); // Removes and returns track at index 0
+player.queue.removeMultiple([1, 3, 5]); // Batch removal by indices
+player.queue.removeWhere((t) => t.duration > 600000); // Filter removal
+player.queue.move(3, 0); // Move track at index 3 to front
+player.queue.swap(1, 2); // Swap positions 1 and 2
+player.queue.shuffle(); // Shuffle remaining tracks
+player.queue.clear(); // Clear upcoming tracks
+```
+
+### Looping & Autoplay
+
+```typescript
+// Set loop mode: "off" | "track" | "queue" (or numeric: 0 | 1 | 2)
+player.loop("track"); // Loops current song
+player.loop("queue"); // Cycles entire queue
+player.loop("off"); // Standard progression
+
+// Enable automatic recommendation of related songs when queue ends
+player.autoPlay(true);
+```
+
+---
+
+## 🎛️ Audio Filters
+
+ZiPlayer features dynamic FFmpeg filter chains executed in real-time. Filters can be stacked and modified on the fly:
+
+```typescript
+// Apply predefined filters
+await player.filter.applyFilter("bassboost");
+await player.filter.applyFilter("nightcore");
+
+// Apply multiple filters in batch
+await player.filter.applyFilters(["bassboost", "8D", "vaporwave"]);
+
+// Inspect current filter string
+console.log(player.filter.getFilterString()); // "bassboost,8D,vaporwave"
+
+// Remove a filter or clear all
+await player.filter.removeFilter("bassboost");
+await player.filter.clearFilters(); // or player.filter.clearAll()
+```
+
+### Built-in Filters
+
+| Filter Name                    | Description                      |
+| ------------------------------ | -------------------------------- |
+| `bassboost` / `bassboost_high` | Low-frequency amplification      |
+| `8D`                           | Spatial rotating stereo panning  |
+| `nightcore`                    | Increased pitch and tempo        |
+| `vaporwave`                    | Decreased pitch and slowed tempo |
+| `lofi`                         | Lowpass analog tape warmth       |
+| `echo` / `reverb`              | Acoustic space emulation         |
+| `karaoke`                      | Voice center-channel suppression |
+| `trebleboost`                  | High-frequency clarity           |
+| `compressor` / `limiter`       | Dynamic range control            |
+
+---
+
+## 🧠 Smart Transitions & Crossfade
+
+ZiPlayer provides intelligent crossfading between tracks:
+
+- **Genre-Aware Duration**: Automatically lengthens crossfades for ambient/chill tracks and shortens them for fast-paced genres.
+- **Beat Alignment**: Detects tempo (`track.metadata.bpm`) and synchronizes the entry of the next track on beat boundaries.
+- **Fade Out on Skip**: Calling `player.skip()` executes a smooth fadeout rather than an abrupt audio cut.
+
+```typescript
+const player = await manager.create(guildId, {
+	crossfade: {
+		enabled: true,
+		durationMs: 4000,
+		autoDisableInLowPerformance: true,
+	},
+	smartTransition: {
+		enabled: true,
+		genreAware: true,
+		beatAlign: true,
+		genreDurations: { chill: 6000, edm: 2000, rock: 2500 },
+	},
+});
+```
+
+---
+
+## 📻 Multi-Guild Forward Mode (Stream Mirroring)
+
+Broadcast one stream across multiple guilds simultaneously with **zero duplicate bandwidth or decoding overhead**:
+
+```typescript
+// Guild A is playing music; guild B has its own player
+const leader = manager.get("guild-A");
+const follower = manager.get("guild-B");
+if (!leader || !follower) throw new Error("Create both players first with manager.create(guildId)");
+
+// Follower subscribes directly to leader's AudioPlayer.
+// Async: resolves false if refused (follower not in a voice channel, leader is a follower, ...).
+// The leader only needs an AudioPlayer, so a WebAudio-only leader works too.
+const ok = await follower.subscribeTo(leader);
+
+// Follower automatically mirrors trackStart, trackEnd, pause, resume, and volume!
+// Follower mutations are guarded to prevent disrupting the leader.
+
+// To stop mirroring:
+follower.unsubscribeForward();
+```
+
+---
+
+## 💾 Session Persistence & State Restoration
+
+Save and restore active players across bot restarts or server migrations:
+
+```typescript
+// Save serializable session state
+const sessionData = player.saveSession();
+// Store sessionData in Redis, MongoDB, SQLite, etc.
+await db.set(`session:${player.guildId}`, JSON.stringify(sessionData));
+
+// After restart: recreate player and restore state
+const savedState = JSON.parse(await db.get(`session:${guildId}`));
+const newPlayer = await manager.create(guildId);
+await newPlayer.connect(voiceChannel);
+
+const success = await newPlayer.restoreState(savedState);
+if (success) {
+	console.log("Player state (queue, volume, filters, loop) restored successfully!");
+}
+```
+
+---
+
+## 📡 Events Reference
+
+Both `PlayerManager` and `Player` emit typed events. `PlayerManager` emits the originating `player` instance as the first
+argument.
+
+| Event                    | Arguments                      | Description                                             |
+| ------------------------ | ------------------------------ | ------------------------------------------------------- |
+| `trackStart`             | `(player, track)`              | Emitted when a track starts playing                     |
+| `trackEnd`               | `(player, track)`              | Emitted when a track finishes playing                   |
+| `queueEnd`               | `(player)`                     | Emitted when the queue is completely exhausted          |
+| `queueAdd`               | `(player, track)`              | A single track was added to the queue                   |
+| `queueAddList`           | `(player, tracks)`             | Multiple tracks were appended to the queue              |
+| `queueRemove`            | `(player, track, index)`       | A track was removed from the queue                      |
+| `playerPause`            | `(player, track)`              | Playback was paused                                     |
+| `playerResume`           | `(player, track)`              | Playback was resumed                                    |
+| `playerStop`             | `(player)`                     | Player stopped and queue was cleared                    |
+| `playerError`            | `(player, error, track)`       | Playback or stream resolution encountered an error      |
+| `volumeChange`           | `(player, oldVol, newVol)`     | Player volume was modified                              |
+| `filterApplied`          | `(player, filter)`             | An audio filter was activated                           |
+| `filterRemoved`          | `(player, filter)`             | An audio filter was removed                             |
+| `filtersCleared`         | `(player)`                     | All active audio filters were cleared                   |
+| `forwardModeStart`       | `(player, leader)`             | Player entered forward mode subscribing to a leader     |
+| `forwardModeEnd`         | `(player, leader, reason)`     | Player exited forward mode                              |
+| `playerDestroy`          | `(player)`                     | Player instance was destroyed and detached              |
+| `connectionError`        | `(player, error)`              | Voice connection or reconnection failed                 |
+| `seek`                   | `(player, payload)`            | Seek completed; payload contains `track` and `position` |
+| `streamError`            | `(player, error, track)`       | An audio stream encountered an error                    |
+| `streamAborted`          | `(player, session)`            | A stream was aborted                                    |
+| `trackLoading`           | `(player, session)`            | Track resolution/loading started                        |
+| `trackLoaded`            | `(player, session)`            | Track resolution/loading completed                      |
+| `trackStuck`             | `(player, track)`              | Playback stalled and recovery was considered            |
+| `recoveryStart`          | `(player, session)`            | Stall or stream recovery started                        |
+| `recoveryFailed`         | `(player)`                     | Stall or stream recovery failed                         |
+| `preloadStateChanged`    | `(player, state)`              | Preload state changed                                   |
+| `preloadPromoted`        | `(player, track)`              | A preloaded track was promoted for playback             |
+| `preloadCancelled`       | `(player)`                     | Preloading was cancelled                                |
+| `queueChange`            | `(player, queue)`              | Queue contents changed                                  |
+| `playbackStateChanged`   | `(player, session)`            | Discord audio player state changed                      |
+| `playbackSessionCreated` | `(player, session)`            | A playback session was created                          |
+| `trackRequested`         | `(player, track, session)`     | A track was requested for playback                      |
+| `stateChanged`           | `(player, oldState, newState)` | Internal Discord player state changed                   |
+| `ttsStart`               | `(player, payload)`            | TTS playback started; payload contains `text`/`track`   |
+| `ttsEnd`                 | `(player)`                     | TTS playback ended                                      |
+| `stats`                  | `(stats)`                      | Periodic aggregate manager statistics                   |
+| `playerIdChange`         | `(player, newId, oldId)`       | A managed player's public ID changed                    |
+| `debug`                  | `(...arg)`                     | A debug message was logged                              |
+
+---
+
+## ⚙️ Configuration Reference
+
+### PlayerOptions
+
+Passed to `manager.create(guildId, options)`:
+
+```typescript
+interface PlayerOptions {
+	volume?: number; // Initial volume (0 - 200, default: 100)
+	quality?: "low" | "high"; // Stream quality preset (default: "high")
+	leaveOnEnd?: boolean; // Leave voice when queue ends (default: true)
+	leaveOnEmpty?: boolean; // Leave voice when the voice channel is empty (default: true)
+	pauseOnEmpty?: boolean; // Pause when voice channel is empty and resume when a user returns (default: false)
+	leaveTimeout?: number; // Inactivity timeout in ms before leave (default: 100000; 0 to disable)
+	selfDeaf?: boolean; // Join deafened (default: true)
+	selfMute?: boolean; // Join muted (default: false)
+	group?: string; // Optional voice connection group
+	extractorTimeout?: number; // Track extraction timeout in ms (default: 50000)
+	ffmpegPath?: string | null; // Explicit FFmpeg executable for seek/filter processing
+	tts?: {
+		createPlayer?: boolean; // Create a dedicated TTS player (default: false)
+		interrupt?: boolean; // Interrupt current playback for TTS (default: true)
+		volume?: number; // TTS volume (default: 100)
+		maxTimeTts?: number; // Maximum TTS duration in ms (default: 60000)
+	};
+	extensions?: any[] | string[]; // Extensions to attach
+	lowPerformance?: boolean; // Low performance mode
+	filters?: (string | AudioFilter)[]; // Initial audio filters to apply
+	preload?: {
+		enabled?: boolean; // Auto-preload upcoming track (default: true)
+		autoDisableInLowPerformance?: boolean; // Disable preload in low-performance mode (default: true)
+	};
+	crossfade?: {
+		enabled?: boolean; // Crossfade enabled (default: true)
+		durationMs?: number; // Crossfade duration in ms (default: 1000)
+		autoEnable?: boolean;
+		autoDisableInLowPerformance?: boolean; // Disable crossfade in low-performance mode (default: true)
+	};
+	smartTransition?: {
+		enabled?: boolean; // Smart transitions (default: true)
+		genreAware?: boolean; // Use track genre for timing (default: true)
+		beatAlign?: boolean; // Align transitions to beats (default: true)
+		baseDurationMs?: number;
+		minDurationMs?: number; // Default: 600
+		maxDurationMs?: number; // Default: 8000
+		beatAlignMaxWaitMs?: number; // Default: 700
+		genreDurations?: Record<string, number>;
+	};
+	antiStuck?: {
+		enabled?: boolean; // Enable stall recovery watchdog
+		maxRetries?: number; // Maximum retries (default: 2)
+		retryDelayMs?: number; // Retry delay (default: 90000)
+		stuckTimeoutMs?: number; // Buffer stall threshold (default: 10000)
+		reusePreloadFirst?: boolean; // Try a preloaded resource first (default: true)
+		reduceQualityOnRetry?: boolean; // Reduce source quality on retry (default: true)
+		controlledSkipThreshold?: number; // Consecutive error threshold (default: 3)
+	};
+	loudnessNormalization?: {
+		enabled?: boolean; // Default: false
+		targetLUFS?: number; // Target LUFS (default: -14)
+		maxBoostDb?: number; // Maximum boost in dB (default: 6)
+		maxCutDb?: number; // Maximum cut in dB (default: 12)
+		limiterCeiling?: number; // Peak ceiling (default: 1)
+		autoDisableInLowPerformance?: boolean; // Default: true
+	};
+	userdata?: Record<string, any>; // Arbitrary custom metadata
+	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
+	maxStreamStore?: number; // Maximum concurrent stream slots (default: 4)
+}
+```
+
+### PlayerManagerOptions
+
+Passed to `new PlayerManager(options)`:
+
+```typescript
+interface PlayerManagerOptions {
+	plugins?: SourcePluginLike[];
+	extensions?: any[];
+	extractorTimeout?: number;
+	autoCleanup?: boolean;
+	cleanupInterval?: number;
+	enableSearchCache?: boolean;
+	enableStatsCollection?: boolean;
+	trackMiddleware?: TrackMiddleware | TrackMiddleware[];
+	debugLevel?: "off" | "error" | "warn" | "info" | "debug" | "verbose" | "time";
+}
+```
+
+---
+
+## 🧩 Advanced: Web Playback & Multi-Node (`@ziplayer/net`)
+
+### Web playback (browser listeners)
 
 Browser playback uses `WebAudioConnection` to subscribe to the shared `AudioPlayer` and publish Opus packets. It can fan out the
 same server-volume-adjusted Opus packets as Discord Voice. The WebSocket gateway is application-provided; ZiPlayer does not create
@@ -366,292 +731,6 @@ browser requirements, see [`@ziplayer/client` documentation](https://github.com/
 
 ---
 
-## Singleton Access
-
-ZiPlayer exposes a process-wide manager singleton. Create `PlayerManager` once during application startup so it registers the
-singleton, then use `getManager()` and `getPlayer(guildId)` from command handlers and other modules. Do not create a manager per
-guild/command or attach it to the Discord client just to share it.
-
-```ts
-import { PlayerManager, getManager, getPlayer } from "ziplayer";
-
-// Application bootstrap: configure plugins and options once.
-new PlayerManager({ plugins, autoCleanup: true });
-
-// In a command or another module:
-const manager = getManager(); // PlayerManager | null
-if (!manager) throw new Error("ZiPlayer has not been initialized");
-
-let player = getPlayer(guildId); // Player | undefined; lookup only, does not create
-if (!player) {
-	player = await manager.create(guildId, playerOptions);
-}
-```
-
-`getManager()` returns `null` until a manager has been constructed. `getPlayer(guildId)` returns `undefined` until that guild's
-player has been created; use `manager.create()` to create it. Keep the single manager initialization in the bot's startup path,
-and use the helpers wherever code needs to retrieve the shared instances.
-
----
-
-## 🎵 Core Usage & Controls
-
-### Playback Operations
-
-```typescript
-// Play from search query, URL, SearchResult, or resume queue
-await player.play("Never Gonna Give You Up", message.author.id);
-await player.play("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
-await player.play("tts:Hello world! Welcome to the voice channel");
-await player.play(null); // Resume from queue if idle
-
-// Controls (All state transitions return a boolean indicating success)
-player.pause(); // Returns false if already paused or not playing
-player.resume(); // Returns false if not paused
-player.skip(); // Skips to next track
-player.skip(3); // Skips directly to track at queue index 3
-player.stop(); // Stops playback and clears the queue
-await player.seek(45000); // Seek to 45 seconds (45,000 ms)
-await player.previous(); // Return to previous track in history
-player.setVolume(120); // Volume supported from 0% up to 200%
-```
-
-### Queue Management
-
-The `player.queue` object provides rich queue operations:
-
-```typescript
-// Inspection
-console.log(player.queue.size); // Number of upcoming tracks
-console.log(player.queue.isEmpty); // Boolean
-console.log(player.queue.currentTrack); // Currently playing track
-console.log(player.queue.nextTrack); // Next track in line
-console.log(player.queue.previousTracks); // History of played tracks
-
-// Adding & Inserting
-player.queue.add(track);
-player.queue.addMultiple([track1, track2]);
-await player.insert(track, 0); // Insert track at the top (play next)
-await player.insert("query string", 2); // Searches and inserts at index 2
-
-// Removing & Reordering
-player.queue.remove(0); // Removes and returns track at index 0
-player.queue.removeMultiple([1, 3, 5]); // Batch removal by indices
-player.queue.removeWhere((t) => t.duration > 600000); // Filter removal
-player.queue.move(3, 0); // Move track at index 3 to front
-player.queue.swap(1, 2); // Swap positions 1 and 2
-player.queue.shuffle(); // Shuffle remaining tracks
-player.queue.clear(); // Clear upcoming tracks
-```
-
-### Looping & Autoplay
-
-```typescript
-// Set loop mode: "off" | "track" | "queue" (or numeric: 0 | 1 | 2)
-player.loop("track"); // Loops current song
-player.loop("queue"); // Cycles entire queue
-player.loop("off"); // Standard progression
-
-// Enable automatic recommendation of related songs when queue ends
-player.autoPlay(true);
-```
-
----
-
-## 🎛️ Audio Filters
-
-ZiPlayer features dynamic FFmpeg filter chains executed in real-time. Filters can be stacked and modified on the fly:
-
-```typescript
-// Apply predefined filters
-await player.filter.applyFilter("bassboost");
-await player.filter.applyFilter("nightcore");
-
-// Apply multiple filters in batch
-await player.filter.applyFilters(["bassboost", "8D", "vaporwave"]);
-
-// Inspect current filter string
-console.log(player.filter.getFilterString()); // "bassboost,8D,vaporwave"
-
-// Remove a filter or clear all
-await player.filter.removeFilter("bassboost");
-await player.filter.clearFilters(); // or player.filter.clearAll()
-```
-
-### Built-in Filters
-
-| Filter Name                    | Description                      |
-| ------------------------------ | -------------------------------- |
-| `bassboost` / `bassboost_high` | Low-frequency amplification      |
-| `8D`                           | Spatial rotating stereo panning  |
-| `nightcore`                    | Increased pitch and tempo        |
-| `vaporwave`                    | Decreased pitch and slowed tempo |
-| `lofi`                         | Lowpass analog tape warmth       |
-| `echo` / `reverb`              | Acoustic space emulation         |
-| `karaoke`                      | Voice center-channel suppression |
-| `trebleboost`                  | High-frequency clarity           |
-| `compressor` / `limiter`       | Dynamic range control            |
-
----
-
-## 🧠 Smart Transitions & Crossfade
-
-ZiPlayer provides intelligent crossfading between tracks:
-
-- **Genre-Aware Duration**: Automatically lengthens crossfades for ambient/chill tracks and shortens them for fast-paced genres.
-- **Beat Alignment**: Detects tempo (`track.metadata.bpm`) and synchronizes the entry of the next track on beat boundaries.
-- **Fade Out on Skip**: Calling `player.skip()` executes a smooth fadeout rather than an abrupt audio cut.
-
-```typescript
-const player = await manager.create(guildId, {
-	crossfade: {
-		enabled: true,
-		durationMs: 4000,
-		autoDisableInLowPerformance: true,
-	},
-	smartTransition: {
-		enabled: true,
-		genreAware: true,
-		beatAlign: true,
-		genreDurations: { chill: 6000, edm: 2000, rock: 2500 },
-	},
-});
-```
-
----
-
-## 📻 Multi-Guild Forward Mode (Stream Mirroring)
-
-Broadcast one stream across multiple guilds simultaneously with **zero duplicate bandwidth or decoding overhead**:
-
-```typescript
-// Guild A is playing music; guild B has its own player
-const leader = manager.get("guild-A");
-const follower = manager.get("guild-B");
-if (!leader || !follower) throw new Error("Create both players first with manager.create(guildId)");
-
-// Follower subscribes directly to leader's AudioPlayer.
-// Async: resolves false if refused (follower not in a voice channel, leader is a follower, ...).
-// The leader only needs an AudioPlayer, so a WebAudio-only leader works too.
-const ok = await follower.subscribeTo(leader);
-
-// Follower automatically mirrors trackStart, trackEnd, pause, resume, and volume!
-// Follower mutations are guarded to prevent disrupting the leader.
-
-// To stop mirroring:
-follower.unsubscribeForward();
-```
-
----
-
-## 💾 Session Persistence & State Restoration
-
-Save and restore active players across bot restarts or server migrations:
-
-```typescript
-// Save serializable session state
-const sessionData = player.saveSession();
-// Store sessionData in Redis, MongoDB, SQLite, etc.
-await db.set(`session:${player.guildId}`, JSON.stringify(sessionData));
-
-// After restart: recreate player and restore state
-const savedState = JSON.parse(await db.get(`session:${guildId}`));
-const newPlayer = await manager.create(guildId);
-await newPlayer.connect(voiceChannel);
-
-const success = await newPlayer.restoreState(savedState);
-if (success) {
-	console.log("Player state (queue, volume, filters, loop) restored successfully!");
-}
-```
-
----
-
-## 📡 Events Reference
-
-Both `PlayerManager` and `Player` emit typed events. `PlayerManager` emits the originating `player` instance as the first
-argument.
-
-| Event              | Arguments                  | Description                                         |
-| ------------------ | -------------------------- | --------------------------------------------------- |
-| `trackStart`       | `(player, track)`          | Emitted when a track starts playing                 |
-| `trackEnd`         | `(player, track)`          | Emitted when a track finishes playing               |
-| `queueEnd`         | `(player)`                 | Emitted when the queue is completely exhausted      |
-| `queueAdd`         | `(player, track)`          | A single track was added to the queue               |
-| `queueAddList`     | `(player, tracks)`         | Multiple tracks were appended to the queue          |
-| `queueRemove`      | `(player, track, index)`   | A track was removed from the queue                  |
-| `playerPause`      | `(player, track)`          | Playback was paused                                 |
-| `playerResume`     | `(player, track)`          | Playback was resumed                                |
-| `playerStop`       | `(player)`                 | Player stopped and queue was cleared                |
-| `playerError`      | `(player, error, track)`   | Playback or stream resolution encountered an error  |
-| `volumeChange`     | `(player, oldVol, newVol)` | Player volume was modified                          |
-| `filterApplied`    | `(player, filter)`         | An audio filter was activated                       |
-| `filterRemoved`    | `(player, filter)`         | An audio filter was removed                         |
-| `filtersCleared`   | `(player)`                 | All active audio filters were cleared               |
-| `forwardModeStart` | `(player, leader)`         | Player entered forward mode subscribing to a leader |
-| `forwardModeEnd`   | `(player, leader, reason)` | Player exited forward mode                          |
-| `playerDestroy`    | `(player)`                 | Player instance was destroyed and detached          |
-
----
-
-## ⚙️ Configuration Reference
-
-### PlayerOptions
-
-Passed to `manager.create(guildId, options)`:
-
-```typescript
-interface PlayerOptions {
-	volume?: number; // Initial volume (0 - 200, default: 100)
-	quality?: "low" | "medium" | "high"; // Stream quality preset
-	leaveOnEnd?: boolean; // Leave voice when queue ends (default: true)
-	leaveOnEmpty?: boolean; // Leave voice when voice channel is empty
-	pauseOnEmpty?: boolean; // Pause when voice channel is empty and resume when a user returns (default: false)
-	leaveTimeout?: number; // Inactivity timeout in ms before leave (default: 100000; 0 to disable)
-	selfDeaf?: boolean; // Join deafened (default: true)
-	selfMute?: boolean; // Join muted (default: false)
-	lowPerformance?: boolean; // Low performance mode (disables preload/crossfade)
-	filters?: string[]; // Initial audio filters to apply
-	preload?: {
-		enabled?: boolean; // Auto-preload upcoming track (default: true)
-		autoDisableInLowPerformance?: boolean;
-	};
-	crossfade?: {
-		enabled?: boolean;
-		durationMs?: number; // Crossfade duration in ms (default: 1000)
-		autoEnable?: boolean;
-		autoDisableInLowPerformance?: boolean;
-	};
-	antiStuck?: {
-		enabled?: boolean; // Enable stall recovery watchdog
-		stuckTimeoutMs?: number; // Buffer stall threshold (default: 10000)
-		controlledSkipThreshold?: number; // Consecutive error threshold (default: 3)
-	};
-	loudnessNormalization?: {
-		enabled?: boolean;
-		targetLUFS?: number; // Target LUFS (default: -14)
-		maxBoostDb?: number; // Maximum boost in dB (default: 8)
-		maxCutDb?: number; // Maximum cut in dB (default: 10)
-		limiterCeiling?: number; // Peak ceiling (default: 0.95)
-	};
-	userdata?: Record<string, any>; // Arbitrary custom metadata
-}
-```
-
----
-
-## 🧩 Advanced: Web Playback & Multi-Node (`@ziplayer/net`)
-
-### Web playback (browser listeners)
-
-A regular player can feed browsers and Discord at the same time: `WebAudioConnection` subscribes to the shared `AudioPlayer`,
-publishes Opus packets (Wire Format v1) to **your** WebSocket gateway, and `@ziplayer/client` decodes and plays them in the
-browser. ZiPlayer does not host the gateway.
-
-- Complete publisher + browser code: [Browser Playback with `@ziplayer/client`](#-browser-playback-with-ziplayerclient)
-- Runnable local gateway and demo page: [`examples/backend`](https://github.com/ZiProject/ZiPlayer/tree/main/examples/backend)
-- Discord and browser at once, with shared server-side volume: see _Shared Discord and browser playback_ above.
-
 ### Multi-node clustering with `@ziplayer/net`
 
 Run several ZiPlayer processes ("nodes") and let them cooperate over **MQTT**. This helps when one server can resolve YouTube but
@@ -667,12 +746,10 @@ the bot's gateway lives on another, when you want to spread voice load across ma
   control data and voice credentials, replay protection. The MQTT broker is untrusted. Audio is sent in clear unless
   `encryptAudio: true`.
 
-`@ziplayer/net` is a pre-release package that lives in this repository under
-[`net/`](https://github.com/ZiProject/ZiPlayer/tree/main/net). Until it is published, build and install it from a clone:
+Install the `@ziplayer/net` package .
 
 ```bash
-npm install --prefix net && npm run build --prefix net
-npm install ./net mqtt        # run inside your bot project
+npm install @ziplayer/net mqtt
 ```
 
 **1. Create a key for every node** and copy each `<name>.key.pub` file to the other machine (never copy the `.key` file):
@@ -802,7 +879,21 @@ ownership, and teardown lifecycle, see [**AGENTS.md**](./AGENTS.md).
 
 ---
 
----
+## 💬 Community & Support
+
+Need help with ZiPlayer, have a question, or want to share your ideas?
+
+Join our Discord community!
+
+<p align="center">
+  <a href="https://discord.gg/TK9WnFFngu">
+    <img src="https://img.shields.io/badge/Join%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join Discord" />
+  </a>
+</p>
+
+- 🐛 **Bug Reports:** Open an issue on GitHub.
+- 💡 **Feature Requests:** Share your ideas through GitHub Discussions.
+- 💬 **Community Support:** Ask questions and get help on Discord.
 
 ## 📄 License
 

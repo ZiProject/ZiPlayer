@@ -13,7 +13,7 @@ const { ReflectionKind } = require("typedoc");
 const EXPORT_ROOTS = [
 	{ name: "core", entry: path.join(repoDir, "core", "src", "index.ts") },
 	{ name: "plugins", entry: path.join(repoDir, "plugins", "src", "index.ts") },
-	{ name: "extensions", entry: path.join(repoDir, "extension", "src", "index.ts") },
+	{ name: "extensions", entry: path.join(repoDir, "extensions", "src", "index.ts") },
 ];
 
 const KIND_NAME_BY_VALUE = {
@@ -185,7 +185,7 @@ function sourceFilesOfSymbol(symbol, checker) {
 
 function createExportProgram() {
 	const sourceFiles = [];
-	for (const directory of ["core/src", "plugins/src", "extension/src"]) {
+	for (const directory of ["core/src", "plugins/src", "extensions/src"]) {
 		const absoluteDirectory = path.join(repoDir, directory);
 		if (fs.existsSync(absoluteDirectory)) {
 			sourceFiles.push(...ts.sys.readDirectory(absoluteDirectory, [".ts", ".tsx"], undefined, undefined, undefined));

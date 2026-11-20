@@ -1,6 +1,6 @@
 {
 	"name": "ziplayer",
-	"version": "1.0.5-dev.9",
+	"version": "1.0.5",
 	"description": "Event-driven Discord voice and music player with plugins, FFmpeg filters, browser (WebAudio) playback and multi-node (MQTT) support",
 	"keywords": [
 		"ZiPlayer",
