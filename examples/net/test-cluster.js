@@ -23,6 +23,10 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const { fork } = require("node:child_process");
+const createSearchAndPlayCases = require("./cases/search-and-play");
+const createRoutingCase = require("./cases/routing");
+const createVoiceHandoffCases = require("./cases/voice-handoff");
+const createSelfTestCase = require("./cases/selftest");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 function load(name, rel) {
@@ -107,6 +111,9 @@ function loadConfig(argv = process.argv.slice(2), env = process.env) {
 		handoffThreshold: Number(get("HANDOFF_THRESHOLD", "0.5")),
 		allowRemoteKill: flag("ALLOW_REMOTE_KILL"),
 		debug: flag("DEBUG"),
+		netDebugFile: get("NET_DEBUG_FILE") ? path.resolve(__dirname, get("NET_DEBUG_FILE")) : undefined,
+		voiceTestChannelId: get("VOICE_TEST_CHANNEL_ID"),
+		voiceTestQuery: get("VOICE_TEST_QUERY"),
 		// what the net layer prints: 0 | msg | wire | 1/all   (+ NET_DEBUG_AUDIO=1 for every audio frame)
 		netDebug:
 			["1", "true", "yes", "on"].includes(get("NET_DEBUG", "0").toLowerCase()) ? "all" : get("NET_DEBUG", "0").toLowerCase(),
@@ -202,6 +209,10 @@ async function startNode(id, cfg, hooks = {}) {
 		});
 	}
 	const manager = new PlayerManager({ autoCleanup: false, plugins });
+	if (cfg.debug) {
+		manager.debugLevel = "debug";
+		manager.on("debug", (message, ...args) => log("[PlayerManager]", message, ...args));
+	}
 	const origResolve = manager.resolveStream.bind(manager);
 	manager.resolveStream = async (...a) => (st.resolved++, origResolve(...a));
 	const origCreate = manager.create.bind(manager);
@@ -263,18 +274,35 @@ async function startNode(id, cfg, hooks = {}) {
 	const origFrame = zi.importer.onFrame.bind(zi.importer);
 	zi.importer.onFrame = (peer, frame) => ((st.bytesIn += frame.payload.length), origFrame(peer, frame));
 
-	const status = () => ({
-		id,
-		sources: zi.localSources(),
-		online: zi.node.onlinePeers(),
-		resolved: st.resolved,
-		bytesIn: st.bytesIn,
-		executing: [...zi.executions.keys()],
-		delegated: [...zi.delegations.keys()],
-		events: events.slice(-20),
-	});
+	const status = ({ guildId } = {}) => {
+		const player = typeof guildId === "string" ? manager.get(guildId) : undefined;
+		return {
+			id,
+			sources: zi.localSources(),
+			online: zi.node.onlinePeers(),
+			resolved: st.resolved,
+			bytesIn: st.bytesIn,
+			executing: [...zi.executions.keys()],
+			delegated: [...zi.delegations.keys()],
+			playback:
+				player ?
+					{
+						isPlaying: player.isPlaying,
+						isPaused: player.isPaused,
+						trackId: player.currentTrack?.id ?? null,
+					}
+				:	null,
+			events: events.slice(-20),
+		};
+	};
 	zi.node.handle("test.status", status);
-	const setTrace = makeTracer(zi.node, net.formatNetDebug, cfg.netDebug, (line) => log(line));
+	const setTrace = makeTracer(zi.node, net.formatNetDebug, cfg.netDebug, (line) => {
+		log(line);
+		if (cfg.netDebugFile) {
+			fs.mkdirSync(path.dirname(cfg.netDebugFile), { recursive: true });
+			fs.appendFileSync(cfg.netDebugFile, `${new Date().toISOString()} ${line}\n`);
+		}
+	});
 	if (cfg.allowRemoteKill) {
 		zi.node.handle("test.kill", () => {
 			log("test.kill received: crashing on purpose");
@@ -298,8 +326,72 @@ async function startNode(id, cfg, hooks = {}) {
 		if (!cfg.discordToken) throw new Error("DISCORD_TOKEN is empty (set it in .env)");
 		await client.login(cfg.discordToken);
 		log(`logged in as ${client.user?.tag}`);
+		if (cfg.voiceTestChannelId) {
+			if (!client.isReady()) await new Promise((resolve) => client.once("ready", resolve));
+			runVoiceTransferTest({ id, cfg, zi, manager, net, client, log }).catch((e) =>
+				log("[voice-test] FAILED:", e.stack || e.message),
+			);
+		}
 	}
 	return { id, zi, manager, client, status, stop: () => zi.stop() };
+}
+
+async function runVoiceTransferTest({ id, cfg, zi, manager, net, client, log }) {
+	const provider = cfg.nodes.find((node) => node.id !== id && node.sources.includes("youtube"));
+	if (!provider) throw new Error("NODES must include a non-Discord node with the youtube plugin");
+	if (!cfg.voiceTestQuery) throw new Error("VOICE_TEST_QUERY is required when VOICE_TEST_CHANNEL_ID is set");
+
+	const channel = await client.channels.fetch(cfg.voiceTestChannelId);
+	if (!channel?.isVoiceBased?.() || !channel.guildId) {
+		throw new Error(`VOICE_TEST_CHANNEL_ID ${cfg.voiceTestChannelId} is not an accessible voice channel`);
+	}
+	const existing = manager.get(channel.guildId);
+	if (existing?.connection || zi.delegationFor(channel.guildId)) {
+		throw new Error(`A player or voice hand-off already exists for guild ${channel.guildId}`);
+	}
+
+	const result = await zi.searchOn(provider.id, cfg.voiceTestQuery, {
+		source: "youtube",
+		limit: 1,
+		requestedBy: "voice-transfer-test",
+	});
+	const track = net.markTrack(result.tracks[0], provider.id);
+	const player = existing ?? (await manager.create(channel.guildId, { extensions: [zi.extensionClass()] }));
+	await player.connect(channel);
+	log(`[voice-test] connected to channel ${channel.id} in guild ${channel.guildId}`);
+
+	const plan = await zi.routeTracks(player, [track], { handoffThreshold: cfg.handoffThreshold });
+	if (plan.mode !== "handoff" || plan.executor !== provider.id || !plan.applied) {
+		throw new Error(
+			`Expected voice hand-off to ${provider.id}; got mode=${plan.mode}, executor=${plan.executor || "-"}, applied=${plan.applied}`,
+		);
+	}
+	log(`[voice-test] voice handed off to ${provider.id}; playing "${track.title}" (${track.source})`);
+
+	const startedAt = Date.now();
+	await player.play(track, { requestedBy: "voice-transfer-test" });
+	let trackStartedAt;
+	const end = Date.now() + 90_000;
+	while (Date.now() < end) {
+		const remote = await zi.node.request(provider.id, "test.status", { guildId: channel.guildId }, { timeoutMs: 8_000 });
+		const error = remote.events.find((e) => e.at >= startedAt && e.guildId === channel.guildId && e.type === "error");
+		if (error) throw new Error(`executor player error: ${error.message}`);
+		const started = remote.events.find((e) => e.at >= startedAt && e.guildId === channel.guildId && e.type === "trackStart");
+		if (started && trackStartedAt === undefined) trackStartedAt = started.at;
+		if (trackStartedAt !== undefined && Date.now() - trackStartedAt >= 10_000) {
+			if (!remote.playback?.isPlaying || remote.playback.trackId !== track.id) {
+				throw new Error(
+					`executor playback is not stable after 10 seconds (playing=${remote.playback?.isPlaying ?? "unknown"}, track=${remote.playback?.trackId ?? "unknown"})`,
+				);
+			}
+			log(
+				`[voice-test] SUCCESS: ${provider.id} played "${started.title}" (${started.source}) for 10 seconds in guild ${channel.guildId}`,
+			);
+			return;
+		}
+		await sleep(1000);
+	}
+	throw new Error(`No trackStart reported by ${provider.id} within 90 seconds`);
 }
 
 /* ───────────────────────── Discord command handling ───────────────────────── */
@@ -342,12 +434,33 @@ function attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, 
 	}
 
 	const peerStatus = (peer) => ask(peer, "test.status", undefined, 8000);
-	const fmtOwners = (owners) =>
-		Object.entries(owners.reduce((a, o) => ((a[o ?? id] = (a[o ?? id] || 0) + 1), a), {}))
-			.map(([k, v]) => `${k}×${v}`)
-			.join(", ");
+	const caseContext = {
+		id,
+		cfg,
+		zi,
+		manager,
+		net,
+		client,
+		events,
+		st,
+		log,
+		peers,
+		ask,
+		specFor,
+		findTracks,
+		getPlayer,
+		waitStart,
+		peerStatus,
+		sleep,
+		searchableSources: SEARCHABLE,
+	};
 
 	const commands = {
+		...createSearchAndPlayCases(caseContext),
+		route: createRoutingCase(caseContext),
+		...createVoiceHandoffCases(caseContext),
+		selftest: createSelfTestCase(caseContext),
+
 		async help(m) {
 			await m.reply(
 				[
@@ -391,21 +504,6 @@ function attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, 
 			);
 		},
 
-		async search(m, arg) {
-			if (!arg) return void (await m.reply("Usage: `search <query>` or `search yt:<query>`"));
-			const { tracks, node, result } = await findTracks(arg, 5);
-			const lines = tracks.map(
-				(t, i) =>
-					`${i + 1}. **${t.title}** (${t.source}) · found on **${t.metadata?.net?.owner ?? id}**${t.duration ? ` · ${t.duration}s` : ""}`,
-			);
-			await m.reply(
-				`${result.playlist ? `📃 playlist **${result.playlist.name}**\n` : ""}${lines.join("\n")}\n_(answered by ${node === id ? "this bot" : node})_`.slice(
-					0,
-					1990,
-				),
-			);
-		},
-
 		async trace(m, arg) {
 			const a = (arg || "").trim().toLowerCase();
 			if (a === "audio") {
@@ -417,65 +515,6 @@ function attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, 
 				: a === "msg" || a === "wire" ? a
 				: "all";
 			await m.reply(`net trace: **${setTrace(mode)}** (printed in the console of ${id})`);
-		},
-
-		async play(m, arg) {
-			if (!arg) return void (await m.reply("Usage: `play <query>` or `play yt:<query>`"));
-			const player = await getPlayer(m);
-			const { tracks, node } = await findTracks(arg, 1);
-			const track = tracks[0];
-			if (node !== id) net.markTrack(track, node);
-			const since = Date.now();
-			const bytes0 = st.bytesIn;
-			await player.play(track, { requestedBy: m.author.id });
-			const d = zi.delegationFor(m.guildId);
-			const started = await waitStart(m.guildId, since).catch((e) => e.message);
-			const where = d ? `played by **${d.executor}**` : "played here";
-			const from =
-				node === id ? "found and resolved locally" : (
-					`audio streamed from **${node}**${st.bytesIn > bytes0 ? ` (${st.bytesIn - bytes0} bytes)` : ""}`
-				);
-			await m.reply(
-				`${started === true ? "▶️" : "⚠️"} **${track.title}** (${track.source}) · ${from} · ${where}${started === true ? "" : ` · not confirmed: ${started === false ? "no trackStart in 25s" : started}`}`,
-			);
-		},
-
-		async route(m, arg) {
-			const parts = arg.split(/\s+/);
-			const count = /^\d+$/.test(parts[parts.length - 1] ?? "") ? Number(parts.pop()) : 20;
-			const text = parts.join(" ");
-			if (!text) return void (await m.reply("Usage: `route yt:<query> [count]`"));
-			const player = await getPlayer(m);
-			const { tracks: found, node } = await findTracks(text, Math.min(count, 25));
-			const tracks = Array.from({ length: count }, (_, i) => ({
-				...found[i % found.length],
-				id: `${found[i % found.length].id}#${i}`,
-			}));
-			const plan = await zi.routeTracks(player, tracks, { handoffThreshold: cfg.handoffThreshold });
-			let reply = `**${plan.mode}**${plan.executor ? ` → ${plan.executor}` : ""} · tracks resolved on: ${fmtOwners(plan.owners)} · applied: ${plan.applied}${plan.error ? ` (${plan.error.message})` : ""}`;
-			if (plan.applied || plan.mode === "local") {
-				const since = Date.now();
-				await player.play(tracks[0], { requestedBy: m.author.id });
-				player.queue.addMultiple(tracks.slice(1));
-				const ok = await waitStart(m.guildId, since).catch((e) => e.message);
-				reply += ` · ${ok === true ? "▶️ started" : `⚠️ ${ok === false ? "no trackStart" : ok}`} (source node: ${node})`;
-			}
-			await m.reply(reply);
-		},
-
-		async handoff(m, arg) {
-			if (!arg) return void (await m.reply("Usage: `handoff <node>`"));
-			const player = await getPlayer(m);
-			if (player.isPlaying) await player.stop();
-			await zi.delegateVoice(player, arg.trim());
-			await m.reply(`🔀 voice handed to **${arg.trim()}** (this bot keeps the gateway and the queue)`);
-		},
-
-		async reclaim(m) {
-			const player = await getPlayer(m, { connect: false });
-			if (!zi.delegationFor(m.guildId)) return void (await m.reply("Voice is not delegated."));
-			await zi.reclaimVoice(player);
-			await m.reply("🔙 voice is back on this bot");
 		},
 
 		async stop(m) {
@@ -497,130 +536,6 @@ function attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, 
 			if (!cfg.allowRemoteKill) return void (await m.reply("Set ALLOW_REMOTE_KILL=1 to use this."));
 			await ask(arg.trim(), "test.kill", undefined, 5000);
 			await m.reply(`💥 ${arg.trim()} is crashing; watch the failover with \`status\``);
-		},
-
-		async selftest(m, arg) {
-			const player = await getPlayer(m);
-			// start from a clean slate: a track that is still playing (or queued) would hide new stream pulls
-			await player.stop().catch(() => {});
-			player.queue.clear?.();
-			await sleep(1500);
-			const lines = [];
-			let fails = 0;
-			const msg = await m.reply("🧪 selftest running…");
-			const flush = () => msg.edit(lines.join("\n").slice(0, 1990) || "…").catch(() => {});
-			const check = (name, ok, detail = "") => {
-				if (!ok) fails++;
-				lines.push(`${ok ? "✅" : "❌"} ${name}${detail ? ` — ${detail}` : ""}`);
-				return flush();
-			};
-			const searchable = (n) => n.sources.filter((s) => SEARCHABLE.includes(s));
-			const localSource = searchable({ sources: zi.localSources() })[0];
-			const foreignNode = peers.find((p) => searchable(p).some((s) => !zi.localSources().includes(s)));
-			const foreignSource = foreignNode && searchable(foreignNode).find((s) => !zi.localSources().includes(s));
-
-			try {
-				// 1. pairing + plugins
-				for (const p of peers) {
-					const s = await peerStatus(p.id).catch((e) => ({ error: e.message }));
-					const want = p.sources.slice().sort().join(",");
-					await check(
-						`${p.id} authenticated, plugins [${want}]`,
-						!s.error && s.sources.slice().sort().join(",") === want,
-						s.error || `got [${s.sources?.join(",")}]`,
-					);
-				}
-				if (!foreignNode || !localSource) {
-					await check("needs a searchable plugin on the bot and a different one on a provider", false, "adjust NODES");
-				} else {
-					// 2. stream transfer
-					const found = (await findTracks(`${foreignSource}:${specFor(foreignSource)}`, 3)).tracks;
-					const foreign = found[0];
-					const before = (await peerStatus(foreignNode.id)).resolved;
-					const bytes0 = st.bytesIn;
-					const since = Date.now();
-					await player.play(net.markTrack({ ...foreign }, foreignNode.id), { requestedBy: m.author.id });
-					const started = await waitStart(m.guildId, since).catch(() => false);
-					await sleep(500);
-					await check(`stream: audio pulled from ${foreignNode.id}`, st.bytesIn > bytes0, `${st.bytesIn - bytes0} bytes`);
-					await check(
-						`stream: ${foreignNode.id} resolved it with its own ${foreignSource} plugin`,
-						(await peerStatus(foreignNode.id)).resolved === before + 1,
-					);
-					await check("stream: trackStart on the bot", started === true);
-					await player.stop();
-
-					// 3. routing + handoff + reclaim
-					const local = (await findTracks(`${localSource}:${specFor(localSource)}`, 1)).tracks[0];
-					const list = (t, n, tag) => Array.from({ length: n }, (_, i) => ({ ...t, id: `${t.id}#${tag}${i}` }));
-					let plan = await zi.routeTracks(player, list(local, 6, "a"), { handoffThreshold: cfg.handoffThreshold });
-					await check("route: all local → local", plan.mode === "local", plan.mode);
-					const mixed = [...list(local, 9, "b"), ...list(foreign, 1, "bf")];
-					plan = await zi.routeTracks(player, mixed, { handoffThreshold: cfg.handoffThreshold });
-					await check(
-						"route: 1 foreign of 10 → relay",
-						plan.mode === "relay" && mixed[9].metadata?.net?.owner === foreignNode.id,
-						`${plan.mode}, owner ${mixed[9].metadata?.net?.owner}`,
-					);
-					plan = await zi.routeTracks(player, [...list(foreign, 20, "c"), ...list(local, 1, "cl")], {
-						handoffThreshold: cfg.handoffThreshold,
-					});
-					await check(
-						`route: 20 foreign of 21 → handoff to ${foreignNode.id}`,
-						plan.mode === "handoff" && plan.applied,
-						plan.error?.message || plan.mode,
-					);
-					if (plan.applied) {
-						const es = await peerStatus(foreignNode.id);
-						await check(`${foreignNode.id} executes this guild's voice`, es.executing.includes(m.guildId));
-						const t0 = Date.now();
-						await player.play({ ...foreign }, { requestedBy: m.author.id });
-						const execStarted = await (async () => {
-							const end = Date.now() + 25_000;
-							while (Date.now() < end) {
-								if (
-									(await peerStatus(foreignNode.id)).events.some(
-										(e) => e.at >= t0 && e.type === "trackStart" && e.guildId === m.guildId,
-									)
-								)
-									return true;
-								await sleep(500);
-							}
-							return false;
-						})();
-						await check(`track started on the executor ${foreignNode.id}, driven by the bot`, execStarted);
-						await player.stop().catch(() => {});
-						await zi.reclaimVoice(player);
-						await check("reclaim: voice is back on the bot", Boolean(player.connection) && !zi.delegationFor(m.guildId));
-					}
-
-					// 4. failover
-					if (arg === "failover") {
-						if (!cfg.allowRemoteKill) await check("failover needs ALLOW_REMOTE_KILL=1", false);
-						else {
-							await player.stop().catch(() => {});
-							const p2 = await zi.routeTracks(player, [...list(foreign, 20, "f"), ...list(local, 1, "fl")], {
-								handoffThreshold: cfg.handoffThreshold,
-							});
-							if (!p2.applied) await check("failover: handoff established", false, p2.error?.message);
-							else {
-								await ask(foreignNode.id, "test.kill", undefined, 5000).catch(() => {});
-								const end = Date.now() + 20_000;
-								while (Date.now() < end && (zi.delegationFor(m.guildId) || !player.connection)) await sleep(250);
-								await check(
-									`failover: bot reclaimed the voice after ${foreignNode.id} crashed`,
-									!zi.delegationFor(m.guildId) && Boolean(player.connection),
-									`restart ${foreignNode.id} afterwards`,
-								);
-							}
-						}
-					}
-				}
-			} catch (e) {
-				await check("selftest aborted", false, e.message);
-			}
-			lines.push(fails ? `\n**${fails} check(s) failed**` : "\n**all checks passed**");
-			await flush();
 		},
 	};
 

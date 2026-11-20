@@ -231,7 +231,14 @@ export class StreamManager extends EventEmitter {
 		if ((managed.stream as any)._readableState?.flowing === true) {
 			attach();
 		} else {
-			managed.stream.once("pipe", attach);
+			const attachBeforeFlowing = (event: string) => {
+				if (event !== "data") return;
+				managed.stream.off("newListener", attachBeforeFlowing);
+				attach();
+			};
+			// Install the counter before a pipe's first data listener starts flowing the source.
+			managed.stream.on("newListener", attachBeforeFlowing);
+			managed.stream.once("close", () => managed.stream.off("newListener", attachBeforeFlowing));
 		}
 	}
 

@@ -47,7 +47,46 @@ node test-cluster.js --keys       # only create keys and print fingerprints
 node test-cluster.js --node=yt-1  # one node only (another machine): copy the other nodes' *.key.pub into KEY_DIR first
 ```
 
-Join a voice channel and type in a text channel:
+## 5. Try one case at a time
+
+The cluster runner wires the Discord bot and shared helpers together; each user-facing network scenario lives in its own module:
+
+1. **Search and play** — start with `!search yt:<query>`, then `!play yt:<query>` to find a track on a provider and stream it to
+   the bot: [`cases/search-and-play.js`](./cases/search-and-play.js).
+2. **Relay or route** — use `!route yt:<query> 10` to see the router choose local playback, audio relay, or voice hand-off based
+   on track ownership: [`cases/routing.js`](./cases/routing.js).
+3. **Voice hand-off** — move a connected voice session with `!handoff <node>` and return it with `!reclaim`:
+   [`cases/voice-handoff.js`](./cases/voice-handoff.js).
+4. **Full self-test** — run `!selftest` for pairing, stream transfer, routing, hand-off, and reclaim; `!selftest failover`
+   additionally crashes the remote executor and checks recovery (requires `ALLOW_REMOTE_KILL=1`):
+   [`cases/selftest.js`](./cases/selftest.js).
+
+The `!nodes`, `!status`, `!trace`, `!stop`, `!skip`, `!leave`, and guarded `!kill` commands remain in
+[`test-cluster.js`](./test-cluster.js) as cluster controls and diagnostics.
+
+### One-shot voice transfer
+
+To connect a specific voice channel and play a YouTube URL on the YouTube provider automatically after login, set
+`VOICE_TEST_CHANNEL_ID` and `VOICE_TEST_QUERY` in the env file. Make sure `NODES` includes a non-Discord node with the `youtube`
+plugin. The test searches on that node, transfers the voice connection, starts playback, and reports success only after the
+provider emits `trackStart`.
+
+For an isolated extra cluster, copy `.env` to `.env.voice-transfer`, set a unique `NET_ID`, `NODES` (for example
+`transfer-client:soundcloud,transfer-yt:youtube`), and `KEY_DIR=./.keys/voice-transfer`, then set the channel and query:
+
+```env
+VOICE_TEST_CHANNEL_ID=1563498330582032529
+VOICE_TEST_QUERY=https://www.youtube.com/watch?v=oc7FhDaO5c4
+NET_DEBUG=1
+DEBUG=1
+NET_DEBUG_FILE=./voice-transfer-mqtt-debug.log
+```
+
+Run the separate processes with `node test-cluster.js --env=./.env.voice-transfer`. The formatted MQTT trace is appended to
+`NET_DEBUG_FILE`; player-manager debug messages are printed in the process console. Debug message bodies remain redacted by
+default. The log file is ignored by git.
+
+## 6. Discord commands
 
 | Command                              | What it tests                                                                                  |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------- |

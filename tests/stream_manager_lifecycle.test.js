@@ -33,3 +33,19 @@ test("StreamManager still expires stale paused streams", () => {
 	assert.equal(stream.destroyed, true);
 	manager.dispose();
 });
+
+test("StreamManager starts counting bytes when an active stream begins flowing", async () => {
+	const manager = new StreamManager({ cleanupInterval: 0 });
+	const stream = new PassThrough();
+	const streamId = manager.registerStream(stream, track);
+	const managed = manager.streams.get(streamId);
+	const destination = new PassThrough();
+	stream.pipe(destination);
+
+	const finished = new Promise((resolve) => destination.once("finish", resolve));
+	stream.end(Buffer.from("audio"));
+	await finished;
+
+	assert.equal(managed.byteCount, 5);
+	manager.dispose();
+});

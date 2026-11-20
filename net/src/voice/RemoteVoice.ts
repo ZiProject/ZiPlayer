@@ -10,6 +10,8 @@ export interface RemoteVoiceChannel {
 interface Registered {
 	methods: any;
 	owner: string;
+	hasState: boolean;
+	server?: any;
 }
 
 /**
@@ -19,15 +21,22 @@ interface Registered {
  */
 export class RemoteVoiceHub {
 	private readonly adapters = new Map<string, Registered>();
-	private readonly early = new Map<string, Array<{ kind: "state" | "server"; data: any }>>();
+	private readonly early = new Map<string, Array<{ from: string; kind: "state" | "server"; data: any }>>();
 
 	constructor(private readonly node: NetNode) {}
 
 	createChannel(guildId: string, channelId: string, ownerId: string): RemoteVoiceChannel {
 		const adapterCreator = (methods: any) => {
-			this.adapters.set(guildId, { methods, owner: ownerId });
-			for (const e of this.early.get(guildId) ?? []) this.deliver(methods, e.kind, e.data);
+			const registration: Registered = { methods, owner: ownerId, hasState: false };
+			this.adapters.set(guildId, registration);
+			const early = this.early.get(guildId) ?? [];
 			this.early.delete(guildId);
+			queueMicrotask(() => {
+				if (this.adapters.get(guildId) !== registration) return;
+				for (const e of early) {
+					if (e.from === ownerId) this.deliverEvent(registration, e.kind, e.data);
+				}
+			});
 			return {
 				sendPayload: (payload: unknown) => {
 					this.node.notify(ownerId, "voice.payload", { guildId, payload }).catch(() => {});
@@ -46,10 +55,10 @@ export class RemoteVoiceHub {
 		const reg = this.adapters.get(guildId);
 		if (reg) {
 			if (reg.owner !== from) return;
-			return this.deliver(reg.methods, kind, data);
+			return this.deliverEvent(reg, kind, data);
 		}
 		const q = this.early.get(guildId) ?? [];
-		if (q.length < 8) q.push({ kind, data });
+		if (q.length < 8) q.push({ from, kind, data });
 		this.early.set(guildId, q);
 	}
 
@@ -65,6 +74,18 @@ export class RemoteVoiceHub {
 	private deliver(methods: any, kind: "state" | "server", data: any) {
 		if (kind === "state") methods.onVoiceStateUpdate(data);
 		else methods.onVoiceServerUpdate(data);
+	}
+
+	private deliverEvent(reg: Registered, kind: "state" | "server", data: any) {
+		if (kind === "server") {
+			reg.server = data;
+			if (reg.hasState) this.deliver(reg.methods, kind, data);
+			return;
+		}
+
+		this.deliver(reg.methods, kind, data);
+		if (!reg.hasState && reg.server) this.deliver(reg.methods, "server", reg.server);
+		reg.hasState = true;
 	}
 }
 

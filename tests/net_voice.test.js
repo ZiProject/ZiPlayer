@@ -3,6 +3,43 @@ const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const { net, makeCluster, tick } = require("./helpers/net");
 
+test("discordJsGateway replays the cached voice server update to a late hand-off", () => {
+	const client = new EventEmitter();
+	client.user = { id: "bot" };
+	client.guilds = { cache: new Map() };
+	client.channels = { cache: new Map() };
+	const gateway = net.discordJsGateway(client);
+	const server = { guild_id: "g1", token: "voice-token", endpoint: "voice.example" };
+	client.emit("raw", { t: "VOICE_SERVER_UPDATE", d: server });
+
+	const received = [];
+	const stop = gateway.onVoiceUpdate((guildId, kind, data) => received.push({ guildId, kind, data }));
+	assert.deepEqual(received, [{ guildId: "g1", kind: "server", data: server }]);
+
+	const state = { guild_id: "g1", user_id: "bot", channel_id: "c1", session_id: "new-session" };
+	client.emit("raw", { t: "VOICE_STATE_UPDATE", d: state });
+	assert.deepEqual(received[1], { guildId: "g1", kind: "state", data: state });
+	stop();
+});
+
+test("RemoteVoiceHub defers queued gateway events until the voice adapter is initialized", async () => {
+	const node = { notify() {} };
+	const hub = new net.RemoteVoiceHub(node);
+	const received = [];
+	hub.feed("g1", "owner", "server", { endpoint: "voice.example" });
+	const channel = hub.createChannel("g1", "c1", "owner");
+	channel.guild.voiceAdapterCreator({
+		onVoiceServerUpdate: (data) => received.push(data),
+		onVoiceStateUpdate: (data) => received.push({ state: data }),
+	});
+
+	assert.deepEqual(received, []);
+	await tick();
+	assert.deepEqual(received, []);
+	hub.feed("g1", "owner", "state", { session_id: "new-session" });
+	assert.deepEqual(received, [{ state: { session_id: "new-session" } }, { endpoint: "voice.example" }]);
+});
+
 // ── router ────────────────────────────────────────────────────────────────
 test("planRoute: everything resolvable here stays local", () => {
 	const plan = net.planRoute({

@@ -15,6 +15,13 @@ export interface GatewayLike {
 
 /** Gateway adapter for a discord.js v14 `Client`. */
 export function discordJsGateway(client: any): GatewayLike {
+	const voiceServers = new Map<string, any>();
+	client.on("raw", (packet: any) => {
+		if (packet?.t === "VOICE_SERVER_UPDATE" && packet.d?.guild_id) {
+			voiceServers.set(String(packet.d.guild_id), packet.d);
+		}
+	});
+
 	return {
 		get userId() {
 			return client.user?.id as string;
@@ -29,6 +36,8 @@ export function discordJsGateway(client: any): GatewayLike {
 				}
 			};
 			client.on("raw", handler);
+			// A hand-off may begin after the owner's initial join already delivered this gateway event.
+			for (const [guildId, data] of voiceServers) listener(guildId, "server", data);
 			return () => client.off("raw", handler);
 		},
 		send(guildId, payload) {
