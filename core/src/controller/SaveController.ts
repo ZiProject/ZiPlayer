@@ -78,11 +78,16 @@ export class SaveController {
 			track,
 			options,
 			signal,
-			(exportTrack) => state.resolveStream(exportTrack),
+			(exportTrack, streamSignal) => state.resolveStream(exportTrack, { signal: streamSignal }),
 		);
 
 		if (!saveOptions.filter?.length && (!saveOptions.seek || saveOptions.seek <= 0)) {
-			return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions, streamInfo.metadata);
+			return this.decorateStream(
+				this.bindAbortToStream(streamInfo.stream, operationSignal, streamInfo.destroy),
+				saveOptions,
+				streamInfo.metadata,
+				streamInfo.destroy,
+			);
 		}
 
 		const filterController = new FilterEngine({ refreshPlayerResource: async () => true }, state.debug, undefined, {
@@ -103,7 +108,12 @@ export class SaveController {
 			this.throwIfAborted(state, operationSignal);
 			this.disposeFilterOnStreamEnd(state, filterController, output);
 			cleanupAbort();
-			return this.decorateStream(this.bindAbortToStream(output, operationSignal), saveOptions, streamInfo.metadata);
+			return this.decorateStream(
+				this.bindAbortToStream(output, operationSignal, streamInfo.destroy),
+				saveOptions,
+				streamInfo.metadata,
+				streamInfo.destroy,
+			);
 		} catch (error) {
 			cleanupAbort();
 			state.activeFilterEngines.delete(filterController);
@@ -126,9 +136,14 @@ export class SaveController {
 			track,
 			options,
 			signal,
-			(exportTrack) => state.resolveVideoStream(exportTrack),
+			(exportTrack, streamSignal) => state.resolveVideoStream(exportTrack, { signal: streamSignal }),
 		);
-		return this.decorateStream(this.bindAbortToStream(streamInfo.stream, operationSignal), saveOptions, streamInfo.metadata);
+		return this.decorateStream(
+			this.bindAbortToStream(streamInfo.stream, operationSignal, streamInfo.destroy),
+			saveOptions,
+			streamInfo.metadata,
+			streamInfo.destroy,
+		);
 	}
 
 	/**
@@ -140,15 +155,23 @@ export class SaveController {
 		track: Track,
 		options: O | string | undefined,
 		signal: AbortSignal | undefined,
-		resolver: (exportTrack: Track) => ReturnType<SaveState["resolveStream"]>,
+		resolver: (exportTrack: Track, signal?: AbortSignal) => ReturnType<SaveState["resolveStream"]>,
 	) {
 		const saveOptions = (typeof options === "string" ? { filename: options } : (options ?? {})) as O;
-		const operationSignal = signal ?? saveOptions.signal;
+		const operationSignal =
+			signal && saveOptions.signal && signal !== saveOptions.signal ?
+				AbortSignal.any([signal, saveOptions.signal])
+			:	(signal ?? saveOptions.signal);
 		state.debug(`[SaveController] save called for track: ${track.title}`);
 
 		const exportTrack = this.prepareExportTrack(track, saveOptions);
 		await this.applyMiddleware(state, exportTrack, operationSignal);
-		const streamInfo = await this.resolveWithTimeout(state, () => resolver(exportTrack), saveOptions.timeout, operationSignal);
+		const streamInfo = await this.resolveWithTimeout(
+			state,
+			() => resolver(exportTrack, operationSignal),
+			saveOptions.timeout,
+			operationSignal,
+		);
 		if (!streamInfo?.stream) throw new Error(`No save stream available for track: ${track.title}`);
 
 		state.debug(`[SaveController] Save stream obtained for track: ${track.title}`);
@@ -193,19 +216,46 @@ export class SaveController {
 					timer = setTimeout(() => reject(new Error(`Save operation timed out after ${timeoutMs}ms`)), timeoutMs);
 				})
 			:	null;
+		let settled = false;
+		const resolvePromise = resolve().then(
+			(res) => {
+				if (settled && res && typeof (res as any).stream?.destroy === "function") {
+					try {
+						(res as any).stream.destroy();
+					} catch {}
+				}
+				return res;
+			},
+			(err) => {
+				if (!settled) throw err;
+				return undefined as unknown as T;
+			},
+		);
 		try {
-			return await Promise.race(timeout ? [resolve(), timeout, aborted] : [resolve(), aborted]);
+			return await Promise.race(timeout ? [resolvePromise, timeout, aborted] : [resolvePromise, aborted]);
 		} finally {
+			settled = true;
 			if (timer) clearTimeout(timer);
 			if (onAbort) operationSignal.removeEventListener("abort", onAbort);
 		}
 	}
 
-	private decorateStream<T extends Readable>(stream: T, options: SaveOptions, streamInfoMetadata?: Record<string, any>): T {
-		const exportStream = stream as T & { filename?: string; metadata?: Record<string, any>; quality?: SaveOptions["quality"] };
+	private decorateStream<T extends Readable>(
+		stream: T,
+		options: SaveOptions,
+		streamInfoMetadata?: Record<string, any>,
+		destroyHook?: () => void | Promise<void>,
+	): T {
+		const exportStream = stream as T & {
+			filename?: string;
+			metadata?: Record<string, any>;
+			quality?: SaveOptions["quality"];
+			destroyStream?: () => void | Promise<void>;
+		};
 		if (options.filename) exportStream.filename = options.filename;
 		exportStream.metadata = { ...(streamInfoMetadata ?? {}), ...(options.metadata ?? {}) };
 		if (options.quality) exportStream.quality = options.quality;
+		if (destroyHook) exportStream.destroyStream = destroyHook;
 		return exportStream;
 	}
 
@@ -229,9 +279,21 @@ export class SaveController {
 		};
 	}
 
-	private bindAbortToStream<T extends Readable>(stream: T, signal?: AbortSignal): T {
+	private bindAbortToStream<T extends Readable>(stream: T, signal?: AbortSignal, destroyHook?: () => void | Promise<void>): T {
+		const runDestroy = () => {
+			if (destroyHook) {
+				try {
+					void destroyHook();
+				} catch {}
+			}
+		};
+		stream.once("close", runDestroy);
+		stream.once("error", runDestroy);
 		if (!signal) return stream;
-		const onAbort = () => stream.destroy(this.abortError());
+		const onAbort = () => {
+			runDestroy();
+			stream.destroy(this.abortError());
+		};
 		if (signal.aborted) onAbort();
 		else signal.addEventListener("abort", onAbort, { once: true });
 		const cleanup = () => signal.removeEventListener("abort", onAbort);

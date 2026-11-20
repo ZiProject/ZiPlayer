@@ -561,8 +561,8 @@ export class PlayerManager extends EventEmitter {
 		this.controllers.save?.attach(playerId, {
 			middleware: [async (track) => this.controllers.trackLoader.applyMiddleware(playerId, track)],
 			middlewareContext: { playerId, manager: this } as any,
-			resolveStream: (track) => pluginManager.getStream(track, { context: { playerId } }),
-			resolveVideoStream: (track) => pluginManager.getVideo(track, { playerId }),
+			resolveStream: (track, options) => pluginManager.getStream(track, { context: { playerId, signal: options?.signal } }),
+			resolveVideoStream: (track, options) => pluginManager.getVideo(track, { playerId, signal: options?.signal }),
 			debug: channel("SaveController"),
 		});
 		this.controllers.filter?.attach(playerId, undefined, channel("FilterController"), {

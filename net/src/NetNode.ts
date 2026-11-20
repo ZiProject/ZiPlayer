@@ -150,7 +150,13 @@ export class NetNode extends EventEmitter {
 		sessionId?: string,
 	) {
 		if (!this.tracing) return;
-		const type = typeof message.type === "string" ? message.type : message.re !== undefined ? (message.err ? "reply:error" : "reply") : undefined;
+		const type =
+			typeof message.type === "string" ? message.type
+			: message.re !== undefined ?
+				message.err ?
+					"reply:error"
+				:	"reply"
+			:	undefined;
 		const raw = message.body !== undefined ? message.body : message.err;
 		this.trace({
 			layer: "message",
@@ -162,7 +168,10 @@ export class NetNode extends EventEmitter {
 			re: message.re,
 			bytes,
 			sessionId,
-			body: raw === undefined ? undefined : this.options.debugRedact === false ? raw : redact(raw),
+			body:
+				raw === undefined ? undefined
+				: this.options.debugRedact === false ? raw
+				: redact(raw),
 		});
 	}
 
@@ -199,11 +208,10 @@ export class NetNode extends EventEmitter {
 			await this.wire.subscribe(topics.audio(this.networkId, this.nodeId), (_t, p) => this.onAudioFrame(Buffer.from(p))),
 			await this.wire.subscribe(topics.presenceAll(this.networkId), (t, p) => this.onPresence(t, Buffer.from(p))),
 		);
-		await this.wire.publish(
-			presenceTopic,
-			enc({ online: true, nodeId: this.nodeId, ts: Date.now(), pub: this.publicKeyPem }),
-			{ qos: 1, retain: true },
-		);
+		await this.wire.publish(presenceTopic, enc({ online: true, nodeId: this.nodeId, ts: Date.now(), pub: this.publicKeyPem }), {
+			qos: 1,
+			retain: true,
+		});
 	}
 
 	async stop(): Promise<void> {
@@ -363,7 +371,15 @@ export class NetNode extends EventEmitter {
 
 	private publishHandshake(peerId: string, message: Hs1 | Hs2 | Hs3) {
 		const data = Buffer.concat([Buffer.from([KIND.HANDSHAKE]), Buffer.from(JSON.stringify(message))]);
-		this.trace({ layer: "message", dir: "out", kind: "handshake", peer: peerId, type: message.t, sessionId: message.sid, bytes: data.length });
+		this.trace({
+			layer: "message",
+			dir: "out",
+			kind: "handshake",
+			peer: peerId,
+			type: message.t,
+			sessionId: message.sid,
+			bytes: data.length,
+		});
 		return this.wire.publish(topics.inbox(this.networkId, peerId), data, { qos: 1 });
 	}
 
@@ -631,7 +647,10 @@ class TracedTransport implements Transport {
 		}
 		if ((kind === "audio" || kind === "audio-encrypted") && !this.node.options.debugAudio) return;
 		const parts = topic.split("/");
-		const peer = presence ? parts[parts.length - 1] : dir === "out" && parts[parts.length - 3] === "node" ? parts[parts.length - 2] : undefined;
+		const peer =
+			presence ? parts[parts.length - 1]
+			: dir === "out" && parts[parts.length - 3] === "node" ? parts[parts.length - 2]
+			: undefined;
 		this.node.trace({
 			layer: "wire",
 			dir,

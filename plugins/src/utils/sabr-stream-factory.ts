@@ -45,6 +45,7 @@ export interface SabrAudioResult {
 	};
 	author?: string;
 	duration?: number;
+	destroy?: () => void | Promise<void>;
 }
 
 export interface SabrVideoResult {
@@ -57,6 +58,7 @@ export interface SabrVideoResult {
 	};
 	author?: string;
 	duration?: number;
+	destroy?: () => void | Promise<void>;
 }
 
 /**
@@ -473,6 +475,14 @@ export async function createSabrStream(
 			},
 			author,
 			duration,
+			destroy: () => {
+				cleanup();
+				if (!nodeStream.destroyed && typeof nodeStream.destroy === "function") {
+					try {
+						nodeStream.destroy();
+					} catch {}
+				}
+			},
 		};
 	} catch (error) {
 		if (sabrStream) {
@@ -623,9 +633,11 @@ export async function createSabrVideoStream(
 		}
 
 		// Drain audio stream in background so video stream never stalls from full audio buffer
+		let audioReader: { cancel: (reason?: any) => Promise<any> } | undefined;
 		(async () => {
 			try {
 				const reader = audioStream.getReader();
+				audioReader = reader;
 				while (true) {
 					const { done } = await reader.read();
 					if (done) break;
@@ -638,12 +650,24 @@ export async function createSabrVideoStream(
 
 		const cleanup = () => {
 			try {
+				audioReader?.cancel()?.catch(() => {});
+			} catch {}
+			try {
 				currentSabr.abort();
 			} catch {}
 		};
 		nodeStream.once("close", cleanup);
 		nodeStream.once("error", cleanup);
 		nodeStream.once("end", cleanup);
+		if (signal) {
+			const onSignalAbort = () => {
+				cleanup();
+				if (!nodeStream.destroyed) nodeStream.destroy();
+			};
+			if (signal.aborted) onSignalAbort();
+			else signal.addEventListener("abort", onSignalAbort, { once: true });
+			nodeStream.once("close", () => signal.removeEventListener("abort", onSignalAbort));
+		}
 
 		const title = playerResponse.video_details?.title ?? playerResponse.basic_info?.title ?? videoId;
 		const author = playerResponse.video_details?.author ?? playerResponse.basic_info?.author;
@@ -659,6 +683,14 @@ export async function createSabrVideoStream(
 			},
 			author,
 			duration,
+			destroy: () => {
+				cleanup();
+				if (!nodeStream.destroyed && typeof nodeStream.destroy === "function") {
+					try {
+						nodeStream.destroy();
+					} catch {}
+				}
+			},
 		};
 	} catch (error) {
 		if (sabrStream) {

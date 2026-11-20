@@ -37,12 +37,24 @@ function fakeManager(plugins) {
 const yt = (n = 3) => ({
 	name: "youtube",
 	canHandle: (q) => /youtube\.com|youtu\.be/.test(q) || !/^(sc|tts):/.test(q),
-	tracks: (q) => Array.from({ length: n }, (_, i) => ({ id: `yt${i}`, title: `yt ${q} ${i}`, url: `https://youtube.com/watch?v=${i}`, duration: 10 })),
+	tracks: (q) =>
+		Array.from({ length: n }, (_, i) => ({
+			id: `yt${i}`,
+			title: `yt ${q} ${i}`,
+			url: `https://youtube.com/watch?v=${i}`,
+			duration: 10,
+		})),
 });
 const sc = (n = 2) => ({
 	name: "soundcloud",
 	canHandle: (q) => !/youtube\.com|youtu\.be|^(yt|tts):/.test(q),
-	tracks: (q) => Array.from({ length: n }, (_, i) => ({ id: `sc${i}`, title: `sc ${q} ${i}`, url: `https://soundcloud.com/${i}`, duration: 10 })),
+	tracks: (q) =>
+		Array.from({ length: n }, (_, i) => ({
+			id: `sc${i}`,
+			title: `sc ${q} ${i}`,
+			url: `https://soundcloud.com/${i}`,
+			duration: 10,
+		})),
 });
 
 /** specs: { id: { plugins, serve, roles } }; roles = roles OTHER nodes grant this node. */
@@ -57,7 +69,9 @@ async function cluster(specs, { zi = {} } = {}) {
 			nodeId: id,
 			networkId: "t",
 			identity: identities[id].privateKeyPem,
-			trust: ids.filter((o) => o !== id).map((o) => ({ nodeId: o, publicKey: identities[o].publicKeyPem, roles: specs[o].roles })),
+			trust: ids
+				.filter((o) => o !== id)
+				.map((o) => ({ nodeId: o, publicKey: identities[o].publicKeyPem, roles: specs[o].roles })),
 			transport: broker.transport(),
 			manager,
 			handshakeTimeoutMs: 500,
@@ -83,7 +97,11 @@ test("yt: prefix searches the node that has the plugin and marks its tracks", as
 	assert.equal(r.tracks.length, 2);
 	assert.equal(r.tracks[0].metadata.net.owner, "yt");
 	assert.equal(r.tracks[0].requestedBy, "user-1");
-	assert.deepEqual(c.yt.manager.calls[0], { via: "plugin", q: "lofi", plugins: ["youtube"] }, "prefix stripped, plugin filter used");
+	assert.deepEqual(
+		c.yt.manager.calls[0],
+		{ via: "plugin", q: "lofi", plugins: ["youtube"] },
+		"prefix stripped, plugin filter used",
+	);
 	assert.equal(c.bot.manager.calls.length, 0, "the bot did not search locally for a youtube query");
 });
 
@@ -107,7 +125,11 @@ test("local results win when this node can handle the query (no network round tr
 });
 
 test("the owner of a remote track is the node that answered, whatever the peer wrote", async (t) => {
-	const evil = { name: "youtube", canHandle: () => true, tracks: () => [{ id: "x", title: "x", url: "https://e/x", metadata: { net: { owner: "someone-else" }, keep: 1 } }] };
+	const evil = {
+		name: "youtube",
+		canHandle: () => true,
+		tracks: () => [{ id: "x", title: "x", url: "https://e/x", metadata: { net: { owner: "someone-else" }, keep: 1 } }],
+	};
 	const c = await cluster({ bot: { plugins: [sc()], serve: false }, yt: { plugins: [evil], serve: true } });
 	t.after(c.stopAll);
 	const r = await c.bot.zi.search("yt:anything");
@@ -129,7 +151,10 @@ test("nodes that do not serve search are skipped; searchOn explains why", async 
 	t.after(c.stopAll);
 	await assert.rejects(() => c.bot.zi.search("yt:lofi"), /No results found/);
 	assert.equal(c.yt.manager.calls.length, 0);
-	await assert.rejects(() => c.bot.zi.searchOn("yt", "lofi"), (e) => e.code === "NOT_PROVIDED");
+	await assert.rejects(
+		() => c.bot.zi.searchOn("yt", "lofi"),
+		(e) => e.code === "NOT_PROVIDED",
+	);
 });
 
 test("provideSearch({ allow }) can refuse, and the provide-search role is required", async (t) => {
@@ -138,14 +163,20 @@ test("provideSearch({ allow }) can refuse, and the provide-search role is requir
 		yt: { plugins: [yt()], serve: true },
 	});
 	t.after(c.stopAll);
-	await assert.rejects(() => c.bot.zi.searchOn("yt", "lofi"), (e) => e.code === "FORBIDDEN");
+	await assert.rejects(
+		() => c.bot.zi.searchOn("yt", "lofi"),
+		(e) => e.code === "FORBIDDEN",
+	);
 
 	const d = await cluster({
 		bot: { plugins: [sc()], serve: false },
 		yt: { plugins: [yt()], serve: { allow: (q) => !q.includes("blocked") } },
 	});
 	t.after(d.stopAll);
-	await assert.rejects(() => d.bot.zi.searchOn("yt", "blocked words"), (e) => e.code === "FORBIDDEN");
+	await assert.rejects(
+		() => d.bot.zi.searchOn("yt", "blocked words"),
+		(e) => e.code === "FORBIDDEN",
+	);
 	assert.ok((await d.bot.zi.searchOn("yt", "fine")).tracks.length);
 });
 
@@ -163,7 +194,11 @@ test("merge asks every node and de-duplicates", async (t) => {
 });
 
 test("answers are trimmed to maxResults and maxResponseBytes", async (t) => {
-	const big = { name: "youtube", canHandle: () => true, tracks: () => Array.from({ length: 10 }, (_, i) => ({ id: `b${i}`, title: "t".repeat(2000), url: `https://e/${i}` })) };
+	const big = {
+		name: "youtube",
+		canHandle: () => true,
+		tracks: () => Array.from({ length: 10 }, (_, i) => ({ id: `b${i}`, title: "t".repeat(2000), url: `https://e/${i}` })),
+	};
 	const c = await cluster({
 		bot: { plugins: [sc()], serve: false },
 		yt: { plugins: [big], serve: { maxResults: 8, maxResponseBytes: 5000 } },

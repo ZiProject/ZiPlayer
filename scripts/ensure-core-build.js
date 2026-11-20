@@ -28,7 +28,11 @@ function ensureBuild({ name, dir, entry, configFiles, script }) {
 		return 0;
 	}
 	console.log(`[pretest] building ${name}...`);
-	const r = spawnSync(npm, ["run", script, "--prefix", dir], { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
+	const r = spawnSync(npm, ["run", script, "--prefix", dir], {
+		cwd: root,
+		stdio: "inherit",
+		shell: process.platform === "win32",
+	});
 	return r.status ?? 1;
 }
 

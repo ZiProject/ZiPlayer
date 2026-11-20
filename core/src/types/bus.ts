@@ -188,15 +188,16 @@ export type PlayerEventArgsMap = {
 	) ?
 		[]
 	: K extends (
-		| "TRACK_LOADING"
-		| "TRACK_LOADED"
-		| "TRACK_STARTED"
-		| "TRACK_END"
-		| "STREAM_ABORTED"
-		| "playbackStateChanged"
-		| "playbackSessionCreated"
-		| "RECOVERY_STARTED"
-		| "RECOVERY_FAILED"
+
+			| "TRACK_LOADING"
+			| "TRACK_LOADED"
+			| "TRACK_STARTED"
+			| "TRACK_END"
+			| "STREAM_ABORTED"
+			| "playbackStateChanged"
+			| "playbackSessionCreated"
+			| "RECOVERY_STARTED"
+			| "RECOVERY_FAILED"
 	) ?
 		[PlaybackSessionSnapshot]
 	: K extends "TRACK_ERROR" ? [PlaybackSessionSnapshot, Error]
@@ -325,9 +326,9 @@ export interface PlayerRpcMap {
 	"playback.promotePreload": { request: { track: Track }; response: AudioResource | null };
 	"playback.transitionLock": { request: { active: boolean }; response: void };
 	"playback.prepareAutoplay": {
-			request: { session: PlaybackSession; context: PlayerMessageContext; allowEnded?: boolean };
-			response: Track | null;
-		};
+		request: { session: PlaybackSession; context: PlayerMessageContext; allowEnded?: boolean };
+		response: Track | null;
+	};
 	"playback.start": { request: { track: Track; context: PlayerMessageContext; from: Track | null }; response: void };
 	"playback.startResource": { request: { resource: AudioResource; track: Track }; response: boolean };
 	"forward.health": { request: undefined; response: ForwardHealthStatus };

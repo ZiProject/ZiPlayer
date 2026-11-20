@@ -66,6 +66,8 @@ export interface RawStreamInfo {
 	metadata?: Record<string, any>;
 	position?: number;
 	recreate?: (position: number, signal?: AbortSignal) => Promise<Readable>;
+	/** Custom cleanup hook to cancel/abort upstream resources (e.g. SABR stream, network readers). */
+	destroy?: () => void | Promise<void>;
 	/**
 	 * Set to `false` when the stream is single-use (for example data pulled from another node) so the extension
 	 * manager does not cache it and hand the same, already consumed stream to the next play of this track.
@@ -85,7 +87,7 @@ export interface RawStreamInfo {
 
 /**
  * Normalized streaming information for audio playback.
- * Guaranteed to have `track` and `streamType`.
+ * Guaranteed to have `track`, `streamType`, and `destroy`.
  */
 export interface StreamInfo extends RawStreamInfo {
 	stream?: Readable;
@@ -95,6 +97,7 @@ export interface StreamInfo extends RawStreamInfo {
 	inputType?: StreamType;
 	/** @deprecated Use streamType */
 	type?: "webm/opus" | "ogg/opus" | "arbitrary" | "url" | string;
+	destroy?: () => void | Promise<void>;
 }
 
 export function inferStreamType(info: Partial<RawStreamInfo>): StreamType {
@@ -113,12 +116,34 @@ export function normalizeStreamInfo(requestedTrack: Track, info: RawStreamInfo):
 	if (String(streamType).toLowerCase() === "raw") {
 		throw new TypeError("Raw audio input is unsupported; provide encoded audio");
 	}
+	const defaultDestroy = () => {
+		if (info.stream && !info.stream.destroyed && typeof info.stream.destroy === "function") {
+			try {
+				info.stream.destroy();
+			} catch {}
+		}
+		if (info.handle && typeof (info.handle as any).destroy === "function") {
+			try {
+				void (info.handle as any).destroy();
+			} catch {}
+		}
+	};
+	const destroy =
+		typeof info.destroy === "function" ?
+			() => {
+				try {
+					void info.destroy!();
+				} catch {}
+				defaultDestroy();
+			}
+		:	defaultDestroy;
 	return {
 		...info,
 		track: info.track ?? requestedTrack,
 		streamType,
 		inputType: info.inputType ?? streamType,
 		type: info.type ?? (streamType as string),
+		destroy,
 	};
 }
 

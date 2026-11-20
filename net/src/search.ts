@@ -114,7 +114,8 @@ export function importWireResult(raw: any, owner: string, requestedBy?: unknown,
 		}
 	}
 	const p = raw?.playlist;
-	const playlist = p && typeof p === "object" && typeof p.name === "string" ? { name: p.name, url: p.url, thumbnail: p.thumbnail } : null;
+	const playlist =
+		p && typeof p === "object" && typeof p.name === "string" ? { name: p.name, url: p.url, thumbnail: p.thumbnail } : null;
 	return {
 		tracks,
 		playlist,

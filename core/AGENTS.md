@@ -331,8 +331,8 @@ substitute a related track. When autoplay is enabled and the queue is empty, sel
 ### Forward Mode
 
 - Subscription validates the follower's voice connection/player and that the leader has an audio player (the leader needs no
-  Discord voice connection), stops independent follower playback, subscribes its voice connection to the leader audio player,
-  then sets `PlaybackMode.FORWARD` and emits `forwardModeStart`.
+  Discord voice connection), stops independent follower playback, subscribes its voice connection to the leader audio player, then
+  sets `PlaybackMode.FORWARD` and emits `forwardModeStart`.
 - `Player.subscribeTo()` is asynchronous (`bus.requestRpc`); the `forward.subscribe` handler is async, so never call it through
   `requestRpcSync`. `unsubscribeForward()` stays synchronous.
 - The leader's track and playback events are mirrored to followers.

@@ -51,8 +51,8 @@ export interface PlaybackPlayControllerOptions {
 export interface SaveControllerOptions {
 	middleware?: TrackMiddleware[];
 	middlewareContext: import("./core").TrackMiddlewareContext;
-	resolveStream: (track: Track) => Promise<StreamInfo | null | undefined>;
-	resolveVideoStream: (track: Track) => Promise<StreamInfo | null | undefined>;
+	resolveStream: (track: Track, options?: { signal?: AbortSignal }) => Promise<StreamInfo | null | undefined>;
+	resolveVideoStream: (track: Track, options?: { signal?: AbortSignal }) => Promise<StreamInfo | null | undefined>;
 	ffmpegPath?: string | null;
 	debug?: DebugLogger;
 	bus?: Bus;

@@ -32,7 +32,10 @@ test("debug events show the wire (ciphertext) and the decoded message", async (t
 	assert.equal(wire[0].qos, 1);
 	assert.ok(wire[0].bytes > 0 && /^[0-9a-f]+…?$/.test(wire[0].hex));
 	for (const e of events.filter((x) => x.layer === "wire")) {
-		assert.ok(!Buffer.from(e.hex.replace("…", ""), "hex").toString("latin1").includes("secret"), "plaintext never reaches the wire");
+		assert.ok(
+			!Buffer.from(e.hex.replace("…", ""), "hex").toString("latin1").includes("secret"),
+			"plaintext never reaches the wire",
+		);
 	}
 	const hs = events.filter((e) => e.layer === "wire" && e.kind === "handshake").map((e) => e.type);
 	assert.ok(hs.includes("hs1") && hs.includes("hs3"), `handshake steps seen on the wire: ${hs}`);
@@ -106,7 +109,7 @@ test("formatNetDebug renders every layer on one line", async (t) => {
 		assert.ok(line.startsWith("[net:a]"));
 	}
 	assert.ok(events.map(net.formatNetDebug).some((l) => l.includes("→ MQTT PUBLISH zi/v1/test/node/b/in qos1")));
-	assert.ok(events.map(net.formatNetDebug).some((l) => l.includes('echo #') && l.includes('{"hello":"world"}')));
+	assert.ok(events.map(net.formatNetDebug).some((l) => l.includes("echo #") && l.includes('{"hello":"world"}')));
 });
 
 test("search routing leaves info notes", async (t) => {

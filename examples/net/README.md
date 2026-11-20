@@ -49,18 +49,18 @@ node test-cluster.js --node=yt-1  # one node only (another machine): copy the ot
 
 Join a voice channel and type in a text channel:
 
-| Command                        | What it tests                                                                                   |
-| ------------------------------ | ----------------------------------------------------------------------------------------------- |
-| `!nodes` / `!status`           | Authenticated request to every node, their plugins, who owns the voice                          |
-| `!play <query>`                | Bot plugins first; if nothing is found (e.g. a YouTube URL) the other nodes are asked           |
-| `!play yt:<query>`             | Search and audio on the node with the youtube plugin, streamed to the bot (`sc:` `sp:` `tts:`)  |
-| `!search <query>`              | Only show the results and which node found them                                                 |
-| `!trace [on\|off\|msg\|wire\|audio]` | Print what this node sends to / receives from MQTT (or `NET_DEBUG=1` in `.env`)             |
-| `!route yt:<query> [n]`        | Router: relay a few foreign tracks, or hand the voice off when most tracks are foreign          |
-| `!handoff <node>` / `!reclaim` | Move the Discord voice session to another node and take it back                                 |
-| `!selftest [failover]`         | Automated: pairing, plugins, stream, relay, handoff, executor playback, reclaim (+ node crash)  |
-| `!kill <node>`                 | Crash a node (`ALLOW_REMOTE_KILL=1`) and watch the bot take the voice back                      |
-| `!stop` `!skip` `!leave`       | Housekeeping                                                                                    |
+| Command                              | What it tests                                                                                  |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `!nodes` / `!status`                 | Authenticated request to every node, their plugins, who owns the voice                         |
+| `!play <query>`                      | Bot plugins first; if nothing is found (e.g. a YouTube URL) the other nodes are asked          |
+| `!play yt:<query>`                   | Search and audio on the node with the youtube plugin, streamed to the bot (`sc:` `sp:` `tts:`) |
+| `!search <query>`                    | Only show the results and which node found them                                                |
+| `!trace [on\|off\|msg\|wire\|audio]` | Print what this node sends to / receives from MQTT (or `NET_DEBUG=1` in `.env`)                |
+| `!route yt:<query> [n]`              | Router: relay a few foreign tracks, or hand the voice off when most tracks are foreign         |
+| `!handoff <node>` / `!reclaim`       | Move the Discord voice session to another node and take it back                                |
+| `!selftest [failover]`               | Automated: pairing, plugins, stream, relay, handoff, executor playback, reclaim (+ node crash) |
+| `!kill <node>`                       | Crash a node (`ALLOW_REMOTE_KILL=1`) and watch the bot take the voice back                     |
+| `!stop` `!skip` `!leave`             | Housekeeping                                                                                   |
 
 Change `NODES` to give nodes different plugins and see the router choose differently, for example
 `NODES=bot-1:soundcloud+youtube,yt-1:youtube,tts-1:tts` makes YouTube local to the bot.

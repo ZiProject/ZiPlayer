@@ -913,6 +913,7 @@ export class YouTubePlugin extends BasePlugin {
 							mediaType: "video",
 							isLive,
 						},
+						destroy: (result as any).destroy,
 						recreate: async (position: number, recreateSignal?: AbortSignal) => {
 							const startTimeMs =
 								typeof position === "number" && Number.isFinite(position) && position > 0 ? Math.floor(position) : undefined;
@@ -1022,6 +1023,13 @@ export class YouTubePlugin extends BasePlugin {
 						mime: (format as any).mime_type ?? (format as any).mimeType,
 						contentLength: (format as any).content_length ?? (format as any).contentLength,
 						mediaType: "video",
+					},
+					destroy: () => {
+						if (!nodeStream.destroyed && typeof nodeStream.destroy === "function") {
+							try {
+								nodeStream.destroy();
+							} catch {}
+						}
 					},
 					recreate: async (position: number, recreateSignal?: AbortSignal) => {
 						const startTimeMs =

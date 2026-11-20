@@ -58,7 +58,8 @@ const MAX_ARRAY = 20;
 
 /** Copy of `value` that is safe to print: sensitive keys hidden, long strings and arrays shortened. */
 export function redact(value: unknown, depth = 0): unknown {
-	if (typeof value === "string") return value.length > MAX_STRING ? `${value.slice(0, MAX_STRING)}…(+${value.length - MAX_STRING} chars)` : value;
+	if (typeof value === "string")
+		return value.length > MAX_STRING ? `${value.slice(0, MAX_STRING)}…(+${value.length - MAX_STRING} chars)` : value;
 	if (value === null || typeof value !== "object") return typeof value === "bigint" ? value.toString() : value;
 	if (depth >= MAX_DEPTH) return "[…]";
 	if (Array.isArray(value)) {
@@ -79,11 +80,17 @@ export function hexPreview(buf: Uint8Array, max = 24): string {
 
 /** One-line, human readable rendering of a debug event. */
 export function formatNetDebug(e: NetDebugEvent): string {
-	const arrow = e.dir === "out" ? "→" : e.dir === "in" ? "←" : "•";
+	const arrow =
+		e.dir === "out" ? "→"
+		: e.dir === "in" ? "←"
+		: "•";
 	if (e.layer === "info") return `[net:${e.node}] ${arrow} ${e.note ?? ""}`;
 	if (e.layer === "wire") {
 		const flags = `${e.qos !== undefined ? ` qos${e.qos}` : ""}${e.retain ? " retain" : ""}`;
-		const detail = e.body !== undefined ? ` ${JSON.stringify(e.body)}` : e.type ? ` ${e.type}` : "";
+		const detail =
+			e.body !== undefined ? ` ${JSON.stringify(e.body)}`
+			: e.type ? ` ${e.type}`
+			: "";
 		return (
 			`[net:${e.node}] ${arrow} MQTT ${e.dir === "out" ? "PUBLISH" : "MESSAGE"} ${e.topic}${flags} ${e.bytes}B ` +
 			`${e.kind}${e.encrypted ? "(encrypted)" : ""}${detail}${e.hex ? ` [${e.hex}]` : ""}${e.error ? ` FAILED: ${e.error}` : ""}`
@@ -93,7 +100,10 @@ export function formatNetDebug(e: NetDebugEvent): string {
 		return `[net:${e.node}] ${arrow} audio ${e.dir === "out" ? "to" : "from"} ${e.peer ?? "?"} stream#${e.streamId} seq ${e.seq} ${e.bytes}B${e.flags ? ` flags ${e.flags}` : ""}`;
 	}
 	const who = e.peer ? ` ${e.dir === "out" ? "to" : "from"} ${e.peer}` : "";
-	const ref = e.re !== undefined ? ` re#${e.re}` : e.id !== undefined ? ` #${e.id}` : "";
+	const ref =
+		e.re !== undefined ? ` re#${e.re}`
+		: e.id !== undefined ? ` #${e.id}`
+		: "";
 	const body = e.body !== undefined ? ` ${JSON.stringify(e.body)}` : "";
 	return `[net:${e.node}] ${arrow} ${e.kind ?? "msg"}${who} ${e.type ?? ""}${ref}${e.bytes !== undefined ? ` ${e.bytes}B` : ""}${body}`;
 }

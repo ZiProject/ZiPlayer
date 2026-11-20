@@ -23,7 +23,13 @@ async function makeCluster(ids, { roles = {}, nodeOptions = {}, start = true } =
 		});
 	}
 	if (start) for (const id of ids) await nodes[id].start();
-	return { broker, identities, nodes, transports, stopAll: () => Promise.all(Object.values(nodes).map((n) => n.stop().catch(() => {}))) };
+	return {
+		broker,
+		identities,
+		nodes,
+		transports,
+		stopAll: () => Promise.all(Object.values(nodes).map((n) => n.stop().catch(() => {}))),
+	};
 }
 
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));

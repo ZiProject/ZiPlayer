@@ -108,7 +108,8 @@ function loadConfig(argv = process.argv.slice(2), env = process.env) {
 		allowRemoteKill: flag("ALLOW_REMOTE_KILL"),
 		debug: flag("DEBUG"),
 		// what the net layer prints: 0 | msg | wire | 1/all   (+ NET_DEBUG_AUDIO=1 for every audio frame)
-		netDebug: ["1", "true", "yes", "on"].includes(get("NET_DEBUG", "0").toLowerCase()) ? "all" : get("NET_DEBUG", "0").toLowerCase(),
+		netDebug:
+			["1", "true", "yes", "on"].includes(get("NET_DEBUG", "0").toLowerCase()) ? "all" : get("NET_DEBUG", "0").toLowerCase(),
 		netDebugAudio: flag("NET_DEBUG_AUDIO"),
 	};
 }
@@ -151,7 +152,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  */
 function makeTracer(node, formatNetDebug, initial, out = console.log) {
 	let mode = initial;
-	const layers = () => (mode === "all" ? ["wire", "message", "info"] : mode === "msg" ? ["message", "info"] : mode === "wire" ? ["wire"] : []);
+	const layers = () =>
+		mode === "all" ? ["wire", "message", "info"]
+		: mode === "msg" ? ["message", "info"]
+		: mode === "wire" ? ["wire"]
+		: [];
 	const listener = (e) => layers().includes(e.layer) && out(formatNetDebug(e));
 	const apply = (next) => {
 		mode = next;
@@ -390,9 +395,15 @@ function attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, 
 			if (!arg) return void (await m.reply("Usage: `search <query>` or `search yt:<query>`"));
 			const { tracks, node, result } = await findTracks(arg, 5);
 			const lines = tracks.map(
-				(t, i) => `${i + 1}. **${t.title}** (${t.source}) · found on **${t.metadata?.net?.owner ?? id}**${t.duration ? ` · ${t.duration}s` : ""}`,
+				(t, i) =>
+					`${i + 1}. **${t.title}** (${t.source}) · found on **${t.metadata?.net?.owner ?? id}**${t.duration ? ` · ${t.duration}s` : ""}`,
 			);
-			await m.reply(`${result.playlist ? `📃 playlist **${result.playlist.name}**\n` : ""}${lines.join("\n")}\n_(answered by ${node === id ? "this bot" : node})_`.slice(0, 1990));
+			await m.reply(
+				`${result.playlist ? `📃 playlist **${result.playlist.name}**\n` : ""}${lines.join("\n")}\n_(answered by ${node === id ? "this bot" : node})_`.slice(
+					0,
+					1990,
+				),
+			);
 		},
 
 		async trace(m, arg) {
@@ -401,7 +412,10 @@ function attachDiscordCommands({ id, cfg, zi, manager, net, client, events, st, 
 				zi.node.options.debugAudio = !zi.node.options.debugAudio;
 				return void (await m.reply(`audio frames in trace: ${zi.node.options.debugAudio ? "on" : "off"}`));
 			}
-			const mode = a === "off" || a === "0" ? "off" : a === "msg" || a === "wire" ? a : "all";
+			const mode =
+				a === "off" || a === "0" ? "off"
+				: a === "msg" || a === "wire" ? a
+				: "all";
 			await m.reply(`net trace: **${setTrace(mode)}** (printed in the console of ${id})`);
 		},
 

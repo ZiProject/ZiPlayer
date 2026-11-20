@@ -11,8 +11,18 @@ function setup({ followerConn = true, leaderConn = false, leaderAudio = true } =
 	const bus = new Bus();
 	const audio = { leader: { id: "leader-audio" }, follower: { id: "follower-audio" } };
 	const calls = [];
-	bus.registerQuery(PLAYER_QUERY.voiceConnection, (id) => (id === "f" ? (followerConn ? {} : null) : leaderConn ? {} : null));
-	bus.registerQuery(PLAYER_QUERY.audioPlayer, (id) => (id === "f" ? audio.follower : leaderAudio ? audio.leader : null));
+	bus.registerQuery(PLAYER_QUERY.voiceConnection, (id) =>
+		id === "f" ?
+			followerConn ? {}
+			:	null
+		: leaderConn ? {}
+		: null,
+	);
+	bus.registerQuery(PLAYER_QUERY.audioPlayer, (id) =>
+		id === "f" ? audio.follower
+		: leaderAudio ? audio.leader
+		: null,
+	);
 	const { forward } = createSharedControllers({ bus });
 	bus.registerRpc("queue.clear", () => undefined);
 	bus.registerRpc("queue.setCurrent", () => undefined);
